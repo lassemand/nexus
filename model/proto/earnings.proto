@@ -1,0 +1,22 @@
+syntax = "proto3";
+package nexus;
+
+// A quarterly earnings report event.
+message EarningsEvent {
+  string ticker = 1;
+  // Unix timestamp (seconds) when the filing was submitted to SEC.
+  int64 announced_at_unix_secs = 2;
+  // Unix timestamp (seconds) of the fiscal period end date.
+  int64 report_period_unix_secs = 3;
+  // Fiscal quarter: 1–4.
+  uint32 fiscal_quarter = 4;
+  uint32 fiscal_year = 5;
+  double eps_actual = 6;
+  double eps_estimate = 7;
+  double revenue_actual = 8;
+  double revenue_estimate = 9;
+  // SEC CIK number for the company.
+  uint64 cik = 10;
+  // URL to the EDGAR filing index page.
+  string filing_url = 11;
+}

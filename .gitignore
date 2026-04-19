@@ -1,0 +1,6 @@
+/target
+
+# protobuf generated output
+**/OUT_DIR
+target/debug/build/**/out/*.rs
+target/release/build/**/out/*.rs

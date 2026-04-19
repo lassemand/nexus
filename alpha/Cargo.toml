@@ -1,0 +1,12 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+model = { path = "../model" }
+async-trait = "0.1"
+yahoo_finance_api = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+thiserror = "1"
+time = "0.3"

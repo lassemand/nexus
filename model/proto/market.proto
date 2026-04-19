@@ -1,0 +1,14 @@
+syntax = "proto3";
+package nexus;
+
+// A price observation for an asset at a point in time.
+message MarketEvent {
+  string ticker = 1;
+  double close = 2;
+  double open = 3;
+  double high = 4;
+  double low = 5;
+  uint64 volume = 6;
+  string currency = 7;
+  int64 timestamp_unix_secs = 8;
+}

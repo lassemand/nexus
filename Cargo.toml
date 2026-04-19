@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "model",
+    "alpha",
+    "chronicle",
+    "backtest",
+]
+resolver = "2"
