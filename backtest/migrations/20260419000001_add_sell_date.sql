@@ -1,0 +1,1 @@
+ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS sell_date DATE;

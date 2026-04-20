@@ -19,10 +19,20 @@ where
     P: PriceProvider,
     P::Error: std::fmt::Display,
 {
+    if event.announced_at_unix_secs <= 0 {
+        return Err(StrategyError::Price(format!(
+            "invalid timestamp for {}: announced_at_unix_secs must be > 0",
+            event.ticker
+        )));
+    }
+
     let asset = Asset::new(&event.ticker);
 
     let report_ts = UNIX_EPOCH + Duration::from_secs(event.announced_at_unix_secs as u64);
     let buy_ts = report_ts - Duration::from_secs(24 * 60 * 60);
+    // Sell the day after the announcement — earnings are typically after market close,
+    // so the market reaction is priced in on the following trading day.
+    let sell_ts = report_ts + Duration::from_secs(24 * 60 * 60);
 
     let buy_price = provider
         .price_at(&asset, buy_ts)
@@ -31,7 +41,7 @@ where
         .value;
 
     let sell_price = provider
-        .price_at(&asset, report_ts)
+        .price_at(&asset, sell_ts)
         .await
         .map_err(|e| StrategyError::Price(e.to_string()))?
         .value;
@@ -41,11 +51,13 @@ where
 
     let earnings_date = to_naive_date(report_ts);
     let buy_date = to_naive_date(buy_ts);
+    let sell_date = to_naive_date(sell_ts);
 
     Ok(TradeResult {
         ticker: event.ticker.clone(),
         earnings_date,
         buy_date,
+        sell_date,
         buy_price,
         sell_price,
         pnl,

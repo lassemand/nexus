@@ -4,5 +4,6 @@ members = [
     "alpha",
     "chronicle",
     "backtest",
+    "insight",
 ]
 resolver = "2"

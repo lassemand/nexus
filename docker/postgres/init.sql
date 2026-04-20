@@ -1,0 +1,2 @@
+CREATE DATABASE chronicle;
+CREATE DATABASE backtest;

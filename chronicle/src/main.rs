@@ -3,23 +3,39 @@ mod edgar;
 mod kafka;
 mod parse;
 
+use clap::Parser;
 use edgar::{EdgarClient, Filing};
 use kafka::ChronicleProducer;
 use model::generated::EarningsEvent;
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info, warn};
 
-const BROKERS: &str = "localhost:19092";
-const EARNINGS_TOPIC: &str = "earnings.calendar";
-const DATABASE_URL: &str = "postgres://nexus:nexus@localhost:5432/nexus";
+#[derive(Parser)]
+#[command(about = "Ingest SEC EDGAR earnings filings into Kafka")]
+struct Args {
+    #[arg(long, env = "DATABASE_URL")]
+    database_url: String,
+
+    #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:19092")]
+    brokers: String,
+
+    #[arg(long, env = "KAFKA_TOPIC", default_value = "earnings.calendar")]
+    topic: String,
+
+    #[arg(long, env = "TICKERS", value_delimiter = ',', default_value = "AAPL,MSFT,GOOGL")]
+    tickers: Vec<String>,
+}
 
 #[tokio::main]
 async fn main() {
+    dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
     tracing_subscriber::fmt::init();
+
+    let args = Args::parse();
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(DATABASE_URL)
+        .connect(&args.database_url)
         .await
         .expect("failed to connect to postgres");
 
@@ -29,11 +45,9 @@ async fn main() {
         .expect("migrations failed");
 
     let edgar = EdgarClient::new().expect("failed to create EDGAR client");
-    let producer = ChronicleProducer::new(BROKERS).expect("failed to connect to Kafka");
+    let producer = ChronicleProducer::new(&args.brokers).expect("failed to connect to Kafka");
 
-    let tickers = ["AAPL", "MSFT", "GOOGL"];
-
-    for ticker in tickers {
+    for ticker in &args.tickers {
         info!("fetching CIK for {ticker}");
         let cik = match edgar.cik_for_ticker(ticker).await {
             Ok(cik) => cik,
@@ -73,7 +87,7 @@ async fn main() {
                 filing_url: parse::filing_url(cik, &accession_number),
             };
 
-            if let Err(e) = producer.publish(EARNINGS_TOPIC, ticker, &event).await {
+            if let Err(e) = producer.publish(&args.topic, ticker, &event).await {
                 error!("publish failed for {ticker}: {e}");
             } else {
                 if let Err(e) = db::mark_published(&pool, &accession_number, ticker).await {

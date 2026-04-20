@@ -2,6 +2,7 @@ mod db;
 mod strategy;
 
 use alpha::YahooPriceProvider;
+use clap::Parser;
 use db::insert_trade_result;
 use model::generated::EarningsEvent;
 use prost::Message;
@@ -12,17 +13,32 @@ use rdkafka::{
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info, warn};
 
-const BROKERS: &str = "localhost:19092";
-const EARNINGS_TOPIC: &str = "earnings.calendar";
-const DATABASE_URL: &str = "postgres://nexus:nexus@localhost:5432/nexus";
+#[derive(Parser)]
+#[command(about = "Backtest earnings strategy against historical data")]
+struct Args {
+    #[arg(long, env = "DATABASE_URL")]
+    database_url: String,
+
+    #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:19092")]
+    brokers: String,
+
+    #[arg(long, env = "KAFKA_TOPIC", default_value = "earnings.calendar")]
+    topic: String,
+
+    #[arg(long, env = "KAFKA_GROUP_ID", default_value = "backtest")]
+    group_id: String,
+}
 
 #[tokio::main]
 async fn main() {
+    dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
     tracing_subscriber::fmt::init();
+
+    let args = Args::parse();
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(DATABASE_URL)
+        .connect(&args.database_url)
         .await
         .expect("failed to connect to postgres");
 
@@ -32,21 +48,28 @@ async fn main() {
         .expect("migrations failed");
 
     let consumer: StreamConsumer = ClientConfig::new()
-        .set("bootstrap.servers", BROKERS)
-        .set("group.id", "backtest")
+        .set("bootstrap.servers", &args.brokers)
+        .set("group.id", &args.group_id)
         .set("auto.offset.reset", "earliest")
+        .set("enable.auto.commit", "false")
         .create()
         .expect("failed to create kafka consumer");
 
     consumer
-        .subscribe(&[EARNINGS_TOPIC])
+        .subscribe(&[args.topic.as_str()])
         .expect("failed to subscribe");
 
     let pricer = YahooPriceProvider::new();
 
-    info!("backtest consumer started, waiting for earnings events");
+    info!(
+        brokers = %args.brokers,
+        topic = %args.topic,
+        group_id = %args.group_id,
+        "backtest consumer started"
+    );
 
     loop {
+        info!("polling for next message...");
         match consumer.recv().await {
             Err(e) => error!("kafka recv error: {e}"),
             Ok(msg) => {

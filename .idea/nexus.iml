@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="EMPTY_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/alpha/crates/model/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/alpha/crates/pricer/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/alpha/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/backtest/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/chronicle/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/insight/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/model/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/proto/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>
