@@ -1,10 +1,10 @@
 [package]
-name = "backtest"
+name = "signal"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "backtest"
+name = "signal"
 path = "src/main.rs"
 
 [dependencies]

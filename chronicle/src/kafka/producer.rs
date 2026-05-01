@@ -1,7 +1,8 @@
+use model::{bar::Bar, generated::MarketEvent};
 use prost::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,6 +24,27 @@ impl ChronicleProducer {
             .map_err(|e| ProducerError::Kafka(e.to_string()))?;
 
         Ok(Self { producer })
+    }
+
+    pub async fn publish_bar(&self, topic: &str, bar: &Bar) -> Result<(), ProducerError> {
+        let ts = bar
+            .timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let event = MarketEvent {
+            ticker: bar.asset.ticker.clone(),
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume as u64,
+            currency: "USD".to_string(),
+            timestamp_unix_secs: ts,
+        };
+
+        self.publish(topic, &bar.asset.ticker, &event).await
     }
 
     /// Serialises `msg` as protobuf and publishes it to `topic`, keyed by `key`.

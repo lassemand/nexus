@@ -3,7 +3,7 @@ members = [
     "model",
     "alpha",
     "chronicle",
-    "backtest",
+    "signal",
     "insight",
 ]
 resolver = "2"

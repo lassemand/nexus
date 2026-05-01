@@ -1,4 +1,5 @@
 pub mod asset;
+pub mod bar;
 pub mod price;
 pub mod sector;
 

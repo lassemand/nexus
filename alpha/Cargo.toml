@@ -9,4 +9,6 @@ async-trait = "0.1"
 yahoo_finance_api = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 thiserror = "1"
-time = "0.3"
+time = { version = "0.3", features = ["formatting"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
