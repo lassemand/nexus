@@ -12,6 +12,16 @@ services:
       - 9092:9092
     depends_on:
       - zookeeper
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
     environment:
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
@@ -49,11 +59,11 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9094 --create --if-not-exists \
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists \
           --topic market-events \
           --partitions 6 \
           --replication-factor 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9094 --create --if-not-exists \
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists \
           --topic earnings.calendar \
           --partitions 6 \
           --replication-factor 1
