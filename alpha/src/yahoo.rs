@@ -16,7 +16,10 @@ pub enum YahooError {
     #[error("yahoo finance error: {0}")]
     Api(#[from] yahoo_finance_api::YahooError),
     #[error("no quotes returned for {ticker} around {timestamp:?}")]
-    NoData { ticker: String, timestamp: SystemTime },
+    NoData {
+        ticker: String,
+        timestamp: SystemTime,
+    },
 }
 
 impl YahooPriceProvider {

@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use model::{asset::Asset, bar::Bar};
 use serde::Deserialize;
-use time::Date;
 use time::format_description::well_known::Iso8601;
+use time::Date;
 
 use crate::bar_provider::BarProvider;
 
@@ -87,8 +87,7 @@ impl BarProvider for PolygonBarProvider {
             .results
             .into_iter()
             .map(|r| {
-                let timestamp =
-                    SystemTime::UNIX_EPOCH + Duration::from_millis(r.t);
+                let timestamp = SystemTime::UNIX_EPOCH + Duration::from_millis(r.t);
                 Bar {
                     asset: asset.clone(),
                     open: r.o,

@@ -3,7 +3,10 @@ use chrono::{Datelike, NaiveDate, TimeZone, Utc};
 /// Parses an EDGAR date string ("YYYY-MM-DD") into a UTC unix timestamp (seconds).
 pub fn filed_at_to_unix(date_str: &str) -> Option<i64> {
     let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
-    Some(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0)?).timestamp())
+    Some(
+        Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0)?)
+            .timestamp(),
+    )
 }
 
 /// Derives fiscal quarter (1–4) from a report period date string ("YYYY-MM-DD").

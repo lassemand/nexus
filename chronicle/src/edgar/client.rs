@@ -55,9 +55,7 @@ pub struct EdgarClient {
 
 impl EdgarClient {
     pub fn new() -> Result<Self, EdgarError> {
-        let http = Client::builder()
-            .user_agent(USER_AGENT)
-            .build()?;
+        let http = Client::builder().user_agent(USER_AGENT).build()?;
         Ok(Self { http })
     }
 
@@ -75,8 +73,8 @@ impl EdgarClient {
 
         let upper = ticker.to_uppercase();
         for entry in tickers.as_object().into_iter().flatten() {
-            let t: TickerEntry = serde_json::from_value(entry.1.clone())
-                .unwrap_or(TickerEntry { cik_str: 0 });
+            let t: TickerEntry =
+                serde_json::from_value(entry.1.clone()).unwrap_or(TickerEntry { cik_str: 0 });
             if entry.1["ticker"].as_str().unwrap_or("").to_uppercase() == upper {
                 return Ok(t.cik_str);
             }

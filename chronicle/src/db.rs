@@ -10,7 +10,11 @@ pub async fn is_published(pool: &PgPool, accession_number: &str) -> sqlx::Result
     Ok(row)
 }
 
-pub async fn mark_published(pool: &PgPool, accession_number: &str, ticker: &str) -> sqlx::Result<()> {
+pub async fn mark_published(
+    pool: &PgPool,
+    accession_number: &str,
+    ticker: &str,
+) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO published_filings (accession_number, ticker) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )
