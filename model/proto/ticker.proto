@@ -1,0 +1,10 @@
+syntax = "proto3";
+package nexus;
+
+// A ticker registration event published to the `company.tickers` Kafka topic.
+// Sector is intentionally absent — it is looked up server-side by `signal`.
+message TickerRegistration {
+  // Raw ticker symbol as provided by the publisher.
+  // Normalisation to uppercase is performed by the consumer, not here.
+  string ticker = 1;
+}
