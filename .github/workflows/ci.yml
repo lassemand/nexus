@@ -19,7 +19,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: sudo apt-get update -y && sudo apt-get install -y protobuf-compiler
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            protobuf-compiler \
+            libssl-dev \
+            libsasl2-dev \
+            libcurl4-openssl-dev \
+            cmake
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
