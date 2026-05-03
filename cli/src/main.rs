@@ -12,7 +12,10 @@ use std::time::Duration;
 
 /// Nexus CLI — interact with the nexus insider-signal pipeline.
 #[derive(Parser)]
-#[command(name = "nexus", about = "Nexus CLI — interact with the nexus insider-signal pipeline")]
+#[command(
+    name = "nexus",
+    about = "Nexus CLI — interact with the nexus insider-signal pipeline"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
