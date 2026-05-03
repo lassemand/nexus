@@ -6,6 +6,8 @@ pub struct Asset {
 
 impl Asset {
     pub fn new(ticker: impl Into<String>) -> Self {
-        Self { ticker: ticker.into() }
+        Self {
+            ticker: ticker.into(),
+        }
     }
 }

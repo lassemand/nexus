@@ -26,6 +26,9 @@ impl ChronicleProducer {
         Ok(Self { producer })
     }
 
+    // Used by the `market` binary; the `chronicle` binary shares this module but
+    // does not call this helper, so we suppress the dead-code lint here.
+    #[allow(dead_code)]
     pub async fn publish_bar(&self, topic: &str, bar: &Bar) -> Result<(), ProducerError> {
         let ts = bar
             .timestamp

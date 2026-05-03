@@ -4,8 +4,8 @@ use alpha::{BarProvider, PolygonBarProvider};
 use clap::Parser;
 use kafka::ChronicleProducer;
 use model::asset::Asset;
-use time::Date;
 use time::macros::format_description;
+use time::Date;
 use tracing::{error, info};
 
 #[derive(Parser)]
@@ -53,7 +53,10 @@ async fn main() {
 
         let bars = match polygon.bars(&asset, from, to).await {
             Ok(b) => b,
-            Err(e) => { error!("failed to fetch {ticker}: {e}"); continue; }
+            Err(e) => {
+                error!("failed to fetch {ticker}: {e}");
+                continue;
+            }
         };
 
         info!("publishing {} bars for {ticker}", bars.len());

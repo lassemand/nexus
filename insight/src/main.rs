@@ -1,14 +1,8 @@
-use chrono::{NaiveDate, DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use clap::Parser;
-use rmcp::{
-    ServerHandler,
-    ServiceExt,
-    model::*,
-    tool,
-    Error as McpError,
-};
+use rmcp::{model::*, tool, Error as McpError, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{postgres::PgPoolOptions, PgPool};
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 struct TradeResult {
@@ -39,18 +33,20 @@ impl InsightServer {
         ticker: Option<String>,
     ) -> Result<CallToolResult, McpError> {
         let results: Vec<TradeResult> = match ticker {
-            Some(ref t) => sqlx::query_as(
-                "SELECT * FROM trade_results WHERE ticker = $1 ORDER BY earnings_date DESC",
-            )
-            .bind(t)
-            .fetch_all(&self.pool)
-            .await,
+            Some(ref t) => {
+                sqlx::query_as(
+                    "SELECT * FROM trade_results WHERE ticker = $1 ORDER BY earnings_date DESC",
+                )
+                .bind(t)
+                .fetch_all(&self.pool)
+                .await
+            }
 
-            None => sqlx::query_as(
-                "SELECT * FROM trade_results ORDER BY earnings_date DESC",
-            )
-            .fetch_all(&self.pool)
-            .await,
+            None => {
+                sqlx::query_as("SELECT * FROM trade_results ORDER BY earnings_date DESC")
+                    .fetch_all(&self.pool)
+                    .await
+            }
         }
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -60,14 +56,20 @@ impl InsightServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    #[tool(description = "Summarise trade results: count, total PnL, average PnL%, win rate. Optionally filter by ticker.")]
+    #[tool(
+        description = "Summarise trade results: count, total PnL, average PnL%, win rate. Optionally filter by ticker."
+    )]
     async fn summarise_trade_results(
         &self,
         #[tool(param)]
         #[schemars(description = "Optional ticker symbol to filter by")]
         ticker: Option<String>,
     ) -> Result<CallToolResult, McpError> {
-        let where_clause = if ticker.is_some() { "WHERE ticker = $1" } else { "" };
+        let where_clause = if ticker.is_some() {
+            "WHERE ticker = $1"
+        } else {
+            ""
+        };
 
         let query = format!(
             r#"
@@ -121,9 +123,7 @@ impl ServerHandler for InsightServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
                 name: "nexus-insight".into(),
                 version: "0.1.0".into(),

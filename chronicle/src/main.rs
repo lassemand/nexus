@@ -22,7 +22,12 @@ struct Args {
     #[arg(long, env = "KAFKA_TOPIC", default_value = "earnings.calendar")]
     topic: String,
 
-    #[arg(long, env = "TICKERS", value_delimiter = ',', default_value = "AAPL,MSFT,GOOGL")]
+    #[arg(
+        long,
+        env = "TICKERS",
+        value_delimiter = ',',
+        default_value = "AAPL,MSFT,GOOGL"
+    )]
     tickers: Vec<String>,
 }
 
@@ -51,16 +56,28 @@ async fn main() {
         info!("fetching CIK for {ticker}");
         let cik = match edgar.cik_for_ticker(ticker).await {
             Ok(cik) => cik,
-            Err(e) => { error!("cik lookup failed for {ticker}: {e}"); continue; }
+            Err(e) => {
+                error!("cik lookup failed for {ticker}: {e}");
+                continue;
+            }
         };
 
         info!("fetching 8-K filings for {ticker} (CIK {cik})");
         let filings = match edgar.earnings_filings(cik).await {
             Ok(f) => f,
-            Err(e) => { error!("filings fetch failed for {ticker}: {e}"); continue; }
+            Err(e) => {
+                error!("filings fetch failed for {ticker}: {e}");
+                continue;
+            }
         };
 
-        for Filing { filed_at, report_date, accession_number, .. } in filings {
+        for Filing {
+            filed_at,
+            report_date,
+            accession_number,
+            ..
+        } in filings
+        {
             match db::is_published(&pool, &accession_number).await {
                 Ok(true) => {
                     warn!("skipping already published filing {accession_number}");
