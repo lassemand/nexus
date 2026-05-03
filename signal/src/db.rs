@@ -59,8 +59,6 @@ fn sector_from_slug(slug: &str) -> Option<Sector> {
 ///
 /// `ticker` is normalized to uppercase before being stored. On conflict the
 /// sector is overwritten with the new value.
-// Wired into main in NEX-8; suppress dead_code for the binary target until then.
-#[allow(dead_code)]
 pub async fn upsert_company(pool: &PgPool, ticker: &str, sector: Sector) -> sqlx::Result<()> {
     let ticker = ticker.to_uppercase();
     sqlx::query(
