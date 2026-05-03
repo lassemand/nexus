@@ -22,7 +22,7 @@ struct Args {
     #[arg(long, env = "KAFKA_TOPIC", default_value = "earnings.calendar")]
     topic: String,
 
-    #[arg(long, env = "KAFKA_GROUP_ID", default_value = "backtest")]
+    #[arg(long, env = "KAFKA_GROUP_ID", default_value = "chronicle")]
     group_id: String,
 }
 
