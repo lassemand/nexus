@@ -3,17 +3,14 @@ mod strategy;
 
 use alpha::{CompanyProvider, PolygonSectorProvider, YahooPriceProvider};
 use clap::Parser;
-use db::{insert_trade_result, load_companies, upsert_company};
-use model::{
-    asset::Asset, generated::EarningsEvent, generated::TickerRegistration, sector::Sector,
-};
+use db::{insert_trade_result, is_registered, upsert_company};
+use model::{asset::Asset, generated::EarningsEvent, generated::TickerRegistration};
 use prost::Message;
 use rdkafka::{
     consumer::{CommitMode, Consumer, StreamConsumer},
     ClientConfig, Message as KafkaMessage,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
-use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
 #[derive(Parser)]
@@ -45,12 +42,11 @@ struct Args {
 /// - Normalises the ticker to uppercase.
 /// - Fetches the GICS sector from Polygon (SIC-based); logs an error and
 ///   returns on API failure, but the caller should still commit the offset.
-/// - On success, persists the mapping to Postgres and updates `cache`.
+/// - On success, persists the mapping to Postgres.
 async fn handle_ticker_registration(
     payload: &[u8],
     pool: &PgPool,
     sector_provider: &PolygonSectorProvider,
-    cache: &mut HashMap<String, Sector>,
 ) {
     let msg = match TickerRegistration::decode(payload) {
         Ok(m) => m,
@@ -71,12 +67,11 @@ async fn handle_ticker_registration(
         }
     };
 
-    if let Err(e) = upsert_company(pool, &ticker, sector.clone()).await {
+    if let Err(e) = upsert_company(pool, &ticker, sector).await {
         error!(ticker = %ticker, error = %e, "failed to persist company sector to DB");
         return;
     }
 
-    cache.insert(ticker.clone(), sector);
     info!(ticker = %ticker, "ticker registered and sector persisted");
 }
 
@@ -98,19 +93,7 @@ async fn main() {
         .await
         .expect("migrations failed");
 
-    // Load the persisted ticker→sector map so the in-memory cache survives
-    // process restarts without replaying the full company.tickers topic.
-    let mut companies: HashMap<String, Sector> = load_companies(&pool)
-        .await
-        .expect("failed to load companies from DB");
-
     let sector_provider = PolygonSectorProvider::new(&args.polygon_api_key);
-
-    info!(
-        tickers_loaded = companies.len(),
-        tickers_topic = %args.tickers_topic,
-        "companies cache initialised"
-    );
 
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", &args.brokers)
@@ -146,8 +129,7 @@ async fn main() {
                 };
 
                 if topic == args.tickers_topic {
-                    handle_ticker_registration(payload, &pool, &sector_provider, &mut companies)
-                        .await;
+                    handle_ticker_registration(payload, &pool, &sector_provider).await;
                 } else if topic == args.topic {
                     let event = match EarningsEvent::decode(payload) {
                         Ok(e) => e,
@@ -159,10 +141,18 @@ async fn main() {
                     };
 
                     let ticker = event.ticker.to_uppercase();
-                    if !companies.contains_key(&ticker) {
-                        debug!(ticker = %ticker, "skipping unregistered ticker");
-                        consumer.commit_message(&msg, CommitMode::Async).ok();
-                        continue;
+                    match is_registered(&pool, &ticker).await {
+                        Ok(false) => {
+                            debug!(ticker = %ticker, "skipping unregistered ticker");
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(ticker = %ticker, error = %e, "DB registration check failed, skipping");
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
+                        }
+                        Ok(true) => {}
                     }
 
                     info!("evaluating earnings strategy for {ticker}");
