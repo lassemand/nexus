@@ -1,5 +1,8 @@
 use chrono::NaiveDate;
-use sqlx::PgPool;
+use model::sector::Sector;
+use sqlx::{PgPool, Row};
+use std::collections::HashMap;
+use tracing::warn;
 
 pub struct TradeResult {
     pub ticker: String,
@@ -12,6 +15,7 @@ pub struct TradeResult {
     pub pnl_pct: f64,
 }
 
+/// Persists a completed trade simulation result.
 pub async fn insert_trade_result(pool: &PgPool, r: &TradeResult) -> sqlx::Result<()> {
     sqlx::query(
         r#"
@@ -30,4 +34,164 @@ pub async fn insert_trade_result(pool: &PgPool, r: &TradeResult) -> sqlx::Result
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Maps a GICS sector slug string (as produced by [`Sector::slug`]) back to a
+/// [`Sector`] variant. Returns `None` for any unrecognized slug.
+// Called from load_companies (below) which is wired into main in NEX-8.
+#[allow(dead_code)]
+fn sector_from_slug(slug: &str) -> Option<Sector> {
+    match slug {
+        "technology" => Some(Sector::Technology),
+        "healthcare" => Some(Sector::Healthcare),
+        "financials" => Some(Sector::Financials),
+        "consumer-discretionary" => Some(Sector::ConsumerDiscretionary),
+        "consumer-staples" => Some(Sector::ConsumerStaples),
+        "energy" => Some(Sector::Energy),
+        "utilities" => Some(Sector::Utilities),
+        "industrials" => Some(Sector::Industrials),
+        "materials" => Some(Sector::Materials),
+        "real-estate" => Some(Sector::RealEstate),
+        "communication-services" => Some(Sector::CommunicationServices),
+        _ => None,
+    }
+}
+
+/// Inserts or updates the sector mapping for a company.
+///
+/// `ticker` is normalized to uppercase before being stored. On conflict the
+/// sector is overwritten with the new value.
+// Wired into main in NEX-8; suppress dead_code for the binary target until then.
+#[allow(dead_code)]
+pub async fn upsert_company(pool: &PgPool, ticker: &str, sector: Sector) -> sqlx::Result<()> {
+    let ticker = ticker.to_uppercase();
+    sqlx::query(
+        r#"
+        INSERT INTO companies (ticker, sector)
+        VALUES ($1, $2)
+        ON CONFLICT (ticker) DO UPDATE SET sector = EXCLUDED.sector
+        "#,
+    )
+    .bind(&ticker)
+    .bind(sector.slug())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Loads all company sector mappings from the database.
+///
+/// Returns a map of uppercase ticker → [`Sector`]. Rows whose stored sector
+/// slug is not recognized are skipped with a [`warn!`] log — they do not
+/// cause a panic or a query error.
+// Wired into main in NEX-8; suppress dead_code for the binary target until then.
+#[allow(dead_code)]
+pub async fn load_companies(pool: &PgPool) -> sqlx::Result<HashMap<String, Sector>> {
+    let rows = sqlx::query("SELECT ticker, sector FROM companies")
+        .fetch_all(pool)
+        .await?;
+
+    let mut map = HashMap::new();
+    for row in rows {
+        let ticker: String = row.get("ticker");
+        let slug: String = row.get("sector");
+        match sector_from_slug(&slug) {
+            Some(sector) => {
+                map.insert(ticker, sector);
+            }
+            None => {
+                warn!(ticker = %ticker, slug = %slug, "unrecognized sector slug in companies table, skipping row");
+            }
+        }
+    }
+    Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_upsert_inserts_new_row(pool: PgPool) -> sqlx::Result<()> {
+        upsert_company(&pool, "AAPL", Sector::Technology).await?;
+        let map = load_companies(&pool).await?;
+        assert_eq!(map.get("AAPL"), Some(&Sector::Technology));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_upsert_updates_sector_on_conflict(pool: PgPool) -> sqlx::Result<()> {
+        upsert_company(&pool, "AAPL", Sector::Technology).await?;
+        upsert_company(&pool, "AAPL", Sector::Healthcare).await?;
+        let map = load_companies(&pool).await?;
+        assert_eq!(map.get("AAPL"), Some(&Sector::Healthcare));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_load_companies_empty_table(pool: PgPool) -> sqlx::Result<()> {
+        let map = load_companies(&pool).await?;
+        assert!(map.is_empty());
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_load_companies_all_eleven_sectors(pool: PgPool) -> sqlx::Result<()> {
+        let fixtures = [
+            ("T1", Sector::Technology),
+            ("T2", Sector::Healthcare),
+            ("T3", Sector::Financials),
+            ("T4", Sector::ConsumerDiscretionary),
+            ("T5", Sector::ConsumerStaples),
+            ("T6", Sector::Energy),
+            ("T7", Sector::Utilities),
+            ("T8", Sector::Industrials),
+            ("T9", Sector::Materials),
+            ("T10", Sector::RealEstate),
+            ("T11", Sector::CommunicationServices),
+        ];
+        for (ticker, ref sector) in &fixtures {
+            upsert_company(&pool, ticker, sector.clone()).await?;
+        }
+        let map = load_companies(&pool).await?;
+        assert_eq!(map.len(), 11);
+        for (ticker, sector) in &fixtures {
+            assert_eq!(map.get(*ticker), Some(sector), "wrong sector for {ticker}");
+        }
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_unknown_slug_is_skipped_not_panicked(pool: PgPool) -> sqlx::Result<()> {
+        // Insert a row with an unrecognized slug directly — bypassing upsert_company
+        // to simulate schema drift or a future variant not yet known to this binary.
+        sqlx::query("INSERT INTO companies (ticker, sector) VALUES ($1, $2)")
+            .bind("BAD")
+            .bind("unknown_sector")
+            .execute(&pool)
+            .await?;
+
+        let map = load_companies(&pool).await?;
+        assert!(
+            !map.contains_key("BAD"),
+            "unknown slug must be skipped, not returned"
+        );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_ticker_normalization_to_uppercase(pool: PgPool) -> sqlx::Result<()> {
+        upsert_company(&pool, "aapl", Sector::Technology).await?;
+        let map = load_companies(&pool).await?;
+        assert_eq!(
+            map.get("AAPL"),
+            Some(&Sector::Technology),
+            "ticker must be stored as uppercase"
+        );
+        assert!(
+            !map.contains_key("aapl"),
+            "lowercase key must not appear in result"
+        );
+        Ok(())
+    }
 }
