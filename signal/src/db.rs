@@ -38,8 +38,6 @@ pub async fn insert_trade_result(pool: &PgPool, r: &TradeResult) -> sqlx::Result
 
 /// Maps a GICS sector slug string (as produced by [`Sector::slug`]) back to a
 /// [`Sector`] variant. Returns `None` for any unrecognized slug.
-// Called from load_companies (below) which is wired into main in NEX-8.
-#[allow(dead_code)]
 fn sector_from_slug(slug: &str) -> Option<Sector> {
     match slug {
         "technology" => Some(Sector::Technology),
@@ -84,8 +82,6 @@ pub async fn upsert_company(pool: &PgPool, ticker: &str, sector: Sector) -> sqlx
 /// Returns a map of uppercase ticker → [`Sector`]. Rows whose stored sector
 /// slug is not recognized are skipped with a [`warn!`] log — they do not
 /// cause a panic or a query error.
-// Wired into main in NEX-8; suppress dead_code for the binary target until then.
-#[allow(dead_code)]
 pub async fn load_companies(pool: &PgPool) -> sqlx::Result<HashMap<String, Sector>> {
     let rows = sqlx::query("SELECT ticker, sector FROM companies")
         .fetch_all(pool)

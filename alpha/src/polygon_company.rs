@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use model::{asset::Asset, sector::Sector};
 use serde::Deserialize;
+use tracing::warn;
 
 use crate::company::CompanyProvider;
 use crate::polygon::PolygonError;
@@ -52,8 +53,18 @@ impl CompanyProvider for PolygonSectorProvider {
             .results
             .and_then(|r| r.sic_code)
             .and_then(|s| s.parse::<u32>().ok())
-            .map(Sector::from_sic)
-            .unwrap_or(Sector::Industrials);
+            .map(Sector::from_sic);
+
+        let sector = match sector {
+            Some(s) => s,
+            None => {
+                warn!(
+                    ticker = %asset.ticker,
+                    "ticker defaulted to Industrials — SIC lookup failed"
+                );
+                Sector::Industrials
+            }
+        };
 
         Ok(sector)
     }
