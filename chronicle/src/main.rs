@@ -22,13 +22,8 @@ struct Args {
     #[arg(long, env = "KAFKA_TOPIC", default_value = "earnings.calendar")]
     topic: String,
 
-    #[arg(
-        long,
-        env = "TICKERS",
-        value_delimiter = ',',
-        default_value = "AAPL,MSFT,GOOGL"
-    )]
-    tickers: Vec<String>,
+    #[arg(long, env = "KAFKA_GROUP_ID", default_value = "backtest")]
+    group_id: String,
 }
 
 #[tokio::main]
@@ -49,10 +44,21 @@ async fn main() {
         .await
         .expect("migrations failed");
 
+    let tickers = db::load_tickers(&pool)
+        .await
+        .expect("failed to load tickers from companies table");
+
+    if tickers.is_empty() {
+        warn!("no tickers registered in the companies table — register tickers via the company.tickers Kafka topic first");
+        return;
+    }
+
+    info!(count = tickers.len(), "loaded tickers from companies table");
+
     let edgar = EdgarClient::new().expect("failed to create EDGAR client");
     let producer = ChronicleProducer::new(&args.brokers).expect("failed to connect to Kafka");
 
-    for ticker in &args.tickers {
+    for ticker in &tickers {
         info!("fetching CIK for {ticker}");
         let cik = match edgar.cik_for_ticker(ticker).await {
             Ok(cik) => cik,

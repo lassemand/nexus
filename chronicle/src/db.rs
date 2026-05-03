@@ -1,4 +1,12 @@
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
+
+/// Returns all tickers registered in the `companies` table, in ascending order.
+pub async fn load_tickers(pool: &PgPool) -> sqlx::Result<Vec<String>> {
+    let rows = sqlx::query("SELECT ticker FROM companies ORDER BY ticker")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.iter().map(|r| r.get::<String, _>("ticker")).collect())
+}
 
 pub async fn is_published(pool: &PgPool, accession_number: &str) -> sqlx::Result<bool> {
     let row = sqlx::query_scalar::<_, bool>(
