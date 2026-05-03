@@ -3,18 +3,15 @@ mod strategy;
 
 use alpha::{CompanyProvider, PolygonSectorProvider, YahooPriceProvider};
 use clap::Parser;
-use db::{insert_trade_result, load_companies, upsert_company};
-use model::{
-    asset::Asset, generated::EarningsEvent, generated::TickerRegistration, sector::Sector,
-};
+use db::{insert_trade_result, is_registered, upsert_company};
+use model::{asset::Asset, generated::EarningsEvent, generated::TickerRegistration};
 use prost::Message;
 use rdkafka::{
     consumer::{CommitMode, Consumer, StreamConsumer},
     ClientConfig, Message as KafkaMessage,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
-use std::collections::HashMap;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Parser)]
 #[command(about = "Backtest earnings strategy against historical data")]
@@ -45,14 +42,11 @@ struct Args {
 /// - Normalises the ticker to uppercase.
 /// - Fetches the GICS sector from Polygon (SIC-based); logs an error and
 ///   returns on API failure, but the caller should still commit the offset.
-/// - On success, persists the mapping to Postgres and updates `cache`.
-// Not yet wired into the Kafka loop (that is NEX-9); #[allow] will be removed then.
-#[allow(dead_code)]
+/// - On success, persists the mapping to Postgres.
 async fn handle_ticker_registration(
     payload: &[u8],
     pool: &PgPool,
     sector_provider: &PolygonSectorProvider,
-    cache: &mut HashMap<String, Sector>,
 ) {
     let msg = match TickerRegistration::decode(payload) {
         Ok(m) => m,
@@ -73,12 +67,11 @@ async fn handle_ticker_registration(
         }
     };
 
-    if let Err(e) = upsert_company(pool, &ticker, sector.clone()).await {
+    if let Err(e) = upsert_company(pool, &ticker, sector).await {
         error!(ticker = %ticker, error = %e, "failed to persist company sector to DB");
         return;
     }
 
-    cache.insert(ticker.clone(), sector);
     info!(ticker = %ticker, "ticker registered and sector persisted");
 }
 
@@ -100,21 +93,7 @@ async fn main() {
         .await
         .expect("migrations failed");
 
-    // Load the persisted ticker→sector map so the in-memory cache survives
-    // process restarts without replaying the full company.tickers topic.
-    // `mut` needed once handle_ticker_registration is wired in (NEX-9).
-    #[allow(unused_mut)]
-    let mut companies: HashMap<String, Sector> = load_companies(&pool)
-        .await
-        .expect("failed to load companies from DB");
-
-    let _sector_provider = PolygonSectorProvider::new(&args.polygon_api_key);
-
-    info!(
-        tickers_loaded = companies.len(),
-        tickers_topic = %args.tickers_topic,
-        "companies cache initialised"
-    );
+    let sector_provider = PolygonSectorProvider::new(&args.polygon_api_key);
 
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", &args.brokers)
@@ -125,67 +104,80 @@ async fn main() {
         .expect("failed to create kafka consumer");
 
     consumer
-        .subscribe(&[args.topic.as_str()])
+        .subscribe(&[args.tickers_topic.as_str(), args.topic.as_str()])
         .expect("failed to subscribe");
 
     let pricer = YahooPriceProvider::new();
 
     info!(
         brokers = %args.brokers,
-        topic = %args.topic,
+        earnings_topic = %args.topic,
+        tickers_topic = %args.tickers_topic,
         group_id = %args.group_id,
-        "backtest consumer started"
+        "signal consumer started"
     );
 
     loop {
-        info!("polling for next message...");
         match consumer.recv().await {
             Err(e) => error!("kafka recv error: {e}"),
             Ok(msg) => {
+                let topic = msg.topic();
                 let Some(payload) = msg.payload() else {
-                    warn!("empty payload, skipping");
+                    warn!(topic, "empty payload, skipping");
                     consumer.commit_message(&msg, CommitMode::Async).ok();
                     continue;
                 };
 
-                let event = match EarningsEvent::decode(payload) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        error!("protobuf decode failed: {e}");
-                        consumer.commit_message(&msg, CommitMode::Async).ok();
-                        continue;
-                    }
-                };
-
-                // Gate on the in-memory sector cache; tickers not yet
-                // registered via company.tickers are silently skipped here
-                // until NEX-9 integrates the full dual-topic consumer.
-                if !companies.contains_key(&event.ticker) {
-                    warn!(ticker = %event.ticker, "ticker not in companies cache, skipping");
-                    consumer.commit_message(&msg, CommitMode::Async).ok();
-                    continue;
-                }
-
-                info!("evaluating earnings strategy for {}", event.ticker);
-
-                match strategy::evaluate(&pricer, &event).await {
-                    Ok(result) => {
-                        info!(
-                            ticker = %result.ticker,
-                            buy_date = %result.buy_date,
-                            earnings_date = %result.earnings_date,
-                            buy_price = result.buy_price,
-                            sell_price = result.sell_price,
-                            pnl = result.pnl,
-                            pnl_pct = result.pnl_pct,
-                            "trade simulated"
-                        );
-
-                        if let Err(e) = insert_trade_result(&pool, &result).await {
-                            error!("db insert failed for {}: {e}", result.ticker);
+                if topic == args.tickers_topic {
+                    handle_ticker_registration(payload, &pool, &sector_provider).await;
+                } else if topic == args.topic {
+                    let event = match EarningsEvent::decode(payload) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            error!("protobuf decode failed: {e}");
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
                         }
+                    };
+
+                    let ticker = event.ticker.to_uppercase();
+                    match is_registered(&pool, &ticker).await {
+                        Ok(false) => {
+                            debug!(ticker = %ticker, "skipping unregistered ticker");
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(ticker = %ticker, error = %e, "DB registration check failed, skipping");
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
+                        }
+                        Ok(true) => {}
                     }
-                    Err(e) => error!("strategy evaluation failed for {}: {e}", event.ticker),
+
+                    info!("evaluating earnings strategy for {ticker}");
+
+                    match strategy::evaluate(&pricer, &event).await {
+                        Ok(result) => {
+                            info!(
+                                ticker = %result.ticker,
+                                buy_date = %result.buy_date,
+                                earnings_date = %result.earnings_date,
+                                buy_price = result.buy_price,
+                                sell_price = result.sell_price,
+                                pnl = result.pnl,
+                                pnl_pct = result.pnl_pct,
+                                "trade simulated"
+                            );
+
+                            if let Err(e) = insert_trade_result(&pool, &result).await {
+                                error!("db insert failed for {}: {e}", result.ticker);
+                            }
+                        }
+                        Err(e) => error!("strategy evaluation failed for {}: {e}", event.ticker),
+                    }
+                } else {
+                    warn!(topic, "message from unknown topic, skipping");
                 }
 
                 consumer.commit_message(&msg, CommitMode::Async).ok();
