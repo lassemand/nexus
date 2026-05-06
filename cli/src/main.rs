@@ -25,10 +25,10 @@ struct Cli {
 enum Commands {
     /// Register one or more tickers for signal tracking.
     ///
-    /// Publishes a TickerRegistration protobuf message to the configured
-    /// Kafka topic for each supplied ticker symbol. All tickers are attempted
-    /// even if earlier ones fail; the process exits with code 1 if any
-    /// delivery fails.
+    /// Validates each ticker against Yahoo Finance before publishing a
+    /// TickerRegistration protobuf message to the configured Kafka topic.
+    /// All tickers are attempted even if earlier ones fail; the process
+    /// exits with code 1 if any validation or delivery fails.
     Register {
         /// Ticker symbols to register (e.g. AAPL MSFT GOOG).
         #[arg(required = true)]
@@ -52,13 +52,6 @@ enum Commands {
         #[command(subcommand)]
         shell: CompletionsShell,
     },
-
-    /// Query Polygon for ticker completions (used internally by shell completions).
-    #[command(name = "_complete", hide = true)]
-    Complete {
-        /// Ticker prefix to search.
-        prefix: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -71,33 +64,7 @@ enum CompletionsShell {
     Zsh,
 }
 
-/// Zsh completion script.
-///
-/// Delegates dynamic ticker lookup to `nexus _complete <prefix>`, which
-/// queries the Polygon ticker search endpoint at tab-press time.
 const ZSH_COMPLETION_SCRIPT: &str = r#"#compdef nexus
-
-# Nexus zsh completion script
-# Install: source <(nexus completions zsh)
-# Or: nexus completions zsh > ~/.zsh/completions/_nexus
-
-_nexus_tickers() {
-  local prefix="${words[CURRENT]}"
-  local raw tickers descriptions line ticker name
-
-  raw=(${(f)"$(nexus _complete "$prefix" 2>/dev/null)"})
-
-  tickers=()
-  descriptions=()
-  for line in $raw; do
-    ticker="${line%%:*}"
-    name="${line#*:}"
-    tickers+=("$ticker")
-    descriptions+=("$name")
-  done
-
-  compadd -d descriptions -a tickers
-}
 
 _nexus() {
   local state
@@ -118,9 +85,6 @@ _nexus() {
       ;;
     args)
       case $words[1] in
-        register)
-          _arguments '*:ticker:_nexus_tickers'
-          ;;
         completions)
           local shells
           shells=('zsh:Generate zsh completions')
@@ -148,27 +112,84 @@ async fn main() -> Result<()> {
         Commands::Completions {
             shell: CompletionsShell::Zsh,
         } => cmd_completions_zsh(),
-
-        Commands::Complete { prefix } => cmd_complete(prefix),
     }
 }
 
-/// Publish `TickerRegistration` protobuf messages for each ticker to Kafka.
-///
-/// All tickers are published concurrently. If any delivery fails the error
-/// is printed to stderr and the process ultimately exits with code 1, but
-/// remaining tickers are still attempted.
+#[derive(Deserialize)]
+struct YahooChart {
+    chart: YahooChartInner,
+}
+
+#[derive(Deserialize)]
+struct YahooChartInner {
+    result: Option<Vec<serde::de::IgnoredAny>>,
+}
+
+/// Returns `true` if Yahoo Finance recognises `ticker` as a valid symbol.
+async fn validate_ticker(client: &reqwest::Client, ticker: &str) -> Result<bool> {
+    let url = format!("https://query1.finance.yahoo.com/v8/finance/chart/{ticker}");
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "Mozilla/5.0")
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .context("Yahoo Finance request failed")?;
+
+    if !resp.status().is_success() {
+        return Ok(false);
+    }
+
+    let body: YahooChart = resp.json().await.context("failed to parse Yahoo Finance response")?;
+    Ok(body.chart.result.is_some_and(|r| !r.is_empty()))
+}
+
+/// Validate each ticker against Yahoo Finance, then publish `TickerRegistration`
+/// protobuf messages for valid ones to Kafka.
 async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> Result<()> {
+    let http = reqwest::Client::new();
+
+    // Validate all tickers concurrently.
+    let validation_futures: Vec<_> = tickers
+        .iter()
+        .map(|raw| {
+            let ticker = raw.to_uppercase();
+            let http = http.clone();
+            async move {
+                match validate_ticker(&http, &ticker).await {
+                    Ok(true) => Ok(Some(ticker)),
+                    Ok(false) => {
+                        eprintln!("✗ {ticker} — not found on Yahoo Finance");
+                        Ok(None)
+                    }
+                    Err(e) => Err(e.context(format!("{ticker}: Yahoo Finance validation failed"))),
+                }
+            }
+        })
+        .collect();
+
+    let mut validated: Vec<String> = Vec::new();
+    let mut had_invalid = false;
+    for res in join_all(validation_futures).await {
+        match res? {
+            Some(ticker) => validated.push(ticker),
+            None => had_invalid = true,
+        }
+    }
+
+    if validated.is_empty() {
+        std::process::exit(1);
+    }
+
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &brokers)
         .set("message.timeout.ms", "5000")
         .create()
         .context("failed to create Kafka producer")?;
 
-    let futures: Vec<_> = tickers
+    let publish_futures: Vec<_> = validated
         .into_iter()
-        .map(|raw| {
-            let ticker = raw.to_uppercase();
+        .map(|ticker| {
             let topic = topic.clone();
             let producer = producer.clone();
 
@@ -184,11 +205,11 @@ async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> R
 
                 match producer.send(record, Duration::from_secs(5)).await {
                     Ok(_) => {
-                        println!("✓ {ticker}");
+                        println!("✓ {ticker} — registered");
                         true
                     }
                     Err((e, _)) => {
-                        eprintln!("✗ {ticker}: {e}");
+                        eprintln!("✗ {ticker} — delivery failed: {e}");
                         false
                     }
                 }
@@ -196,9 +217,9 @@ async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> R
         })
         .collect();
 
-    let results = join_all(futures).await;
+    let results = join_all(publish_futures).await;
 
-    if results.into_iter().any(|ok| !ok) {
+    if had_invalid || results.into_iter().any(|ok| !ok) {
         std::process::exit(1);
     }
 
@@ -208,55 +229,6 @@ async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> R
 /// Print the zsh completion script to stdout.
 fn cmd_completions_zsh() -> Result<()> {
     print!("{ZSH_COMPLETION_SCRIPT}");
-    Ok(())
-}
-
-/// Polygon ticker search response shapes.
-#[derive(Deserialize)]
-struct PolygonResponse {
-    results: Option<Vec<PolygonTicker>>,
-}
-
-#[derive(Deserialize)]
-struct PolygonTicker {
-    ticker: String,
-    name: String,
-}
-
-/// Query Polygon for tickers matching `prefix` and print one `TICKER:Company Name`
-/// line per result to stdout.
-///
-/// Reads `POLYGON_API_KEY` from the environment. If the variable is absent the
-/// subcommand exits silently with code 0 so that shell completions degrade
-/// gracefully rather than producing error noise.
-fn cmd_complete(prefix: String) -> Result<()> {
-    let api_key = match std::env::var("POLYGON_API_KEY") {
-        Ok(k) => k,
-        Err(_) => return Ok(()), // degrade gracefully — no key, no completions
-    };
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(800))
-        .build()
-        .context("failed to build HTTP client")?;
-
-    let response: PolygonResponse = client
-        .get("https://api.polygon.io/v3/reference/tickers")
-        .query(&[
-            ("search", prefix.as_str()),
-            ("active", "true"),
-            ("limit", "20"),
-            ("apiKey", api_key.as_str()),
-        ])
-        .send()
-        .context("Polygon request failed")?
-        .json()
-        .context("failed to parse Polygon response")?;
-
-    for item in response.results.unwrap_or_default() {
-        println!("{}:{}", item.ticker, item.name);
-    }
-
     Ok(())
 }
 
