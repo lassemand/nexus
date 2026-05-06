@@ -140,7 +140,10 @@ async fn validate_ticker(client: &reqwest::Client, ticker: &str) -> Result<bool>
         return Ok(false);
     }
 
-    let body: YahooChart = resp.json().await.context("failed to parse Yahoo Finance response")?;
+    let body: YahooChart = resp
+        .json()
+        .await
+        .context("failed to parse Yahoo Finance response")?;
     Ok(body.chart.result.is_some_and(|r| !r.is_empty()))
 }
 
