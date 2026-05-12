@@ -5,5 +5,6 @@ members = [
     "chronicle",
     "signal",
     "insight",
+    "mcp",
 ]
 resolver = "2"
