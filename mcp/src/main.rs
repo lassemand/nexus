@@ -1,4 +1,4 @@
-use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use axum::{extract::State, http::StatusCode, routing::post, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -57,7 +57,6 @@ async fn send_channel_notification(stdout: &Arc<Mutex<io::Stdout>>, issue: &Line
             "params": {
                 "content": content,
                 "meta": {
-                    "source": "linear",
                     "event": "issue_todo",
                     "issue_id": issue.identifier
                 }
@@ -83,7 +82,7 @@ struct LinearData {
     title: Option<String>,
     description: Option<String>,
     state: Option<LinearState>,
-    labels: Option<LinearLabels>,
+    labels: Option<Vec<LinearLabel>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,10 +90,6 @@ struct LinearState {
     name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct LinearLabels {
-    nodes: Option<Vec<LinearLabel>>,
-}
 
 #[derive(Debug, Deserialize)]
 struct LinearLabel {
@@ -120,8 +115,16 @@ struct AppState {
 
 async fn handle_webhook(
     State(state): State<AppState>,
-    Json(payload): Json<LinearWebhook>,
+    body: axum::body::Bytes,
 ) -> StatusCode {
+    let payload: LinearWebhook = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[linear-channel] Failed to parse body: {e}");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
     // Only handle Issue events
     if payload.event_type.as_deref() != Some("Issue") {
         return StatusCode::OK;
@@ -144,7 +147,6 @@ async fn handle_webhook(
         description: data.description.unwrap_or_default(),
         labels: data
             .labels
-            .and_then(|l| l.nodes)
             .unwrap_or_default()
             .into_iter()
             .map(|l| l.name)
