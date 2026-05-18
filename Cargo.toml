@@ -5,7 +5,7 @@ members = [
     "chronicle",
     "signal",
     "insight",
-    "cli"
+    "cli",
     "mcp"
 ]
 resolver = "2"
