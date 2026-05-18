@@ -19,7 +19,10 @@ pub struct EarningsRecord {
 /// On conflict on `(ticker, fiscal_year, fiscal_quarter)` all mutable fields
 /// (`period_end`, `filing_date`, `eps_actual`, `revenue_actual`) are overwritten.
 /// `id`, `published_at`, and `created_at` are left unchanged on conflict.
-pub async fn upsert_earnings_date(pool: &PgPool, record: &EarningsRecord) -> Result<(), sqlx::Error> {
+pub async fn upsert_earnings_date(
+    pool: &PgPool,
+    record: &EarningsRecord,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
         INSERT INTO earnings_dates (ticker, fiscal_year, fiscal_quarter, period_end, filing_date, eps_actual, revenue_actual)
@@ -174,14 +177,17 @@ mod tests {
             2,
             NaiveDate::from_ymd_opt(2025, 6, 30).unwrap(),
             NaiveDate::from_ymd_opt(2025, 7, 25).unwrap(), // changed
-            Some(2.95),                                     // changed
-            Some(55_000.0),                                 // changed
+            Some(2.95),                                    // changed
+            Some(55_000.0),                                // changed
         );
         upsert_earnings_date(&pool, &updated).await?;
 
         let rows = load_unpublished_earnings(&pool, "MSFT").await?;
         assert_eq!(rows.len(), 1, "must still be exactly one row after upsert");
-        assert_eq!(rows[0].filing_date, NaiveDate::from_ymd_opt(2025, 7, 25).unwrap());
+        assert_eq!(
+            rows[0].filing_date,
+            NaiveDate::from_ymd_opt(2025, 7, 25).unwrap()
+        );
         assert_eq!(rows[0].eps_actual, Some(2.95));
         assert_eq!(rows[0].revenue_actual, Some(55_000.0));
         Ok(())
@@ -208,7 +214,11 @@ mod tests {
 
         // After marking, should no longer appear in unpublished list
         let after = load_unpublished_earnings(&pool, "GOOG").await?;
-        assert_eq!(after.len(), 0, "published row must not appear in unpublished results");
+        assert_eq!(
+            after.len(),
+            0,
+            "published row must not appear in unpublished results"
+        );
 
         // Verify published_at is actually set in the database
         let published_at: Option<DateTime<Utc>> = sqlx::query_scalar(
@@ -219,7 +229,10 @@ mod tests {
         .bind(3_i16)
         .fetch_one(&pool)
         .await?;
-        assert!(published_at.is_some(), "published_at must be non-null after marking");
+        assert!(
+            published_at.is_some(),
+            "published_at must be non-null after marking"
+        );
         Ok(())
     }
 
@@ -251,13 +264,19 @@ mod tests {
         mark_earnings_published(&pool, "AMZN", 2025, 1).await?;
 
         let unpublished = load_unpublished_earnings(&pool, "AMZN").await?;
-        assert_eq!(unpublished.len(), 1, "only the unpublished quarter must be returned");
+        assert_eq!(
+            unpublished.len(),
+            1,
+            "only the unpublished quarter must be returned"
+        );
         assert_eq!(unpublished[0].fiscal_quarter, 2);
         Ok(())
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn test_load_unpublished_returns_ascending_period_end_order(pool: PgPool) -> sqlx::Result<()> {
+    async fn test_load_unpublished_returns_ascending_period_end_order(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
         // Insert Q3, Q1, Q2 out of order
         let quarters = [
             (3_i16, NaiveDate::from_ymd_opt(2025, 9, 30).unwrap()),
