@@ -1,6 +1,6 @@
-use axum::{extract::State, http::StatusCode, routing::post, Router};
+use axum::{Router, extract::State, http::StatusCode, routing::post};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 /// Writes a JSON-RPC message to stdout (the MCP stdio transport).
 /// Each message is a single line of JSON followed by a newline.
 async fn write_mcp(stdout: &Arc<Mutex<io::Stdout>>, msg: Value) {
-    let line = format!("{}\n", msg.to_string());
+    let line = format!("{}\n", msg);
     let mut out = stdout.lock().await;
     let _ = out.write_all(line.as_bytes()).await;
     let _ = out.flush().await;
@@ -90,7 +90,6 @@ struct LinearState {
     name: Option<String>,
 }
 
-
 #[derive(Debug, Deserialize)]
 struct LinearLabel {
     name: String,
@@ -113,10 +112,7 @@ struct AppState {
 
 // ── HTTP handler ──────────────────────────────────────────────────────────────
 
-async fn handle_webhook(
-    State(state): State<AppState>,
-    body: axum::body::Bytes,
-) -> StatusCode {
+async fn handle_webhook(State(state): State<AppState>, body: axum::body::Bytes) -> StatusCode {
     let payload: LinearWebhook = match serde_json::from_slice(&body) {
         Ok(p) => p,
         Err(e) => {
@@ -136,13 +132,19 @@ async fn handle_webhook(
     };
 
     // Only forward when issue moves to Todo
-    let state_name = data.state.as_ref().and_then(|s| s.name.as_deref()).unwrap_or("");
+    let state_name = data
+        .state
+        .as_ref()
+        .and_then(|s| s.name.as_deref())
+        .unwrap_or("");
     if state_name != "Todo" {
         return StatusCode::OK;
     }
 
     let issue = LinearIssue {
-        identifier: data.identifier.unwrap_or_else(|| data.id.unwrap_or_default()),
+        identifier: data
+            .identifier
+            .unwrap_or_else(|| data.id.unwrap_or_default()),
         title: data.title.unwrap_or_default(),
         description: data.description.unwrap_or_default(),
         labels: data
@@ -153,7 +155,10 @@ async fn handle_webhook(
             .collect(),
     };
 
-    eprintln!("[linear-channel] Forwarding issue {} to Claude", issue.identifier);
+    eprintln!(
+        "[linear-channel] Forwarding issue {} to Claude",
+        issue.identifier
+    );
     send_channel_notification(&state.stdout, &issue).await;
 
     StatusCode::OK
@@ -187,11 +192,7 @@ async fn stdio_loop(stdout: Arc<Mutex<io::Stdout>>) {
                 send_initialize_response(&stdout, id).await;
             }
             "ping" => {
-                write_mcp(
-                    &stdout,
-                    json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
-                )
-                .await;
+                write_mcp(&stdout, json!({ "jsonrpc": "2.0", "id": id, "result": {} })).await;
             }
             "notifications/initialized" => {
                 // Claude Code sends this after initialize — no response needed
