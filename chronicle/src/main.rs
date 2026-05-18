@@ -1,5 +1,6 @@
 mod db;
 mod edgar;
+pub mod earnings_db;
 mod kafka;
 mod parse;
 
