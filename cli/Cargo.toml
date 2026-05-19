@@ -1,0 +1,19 @@
+[package]
+name = "nexus-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "nexus"
+path = "src/main.rs"
+
+[dependencies]
+model = { path = "../model" }
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["full"] }
+rdkafka = { version = "0.36", features = ["cmake-build", "tokio"] }
+prost = "0.13"
+reqwest = { version = "0.12", features = ["json"] }
+anyhow = "1"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
