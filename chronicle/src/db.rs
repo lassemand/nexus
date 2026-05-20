@@ -8,6 +8,8 @@ pub async fn load_tickers(pool: &PgPool) -> sqlx::Result<Vec<String>> {
     Ok(rows.iter().map(|r| r.get::<String, _>("ticker")).collect())
 }
 
+// Used by the `chronicle` binary; other binaries share this module but do not call it.
+#[allow(dead_code)]
 pub async fn is_published(pool: &PgPool, accession_number: &str) -> sqlx::Result<bool> {
     let row = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM published_filings WHERE accession_number = $1)",
@@ -18,6 +20,8 @@ pub async fn is_published(pool: &PgPool, accession_number: &str) -> sqlx::Result
     Ok(row)
 }
 
+// Used by the `chronicle` binary; other binaries share this module but do not call it.
+#[allow(dead_code)]
 pub async fn mark_published(
     pool: &PgPool,
     accession_number: &str,
