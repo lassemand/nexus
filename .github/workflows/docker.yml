@@ -10,8 +10,6 @@ jobs:
   docker:
     name: Build and push Docker image
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout
@@ -73,16 +71,3 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Create and push annotated git tag
-        if: github.event_name == 'push' && steps.changed.outputs.changed == 'true'
-        env:
-          VERSION: ${{ steps.changed.outputs.version }}
-        run: |
-          if git ls-remote --tags origin "v$VERSION" | grep -q .; then
-            echo "::error::Tag v$VERSION already exists on the remote."
-            exit 1
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$VERSION" -m "Release v$VERSION"
-          git push origin "v$VERSION"
