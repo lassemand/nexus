@@ -8,7 +8,7 @@
 #   insight    – MCP server exposing derived results
 
 # ── Builder ───────────────────────────────────────────────────────────────────
-FROM rust:stable-bookworm AS builder
+FROM rust:bookworm AS builder
 
 # cmake       – required by rdkafka's cmake-build feature to compile librdkafka
 # libssl-dev  – TLS support at build time
