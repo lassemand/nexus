@@ -1,0 +1,18 @@
+image:
+  repository: "<DOCKERHUB_USER>/nexus"  # TODO: replace with real Docker Hub username
+  tag: "latest"
+
+replicaCount: 1
+
+# Default Kafka broker address (in-cluster service DNS).
+# This value is also written to the ExternalSecret so the K8s Secret
+# contains it alongside the credentials fetched from the secret store.
+kafkaBrokers: kafka.nexus.svc.cluster.local:9092
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "50m"
+  limits:
+    memory: "256Mi"
+    cpu: "200m"
