@@ -51,10 +51,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
     libsasl2-2 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin nexus
 
 COPY --from=builder /build/target/release/chronicle /usr/local/bin/chronicle
 COPY --from=builder /build/target/release/market    /usr/local/bin/market
 COPY --from=builder /build/target/release/earnings  /usr/local/bin/earnings
 COPY --from=builder /build/target/release/signal    /usr/local/bin/signal
 COPY --from=builder /build/target/release/insight   /usr/local/bin/insight
+
+USER nexus
