@@ -19,23 +19,15 @@ jobs:
       - name: Detect version change
         id: changed
         run: |
-          changed=false
-          max_version=""
-          for crate_dir in model alpha chronicle signal insight cli mcp; do
-            toml="$crate_dir/Cargo.toml"
-            [ -f "$toml" ] || continue
-            current=$(grep '^version = "' "$toml" | head -1 | sed 's/version = "//;s/"//')
-            prev=$(git show HEAD~1:"$toml" 2>/dev/null | grep '^version = "' | head -1 | sed 's/version = "//;s/"//' || true)
-            if [ -n "$prev" ] && [ "$current" != "$prev" ]; then
-              changed=true
-            fi
-            if [ -n "$current" ] && { [ -z "$max_version" ] || \
-              [ "$(printf '%s\n%s' "$current" "$max_version" | sort -V | tail -1)" = "$current" ]; }; then
-              max_version="$current"
-            fi
-          done
-          echo "changed=$changed" >> "$GITHUB_OUTPUT"
-          echo "version=$max_version" >> "$GITHUB_OUTPUT"
+          current=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "//;s/"//')
+          prev=$(git show HEAD~1:Cargo.toml 2>/dev/null \
+            | grep '^version' | head -1 | sed 's/version = "//;s/"//' || true)
+          if [ "$current" != "$prev" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$current" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         if: steps.changed.outputs.changed == 'true'
