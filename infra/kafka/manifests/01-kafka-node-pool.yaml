@@ -1,0 +1,27 @@
+# KafkaNodePool — combined broker + controller roles (single-node KRaft).
+# Storage and resources are defined here; the Kafka CR references this pool
+# via the strimzi.io/cluster label.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: combined
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+spec:
+  replicas: 1
+  roles:
+    - controller
+    - broker
+  storage:
+    type: persistent-claim
+    size: 5Gi
+    deleteClaim: false
+    # storageClass: ""   # leave empty to use the cluster default
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 250m
+    limits:
+      memory: 1Gi
+      cpu: 500m

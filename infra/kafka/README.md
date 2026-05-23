@@ -1,44 +1,50 @@
 # Kafka — deployment guide
 
 Nexus uses Kafka as the message bus between the `chronicle` producers and the
-`signal` consumer.  This directory documents the Kafka deployment for the
-Nexus Kubernetes cluster.
+`signal` consumer. This document covers the Kafka deployment for the Nexus
+Kubernetes cluster.
 
 ## Distribution
 
-[Bitnami `kafka` Helm chart](https://github.com/bitnami/charts/tree/main/bitnami/kafka),
-version **31.0.0**, configured in **KRaft mode** (ZooKeeper-free).
+[Strimzi](https://strimzi.io/) **1.0.0** — the Kubernetes-native Kafka
+operator. Kafka version **4.1.0** in **KRaft mode** (ZooKeeper-free).
 
-## Manifests
+## Repository layout
 
-| File | Purpose |
-|---|---|
-| `infra/argocd/root-app.yaml` | One-time bootstrap: registers the App of Apps with ArgoCD |
-| `infra/argocd/apps/nexus-kafka.yaml` | ArgoCD Application — installs the Bitnami Kafka chart |
-
-ArgoCD manages the full lifecycle after bootstrap.  Re-applying the manifests
-is idempotent.
+```
+infra/kafka/
+  README.md                       — this file
+  manifests/
+    00-namespace.yaml             — nexus Namespace
+    01-kafka-node-pool.yaml       — KafkaNodePool CR (broker + controller, 1 replica)
+    02-kafka.yaml                 — Kafka CR (cluster definition)
+infra/argocd/apps/nexus-kafka.yaml — ArgoCD Application pointing at manifests/
+```
 
 ## Target namespace
 
 `nexus`
 
-## Internal DNS
+## Internal bootstrap address
 
-| Address | Port | Protocol |
-|---|---|---|
-| `kafka.nexus.svc.cluster.local` | `9092` | PLAINTEXT (within-cluster) |
+```
+nexus-kafka-bootstrap.nexus.svc.cluster.local:9092   (PLAINTEXT, within-cluster only)
+```
 
-Use this address in application configuration (`KAFKA_BROKERS`,
-`KAFKA_BOOTSTRAP_SERVERS`, etc.).
+Use this as `KAFKA_BROKERS` / `KAFKA_BOOTSTRAP_SERVERS` in application config.
+
+Individual broker DNS (Strimzi headless service):
+```
+nexus-combined-{id}.nexus-combined-brokers.nexus.svc.cluster.local:9092
+```
 
 ## Storage
 
-A **5 Gi** PersistentVolumeClaim is created on the cluster's default
-StorageClass.  Broker data survives pod restarts and rescheduling.
+A **5 Gi** PersistentVolumeClaim is provisioned per broker on the cluster's
+default StorageClass (`deleteClaim: false` — data is retained on pod deletion).
 
-To use a specific StorageClass, set `persistence.storageClass` in the Helm
-values block inside `nexus-kafka.yaml`.
+To use a specific StorageClass, set `storage.storageClass` in
+`infra/kafka/manifests/01-kafka-node-pool.yaml`.
 
 ## Resources
 
@@ -47,64 +53,86 @@ values block inside `nexus-kafka.yaml`.
 | Request | 250 m | 512 Mi |
 | Limit | 500 m | 1 Gi |
 
+## Health probes
+
+Both liveness and readiness probes are configured in `02-kafka.yaml`:
+
+| Probe | Initial delay | Timeout |
+|---|---|---|
+| Liveness | 15 s | 5 s |
+| Readiness | 15 s | 5 s |
+
+Strimzi's operator manages the actual probe implementation (TCP socket on
+port 9092 + JMX checks).
+
 ## Bootstrap steps
 
-These steps are performed **once** per cluster.  They are not automated
-because they require access to the cluster before ArgoCD is managing it.
+These steps are performed **once** per cluster before ArgoCD takes over.
 
-### 1 — Install ArgoCD (if not already present)
+### 1 — Install the Strimzi operator
 
 ```bash
-kubectl create namespace argocd
-kubectl apply -n argocd \
-  -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl create namespace nexus --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl apply -f 'https://strimzi.io/install/latest?namespace=nexus'
+
+# Wait for the operator to be ready
+kubectl rollout status deployment/strimzi-cluster-operator -n nexus
 ```
 
-### 2 — Set the repository URL
+> **Pinned version:** the URL above resolves to the latest Strimzi release.
+> To pin to a specific version (e.g. 1.0.0) use:
+> `https://github.com/strimzi/strimzi-kafka-operator/releases/download/1.0.0/strimzi-1.0.0.yaml`
 
-Edit `infra/argocd/root-app.yaml` and replace `<YOUR_REPO_URL>` with the
-actual Git remote, e.g. `https://github.com/your-org/nexus.git`.  Commit and
-push.
+### 2 — Apply the Kafka manifests
 
-### 3 — Apply the root application
+```bash
+kubectl apply -f infra/kafka/manifests/
+```
+
+### 3 — (Optional) Bootstrap ArgoCD App-of-Apps
+
+Once ArgoCD is installed, edit `infra/argocd/root-app.yaml` to set
+`<YOUR_REPO_URL>`, then:
 
 ```bash
 kubectl apply -f infra/argocd/root-app.yaml
 ```
 
-ArgoCD will discover `infra/argocd/apps/` and reconcile all child Applications,
-including `nexus-kafka`, automatically.
+ArgoCD will then manage all subsequent reconciliations declaratively.
 
-### 4 — Verify Kafka is healthy
+## Verifying Kafka is healthy
 
 ```bash
-# Wait for the StatefulSet to roll out
-kubectl rollout status statefulset/kafka-broker -n nexus
+# Operator ready?
+kubectl rollout status deployment/strimzi-cluster-operator -n nexus
 
-# Check the broker pod is Running and both probes pass
-kubectl get pods -n nexus -l app.kubernetes.io/name=kafka
+# Kafka cluster ready?
+kubectl get kafka nexus -n nexus
 
-# Confirm the ClusterIP service exists
-kubectl get svc kafka -n nexus
+# Broker pod running?
+kubectl get pods -n nexus -l strimzi.io/cluster=nexus
+
+# Bootstrap service exists?
+kubectl get svc nexus-kafka-bootstrap -n nexus
 ```
 
-Expected output for the service:
+Expected service output:
 ```
-NAME    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
-kafka   ClusterIP   10.x.x.x        <none>        9092/TCP   ...
+NAME                    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+nexus-kafka-bootstrap   ClusterIP   10.x.x.x        <none>        9092/TCP   ...
 ```
 
-## Upgrading
+## Upgrading Kafka version
 
-To upgrade the chart version, change `targetRevision` in
-`infra/argocd/apps/nexus-kafka.yaml`, commit, and push.  ArgoCD will
-reconcile the change automatically.
+Supported versions for Strimzi 1.0.0: `4.1.0`, `4.1.1`, `4.1.2`, `4.2.0`.
+
+1. Update `spec.kafka.version` in `infra/kafka/manifests/02-kafka.yaml`
+2. Commit and push — ArgoCD reconciles automatically (or `kubectl apply -f infra/kafka/manifests/`)
 
 ## Out of scope (follow-on tasks)
 
-- **Topic creation** — handled in NEX-29 via the Bitnami provisioning Job or
-  a separate init manifest.
-- **Application wiring** — `KAFKA_BROKERS` env vars for `chronicle` and
-  `signal` are configured in NEX-30.
-- **TLS / SASL** — not enabled; internal cluster traffic is trusted.
-- **Monitoring / alerting** — separate concern.
+- **Topic creation** — NEX-29: use `KafkaTopic` CRs managed by Strimzi Entity Operator
+- **Application wiring** — NEX-30: set `KAFKA_BROKERS` env vars for `chronicle` and `signal`
+- **TLS / SASL** — not enabled; internal cluster traffic is trusted
+- **Monitoring / alerting** — separate concern
