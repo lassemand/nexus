@@ -1,0 +1,87 @@
+# Kafka — Bitnami chart, KRaft mode (no ZooKeeper).
+#
+# Sync wave 1: runs after base infra (namespace, secrets) at wave 0.
+#
+# Internal DNS once deployed:
+#   kafka.nexus.svc.cluster.local:9092   (PLAINTEXT, within-cluster only)
+#
+# Persistent data survives pod restarts via a 5 Gi PVC on the cluster's
+# default StorageClass.  Override `persistence.storageClass` if needed.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nexus-kafka
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+
+  source:
+    repoURL: https://charts.bitnami.com/bitnami
+    chart: kafka
+    targetRevision: "31.0.0"
+
+    helm:
+      # Fix the release name so the Service is always "kafka" and the
+      # internal DNS is stable regardless of the Application name.
+      releaseName: kafka
+
+      values: |
+        # ── KRaft mode: no ZooKeeper dependency ────────────────────────────
+        kraft:
+          enabled: true
+
+        # Single broker for the initial deployment.
+        # Raise replicaCount + replicationFactor together if HA is needed.
+        replicaCount: 1
+
+        # ── Persistent storage ──────────────────────────────────────────────
+        persistence:
+          enabled: true
+          size: 5Gi
+          # storageClass: ""   # leave empty to use the cluster default
+
+        # ── Resource envelope ───────────────────────────────────────────────
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 250m
+          limits:
+            memory: 1Gi
+            cpu: 500m
+
+        # ── Health probes ───────────────────────────────────────────────────
+        # Bitnami uses a TCP socket check on port 9092 by default; these
+        # values tune the timing to give the JVM time to start up.
+        livenessProbe:
+          enabled: true
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+          successThreshold: 1
+
+        readinessProbe:
+          enabled: true
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+          successThreshold: 1
+
+        # ── Networking ──────────────────────────────────────────────────────
+        # ClusterIP only — no external exposure required.
+        service:
+          type: ClusterIP
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nexus
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
