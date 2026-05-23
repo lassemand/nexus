@@ -1,0 +1,64 @@
+# Wave 1 — PostgreSQL (Bitnami).
+#
+# IMPORTANT: nexus-postgres-secret MUST exist in the nexus namespace before
+# this Application syncs, otherwise the Postgres pod will fail to start.
+#
+# Two options to bootstrap the secret:
+#   (a) Manually once:
+#         kubectl create secret generic nexus-postgres-secret \
+#           --namespace nexus \
+#           --from-literal=password=<your-password>
+#   (b) Deploy ESO + a bootstrap ExternalSecret in a sync-wave "-1" manifest
+#       that pulls the password from Vault and creates the secret automatically
+#       before this wave runs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nexus-postgres
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+
+  source:
+    repoURL: https://charts.bitnami.com/bitnami
+    chart: postgresql
+    # TODO: check latest stable — pinned to 16.0.0
+    targetRevision: "16.0.0"
+
+    helm:
+      values: |
+        auth:
+          username: nexus
+          # ESO must create this secret before nexus-postgres syncs (see comment above)
+          existingSecret: nexus-postgres-secret
+          secretKeys:
+            userPasswordKey: password
+
+        primary:
+          initdb:
+            scripts:
+              init.sql: |
+                CREATE DATABASE chronicle;
+                CREATE DATABASE backtest;
+
+          persistence:
+            enabled: true
+            size: 10Gi
+
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nexus
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

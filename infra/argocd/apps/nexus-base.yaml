@@ -1,0 +1,28 @@
+# Wave 0 — Base infrastructure: Namespace, ClusterSecretStore, Kafka UI.
+# Must sync before any other component (sync-wave "0").
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nexus-base
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+
+  source:
+    # TODO: replace with your actual Git repository URL
+    repoURL: <YOUR_REPO_URL>
+    targetRevision: main
+    path: infra/manifests
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nexus
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

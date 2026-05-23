@@ -1,0 +1,28 @@
+# Wave 2 — Chronicle CronJobs (local Helm chart).
+# Depends on Kafka and Postgres (wave 1) being ready.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nexus-chronicle
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+
+  source:
+    # TODO: replace with your actual Git repository URL
+    repoURL: <YOUR_REPO_URL>
+    targetRevision: main
+    path: infra/charts/chronicle
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nexus
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

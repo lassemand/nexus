@@ -1,0 +1,57 @@
+# Wave 1 — Kafka (Bitnami, KRaft mode — no ZooKeeper required).
+# Topics are created by the Bitnami provisioning Job post-install,
+# replacing the kafka-init container from docker-compose.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nexus-kafka
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+
+  source:
+    repoURL: https://charts.bitnami.com/bitnami
+    chart: kafka
+    # TODO: check latest stable — pinned to 31.0.0
+    targetRevision: "31.0.0"
+
+    helm:
+      values: |
+        # KRaft mode: no ZooKeeper dependency
+        kraft:
+          enabled: true
+
+        replicaCount: 1
+
+        # Topic provisioning via post-install Job
+        provisioning:
+          enabled: true
+          topics:
+            - name: market.bars
+              partitions: 6
+              replicationFactor: 1
+            - name: earnings.calendar
+              partitions: 6
+              replicationFactor: 1
+
+        persistence:
+          enabled: true
+          size: 5Gi
+
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 250m
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nexus
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
