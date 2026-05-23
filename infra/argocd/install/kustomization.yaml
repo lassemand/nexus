@@ -1,0 +1,13 @@
+# Pinned ArgoCD install — v3.4.2 (upstream official manifest).
+#
+# Apply idempotently:
+#   kubectl apply -k infra/argocd/install/
+#
+# Re-applying this is a no-op when ArgoCD is already at this version.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: argocd
+
+resources:
+  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.2/manifests/install.yaml
