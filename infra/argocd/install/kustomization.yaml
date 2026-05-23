@@ -1,9 +1,16 @@
 # Pinned ArgoCD install — v3.4.2 (upstream official manifest).
 #
-# Apply idempotently:
-#   kubectl apply -k infra/argocd/install/
+# Apply idempotently (two steps due to large ApplicationSet CRD):
 #
-# Re-applying this is a no-op when ArgoCD is already at this version.
+#   Step 1 — main install (client-side apply):
+#     kubectl apply -n argocd \
+#       -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.2/manifests/install.yaml
+#
+#   Step 2 — ApplicationSet CRD (server-side apply required; exceeds 262 KB annotation limit):
+#     kubectl apply --server-side --force-conflicts \
+#       -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.2/manifests/crds/applicationset-crd.yaml
+#
+# Re-applying is a no-op when ArgoCD is already at this version.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

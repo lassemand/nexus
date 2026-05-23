@@ -32,10 +32,19 @@ These steps are performed **once** per cluster.
 
 ```bash
 kubectl apply -f infra/argocd/install/namespace.yaml
-kubectl apply -k infra/argocd/install/
+
+# Step A — main install (client-side apply)
+kubectl apply -n argocd \
+  -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.2/manifests/install.yaml
+
+# Step B — ApplicationSet CRD (server-side apply required)
+# The applicationsets.argoproj.io CRD exceeds the 262 KB annotation limit
+# for client-side apply. Server-side apply bypasses this restriction.
+kubectl apply --server-side --force-conflicts \
+  -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.2/manifests/crds/applicationset-crd.yaml
 ```
 
-Re-applying is idempotent — existing resources are patched, not replaced.
+Re-applying either step is idempotent — existing resources are patched, not replaced.
 
 ### 2 — Wait for all core pods to be ready
 
