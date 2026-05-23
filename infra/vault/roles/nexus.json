@@ -1,0 +1,6 @@
+{
+  "bound_service_account_names": "nexus",
+  "bound_service_account_namespaces": "default",
+  "policies": "nexus-read",
+  "ttl": "24h"
+}

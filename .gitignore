@@ -5,3 +5,6 @@
 **/OUT_DIR
 target/debug/build/**/out/*.rs
 target/release/build/**/out/*.rs
+
+# Vault init output — contains unseal key and root token; must never be committed
+.vault-init.json
