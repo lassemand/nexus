@@ -4,7 +4,7 @@
 #   nexus-kafka-bootstrap.nexus.svc.cluster.local:9092
 #
 # Annotations enable KRaft and KafkaNodePool features.
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: Kafka
 metadata:
   name: nexus

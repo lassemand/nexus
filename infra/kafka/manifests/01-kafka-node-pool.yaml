@@ -1,7 +1,7 @@
 # KafkaNodePool — combined broker + controller roles (single-node KRaft).
 # Storage and resources are defined here; the Kafka CR references this pool
 # via the strimzi.io/cluster label.
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaNodePool
 metadata:
   name: combined
