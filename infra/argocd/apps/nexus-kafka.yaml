@@ -1,0 +1,37 @@
+# Kafka — Strimzi operator CRs (KRaft mode, KafkaNodePool-based).
+#
+# Sync wave 1: runs after base infra (namespace, Strimzi operator) at wave 0.
+#
+# Bootstrap address once deployed:
+#   nexus-kafka-bootstrap.nexus.svc.cluster.local:9092
+#
+# Prerequisites (wave 0 / one-time bootstrap):
+#   1. Strimzi operator installed in namespace nexus:
+#      kubectl apply -f 'https://strimzi.io/install/latest?namespace=nexus'
+#   2. nexus namespace exists (created by 00-namespace.yaml below)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nexus-kafka
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+
+  source:
+    # TODO: replace with your actual Git repository URL
+    repoURL: <YOUR_REPO_URL>
+    targetRevision: main
+    path: infra/kafka/manifests
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nexus
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
