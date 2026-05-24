@@ -35,3 +35,53 @@ cargo test -p <crate>        # test a single crate
 cargo clippy                 # lint
 cargo fmt                    # format
 ```
+
+## Infrastructure
+
+The cluster is managed via ArgoCD (GitOps). All manifests live under `infra/`.
+
+### Layout
+
+```
+infra/
+  argocd/
+    apps/
+      nexus-appset.yaml      # ApplicationSet — Git directory generator over infra/charts/*
+    root-app.yaml            # Bootstrap: apply once, then ArgoCD self-manages
+    README.md                # Bootstrap steps and Helm repo registration
+  charts/
+    signal/                  # nexus signal service (Helm chart)
+    postgres-operator/       # Zalando Postgres Operator (umbrella Helm chart)
+    postgres/                # nexus postgresql CR (nexus-postgres cluster)
+    kafka/                   # Strimzi operator + nexus Kafka cluster CRs
+    vault/                   # HashiCorp Vault standalone (umbrella Helm chart)
+  kafka/                     # Reference manifests and README (source superseded by charts/)
+  vault/                     # Vault policies, roles, setup script, original values
+  migrations/                # sqlx migration files (YYYYMMDDHHMMSS_description.sql)
+```
+
+### Adding a new infrastructure component
+
+Drop a Helm chart directory under `infra/charts/<name>/` containing at minimum
+`Chart.yaml` and `values.yaml`. The ApplicationSet picks it up automatically on
+the next ArgoCD sync — no Application CR required.
+
+For components that wrap an external Helm chart (e.g. an operator), declare it
+as a dependency in `Chart.yaml` and prefix its values with the dependency name
+in `values.yaml`.
+
+### Key in-cluster addresses
+
+| Service | Address |
+|---|---|
+| Postgres (primary) | `nexus-postgres.nexus.svc.cluster.local:5432` |
+| Kafka bootstrap | `nexus-kafka-bootstrap.nexus.svc.cluster.local:9092` |
+| Vault | `vault.nexus.svc.cluster.local:8200` |
+
+### Postgres credential secret
+
+Auto-created by the Zalando operator:
+```
+nexus.nexus-postgres.credentials.postgresql.acid.zalan.do
+```
+Keys: `username`, `password`.
