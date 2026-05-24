@@ -83,28 +83,32 @@ kubectl get secret argocd-initial-admin-secret \
 
 ### 4 — Access the ArgoCD UI
 
-#### Minikube (NodePort — recommended for local dev)
+#### macOS + minikube Docker driver — port-forward (required)
 
-Apply the minikube overlay to expose the server on stable node ports:
+On macOS, minikube runs inside a Docker container. Its node IP (`192.168.49.2`)
+is a Docker bridge address and is **not directly routable from the macOS host**.
+NodePort services bind correctly inside the cluster but cannot be reached via
+`curl`/browser from your Mac. Use port-forward instead:
+
+```bash
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+```
+
+Then open **https://localhost:8080** in your browser.
+Accept the self-signed certificate warning (expected on first access).
+
+> **Validation:** The server returns `200` on `/healthz` from inside the cluster,
+> confirming ArgoCD itself is healthy. The port-forward exposes it to your Mac.
+
+#### Linux / bare-metal minikube — NodePort
+
+On Linux the Docker bridge **is** routable from the host. Apply the overlay:
 
 ```bash
 kubectl apply -k infra/argocd/overlays/minikube/
 ```
 
-Then open **https://192.168.49.2:30443** in your browser.  
-Accept the self-signed certificate warning (expected on first access).
-
-> If your minikube IP differs, check it with:
-> `kubectl get node minikube -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'`
-
-#### Fallback — port-forward
-
-```bash
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-# → https://localhost:8080
-```
-
-Login with username `admin` and the password retrieved in step 3.
+Then open **https://192.168.49.2:30443** directly in your browser.
 
 #### CLI access
 
@@ -112,14 +116,14 @@ Login with username `admin` and the password retrieved in step 3.
 # Install the argocd CLI (macOS)
 brew install argocd
 
-# Login (NodePort)
-argocd login 192.168.49.2:30443 \
+# Login via port-forward (macOS)
+argocd login localhost:8080 \
   --username admin \
   --password <password-from-step-3> \
   --insecure
 
-# Login (port-forward)
-argocd login localhost:8080 \
+# Login via NodePort (Linux)
+argocd login 192.168.49.2:30443 \
   --username admin \
   --password <password-from-step-3> \
   --insecure
