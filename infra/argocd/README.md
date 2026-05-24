@@ -38,26 +38,15 @@ Adding a new subdirectory under `infra/charts/` is all that is needed for ArgoCD
 
 `argocd`
 
-## Helm repository registration
+## Helm dependencies
 
-The umbrella charts under `infra/charts/` declare external Helm repositories as
-dependencies (Zalando, Strimzi, HashiCorp).  ArgoCD must have these repos
-registered so it can run `helm dependency update` during sync.
+The umbrella charts (`postgres-operator`, `kafka`, `vault`) vendor their upstream
+Helm chart dependencies directly in git under each chart's `charts/` directory.
+ArgoCD renders them from the repo with no outbound Helm registry calls — no
+`argocd repo add` or repo Secret required.
 
-Run **once** after ArgoCD is installed:
-
-```bash
-argocd repo add https://opensource.zalando.com/postgres-operator/charts/postgres-operator \
-  --type helm --name zalando
-
-argocd repo add https://strimzi.io/charts/ \
-  --type helm --name strimzi
-
-argocd repo add https://helm.releases.hashicorp.com \
-  --type helm --name hashicorp
-```
-
-Or via the UI: **Settings → Repositories → Connect Repo** (type: Helm).
+To upgrade a dependency, run `helm dependency update infra/charts/<name>/` and
+commit the updated `Chart.lock` and `charts/*.tgz`.
 
 ---
 
