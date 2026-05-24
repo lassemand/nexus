@@ -1,0 +1,40 @@
+# ArgoCD Application — nexus PostgreSQL cluster CRD
+#
+# Applies the Zalando postgresql CRD (infra/manifests/postgres/nexus-cluster.yaml)
+# to the nexus namespace.  The Zalando operator (nexus-postgres-operator, wave 1)
+# must be Healthy before this Application syncs, which is enforced by sync-wave "2".
+#
+# After a successful sync the following resources are present in the nexus namespace:
+#   Pod:    nexus-postgres-0
+#   Svc:    nexus-postgres (port 5432)
+#   Secret: nexus.nexus-postgres.credentials.postgresql.acid.zalan.do
+#             keys: username, password
+#
+# In-cluster endpoints:
+#   postgresql://nexus:<password>@nexus-postgres.nexus.svc.cluster.local:5432/chronicle
+#   postgresql://nexus:<password>@nexus-postgres.nexus.svc.cluster.local:5432/backtest
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nexus-postgres
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/lassemand/nexus.git
+    targetRevision: main
+    path: infra/manifests/postgres
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nexus
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
