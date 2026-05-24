@@ -23,6 +23,7 @@ infra/argocd/
   root-app.yaml                      — App-of-Apps bootstrap
   apps/
     nexus-appset.yaml                — ApplicationSet (Git directory generator over infra/charts/*)
+    helm-repos.yaml                  — Helm repository Secrets (Zalando, Strimzi, HashiCorp)
 
 infra/charts/
   signal/          — nexus signal service (Helm chart)
@@ -41,23 +42,11 @@ Adding a new subdirectory under `infra/charts/` is all that is needed for ArgoCD
 ## Helm repository registration
 
 The umbrella charts under `infra/charts/` declare external Helm repositories as
-dependencies (Zalando, Strimzi, HashiCorp).  ArgoCD must have these repos
-registered so it can run `helm dependency update` during sync.
+dependencies (Zalando, Strimzi, HashiCorp).  These repos are registered
+**automatically** via `infra/argocd/apps/helm-repos.yaml` — the root Application
+applies that file to the `argocd` namespace as part of normal GitOps sync.
 
-Run **once** after ArgoCD is installed:
-
-```bash
-argocd repo add https://opensource.zalando.com/postgres-operator/charts/postgres-operator \
-  --type helm --name zalando
-
-argocd repo add https://strimzi.io/charts/ \
-  --type helm --name strimzi
-
-argocd repo add https://helm.releases.hashicorp.com \
-  --type helm --name hashicorp
-```
-
-Or via the UI: **Settings → Repositories → Connect Repo** (type: Helm).
+No manual `argocd repo add` is required.
 
 ---
 

@@ -1,0 +1,49 @@
+# Helm repository registrations for ArgoCD.
+#
+# ArgoCD watches for Secrets labelled
+#   argocd.argoproj.io/secret-type: repository
+# in the argocd namespace and uses them to pull Helm chart dependencies.
+#
+# These three repos are required by the umbrella charts under infra/charts/:
+#   infra/charts/postgres-operator/  → Zalando Postgres Operator
+#   infra/charts/kafka/              → Strimzi Kafka Operator
+#   infra/charts/vault/              → HashiCorp Vault
+#
+# The root Application (infra/argocd/root-app.yaml) applies this file to the
+# argocd namespace automatically — no manual `argocd repo add` required.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-zalando-postgres-operator
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  url: https://opensource.zalando.com/postgres-operator/charts/postgres-operator
+  name: zalando-postgres-operator
+  type: helm
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-strimzi
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  url: https://strimzi.io/charts/
+  name: strimzi
+  type: helm
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-hashicorp
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  url: https://helm.releases.hashicorp.com
+  name: hashicorp
+  type: helm
