@@ -1,0 +1,45 @@
+# Zalando Postgres Operator — nexus PostgreSQL cluster
+#
+# Provisions a single-instance Postgres 16 cluster named "nexus-postgres"
+# in the nexus namespace.  The operator creates:
+#
+#   Pod:     nexus-postgres-0
+#   Service: nexus-postgres          (primary, port 5432)
+#            nexus-postgres-repl     (replication, not used for single-instance)
+#
+# In-cluster hostname:
+#   nexus-postgres.nexus.svc.cluster.local:5432
+#
+# Connection strings:
+#   postgresql://nexus:<password>@nexus-postgres.nexus.svc.cluster.local:5432/chronicle
+#   postgresql://nexus:<password>@nexus-postgres.nexus.svc.cluster.local:5432/backtest
+#
+# Credential secret (auto-created by the operator, keys: username, password):
+#   nexus.nexus-postgres.credentials.postgresql.acid.zalan.do
+apiVersion: acid.zalan.do/v1
+kind: postgresql
+metadata:
+  name: nexus-postgres
+  namespace: nexus
+spec:
+  teamId: nexus
+  postgresql:
+    version: "16"
+  numberOfInstances: 1
+  volume:
+    size: 5Gi
+    storageClass: standard      # minikube default StorageClass; change for other environments
+  users:
+    nexus:
+      - superuser
+      - createdb
+  databases:
+    chronicle: nexus            # chronicle crate: published_filings, companies, earnings_dates
+    backtest: nexus             # signal crate: trade_results, companies
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

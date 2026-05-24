@@ -1,0 +1,7 @@
+# Values for the Zalando postgres-operator sub-chart.
+# Keys are prefixed with the dependency name (postgres-operator).
+# Default upstream values are sufficient for minikube; uncomment to override.
+postgres-operator:
+  {}
+  # configKubernetes:
+  #   enable_pod_antiaffinity: "false"

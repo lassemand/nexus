@@ -20,13 +20,46 @@ infra/argocd/
     minikube/
       kustomization.yaml             — patches argocd-server to NodePort 30080/30443
       argocd-server-nodeport.yaml    — NodePort Service patch
-  root-app.yaml                      — App-of-Apps bootstrap (NEX-32 follow-up)
-  apps/                              — Child Application CRs  (NEX-32 follow-up)
+  root-app.yaml                      — App-of-Apps bootstrap
+  apps/
+    nexus-appset.yaml                — ApplicationSet (Git directory generator over infra/charts/*)
+
+infra/charts/
+  signal/          — nexus signal service (Helm chart)
+  postgres-operator/ — Zalando Postgres Operator (umbrella, wraps upstream Helm chart)
+  postgres/        — nexus PostgreSQL cluster CR
+  kafka/           — Strimzi operator + nexus Kafka cluster CRs
+  vault/           — HashiCorp Vault standalone (umbrella, wraps upstream Helm chart)
 ```
+
+Adding a new subdirectory under `infra/charts/` is all that is needed for ArgoCD to deploy it — no manual Application CR required.
 
 ## Target namespace
 
 `argocd`
+
+## Helm repository registration
+
+The umbrella charts under `infra/charts/` declare external Helm repositories as
+dependencies (Zalando, Strimzi, HashiCorp).  ArgoCD must have these repos
+registered so it can run `helm dependency update` during sync.
+
+Run **once** after ArgoCD is installed:
+
+```bash
+argocd repo add https://opensource.zalando.com/postgres-operator/charts/postgres-operator \
+  --type helm --name zalando
+
+argocd repo add https://strimzi.io/charts/ \
+  --type helm --name strimzi
+
+argocd repo add https://helm.releases.hashicorp.com \
+  --type helm --name hashicorp
+```
+
+Or via the UI: **Settings → Repositories → Connect Repo** (type: Helm).
+
+---
 
 ## Bootstrap steps
 

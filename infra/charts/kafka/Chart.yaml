@@ -1,0 +1,13 @@
+apiVersion: v2
+name: kafka
+description: >
+  Umbrella chart for the nexus Kafka cluster.
+  Installs the Strimzi operator (via Helm dependency) and provisions the
+  KafkaNodePool + Kafka CRs in wave 1, after the operator CRDs are registered.
+type: application
+version: 0.1.0
+appVersion: "4.1.0"
+dependencies:
+  - name: strimzi-kafka-operator
+    version: "*"
+    repository: https://strimzi.io/charts/

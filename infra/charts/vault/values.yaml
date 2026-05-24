@@ -1,0 +1,16 @@
+# Values for the vault sub-chart.
+# Keys are prefixed with the dependency name (vault).
+vault:
+  server:
+    standalone:
+      enabled: true
+    dataStorage:
+      enabled: true
+      size: 1Gi
+      storageClass: standard   # minikube default storageclass
+
+  injector:
+    enabled: false             # Vault Agent Injector is out of scope for this setup
+
+  ui:
+    enabled: true              # useful for local inspection
