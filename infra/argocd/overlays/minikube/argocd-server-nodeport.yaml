@@ -1,0 +1,26 @@
+# Patches the argocd-server Service to NodePort for minikube access.
+#
+# Access the UI at:
+#   https://192.168.49.2:30443   (HTTPS — accept the self-signed cert)
+#   http://192.168.49.2:30080    (HTTP — redirects to HTTPS)
+#
+# Retrieve the node IP if it differs:
+#   kubectl get node minikube -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      nodePort: 30080
+      protocol: TCP
+    - name: https
+      port: 443
+      targetPort: 8080
+      nodePort: 30443
+      protocol: TCP

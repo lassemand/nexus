@@ -12,12 +12,16 @@ declared in source control — no manual `kubectl apply` required after bootstra
 
 ```
 infra/argocd/
-  README.md                     — this file
+  README.md                          — this file
   install/
-    namespace.yaml              — argocd Namespace
-    kustomization.yaml          — pinned upstream install (v3.4.2)
-  root-app.yaml                 — App-of-Apps bootstrap (NEX-32 follow-up)
-  apps/                         — Child Application CRs  (NEX-32 follow-up)
+    namespace.yaml                   — argocd Namespace
+    kustomization.yaml               — pinned upstream install (v3.4.2)
+  overlays/
+    minikube/
+      kustomization.yaml             — patches argocd-server to NodePort 30080/30443
+      argocd-server-nodeport.yaml    — NodePort Service patch
+  root-app.yaml                      — App-of-Apps bootstrap (NEX-32 follow-up)
+  apps/                              — Child Application CRs  (NEX-32 follow-up)
 ```
 
 ## Target namespace
@@ -79,14 +83,26 @@ kubectl get secret argocd-initial-admin-secret \
 
 ### 4 — Access the ArgoCD UI
 
-There is no Ingress controller in this cluster. Use port-forward:
+#### Minikube (NodePort — recommended for local dev)
+
+Apply the minikube overlay to expose the server on stable node ports:
+
+```bash
+kubectl apply -k infra/argocd/overlays/minikube/
+```
+
+Then open **https://192.168.49.2:30443** in your browser.  
+Accept the self-signed certificate warning (expected on first access).
+
+> If your minikube IP differs, check it with:
+> `kubectl get node minikube -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'`
+
+#### Fallback — port-forward
 
 ```bash
 kubectl port-forward svc/argocd-server -n argocd 8080:443
+# → https://localhost:8080
 ```
-
-Then open **https://localhost:8080** in your browser.
-Accept the self-signed certificate warning (expected on first access).
 
 Login with username `admin` and the password retrieved in step 3.
 
@@ -96,7 +112,13 @@ Login with username `admin` and the password retrieved in step 3.
 # Install the argocd CLI (macOS)
 brew install argocd
 
-# Login
+# Login (NodePort)
+argocd login 192.168.49.2:30443 \
+  --username admin \
+  --password <password-from-step-3> \
+  --insecure
+
+# Login (port-forward)
 argocd login localhost:8080 \
   --username admin \
   --password <password-from-step-3> \
