@@ -4,7 +4,6 @@
 #   kubectl apply -f infra/argocd/root-app.yaml
 #
 # After that ArgoCD self-manages everything under infra/argocd/apps/.
-# Replace <YOUR_REPO_URL> with the actual Git remote URL before applying.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -14,7 +13,7 @@ spec:
   project: default
 
   source:
-    repoURL: <YOUR_REPO_URL>
+    repoURL: https://github.com/lassemand/nexus.git
     targetRevision: main
     path: infra/argocd/apps
 
