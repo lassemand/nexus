@@ -1,0 +1,9 @@
+apiVersion: v2
+name: signal
+description: >
+  Helm chart for the nexus signal binary — a long-running Kafka consumer
+  that derives trading signals from earnings events and persists results
+  to the backtest Postgres database.
+type: application
+version: 0.1.0
+appVersion: "latest"

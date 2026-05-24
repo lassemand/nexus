@@ -1,0 +1,57 @@
+# ApplicationSet — Git directory generator over infra/charts/
+#
+# Automatically creates one ArgoCD Application per subdirectory found
+# under infra/charts/.  Adding a new chart directory (e.g.
+# infra/charts/chronicle) is enough for ArgoCD to pick it up — no
+# manual Application CR required.
+#
+# Naming: nexus-<chart-dir>  (e.g. nexus-signal, nexus-chronicle)
+# Namespace: nexus
+# Sync: automated with prune + selfHeal
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: nexus-charts
+  namespace: argocd
+spec:
+  # Reconcile every 3 minutes even without a webhook push.
+  syncPolicy:
+    applicationsSync: sync
+
+  generators:
+    - git:
+        repoURL: https://github.com/lassemand/nexus.git
+        revision: main
+        directories:
+          - path: infra/charts/*
+
+  template:
+    metadata:
+      # e.g. "nexus-signal" for infra/charts/signal
+      name: 'nexus-{{path.basename}}'
+      labels:
+        app.kubernetes.io/managed-by: argocd-applicationset
+        nexus/chart: '{{path.basename}}'
+    spec:
+      project: default
+
+      source:
+        repoURL: https://github.com/lassemand/nexus.git
+        targetRevision: main
+        # Points at the chart directory itself (e.g. infra/charts/signal)
+        path: '{{path}}'
+        helm:
+          releaseName: '{{path.basename}}'
+          valueFiles:
+            - values.yaml
+
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: nexus
+
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
