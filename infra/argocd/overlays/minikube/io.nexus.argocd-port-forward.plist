@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent — keeps kubectl port-forward running as a background service.
+
+  Install once:
+    cp infra/argocd/overlays/minikube/io.nexus.argocd-port-forward.plist \
+       ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+
+  After that, ArgoCD UI is always available at https://localhost:8080
+  (starts on login, restarts automatically if it crashes).
+
+  Uninstall:
+    launchctl unload -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+    rm ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+
+  Logs:
+    tail -f /tmp/argocd-port-forward.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.nexus.argocd-port-forward</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/kubectl</string>
+    <string>port-forward</string>
+    <string>svc/argocd-server</string>
+    <string>8080:443</string>
+    <string>-n</string>
+    <string>argocd</string>
+  </array>
+
+  <!-- Restart automatically whenever the process exits -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Start immediately on load and on every login -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Wait 10 s before restarting — avoids spin-loop when cluster is down -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/argocd-port-forward.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/argocd-port-forward.log</string>
+</dict>
+</plist>

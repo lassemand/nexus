@@ -1,0 +1,11 @@
+# Minikube overlay — exposes argocd-server as NodePort 30080/30443.
+#
+# Apply on top of the base install:
+#   kubectl apply -k infra/argocd/overlays/minikube/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: argocd
+
+resources:
+  - argocd-server-nodeport.yaml
