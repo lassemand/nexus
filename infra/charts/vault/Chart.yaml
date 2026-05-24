@@ -1,0 +1,13 @@
+apiVersion: v2
+name: vault
+description: >
+  Umbrella chart for HashiCorp Vault (standalone mode).
+  Wraps the upstream HashiCorp Helm chart as a dependency so the ApplicationSet
+  can manage it from infra/charts/ without a separate Application CR.
+type: application
+version: 0.1.0
+appVersion: "1.18.0"
+dependencies:
+  - name: vault
+    version: "*"
+    repository: https://helm.releases.hashicorp.com

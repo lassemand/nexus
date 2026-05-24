@@ -1,0 +1,9 @@
+apiVersion: v2
+name: postgres
+description: >
+  Provisions the nexus PostgreSQL cluster via the Zalando Postgres Operator.
+  Depends on nexus-postgres-operator being healthy (sync-wave ordering handled
+  by ArgoCD's retry behaviour between Applications).
+type: application
+version: 0.1.0
+appVersion: "16"

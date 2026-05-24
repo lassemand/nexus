@@ -1,0 +1,30 @@
+# KafkaNodePool — combined broker + controller roles (single-node KRaft).
+# Storage and resources are defined here; the Kafka CR references this pool
+# via the strimzi.io/cluster label.
+#
+# sync-wave 1: applied after the Strimzi operator (wave 0) has registered CRDs.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: combined
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 1
+  roles:
+    - controller
+    - broker
+  storage:
+    type: persistent-claim
+    size: 5Gi
+    deleteClaim: false
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 250m
+    limits:
+      memory: 1Gi
+      cpu: 500m

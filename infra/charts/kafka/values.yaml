@@ -1,0 +1,6 @@
+# Values for the strimzi-kafka-operator sub-chart.
+# Keys are prefixed with the dependency name.
+# Default upstream values are fine for minikube; uncomment to override.
+strimzi-kafka-operator:
+  {}
+  # watchAnyNamespace: false   # operator watches its own namespace only (default)

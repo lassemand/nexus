@@ -1,0 +1,38 @@
+# Kafka cluster — Strimzi KRaft mode, KafkaNodePool-based.
+#
+# Bootstrap address (internal ClusterIP):
+#   nexus-kafka-bootstrap.nexus.svc.cluster.local:9092
+#
+# sync-wave 1: applied after the Strimzi operator (wave 0) has registered CRDs.
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: nexus
+  namespace: nexus
+  annotations:
+    strimzi.io/node-pools: enabled
+    strimzi.io/kraft: enabled
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  kafka:
+    version: 4.1.0
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      offsets.topic.replication.factor: "1"
+      transaction.state.log.replication.factor: "1"
+      transaction.state.log.min.isr: "1"
+      default.replication.factor: "1"
+      min.insync.replicas: "1"
+    readinessProbe:
+      initialDelaySeconds: 15
+      timeoutSeconds: 5
+    livenessProbe:
+      initialDelaySeconds: 15
+      timeoutSeconds: 5
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
