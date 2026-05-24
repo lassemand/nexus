@@ -83,32 +83,45 @@ kubectl get secret argocd-initial-admin-secret \
 
 ### 4 — Access the ArgoCD UI
 
-#### macOS + minikube Docker driver — port-forward (required)
+#### macOS + minikube Docker driver — LaunchAgent (configure once)
 
-On macOS, minikube runs inside a Docker container. Its node IP (`192.168.49.2`)
-is a Docker bridge address and is **not directly routable from the macOS host**.
-NodePort services bind correctly inside the cluster but cannot be reached via
-`curl`/browser from your Mac. Use port-forward instead:
+On macOS, minikube's Docker bridge (`192.168.49.2`) is not routable from the
+host. The fix is a **macOS LaunchAgent** that keeps `kubectl port-forward`
+running as a background service — starts on login, restarts on crash, no
+manual steps after install.
+
+**Install once (copy from repo + load):**
 
 ```bash
-kubectl port-forward svc/argocd-server -n argocd 8080:443
+cp infra/argocd/overlays/minikube/io.nexus.argocd-port-forward.plist \
+   ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
 ```
 
-Then open **https://localhost:8080** in your browser.
-Accept the self-signed certificate warning (expected on first access).
+ArgoCD UI is then permanently available at **https://localhost:8080**.  
+Accept the self-signed certificate warning on first visit.
 
-> **Validation:** The server returns `200` on `/healthz` from inside the cluster,
-> confirming ArgoCD itself is healthy. The port-forward exposes it to your Mac.
+```bash
+# Check the agent is running
+launchctl list io.nexus.argocd-port-forward
+
+# View logs
+tail -f /tmp/argocd-port-forward.log
+
+# Uninstall
+launchctl unload -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+rm ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+```
 
 #### Linux / bare-metal minikube — NodePort
 
-On Linux the Docker bridge **is** routable from the host. Apply the overlay:
+On Linux the Docker bridge **is** routable from the host. Apply the overlay
+and open the URL directly — no agent needed:
 
 ```bash
 kubectl apply -k infra/argocd/overlays/minikube/
+# → https://192.168.49.2:30443
 ```
-
-Then open **https://192.168.49.2:30443** directly in your browser.
 
 #### CLI access
 
@@ -116,13 +129,13 @@ Then open **https://192.168.49.2:30443** directly in your browser.
 # Install the argocd CLI (macOS)
 brew install argocd
 
-# Login via port-forward (macOS)
+# Login (macOS — LaunchAgent running)
 argocd login localhost:8080 \
   --username admin \
   --password <password-from-step-3> \
   --insecure
 
-# Login via NodePort (Linux)
+# Login (Linux — NodePort)
 argocd login 192.168.49.2:30443 \
   --username admin \
   --password <password-from-step-3> \
