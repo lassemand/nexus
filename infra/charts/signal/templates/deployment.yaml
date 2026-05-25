@@ -17,7 +17,7 @@ spec:
       containers:
         - name: signal
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           command: ["/usr/local/bin/signal"]
 
           # All runtime configuration is injected from the ESO-managed secret.
