@@ -1,4 +1,8 @@
+ARG VERSION=0.0.0
+
 FROM rust:bookworm AS builder
+
+ARG VERSION
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
@@ -21,29 +25,37 @@ COPY insight/Cargo.toml  insight/Cargo.toml
 COPY cli/Cargo.toml      cli/Cargo.toml
 COPY mcp/Cargo.toml      mcp/Cargo.toml
 
+# Create placeholder sources so Cargo can parse the workspace
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src mcp/src \
     && touch model/src/lib.rs alpha/src/lib.rs \
-    && printf 'fn main(){}' | tee \
+    && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
         chronicle/src/market.rs \
         chronicle/src/earnings_bin.rs \
         signal/src/main.rs \
         insight/src/main.rs \
         cli/src/main.rs \
-        mcp/src/main.rs \
-    && cargo build --release
+        mcp/src/main.rs
+
+# Download dependencies as a separate layer — only re-runs when Cargo.lock changes
+RUN cargo fetch --locked
+
+# Compile dependencies — cached as long as manifests are unchanged
+RUN cargo build --frozen --release
 
 COPY . .
-RUN touch \
-      model/src/*.rs \
-      alpha/src/*.rs \
-      chronicle/src/*.rs \
-      signal/src/*.rs \
-      insight/src/*.rs \
-      cli/src/*.rs \
-      mcp/src/*.rs \
-    && cargo build --release
+RUN sed -i "s/version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml \
+    && cargo update --workspace \
+    && touch \
+        model/src/*.rs \
+        alpha/src/*.rs \
+        chronicle/src/*.rs \
+        signal/src/*.rs \
+        insight/src/*.rs \
+        cli/src/*.rs \
+        mcp/src/*.rs \
+    && cargo build --frozen --release
 
 FROM debian:bookworm-slim AS runtime
 

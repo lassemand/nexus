@@ -1,0 +1,36 @@
+# Build artifacts
+target/
+
+# Git
+.git/
+.gitignore
+
+# CI / CD
+.github/
+
+# IDE & tooling
+.idea/
+.claude/
+.mcp.json
+
+# Local dev
+docker-compose.yml
+docker/
+
+# Infrastructure manifests (not part of the Rust build)
+infra/argocd/
+infra/charts/
+infra/kafka/
+infra/manifests/
+infra/vault/
+
+# Secrets
+.vault-init.json
+
+# Docs
+CLAUDE.md
+*.md
+
+# SQL migrations — not needed for compilation and would bust the
+# COPY . . cache layer on every migration change
+*/migrations/
