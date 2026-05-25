@@ -31,6 +31,6 @@ infra/vault/
 CLAUDE.md
 *.md
 
-# SQL migrations — not needed for compilation and would bust the
-# COPY . . cache layer on every migration change
-*/migrations/
+# Note: migrations are intentionally NOT excluded here.
+# sqlx::migrate!("./migrations") is a compile-time macro that embeds SQL
+# files into the binary. Excluding them from the build context breaks the build.
