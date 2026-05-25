@@ -12,7 +12,7 @@ model = { path = "../model" }
 alpha = { path = "../alpha" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 rdkafka = { version = "0.36", features = ["cmake-build", "tokio"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono"] }
 prost = "0.13"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
