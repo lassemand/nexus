@@ -25,7 +25,7 @@ COPY mcp/Cargo.toml      mcp/Cargo.toml
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src mcp/src \
     && touch model/src/lib.rs alpha/src/lib.rs \
-    && printf 'fn main(){}' | tee \
+    && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
         chronicle/src/market.rs \
         chronicle/src/earnings_bin.rs \
