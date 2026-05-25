@@ -21,10 +21,7 @@ COPY insight/Cargo.toml  insight/Cargo.toml
 COPY cli/Cargo.toml      cli/Cargo.toml
 COPY mcp/Cargo.toml      mcp/Cargo.toml
 
-# Download dependencies as a separate layer — only re-runs when Cargo.lock changes
-RUN cargo fetch --locked
-
-# Compile dependencies using placeholder sources — cached as long as manifests are unchanged
+# Create placeholder sources so Cargo can parse the workspace
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src mcp/src \
     && touch model/src/lib.rs alpha/src/lib.rs \
@@ -35,8 +32,13 @@ RUN mkdir -p \
         signal/src/main.rs \
         insight/src/main.rs \
         cli/src/main.rs \
-        mcp/src/main.rs \
-    && cargo build --frozen --release
+        mcp/src/main.rs
+
+# Download dependencies as a separate layer — only re-runs when Cargo.lock changes
+RUN cargo fetch --locked
+
+# Compile dependencies — cached as long as manifests are unchanged
+RUN cargo build --frozen --release
 
 COPY . .
 RUN touch \
