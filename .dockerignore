@@ -31,6 +31,9 @@ infra/vault/
 CLAUDE.md
 *.md
 
-# SQL migrations — not needed for compilation and would bust the
-# COPY . . cache layer on every migration change
-*/migrations/
+# NOTE: migrations are intentionally NOT excluded.
+# sqlx::migrate!("./migrations") is a compile-time macro — it reads and
+# embeds the .sql files into the binary during `cargo build`. Excluding
+# them from the build context causes a compile error.
+# Cache concern: moot — the `touch *.rs` step already forces a full
+# recompile on every build regardless of what files changed.
