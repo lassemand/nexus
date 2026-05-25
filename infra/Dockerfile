@@ -1,4 +1,8 @@
+ARG VERSION=0.0.0
+
 FROM rust:bookworm AS builder
+
+ARG VERSION
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
@@ -41,14 +45,16 @@ RUN cargo fetch --locked
 RUN cargo build --frozen --release
 
 COPY . .
-RUN touch \
-      model/src/*.rs \
-      alpha/src/*.rs \
-      chronicle/src/*.rs \
-      signal/src/*.rs \
-      insight/src/*.rs \
-      cli/src/*.rs \
-      mcp/src/*.rs \
+RUN sed -i "s/version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml \
+    && cargo update --workspace \
+    && touch \
+        model/src/*.rs \
+        alpha/src/*.rs \
+        chronicle/src/*.rs \
+        signal/src/*.rs \
+        insight/src/*.rs \
+        cli/src/*.rs \
+        mcp/src/*.rs \
     && cargo build --frozen --release
 
 FROM debian:bookworm-slim AS runtime
