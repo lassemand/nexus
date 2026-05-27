@@ -7,9 +7,9 @@ strimzi-kafka-operator:
   # triggering ~480 restarts over 4 days.
   resources:
     limits:
-      memory: 512Mi
+      memory: 1Gi
     requests:
-      memory: 384Mi
+      memory: 512Mi
       cpu: 200m
 
   # Raise probe timeout from 1s → 10s so transient GC pauses don't kill the pod.
