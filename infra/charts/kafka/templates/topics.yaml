@@ -1,0 +1,54 @@
+# KafkaTopic resources managed by the Strimzi Topic Operator.
+#
+# Resource names use hyphens (DNS-label safe); spec.topicName carries the
+# canonical dotted name that producers and consumers reference.
+#
+# sync-wave 2: applied after the Kafka cluster (wave 1) is ready.
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: earnings-calendar
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  topicName: earnings.calendar
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"   # 7 days
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: company-tickers
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  topicName: company.tickers
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "-1"          # retain indefinitely — ticker registrations are sparse
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: market-bars
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  topicName: market.bars
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"   # 7 days
