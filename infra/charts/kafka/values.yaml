@@ -2,5 +2,22 @@
 # Keys are prefixed with the dependency name.
 # Default upstream values are fine for minikube; uncomment to override.
 strimzi-kafka-operator:
-  {}
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      memory: 512Mi
+      cpu: 200m
+
+  # Raise probe timeout from 1s → 10s so transient GC pauses don't kill the pod.
+  livenessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
   # watchAnyNamespace: false   # operator watches its own namespace only (default)
