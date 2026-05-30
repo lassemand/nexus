@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nexus-market
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    nexus/chart: market
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/lassemand/nexus.git
+    targetRevision: main
+    path: infra/charts/market
+    helm:
+      releaseName: market
+      valueFiles:
+        - values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: market
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -23,13 +23,17 @@ infra/argocd/
   root-app.yaml                      — App-of-Apps bootstrap
   apps/
     nexus-appset.yaml                — ApplicationSet (Git directory generator over infra/charts/*)
+    chronicle-app.yaml               — Application CR for chronicle (namespace: chronicle)
+    market-app.yaml                  — Application CR for market    (namespace: market)
 
 infra/charts/
-  signal/          — nexus signal service (Helm chart)
+  signal/            — nexus signal service (Helm chart, Deployment)
+  chronicle/         — nexus chronicle binary (Helm chart, CronJob — EDGAR → earnings.calendar)
+  market/            — nexus market binary   (Helm chart, CronJob — Polygon  → market.bars)
   postgres-operator/ — Zalando Postgres Operator (umbrella, wraps upstream Helm chart)
-  postgres/        — nexus PostgreSQL cluster CR
-  kafka/           — Strimzi operator + nexus Kafka cluster CRs
-  vault/           — HashiCorp Vault standalone (umbrella, wraps upstream Helm chart)
+  postgres/          — nexus PostgreSQL cluster CR
+  kafka/             — Strimzi operator + nexus Kafka cluster CRs
+  vault/             — HashiCorp Vault standalone (umbrella, wraps upstream Helm chart)
 ```
 
 Adding a new subdirectory under `infra/charts/` is all that is needed for ArgoCD to deploy it — no manual Application CR required.
@@ -164,6 +168,50 @@ argocd login 192.168.49.2:30443 \
   --insecure
 ```
 
+### 5 — Apply the root Application (App of Apps)
+
+This is the single manual `kubectl apply` that hands control to ArgoCD for
+everything else.  After this step, all future changes are made by merging to
+`main` — ArgoCD reconciles the cluster automatically.
+
+```bash
+kubectl apply -f infra/argocd/root-app.yaml
+```
+
+ArgoCD will:
+1. Sync `infra/argocd/apps/` → create the `nexus-charts` ApplicationSet plus
+   the explicit `nexus-chronicle` and `nexus-market` Application CRs
+2. The ApplicationSet enumerates `infra/charts/*` (excluding `chronicle` and
+   `market`) and creates one Application per remaining chart directory, all
+   targeting the `nexus` namespace
+3. `nexus-chronicle` and `nexus-market` deploy into their own `chronicle` and
+   `market` namespaces respectively (created automatically via `CreateNamespace=true`)
+
+Watch progress in the UI or with:
+
+```bash
+kubectl get applications -n argocd -w
+```
+
+---
+
+## Sync policy
+
+All ArgoCD Applications use **automated sync with prune and self-heal**:
+
+```yaml
+syncPolicy:
+  automated:
+    prune: true     # delete resources removed from git
+    selfHeal: true  # revert any manual kubectl changes
+```
+
+Manual `kubectl apply` against the `nexus` namespace is no longer the workflow
+after bootstrap — ArgoCD will revert any out-of-band changes within its
+reconcile interval (~3 minutes).
+
+---
+
 ## Upgrading ArgoCD
 
 1. Update the `targetRevision` tag in `infra/argocd/install/kustomization.yaml`
@@ -173,7 +221,6 @@ argocd login 192.168.49.2:30443 \
 
 ## Out of scope (follow-up tasks)
 
-- **Connecting to the nexus Git repository** — NEX-32
-- **Application CRs** for nexus services — NEX-32
 - **SSO / OIDC** integration
 - **RBAC** customisation
+- **Notifications / Slack** on sync events

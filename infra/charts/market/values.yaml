@@ -1,0 +1,26 @@
+image:
+  repository: "lmapwns/nexus"
+  tag: "0.0.9"
+
+# CronJob schedule — Tue–Sat at 02:00 UTC, covering Mon–Fri US trading days.
+# This gives ~8 hours after NYSE close (21:00 UTC) for Polygon to publish data.
+schedule: "0 2 * * 2-6"
+
+# All runtime secrets (POLYGON_API_KEY, KAFKA_BROKERS, KAFKA_TOPIC, TICKERS)
+# are fetched from Vault via ExternalSecret and mounted as market-secret.
+# The values below are defaults documented for the operator; they must be
+# stored in Vault at secret/data/nexus/market with the matching keys.
+#
+# Vault path: nexus/market
+#   POLYGON_API_KEY — Polygon.io API key
+#   KAFKA_BROKERS   — nexus-kafka-bootstrap.nexus.svc.cluster.local:9092
+#   KAFKA_TOPIC     — market.bars
+#   TICKERS         — comma-separated list, e.g. AAPL,MSFT,NVDA
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "50m"
+  limits:
+    memory: "256Mi"
+    cpu: "200m"

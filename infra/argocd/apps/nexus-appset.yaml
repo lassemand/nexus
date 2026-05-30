@@ -24,6 +24,12 @@ spec:
         revision: main
         directories:
           - path: infra/charts/*
+          # chronicle and market have dedicated Application CRs so they can
+          # target their own namespaces — exclude them from this generator.
+          - path: infra/charts/chronicle
+            exclude: true
+          - path: infra/charts/market
+            exclude: true
 
   template:
     metadata:
