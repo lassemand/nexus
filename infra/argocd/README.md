@@ -23,6 +23,8 @@ infra/argocd/
   root-app.yaml                      — App-of-Apps bootstrap
   apps/
     nexus-appset.yaml                — ApplicationSet (Git directory generator over infra/charts/*)
+    chronicle-app.yaml               — Application CR for chronicle (namespace: chronicle)
+    market-app.yaml                  — Application CR for market    (namespace: market)
 
 infra/charts/
   signal/            — nexus signal service (Helm chart, Deployment)
@@ -177,10 +179,13 @@ kubectl apply -f infra/argocd/root-app.yaml
 ```
 
 ArgoCD will:
-1. Sync `infra/argocd/apps/` → create the `nexus-charts` ApplicationSet
-2. The ApplicationSet enumerates `infra/charts/*` and creates one Application
-   per chart directory
-3. Each Application renders and applies its Helm chart into the `nexus` namespace
+1. Sync `infra/argocd/apps/` → create the `nexus-charts` ApplicationSet plus
+   the explicit `nexus-chronicle` and `nexus-market` Application CRs
+2. The ApplicationSet enumerates `infra/charts/*` (excluding `chronicle` and
+   `market`) and creates one Application per remaining chart directory, all
+   targeting the `nexus` namespace
+3. `nexus-chronicle` and `nexus-market` deploy into their own `chronicle` and
+   `market` namespaces respectively (created automatically via `CreateNamespace=true`)
 
 Watch progress in the UI or with:
 
