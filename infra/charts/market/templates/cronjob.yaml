@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: market
+  labels:
+    app: market
+spec:
+  schedule: {{ .Values.schedule | quote }}
+
+  # Only one instance at a time — prevent duplicate bar ingestion.
+  concurrencyPolicy: Forbid
+
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: market
+        spec:
+          restartPolicy: OnFailure
+
+          containers:
+            - name: market
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: IfNotPresent
+
+              # The market binary requires --from and --to date arguments.
+              # A shell wrapper computes "yesterday" and "today" dynamically so
+              # the CronJob always fetches the most recent trading day's bars.
+              # GNU date (-d) is available via coreutils in debian:bookworm-slim.
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  exec /usr/local/bin/market \
+                    --from="$(date -d yesterday +%Y-%m-%d)" \
+                    --to="$(date +%Y-%m-%d)"
+
+              # All runtime configuration is injected from the ESO-managed secret.
+              # No env vars are hardcoded here; see templates/external-secret.yaml.
+              envFrom:
+                - secretRef:
+                    name: market-secret
+
+              resources:
+                requests:
+                  memory: {{ .Values.resources.requests.memory | quote }}
+                  cpu: {{ .Values.resources.requests.cpu | quote }}
+                limits:
+                  memory: {{ .Values.resources.limits.memory | quote }}
+                  cpu: {{ .Values.resources.limits.cpu | quote }}

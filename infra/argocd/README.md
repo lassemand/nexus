@@ -23,13 +23,16 @@ infra/argocd/
   root-app.yaml                      — App-of-Apps bootstrap
   apps/
     nexus-appset.yaml                — ApplicationSet (Git directory generator over infra/charts/*)
+    repo-secret.yaml                 — ExternalSecret for the ArgoCD GitHub repo credential
 
 infra/charts/
-  signal/          — nexus signal service (Helm chart)
+  signal/            — nexus signal service (Helm chart, Deployment)
+  chronicle/         — nexus chronicle binary (Helm chart, CronJob — EDGAR → earnings.calendar)
+  market/            — nexus market binary   (Helm chart, CronJob — Polygon  → market.bars)
   postgres-operator/ — Zalando Postgres Operator (umbrella, wraps upstream Helm chart)
-  postgres/        — nexus PostgreSQL cluster CR
-  kafka/           — Strimzi operator + nexus Kafka cluster CRs
-  vault/           — HashiCorp Vault standalone (umbrella, wraps upstream Helm chart)
+  postgres/          — nexus PostgreSQL cluster CR
+  kafka/             — Strimzi operator + nexus Kafka cluster CRs
+  vault/             — HashiCorp Vault standalone (umbrella, wraps upstream Helm chart)
 ```
 
 Adding a new subdirectory under `infra/charts/` is all that is needed for ArgoCD to deploy it — no manual Application CR required.
@@ -103,7 +106,56 @@ kubectl get secret argocd-initial-admin-secret \
 > password via the UI or CLI:
 > `kubectl delete secret argocd-initial-admin-secret -n argocd`
 
-### 4 — Access the ArgoCD UI
+### 4 — Connect ArgoCD to the nexus GitHub repository
+
+ArgoCD must authenticate to the (private) `nexus` repository before it can
+sync any Application.  Credentials are stored as a Kubernetes Secret with the
+label `argocd.argoproj.io/secret-type: repository` in the `argocd` namespace.
+
+After the cluster stabilises (ESO and Vault are healthy), the
+`infra/argocd/apps/repo-secret.yaml` ExternalSecret manages this secret
+automatically from Vault.  On the **very first bootstrap**, however, ESO is not
+yet running, so the secret must be created **manually once** before applying
+the root Application.
+
+#### Create a read-only GitHub Personal Access Token
+
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**
+2. Create a token scoped to the `nexus` repository with **Contents: Read-only** permission
+3. Copy the token value — you will not see it again
+
+#### Write the token to Vault
+
+```bash
+vault kv put secret/nexus/argocd/repo \
+  type="git" \
+  url="https://github.com/lassemand/nexus.git" \
+  username="git" \
+  password="<github-pat>"
+```
+
+#### Create the ArgoCD repo secret manually (bootstrap only)
+
+```bash
+kubectl create secret generic nexus-repo-secret \
+  --namespace argocd \
+  --from-literal=type=git \
+  --from-literal=url=https://github.com/lassemand/nexus.git \
+  --from-literal=username=git \
+  --from-literal=password=<github-pat>
+
+kubectl label secret nexus-repo-secret \
+  --namespace argocd \
+  argocd.argoproj.io/secret-type=repository
+```
+
+Once the root Application is synced and ESO is running, the ExternalSecret in
+`infra/argocd/apps/repo-secret.yaml` will adopt and reconcile this secret from
+Vault — no further manual intervention required.
+
+---
+
+### 5 — Access the ArgoCD UI
 
 #### macOS + minikube Docker driver — LaunchAgent (configure once)
 
@@ -164,6 +216,48 @@ argocd login 192.168.49.2:30443 \
   --insecure
 ```
 
+### 6 — Apply the root Application (App of Apps)
+
+This is the single manual `kubectl apply` that hands control to ArgoCD for
+everything else.  After this step, all future changes are made by merging to
+`main` — ArgoCD reconciles the cluster automatically.
+
+```bash
+kubectl apply -f infra/argocd/root-app.yaml
+```
+
+ArgoCD will:
+1. Sync `infra/argocd/apps/` → create the `nexus-charts` ApplicationSet and the
+   `nexus-repo-secret` ExternalSecret
+2. The ApplicationSet enumerates `infra/charts/*` and creates one Application
+   per chart directory
+3. Each Application renders and applies its Helm chart into the `nexus` namespace
+
+Watch progress in the UI or with:
+
+```bash
+kubectl get applications -n argocd -w
+```
+
+---
+
+## Sync policy
+
+All ArgoCD Applications use **automated sync with prune and self-heal**:
+
+```yaml
+syncPolicy:
+  automated:
+    prune: true     # delete resources removed from git
+    selfHeal: true  # revert any manual kubectl changes
+```
+
+Manual `kubectl apply` against the `nexus` namespace is no longer the workflow
+after bootstrap — ArgoCD will revert any out-of-band changes within its
+reconcile interval (~3 minutes).
+
+---
+
 ## Upgrading ArgoCD
 
 1. Update the `targetRevision` tag in `infra/argocd/install/kustomization.yaml`
@@ -173,7 +267,6 @@ argocd login 192.168.49.2:30443 \
 
 ## Out of scope (follow-up tasks)
 
-- **Connecting to the nexus Git repository** — NEX-32
-- **Application CRs** for nexus services — NEX-32
 - **SSO / OIDC** integration
 - **RBAC** customisation
+- **Notifications / Slack** on sync events

@@ -1,0 +1,9 @@
+apiVersion: v2
+name: market
+description: >
+  Helm chart for the nexus market binary — a daily CronJob that fetches
+  end-of-day OHLCV bars from Polygon and publishes them as protobuf
+  MarketEvents to the market.bars Kafka topic.
+type: application
+version: 0.1.0
+appVersion: "latest"

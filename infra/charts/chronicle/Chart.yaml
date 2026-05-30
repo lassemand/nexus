@@ -1,0 +1,9 @@
+apiVersion: v2
+name: chronicle
+description: >
+  Helm chart for the nexus chronicle binary — a daily CronJob that fetches
+  SEC EDGAR earnings filings and publishes them as protobuf EarningsEvents to
+  the earnings.calendar Kafka topic.
+type: application
+version: 0.1.0
+appVersion: "latest"
