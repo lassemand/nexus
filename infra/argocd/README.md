@@ -22,21 +22,26 @@ infra/argocd/
       argocd-server-nodeport.yaml    — NodePort Service patch
   root-app.yaml                      — App-of-Apps bootstrap
   apps/
-    nexus-appset.yaml                — ApplicationSet (Git directory generator over infra/charts/*)
-    chronicle-app.yaml               — Application CR for chronicle (namespace: chronicle)
-    market-app.yaml                  — Application CR for market    (namespace: market)
+    nexus-appset.yaml                — ApplicationSet (Git directory generator over infra/charts/*/*)
 
-infra/charts/
-  signal/            — nexus signal service (Helm chart, Deployment)
-  chronicle/         — nexus chronicle binary (Helm chart, CronJob — EDGAR → earnings.calendar)
-  market/            — nexus market binary   (Helm chart, CronJob — Polygon  → market.bars)
-  postgres-operator/ — Zalando Postgres Operator (umbrella, wraps upstream Helm chart)
-  postgres/          — nexus PostgreSQL cluster CR
-  kafka/             — Strimzi operator + nexus Kafka cluster CRs
-  vault/             — HashiCorp Vault standalone (umbrella, wraps upstream Helm chart)
+infra/charts/                        — layout: infra/charts/<namespace>/<chart>/
+  nexus/
+    postgres-operator/ — Zalando Postgres Operator (umbrella, wraps upstream Helm chart)
+    postgres/          — nexus PostgreSQL cluster CR
+    kafka/             — Strimzi operator + nexus Kafka cluster CRs
+    vault/             — HashiCorp Vault standalone (umbrella, wraps upstream Helm chart)
+    external-secrets/  — External Secrets Operator + ClusterSecretStore
+  signal/
+    signal/            — nexus signal service (Helm chart, Deployment)
+  chronicle/
+    chronicle/         — nexus chronicle binary (Helm chart, CronJob — EDGAR → earnings.calendar)
+  market/
+    market/            — nexus market binary   (Helm chart, CronJob — Polygon  → market.bars)
 ```
 
-Adding a new subdirectory under `infra/charts/` is all that is needed for ArgoCD to deploy it — no manual Application CR required.
+Adding `infra/charts/<namespace>/<chart>/` is all that is needed for ArgoCD to deploy a chart into
+`<namespace>` — no manual Application CR required. The ApplicationSet derives both the app name
+(`<namespace>-<chart>`) and the target namespace (`<namespace>`) from the directory path.
 
 ## Target namespace
 
