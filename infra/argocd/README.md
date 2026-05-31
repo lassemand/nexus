@@ -112,16 +112,49 @@ kubectl get secret argocd-initial-admin-secret \
 > password via the UI or CLI:
 > `kubectl delete secret argocd-initial-admin-secret -n argocd`
 
-### 4 — Access the ArgoCD UI
+### 4 — Permanent minikube routing (macOS Docker driver)
 
-#### macOS + minikube Docker driver — LaunchAgent (configure once)
+On macOS with the Docker driver, `192.168.49.2` (the minikube node IP) is
+**not routable** from the host by default.  The fix is a root-level
+**LaunchDaemon** that keeps `minikube tunnel` running permanently — it adds the
+host route at boot, restarts on crash, no manual steps after install.
 
-On macOS, minikube's Docker bridge (`192.168.49.2`) is not routable from the
-host. The fix is a **macOS LaunchAgent** that keeps `kubectl port-forward`
-running as a background service — starts on login, restarts on crash, no
-manual steps after install.
+**Install once:**
 
-**Install once (copy from repo + load):**
+```bash
+sudo cp infra/argocd/overlays/minikube/io.nexus.minikube-tunnel.plist \
+        /Library/LaunchDaemons/
+sudo launchctl load -w /Library/LaunchDaemons/io.nexus.minikube-tunnel.plist
+```
+
+Once the daemon is running every NodePort / LoadBalancer on `192.168.49.2` is
+directly reachable from the host.
+
+```bash
+# Check the daemon is running
+sudo launchctl list io.nexus.minikube-tunnel
+
+# View logs
+tail -f /tmp/minikube-tunnel.log
+
+# Uninstall
+sudo launchctl unload -w /Library/LaunchDaemons/io.nexus.minikube-tunnel.plist
+sudo rm /Library/LaunchDaemons/io.nexus.minikube-tunnel.plist
+```
+
+### 5 — Access the ArgoCD UI
+
+#### macOS + minikube Docker driver
+
+After the tunnel daemon is running the UI is available at the NodePort address:
+
+```bash
+kubectl apply -k infra/argocd/overlays/minikube/
+# → https://192.168.49.2:30443
+```
+
+Alternatively, a user-level **LaunchAgent** wraps `kubectl port-forward` if
+you prefer `https://localhost:8080` instead of the IP address:
 
 ```bash
 cp infra/argocd/overlays/minikube/io.nexus.argocd-port-forward.plist \
@@ -147,7 +180,7 @@ rm ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
 #### Linux / bare-metal minikube — NodePort
 
 On Linux the Docker bridge **is** routable from the host. Apply the overlay
-and open the URL directly — no agent needed:
+and open the URL directly — no daemon needed:
 
 ```bash
 kubectl apply -k infra/argocd/overlays/minikube/
@@ -173,7 +206,7 @@ argocd login 192.168.49.2:30443 \
   --insecure
 ```
 
-### 5 — Apply the root Application (App of Apps)
+### 6 — Apply the root Application (App of Apps)
 
 This is the single manual `kubectl apply` that hands control to ArgoCD for
 everything else.  After this step, all future changes are made by merging to
@@ -196,6 +229,32 @@ Watch progress in the UI or with:
 
 ```bash
 kubectl get applications -n argocd -w
+```
+
+---
+
+## Kafka CLI access
+
+With `minikube tunnel` running (see step 4 above) the Kafka NodePort bootstrap
+is permanently available at `192.168.49.2:32092`.
+
+```bash
+# List topics
+kafka-topics --bootstrap-server 192.168.49.2:32092 --list
+
+# Describe a topic
+kafka-topics --bootstrap-server 192.168.49.2:32092 \
+  --describe --topic earnings.calendar
+
+# Consume from the beginning
+kafka-console-consumer --bootstrap-server 192.168.49.2:32092 \
+  --topic market.bars --from-beginning
+```
+
+Install Kafka CLI tools on macOS:
+
+```bash
+brew install kafka
 ```
 
 ---
