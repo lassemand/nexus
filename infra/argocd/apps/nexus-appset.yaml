@@ -1,13 +1,15 @@
-# ApplicationSet — Git directory generator over infra/charts/
+# ApplicationSet — Git directory generator over infra/charts/<namespace>/<chart>/
 #
-# Automatically creates one ArgoCD Application per subdirectory found
-# under infra/charts/.  Adding a new chart directory (e.g.
-# infra/charts/chronicle) is enough for ArgoCD to pick it up — no
-# manual Application CR required.
+# Directory layout: infra/charts/<namespace>/<chart>/
+#   {{path[2]}}      → namespace  (e.g. nexus, signal, chronicle, market)
+#   {{path.basename}} → chart name (e.g. kafka, signal, chronicle, market)
 #
-# Naming: nexus-<chart-dir>  (e.g. nexus-signal, nexus-chronicle)
-# Namespace: nexus
-# Sync: automated with prune + selfHeal
+# Adding infra/charts/<namespace>/<chart>/ is enough for ArgoCD to deploy it —
+# no manual Application CR required.
+#
+# Naming:    <namespace>-<chart>  (e.g. nexus-kafka, signal-signal)
+# Namespace: derived from path   (e.g. nexus, signal, chronicle, market)
+# Sync:      automated with prune + selfHeal
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -23,28 +25,24 @@ spec:
         repoURL: https://github.com/lassemand/nexus.git
         revision: main
         directories:
-          - path: infra/charts/*
-          # chronicle and market have dedicated Application CRs so they can
-          # target their own namespaces — exclude them from this generator.
-          - path: infra/charts/chronicle
-            exclude: true
-          - path: infra/charts/market
-            exclude: true
+          - path: infra/charts/*/*
 
   template:
     metadata:
-      # e.g. "nexus-signal" for infra/charts/signal
-      name: 'nexus-{{path.basename}}'
+      # e.g. "nexus-kafka" for infra/charts/nexus/kafka
+      #      "signal-signal" for infra/charts/signal/signal
+      name: '{{path[2]}}-{{path.basename}}'
       labels:
         app.kubernetes.io/managed-by: argocd-applicationset
         nexus/chart: '{{path.basename}}'
+        nexus/namespace: '{{path[2]}}'
     spec:
       project: default
 
       source:
         repoURL: https://github.com/lassemand/nexus.git
         targetRevision: main
-        # Points at the chart directory itself (e.g. infra/charts/signal)
+        # Points at the chart directory itself (e.g. infra/charts/nexus/kafka)
         path: '{{path}}'
         helm:
           releaseName: '{{path.basename}}'
@@ -53,7 +51,8 @@ spec:
 
       destination:
         server: https://kubernetes.default.svc
-        namespace: nexus
+        # Namespace derived from directory structure: infra/charts/<namespace>/...
+        namespace: '{{path[2]}}'
 
       syncPolicy:
         automated:
