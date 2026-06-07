@@ -2,33 +2,28 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  LaunchDaemon — adds 192.168.49.2 as a loopback alias on lo0 (runs as root).
+  LaunchDaemon — keeps `minikube tunnel` running as root permanently.
 
-  On macOS with Docker Desktop the Docker bridge network (192.168.49.0/24) is
-  inside a Linux VM and is NOT routable from the host — minikube tunnel cannot
-  add routes for it. Instead this daemon adds 192.168.49.2 as an alias on lo0
-  so that kubectl port-forward (see io.nexus.kafka-port-forward LaunchAgent)
-  can bind to that address. Kafka clients that receive broker metadata pointing
-  at 192.168.49.x will then connect through the local port-forward.
+  minikube tunnel adds a host route for the minikube network (192.168.49.0/24)
+  so that 192.168.49.2 (the minikube node IP) is reachable directly from the
+  macOS host — no port-forward required.
 
   Install (once):
-    sudo cp infra/argocd/overlays/minikube/nexus-minikube-alias.sh \
-           /usr/local/bin/nexus-minikube-alias.sh
-    sudo chmod +x /usr/local/bin/nexus-minikube-alias.sh
     sudo cp infra/argocd/overlays/minikube/io.nexus.minikube-tunnel.plist \
            /Library/LaunchDaemons/
-    sudo launchctl unload /Library/LaunchDaemons/io.nexus.minikube-tunnel.plist 2>/dev/null || true
     sudo launchctl load -w /Library/LaunchDaemons/io.nexus.minikube-tunnel.plist
 
   Verify:
     sudo launchctl list io.nexus.minikube-tunnel
-    ifconfig lo0 | grep 192.168.49.2    # should show the alias
     tail -f /tmp/minikube-tunnel.log
 
   Uninstall:
     sudo launchctl unload -w /Library/LaunchDaemons/io.nexus.minikube-tunnel.plist
     sudo rm /Library/LaunchDaemons/io.nexus.minikube-tunnel.plist
-    sudo rm /usr/local/bin/nexus-minikube-alias.sh
+
+  Once the daemon is running the following addresses become reachable:
+    ArgoCD UI  https://192.168.49.2:30443
+    Kafka CLI  192.168.49.2:32092  (NodePort bootstrap)
 -->
 <plist version="1.0">
 <dict>
@@ -37,10 +32,12 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/nexus-minikube-alias.sh</string>
+    <string>/opt/homebrew/bin/minikube</string>
+    <string>tunnel</string>
+    <string>--cleanup</string>
   </array>
 
-  <!-- Restart immediately if the script exits. -->
+  <!-- Restart immediately if the process exits. -->
   <key>KeepAlive</key>
   <true/>
 
