@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent — persistent kubectl port-forward for Kafka.
+
+  Forwards two NodePort services to localhost so that the nexus CLI and any
+  Kafka client can reach the cluster broker at localhost:32092 / localhost:32093
+  without running kubectl manually.
+
+    localhost:32092 → nexus-kafka-external-bootstrap:9093  (bootstrap)
+    localhost:32093 → nexus-combined-external-0:9093       (broker 0)
+
+  Requires:
+    - minikube cluster running (minikube start)
+    - nexus-kafka-forward.sh installed at ~/.local/bin/nexus-kafka-forward.sh
+
+  Install (once):
+    mkdir -p ~/.local/bin
+    cp infra/argocd/overlays/minikube/nexus-kafka-forward.sh \
+       ~/.local/bin/nexus-kafka-forward.sh
+    chmod +x ~/.local/bin/nexus-kafka-forward.sh
+    cp infra/argocd/overlays/minikube/io.nexus.kafka-port-forward.plist \
+       ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/io.nexus.kafka-port-forward.plist
+
+  Verify:
+    launchctl list io.nexus.kafka-port-forward
+    nc -z localhost 32092 && echo "bootstrap reachable"
+    tail -f /tmp/kafka-port-forward.log
+
+  Uninstall:
+    launchctl unload -w ~/Library/LaunchAgents/io.nexus.kafka-port-forward.plist
+    rm ~/Library/LaunchAgents/io.nexus.kafka-port-forward.plist
+    rm ~/.local/bin/nexus-kafka-forward.sh
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.nexus.kafka-port-forward</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/agent/.local/bin/nexus-kafka-forward.sh</string>
+  </array>
+
+  <!-- Restart automatically whenever the script exits. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Start on login. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Back off 10 s between restarts — avoids spin-loop when cluster is down. -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/kafka-port-forward.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/kafka-port-forward.log</string>
+</dict>
+</plist>
