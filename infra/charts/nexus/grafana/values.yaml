@@ -1,0 +1,33 @@
+# Values for the grafana sub-chart.
+# Keys are prefixed with the dependency name (grafana).
+grafana:
+  # Expose Grafana UI at localhost:30300 on the minikube host.
+  # minikube must be started with --ports=30300:30300.
+  service:
+    type: NodePort
+    nodePort: 30300
+
+  # Default admin credentials — change after first login.
+  adminUser: admin
+  adminPassword: admin
+
+  # Persist dashboards and datasources across pod restarts.
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClassName: standard  # minikube default storageclass
+
+  # Pre-configure Postgres as a datasource (optional — remove if not needed yet).
+  # datasources:
+  #   datasources.yaml:
+  #     apiVersion: 1
+  #     datasources:
+  #       - name: PostgreSQL
+  #         type: postgres
+  #         url: nexus-postgres.nexus.svc.cluster.local:5432
+  #         user: nexus
+  #         secureJsonData:
+  #           password: "${POSTGRES_PASSWORD}"
+  #         jsonData:
+  #           database: signal
+  #           sslmode: disable

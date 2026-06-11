@@ -3,9 +3,19 @@
 # Bootstrap address (internal ClusterIP):
 #   nexus-kafka-bootstrap.nexus.svc.cluster.local:9092
 #
-# External access from the macOS host (Docker Desktop Kubernetes):
-#   Docker Desktop routes LoadBalancer services to localhost natively.
-#   KAFKA_BROKERS=localhost:9093
+# External access from the macOS host (minikube Docker driver):
+#   minikube is started with the following --ports flags so all NodePorts are
+#   bound to localhost at cluster creation — no tunnel, no port-forward needed.
+#
+#   minikube start \
+#     --ports=30080:30080   \  # ArgoCD HTTP
+#     --ports=30443:30443   \  # ArgoCD HTTPS
+#     --ports=30300:30300   \  # Grafana UI
+#     --ports=32092:32092   \  # Kafka bootstrap
+#     --ports=32093:32093   \  # Kafka broker 0
+#     --ports=32200:32200      # Vault UI
+#
+#   KAFKA_BROKERS=localhost:32092
 #
 # sync-wave 1: applied after the Strimzi operator (wave 0) has registered CRDs.
 apiVersion: kafka.strimzi.io/v1
@@ -25,17 +35,21 @@ spec:
         port: 9092
         type: internal
         tls: false
-      # External LoadBalancer listener — Docker Desktop routes this to localhost:9093
-      # automatically. No port-forward, no tunnel required.
-      #   KAFKA_BROKERS=localhost:9093
+      # External NodePort listener — reachable from the macOS host at localhost:32092
+      # because minikube is started with --ports=32092:32092,32093:32093 which
+      # binds these NodePorts into the Docker container at cluster creation time.
+      # No tunnel or port-forward required.
       - name: external
         port: 9093
-        type: loadbalancer
+        type: nodeport
         tls: false
         configuration:
+          bootstrap:
+            nodePort: 32092
           brokers:
             - broker: 0
               advertisedHost: 127.0.0.1
+              nodePort: 32093
     config:
       offsets.topic.replication.factor: "1"
       transaction.state.log.replication.factor: "1"

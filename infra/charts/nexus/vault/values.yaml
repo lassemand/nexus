@@ -13,4 +13,8 @@ vault:
     enabled: false             # Vault Agent Injector is out of scope for this setup
 
   ui:
-    enabled: true              # useful for local inspection
+    enabled: true
+    # Expose Vault UI at localhost:32200 on the minikube host.
+    # minikube must be started with --ports=32200:32200.
+    serviceType: NodePort
+    serviceNodePort: 32200

@@ -1,0 +1,13 @@
+apiVersion: v2
+name: grafana
+description: >
+  Umbrella chart for Grafana. Wraps the upstream Grafana Helm chart as a
+  dependency so the ApplicationSet can manage it from infra/charts/ without
+  a separate Application CR.
+type: application
+version: 0.1.0
+appVersion: "11.6.0"
+dependencies:
+  - name: grafana
+    version: "9.0.0"
+    repository: https://grafana.github.io/helm-charts
