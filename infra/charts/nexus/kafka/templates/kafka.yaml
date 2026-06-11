@@ -3,18 +3,8 @@
 # Bootstrap address (internal ClusterIP):
 #   nexus-kafka-bootstrap.nexus.svc.cluster.local:9092
 #
-# External access from the macOS host (minikube Docker driver):
-#   minikube is started with the following --ports flags so all NodePorts are
-#   bound to localhost at cluster creation — no tunnel, no port-forward needed.
-#
-#   minikube start \
-#     --ports=30080:30080   \  # ArgoCD HTTP
-#     --ports=30443:30443   \  # ArgoCD HTTPS
-#     --ports=32092:32092   \  # Kafka bootstrap
-#     --ports=32093:32093   \  # Kafka broker 0
-#     --ports=32200:32200      # Vault UI
-#
-#   KAFKA_BROKERS=localhost:32092
+# External bootstrap (NodePort, host access):
+#   localhost:32092
 #
 # sync-wave 1: applied after the Strimzi operator (wave 0) has registered CRDs.
 apiVersion: kafka.strimzi.io/v1
@@ -34,10 +24,7 @@ spec:
         port: 9092
         type: internal
         tls: false
-      # External NodePort listener — reachable from the macOS host at localhost:32092
-      # because minikube is started with --ports=32092:32092,32093:32093 which
-      # binds these NodePorts into the Docker container at cluster creation time.
-      # No tunnel or port-forward required.
+      # External NodePort listener — fixed ports 32092 (bootstrap) and 32093 (broker 0).
       - name: external
         port: 9093
         type: nodeport
