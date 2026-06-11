@@ -17,7 +17,7 @@ struct Args {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
 
-    #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:19092")]
+    #[arg(long, env = "KAFKA_BROKERS")]
     brokers: String,
 
     #[arg(long, env = "KAFKA_TOPIC", default_value = "earnings.calendar")]
