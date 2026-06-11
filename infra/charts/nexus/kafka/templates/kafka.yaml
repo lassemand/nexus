@@ -3,9 +3,8 @@
 # Bootstrap address (internal ClusterIP):
 #   nexus-kafka-bootstrap.nexus.svc.cluster.local:9092
 #
-# External access from the macOS host (Docker Desktop Kubernetes):
-#   Docker Desktop routes LoadBalancer services to localhost natively.
-#   KAFKA_BROKERS=localhost:9093
+# External bootstrap (NodePort, host access):
+#   localhost:32092
 #
 # sync-wave 1: applied after the Strimzi operator (wave 0) has registered CRDs.
 apiVersion: kafka.strimzi.io/v1
@@ -25,17 +24,18 @@ spec:
         port: 9092
         type: internal
         tls: false
-      # External LoadBalancer listener — Docker Desktop routes this to localhost:9093
-      # automatically. No port-forward, no tunnel required.
-      #   KAFKA_BROKERS=localhost:9093
+      # External NodePort listener — fixed ports 32092 (bootstrap) and 32093 (broker 0).
       - name: external
         port: 9093
-        type: loadbalancer
+        type: nodeport
         tls: false
         configuration:
+          bootstrap:
+            nodePort: 32092
           brokers:
             - broker: 0
               advertisedHost: 127.0.0.1
+              nodePort: 32093
     config:
       offsets.topic.replication.factor: "1"
       transaction.state.log.replication.factor: "1"
