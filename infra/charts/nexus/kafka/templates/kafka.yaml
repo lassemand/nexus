@@ -10,7 +10,6 @@
 #   minikube start \
 #     --ports=30080:30080   \  # ArgoCD HTTP
 #     --ports=30443:30443   \  # ArgoCD HTTPS
-#     --ports=30300:30300   \  # Grafana UI
 #     --ports=32092:32092   \  # Kafka bootstrap
 #     --ports=32093:32093   \  # Kafka broker 0
 #     --ports=32200:32200      # Vault UI
