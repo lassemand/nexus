@@ -14,7 +14,7 @@ struct Args {
     #[arg(long, env = "POLYGON_API_KEY")]
     api_key: String,
 
-    #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:19092")]
+    #[arg(long, env = "KAFKA_BROKERS")]
     brokers: String,
 
     #[arg(long, env = "KAFKA_TOPIC", default_value = "market.bars")]
