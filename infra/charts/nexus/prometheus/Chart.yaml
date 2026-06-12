@@ -1,0 +1,10 @@
+apiVersion: v2
+name: prometheus
+description: Umbrella chart for Prometheus (core server only, no alertmanager or exporters).
+type: application
+version: 0.1.0
+appVersion: "v3.12.0"
+dependencies:
+  - name: prometheus
+    version: "29.10.1"
+    repository: https://prometheus-community.github.io/helm-charts

@@ -112,58 +112,42 @@ kubectl get secret argocd-initial-admin-secret \
 > password via the UI or CLI:
 > `kubectl delete secret argocd-initial-admin-secret -n argocd`
 
-### 4 — Permanent minikube routing (macOS Docker driver)
+### 4 — Start minikube with host port bindings
 
-On macOS with the Docker driver, `192.168.49.2` (the minikube node IP) is
-**not routable** from the host by default.  The fix is a root-level
-**LaunchDaemon** that keeps `minikube tunnel` running permanently — it adds the
-host route at boot, restarts on crash, no manual steps after install.
-
-**Install once:**
+NodePorts are accessible at `localhost` because minikube is started with explicit
+`--ports` bindings baked into the Docker container.  Start it once with:
 
 ```bash
-sudo cp infra/argocd/overlays/minikube/io.nexus.minikube-tunnel.plist \
-        /Library/LaunchDaemons/
-sudo launchctl load -w /Library/LaunchDaemons/io.nexus.minikube-tunnel.plist
+minikube start \
+  --ports=30080:30080 \
+  --ports=30443:30443 \
+  --ports=32090:32090 \
+  --ports=32092:32092 \
+  --ports=32093:32093 \
+  --ports=32200:32200 \
+  --driver=docker \
+  --memory=4096 \
+  --cpus=2
 ```
 
-Once the daemon is running every NodePort / LoadBalancer on `192.168.49.2` is
-directly reachable from the host.
+After that every NodePort in the table below is permanently reachable at `localhost`
+with no tunnel, no port-forward, and no daemon.
 
-```bash
-# Check the daemon is running
-sudo launchctl list io.nexus.minikube-tunnel
-
-# View logs
-tail -f /tmp/minikube-tunnel.log
-
-# Uninstall
-sudo launchctl unload -w /Library/LaunchDaemons/io.nexus.minikube-tunnel.plist
-sudo rm /Library/LaunchDaemons/io.nexus.minikube-tunnel.plist
-```
+| Service | Host address |
+|---|---|
+| ArgoCD UI | `https://localhost:30443` |
+| Kafka bootstrap | `localhost:32092` |
+| Prometheus | `http://localhost:32090` |
+| Vault UI | `http://localhost:32200` |
 
 ### 5 — Access the ArgoCD UI
 
-#### macOS + minikube Docker driver
-
-After the tunnel daemon is running the UI is available at the NodePort address:
+Apply the minikube overlay to expose the ArgoCD server as a NodePort:
 
 ```bash
 kubectl apply -k infra/argocd/overlays/minikube/
-# → https://192.168.49.2:30443
+# → https://localhost:30443
 ```
-
-Alternatively, a user-level **LaunchAgent** wraps `kubectl port-forward` if
-you prefer `https://localhost:8080` instead of the IP address:
-
-```bash
-cp infra/argocd/overlays/minikube/io.nexus.argocd-port-forward.plist \
-   ~/Library/LaunchAgents/
-launchctl load -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
-```
-
-ArgoCD UI is then permanently available at **https://localhost:8080**.  
-Accept the self-signed certificate warning on first visit.
 
 ```bash
 # Check the agent is running
@@ -206,7 +190,24 @@ argocd login 192.168.49.2:30443 \
   --insecure
 ```
 
-### 6 — Apply the root Application (App of Apps)
+### 6 — Grant the nexus service account token-review permission
+
+Vault's Kubernetes auth method needs to validate incoming JWTs against the
+Kubernetes API. The `nexus` service account (in the `nexus` namespace) must
+have the `system:auth-delegator` ClusterRole to do this:
+
+```bash
+kubectl create clusterrolebinding nexus-auth-delegator \
+  --clusterrole=system:auth-delegator \
+  --serviceaccount=nexus:nexus
+```
+
+This step must be performed **after ArgoCD has synced** (which creates the
+`nexus` namespace and service account) and **before** Vault's Kubernetes auth
+is configured.  Without it the ClusterSecretStore will fail with
+`permission denied` and all ExternalSecrets will stay in `SecretSyncedError`.
+
+### 7 — Apply the root Application (App of Apps)
 
 This is the single manual `kubectl apply` that hands control to ArgoCD for
 everything else.  After this step, all future changes are made by merging to
@@ -235,19 +236,19 @@ kubectl get applications -n argocd -w
 
 ## Kafka CLI access
 
-With `minikube tunnel` running (see step 4 above) the Kafka NodePort bootstrap
-is permanently available at `192.168.49.2:32092`.
+The Kafka NodePort bootstrap is permanently available at `localhost:32092`
+(bound via `--ports=32092:32092` at minikube start — no tunnel needed).
 
 ```bash
 # List topics
-kafka-topics --bootstrap-server 192.168.49.2:32092 --list
+kafka-topics --bootstrap-server localhost:32092 --list
 
 # Describe a topic
-kafka-topics --bootstrap-server 192.168.49.2:32092 \
+kafka-topics --bootstrap-server localhost:32092 \
   --describe --topic earnings.calendar
 
 # Consume from the beginning
-kafka-console-consumer --bootstrap-server 192.168.49.2:32092 \
+kafka-console-consumer --bootstrap-server localhost:32092 \
   --topic market.bars --from-beginning
 ```
 
