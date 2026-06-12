@@ -2,23 +2,10 @@ image:
   repository: "lmapwns/nexus"
   tag: "0.0.9"
 
-# CronJob schedule — daily at 07:00 UTC (after SEC EDGAR nightly processing).
-# Set to "0 7 * * *" which is roughly 3am ET / midnight PT.
-schedule: "0 7 * * *"
-
-# All runtime secrets (DATABASE_URL, KAFKA_BROKERS, KAFKA_TOPIC, KAFKA_GROUP_ID)
-# are fetched from Vault via ExternalSecret and mounted as chronicle-secret.
-# The values below are defaults documented for the operator; they must be
-# stored in Vault at secret/data/nexus/chronicle with the matching keys.
-# Non-sensitive defaults (broker address, topic, group) are shown here so the
-# operator knows what to write into Vault. DATABASE_URL contains credentials
-# and must never appear in plaintext outside Vault.
-#
-# Vault path: nexus/chronicle
-#   DATABASE_URL  — postgres connection string (with password)
-#   KAFKA_BROKERS — nexus-kafka-bootstrap.nexus.svc.cluster.local:9092
-#   KAFKA_TOPIC   — earnings.calendar
-#   KAFKA_GROUP_ID — chronicle
+schedules:
+  chronicle: "0 6 * * *"
+  market: "0 22 * * 1-5"
+  earnings: "0 7 * * *"
 
 resources:
   requests:
@@ -26,4 +13,3 @@ resources:
     cpu: "50m"
   limits:
     memory: "256Mi"
-    cpu: "200m"

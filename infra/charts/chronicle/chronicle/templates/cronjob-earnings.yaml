@@ -1,43 +1,33 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: chronicle
+  name: earnings
   labels:
-    app: chronicle
+    app: earnings
 spec:
-  schedule: {{ .Values.schedule | quote }}
-
-  # Only one instance at a time — prevent concurrent EDGAR crawls.
+  schedule: {{ .Values.schedules.earnings | quote }}
   concurrencyPolicy: Forbid
-
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
-
   jobTemplate:
     spec:
       template:
         metadata:
           labels:
-            app: chronicle
+            app: earnings
         spec:
           restartPolicy: OnFailure
-
           containers:
-            - name: chronicle
+            - name: earnings
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
               imagePullPolicy: IfNotPresent
-              command: ["/usr/local/bin/chronicle"]
-
-              # All runtime configuration is injected from the ESO-managed secret.
-              # No env vars are hardcoded here; see templates/external-secret.yaml.
+              command: ["/usr/local/bin/earnings"]
               envFrom:
                 - secretRef:
                     name: chronicle-secret
-
               resources:
                 requests:
                   memory: {{ .Values.resources.requests.memory | quote }}
                   cpu: {{ .Values.resources.requests.cpu | quote }}
                 limits:
                   memory: {{ .Values.resources.limits.memory | quote }}
-                  cpu: {{ .Values.resources.limits.cpu | quote }}

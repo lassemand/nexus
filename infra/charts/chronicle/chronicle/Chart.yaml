@@ -1,9 +1,9 @@
 apiVersion: v2
 name: chronicle
 description: >
-  Helm chart for the nexus chronicle binary — a daily CronJob that fetches
-  SEC EDGAR earnings filings and publishes them as protobuf EarningsEvents to
-  the earnings.calendar Kafka topic.
+  Helm chart for the nexus chronicle CronJobs — chronicle (SEC EDGAR →
+  earnings.calendar), market (Polygon EOD bars → market.bars), and earnings
+  (Polygon quarterly earnings → earnings.calendar).
 type: application
 version: 0.1.0
 appVersion: "latest"
