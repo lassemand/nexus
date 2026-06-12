@@ -1,0 +1,15 @@
+{{- if .Values.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: insight
+  labels:
+    app: insight
+spec:
+  type: ClusterIP
+  selector:
+    app: insight
+  ports:
+    - port: 8080
+      targetPort: 8080
+{{- end }}
