@@ -1,0 +1,31 @@
+# NOTE: insight uses rmcp transport-io (stdio). This Deployment will not serve
+# traffic until the binary is updated to use transport-sse or
+# transport-streamable-http. See insight/Cargo.toml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insight
+  labels:
+    app: insight
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: insight
+  template:
+    metadata:
+      labels:
+        app: insight
+    spec:
+      containers:
+        - name: insight
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/insight"]
+          envFrom:
+            - secretRef:
+                name: insight-secret
+          resources:
+            requests:
+              memory: {{ .Values.resources.requests.memory | quote }}
+              cpu: {{ .Values.resources.requests.cpu | quote }}

@@ -1,0 +1,16 @@
+image:
+  repository: "lmapwns/nexus"  # TODO: replace with real Docker Hub username/image
+  tag: "latest"
+
+replicaCount: 1
+
+# insight uses rmcp transport-io (stdio) and cannot serve network traffic.
+# Enable only after the binary is updated to use transport-sse or
+# transport-streamable-http.
+service:
+  enabled: false
+
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "25m"
