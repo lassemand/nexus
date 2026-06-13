@@ -1,10 +1,15 @@
 mod db;
+mod features;
 mod strategy;
 
 use alpha::{CompanyProvider, PolygonSectorProvider, YahooPriceProvider};
 use chrono::DateTime;
 use clap::Parser;
-use db::{insert_trade_result, is_registered, upsert_bar, upsert_company, upsert_special_event};
+use db::{
+    fetch_bars_before, insert_event_signal, insert_trade_result, is_registered, upsert_bar,
+    upsert_company, upsert_special_event,
+};
+use features::compute_pre_event_features;
 use model::{
     asset::Asset,
     generated::{EarningsEvent, MarketEvent, SpecialEvent, TickerRegistration},
@@ -191,6 +196,29 @@ async fn main() {
                             }
                         }
                         Err(e) => error!("strategy evaluation failed for {}: {e}", event.ticker),
+                    }
+
+                    // Compute and store pre-event features regardless of strategy outcome.
+                    let event_date =
+                        chrono::DateTime::from_timestamp(event.announced_at_unix_secs, 0)
+                            .map(|dt| dt.date_naive());
+
+                    if let Some(event_date) = event_date {
+                        match fetch_bars_before(&pool, &ticker, event_date, 80).await {
+                            Ok(bars) => {
+                                let features = compute_pre_event_features(&bars);
+                                if let Err(e) = insert_event_signal(
+                                    &pool, &ticker, "earnings", event_date, &features,
+                                )
+                                .await
+                                {
+                                    error!(ticker = %ticker, error = %e, "failed to insert event signal");
+                                }
+                            }
+                            Err(e) => {
+                                error!(ticker = %ticker, error = %e, "failed to fetch bars for feature computation");
+                            }
+                        }
                     }
                 } else if topic == args.special_events_topic {
                     let event = match SpecialEvent::decode(payload) {

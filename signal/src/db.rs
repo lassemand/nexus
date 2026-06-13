@@ -2,6 +2,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use model::sector::Sector;
 use sqlx::PgPool;
 
+use crate::features::{Bar, PreEventFeatures};
+
 pub struct TradeResult {
     pub ticker: String,
     pub earnings_date: NaiveDate,
@@ -93,6 +95,73 @@ pub async fn upsert_bar(
     .bind(low)
     .bind(close)
     .bind(volume)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Fetches up to `limit` bars before `before_date` for `ticker`, returned in
+/// chronological order (ascending date).
+pub async fn fetch_bars_before(
+    pool: &PgPool,
+    ticker: &str,
+    before_date: NaiveDate,
+    limit: i64,
+) -> sqlx::Result<Vec<Bar>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT date, close, volume FROM bars \
+         WHERE ticker = $1 AND date < $2 \
+         ORDER BY date DESC LIMIT $3",
+    )
+    .bind(ticker)
+    .bind(before_date)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let mut bars: Vec<Bar> = rows
+        .into_iter()
+        .map(|r| Bar {
+            close: r.get("close"),
+            volume: r.get("volume"),
+        })
+        .collect();
+    bars.reverse();
+    Ok(bars)
+}
+
+/// Inserts an event signal row. Ignores duplicates (idempotent).
+pub async fn insert_event_signal(
+    pool: &PgPool,
+    ticker: &str,
+    event_type: &str,
+    event_date: NaiveDate,
+    f: &PreEventFeatures,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO event_signals (
+            ticker, event_type, event_date,
+            car_20d, car_10d, car_5d,
+            mean_abvol_20d, max_abvol_20d, realized_vol_20d,
+            price_momentum_20d, vol_trend_slope, pre_event_bars
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (ticker, event_type, event_date) DO NOTHING
+        "#,
+    )
+    .bind(ticker)
+    .bind(event_type)
+    .bind(event_date)
+    .bind(f.car_20d)
+    .bind(f.car_10d)
+    .bind(f.car_5d)
+    .bind(f.mean_abvol_20d)
+    .bind(f.max_abvol_20d)
+    .bind(f.realized_vol_20d)
+    .bind(f.price_momentum_20d)
+    .bind(f.vol_trend_slope)
+    .bind(f.pre_event_bars)
     .execute(pool)
     .await?;
     Ok(())
