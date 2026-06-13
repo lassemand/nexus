@@ -1,0 +1,6 @@
+apiVersion: v2
+name: model-trainer
+description: One-shot Kubernetes Job that trains the XGBoost insider-score model and writes it to the shared insider-model PVC.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

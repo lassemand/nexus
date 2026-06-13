@@ -20,11 +20,17 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["/usr/local/bin/signal"]
 
-          # All runtime configuration is injected from the ESO-managed secret.
-          # No env vars are hardcoded here; see templates/external-secret.yaml.
+          env:
+            - name: INSIDER_MODEL_PATH
+              value: /model/insider_score.onnx
+
           envFrom:
             - secretRef:
                 name: signal-secret
+
+          volumeMounts:
+            - name: model
+              mountPath: /model
 
           resources:
             requests:
@@ -34,8 +40,6 @@ spec:
               memory: {{ .Values.resources.limits.memory | quote }}
               cpu: {{ .Values.resources.limits.cpu | quote }}
 
-          # signal has no HTTP server so a process-existence exec probe is used
-          # instead of an HTTP liveness/readiness probe.
           livenessProbe:
             exec:
               command: ["pgrep", "-x", "signal"]
@@ -47,3 +51,8 @@ spec:
               command: ["pgrep", "-x", "signal"]
             initialDelaySeconds: 10
             periodSeconds: 30
+
+      volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: insider-model

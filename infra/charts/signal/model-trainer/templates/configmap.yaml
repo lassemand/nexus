@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: model-trainer-script
+  namespace: signal
+data:
+  requirements.txt: |
+    xgboost>=2.0
+    onnxmltools>=1.12
+    skl2onnx>=1.16
+    pandas>=2.0
+    sqlalchemy>=2.0
+    psycopg2-binary>=2.9
+    scikit-learn>=1.3
+    numpy>=1.24
+
+  train_insider_score.py: |
+    import argparse, os, sys
+    import numpy as np
+    import pandas as pd
+    from sklearn.metrics import classification_report, roc_auc_score
+    from sqlalchemy import create_engine
+    import xgboost as xgb
+    from skl2onnx import convert_sklearn
+    from skl2onnx.common.data_types import FloatTensorType
+
+    FEATURE_NAMES = [
+        "car_20d", "car_10d", "car_5d",
+        "mean_abvol_20d", "max_abvol_20d", "realized_vol_20d",
+        "price_momentum_20d", "vol_trend_slope",
+    ]
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--database-url", required=True)
+    parser.add_argument("--label-threshold", type=float, default=0.08)
+    parser.add_argument("--min-rows", type=int, default=50)
+    parser.add_argument("--output-path", default="/model/insider_score.onnx")
+    args = parser.parse_args()
+
+    engine = create_engine(args.database_url)
+    df = pd.read_sql(
+        "SELECT event_date, post_ar_1d, {f} FROM event_signals "
+        "WHERE truth_labeled_at IS NOT NULL AND pre_event_bars >= 20 "
+        "ORDER BY event_date".format(f=", ".join(FEATURE_NAMES)),
+        engine,
+    )
+    df = df.dropna(subset=FEATURE_NAMES + ["post_ar_1d"])
+
+    if len(df) < args.min_rows:
+        print(f"ERROR: only {len(df)} labeled rows — need at least {args.min_rows}.")
+        sys.exit(1)
+
+    print(f"Loaded {len(df)} labeled rows.")
+    y = (df["post_ar_1d"] > args.label_threshold).astype(int)
+    X = df[FEATURE_NAMES].astype(np.float32)
+    print(f"Positive class: {y.sum()} / {len(y)} ({100 * y.mean():.1f}%)")
+
+    split = int(len(X) * 0.8)
+    X_train, X_test = X.iloc[:split], X.iloc[split:]
+    y_train, y_test = y.iloc[:split], y.iloc[split:]
+
+    model = xgb.XGBClassifier(
+        n_estimators=200, max_depth=4, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, eval_metric="auc",
+        use_label_encoder=False, random_state=42,
+    )
+    model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+
+    y_prob = model.predict_proba(X_test)[:, 1]
+    y_pred = (y_prob >= 0.5).astype(int)
+    print(f"Test AUC: {roc_auc_score(y_test, y_prob):.4f}")
+    print(classification_report(y_test, y_pred, target_names=["no-signal", "signal"]))
+
+    os.makedirs(os.path.dirname(args.output_path) or ".", exist_ok=True)
+    initial_type = [("float_input", FloatTensorType([None, len(FEATURE_NAMES)]))]
+    onnx_model = convert_sklearn(model, initial_types=initial_type)
+    with open(args.output_path, "wb") as f:
+        f.write(onnx_model.SerializeToString())
+    print(f"Model written to {args.output_path}")
