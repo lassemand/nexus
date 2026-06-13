@@ -1,0 +1,38 @@
+grafana:
+  service:
+    type: NodePort
+    nodePort: 32300
+
+  persistence:
+    enabled: false
+
+  # Admin credentials injected from the grafana-secret ExternalSecret.
+  envFromSecret: grafana-secret
+
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://prometheus-server.nexus.svc.cluster.local:80
+          isDefault: true
+          editable: false
+
+        - name: Nexus Postgres
+          type: postgres
+          url: nexus-postgres.nexus.svc.cluster.local:5432
+          database: nexus
+          user: nexus
+          secureJsonData:
+            password: ${GF_DATABASE_PASSWORD}
+          jsonData:
+            sslmode: disable
+            timescaledb: false
+          editable: false
+
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
