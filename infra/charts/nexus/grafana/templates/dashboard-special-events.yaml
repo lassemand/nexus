@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-special-events
+  namespace: nexus
+  labels:
+    grafana_dashboard: "1"
+data:
+  special-events.json: |
+    {
+      "uid": "nexus-special-events",
+      "title": "Special Events",
+      "tags": ["nexus"],
+      "timezone": "browser",
+      "time": { "from": "now-90d", "to": "now" },
+      "refresh": "5m",
+      "schemaVersion": 39,
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Special Events",
+          "gridPos": { "x": 0, "y": 0, "w": 24, "h": 10 },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "points",
+                "lineWidth": 0,
+                "barAlignment": 0,
+                "pointSize": 6,
+                "showPoints": "always",
+                "axisPlacement": "hidden"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "displayMode": "hidden", "placement": "bottom" },
+            "tooltip": { "mode": "single", "sort": "none" }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+              "format": "time_series",
+              "rawSql": "SELECT\n  occurred_at AS time,\n  1 AS value,\n  ticker || ' — ' || description AS metric\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nORDER BY occurred_at"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "table",
+          "title": "Event Log",
+          "gridPos": { "x": 0, "y": 10, "w": 24, "h": 12 },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "sortBy": [{ "displayName": "occurred_at", "desc": true }]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+              "format": "table",
+              "rawSql": "SELECT occurred_at, ticker, event_type, description\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nORDER BY occurred_at DESC"
+            }
+          ]
+        }
+      ]
+    }
