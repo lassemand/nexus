@@ -1,5 +1,6 @@
 mod db;
 mod features;
+mod scorer;
 mod strategy;
 
 use alpha::{CompanyProvider, PolygonSectorProvider, YahooPriceProvider};
@@ -7,8 +8,8 @@ use chrono::DateTime;
 use clap::Parser;
 use db::{
     fetch_bars_after, fetch_bars_before, fetch_unlabeled_events_needing_bar, insert_event_signal,
-    insert_trade_result, is_registered, label_event_truth, upsert_bar, upsert_company,
-    upsert_insider_filing, upsert_special_event,
+    insert_trade_result, is_registered, label_event_truth, update_insider_score, upsert_bar,
+    upsert_company, upsert_insider_filing, upsert_special_event,
 };
 use features::{compute_post_event_ar, compute_pre_event_features};
 use model::{
@@ -52,6 +53,9 @@ struct Args {
 
     #[arg(long, env = "INSIDER_FILINGS_TOPIC", default_value = "insider.filings")]
     insider_filings_topic: String,
+
+    #[arg(long, env = "INSIDER_MODEL_PATH")]
+    insider_model_path: Option<String>,
 }
 
 /// Handles a raw `TickerRegistration` protobuf payload from the
@@ -112,6 +116,7 @@ async fn main() {
         .await
         .expect("migrations failed");
 
+    let mut scorer = scorer::Scorer::load(args.insider_model_path.as_deref());
     let sector_provider = PolygonSectorProvider::new(&args.polygon_api_key);
 
     let consumer: StreamConsumer = ClientConfig::new()
@@ -218,6 +223,43 @@ async fn main() {
                                 .await
                                 {
                                     error!(ticker = %ticker, error = %e, "failed to insert event signal");
+                                }
+                                // Score the event if the model is loaded.
+                                if let Some(ref mut s) = scorer {
+                                    let feature_vec: Option<[f32; 8]> = (|| {
+                                        Some([
+                                            features.car_20d? as f32,
+                                            features.car_10d? as f32,
+                                            features.car_5d? as f32,
+                                            features.mean_abvol_20d? as f32,
+                                            features.max_abvol_20d? as f32,
+                                            features.realized_vol_20d? as f32,
+                                            features.price_momentum_20d? as f32,
+                                            features.vol_trend_slope? as f32,
+                                        ])
+                                    })(
+                                    );
+                                    if let Some(score) = feature_vec.and_then(|v| s.score(&v)) {
+                                        match db::fetch_event_signal_id(
+                                            &pool, &ticker, "earnings", event_date,
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some(id)) => {
+                                                if let Err(e) =
+                                                    update_insider_score(&pool, id, score).await
+                                                {
+                                                    error!(ticker = %ticker, error = %e, "failed to update insider score");
+                                                } else {
+                                                    info!(ticker = %ticker, event_date = %event_date, score, "insider score written");
+                                                }
+                                            }
+                                            Ok(None) => {}
+                                            Err(e) => {
+                                                warn!(error = %e, "failed to fetch event signal id for scoring")
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             Err(e) => {
