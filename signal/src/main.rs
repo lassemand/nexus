@@ -4,10 +4,10 @@ mod strategy;
 use alpha::{CompanyProvider, PolygonSectorProvider, YahooPriceProvider};
 use chrono::DateTime;
 use clap::Parser;
-use db::{insert_trade_result, is_registered, upsert_company, upsert_special_event};
+use db::{insert_trade_result, is_registered, upsert_bar, upsert_company, upsert_special_event};
 use model::{
     asset::Asset,
-    generated::{EarningsEvent, SpecialEvent, TickerRegistration},
+    generated::{EarningsEvent, MarketEvent, SpecialEvent, TickerRegistration},
 };
 use prost::Message;
 use rdkafka::{
@@ -40,6 +40,9 @@ struct Args {
 
     #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = "special.events")]
     special_events_topic: String,
+
+    #[arg(long, env = "MARKET_BARS_TOPIC", default_value = "market.bars")]
+    market_bars_topic: String,
 }
 
 /// Handles a raw `TickerRegistration` protobuf payload from the
@@ -115,6 +118,7 @@ async fn main() {
             args.tickers_topic.as_str(),
             args.topic.as_str(),
             args.special_events_topic.as_str(),
+            args.market_bars_topic.as_str(),
         ])
         .expect("failed to subscribe");
 
@@ -233,6 +237,44 @@ async fn main() {
                             occurred_at = %occurred_at,
                             "special event persisted"
                         );
+                    }
+                } else if topic == args.market_bars_topic {
+                    let event = match MarketEvent::decode(payload) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            warn!("malformed MarketEvent protobuf, skipping: {e}");
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
+                        }
+                    };
+
+                    let Some(date) = DateTime::from_timestamp(event.timestamp_unix_secs, 0)
+                        .map(|dt| dt.date_naive())
+                    else {
+                        warn!(
+                            ticker = %event.ticker,
+                            secs = event.timestamp_unix_secs,
+                            "invalid bar timestamp, skipping"
+                        );
+                        consumer.commit_message(&msg, CommitMode::Async).ok();
+                        continue;
+                    };
+
+                    if let Err(e) = upsert_bar(
+                        &pool,
+                        &event.ticker,
+                        date,
+                        event.open,
+                        event.high,
+                        event.low,
+                        event.close,
+                        event.volume as i64,
+                    )
+                    .await
+                    {
+                        warn!(ticker = %event.ticker, date = %date, error = %e, "failed to persist bar");
+                    } else {
+                        info!(ticker = %event.ticker, date = %date, "bar persisted");
                     }
                 } else {
                     warn!(topic, "message from unknown topic, skipping");
