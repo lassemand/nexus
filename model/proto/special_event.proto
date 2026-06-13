@@ -1,0 +1,9 @@
+syntax = "proto3";
+package nexus;
+
+message SpecialEvent {
+  string ticker               = 1;
+  string event_type           = 2;  // e.g. "earnings"
+  int64  occurred_at_unix_secs = 3;
+  string description          = 4;  // empty string if unavailable
+}

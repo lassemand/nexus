@@ -1,4 +1,4 @@
-use model::{bar::Bar, generated::MarketEvent};
+use model::{bar::Bar, generated::MarketEvent, generated::SpecialEvent};
 use prost::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
@@ -48,6 +48,16 @@ impl ChronicleProducer {
         };
 
         self.publish(topic, &bar.asset.ticker, &event).await
+    }
+
+    /// Publishes a `SpecialEvent` to `topic`, keyed by ticker.
+    #[allow(dead_code)]
+    pub async fn publish_special_event(
+        &self,
+        topic: &str,
+        event: &SpecialEvent,
+    ) -> Result<(), ProducerError> {
+        self.publish(topic, &event.ticker, event).await
     }
 
     /// Serialises `msg` as protobuf and publishes it to `topic`, keyed by `key`.
