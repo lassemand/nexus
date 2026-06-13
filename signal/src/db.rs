@@ -60,6 +60,44 @@ pub async fn upsert_special_event(
     Ok(())
 }
 
+/// Inserts or updates an EOD bar. On conflict (same ticker + date) all OHLCV
+/// fields are overwritten, allowing the market binary to re-publish without
+/// creating duplicates.
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_bar(
+    pool: &PgPool,
+    ticker: &str,
+    date: NaiveDate,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    volume: i64,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO bars (ticker, date, open, high, low, close, volume)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (ticker, date) DO UPDATE SET
+            open   = EXCLUDED.open,
+            high   = EXCLUDED.high,
+            low    = EXCLUDED.low,
+            close  = EXCLUDED.close,
+            volume = EXCLUDED.volume
+        "#,
+    )
+    .bind(ticker)
+    .bind(date)
+    .bind(open)
+    .bind(high)
+    .bind(low)
+    .bind(close)
+    .bind(volume)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Returns `true` if the ticker exists in the `companies` table.
 ///
 /// The comparison is case-sensitive; callers should normalise to uppercase
