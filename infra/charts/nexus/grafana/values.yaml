@@ -14,12 +14,14 @@ grafana:
       apiVersion: 1
       datasources:
         - name: Prometheus
+          uid: nexus-prometheus
           type: prometheus
           url: http://prometheus-server.nexus.svc.cluster.local:80
           isDefault: true
           editable: false
 
         - name: Nexus Postgres
+          uid: nexus-postgres
           type: postgres
           url: nexus-postgres.nexus.svc.cluster.local:5432
           database: nexus
