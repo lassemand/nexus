@@ -1,4 +1,4 @@
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use model::sector::Sector;
 use sqlx::PgPool;
 
@@ -29,6 +29,32 @@ pub async fn insert_trade_result(pool: &PgPool, r: &TradeResult) -> sqlx::Result
     .bind(r.sell_price)
     .bind(r.pnl)
     .bind(r.pnl_pct)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Inserts a special event, ignoring duplicates (idempotent under at-least-once delivery).
+///
+/// `description` is stored as `NULL` when the proto field is an empty string.
+pub async fn upsert_special_event(
+    pool: &PgPool,
+    ticker: &str,
+    event_type: &str,
+    occurred_at: DateTime<Utc>,
+    description: Option<&str>,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO special_events (ticker, event_type, occurred_at, description)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (ticker, event_type, occurred_at) DO NOTHING
+        "#,
+    )
+    .bind(ticker)
+    .bind(event_type)
+    .bind(occurred_at)
+    .bind(description)
     .execute(pool)
     .await?;
     Ok(())

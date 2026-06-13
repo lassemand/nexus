@@ -2,9 +2,13 @@ mod db;
 mod strategy;
 
 use alpha::{CompanyProvider, PolygonSectorProvider, YahooPriceProvider};
+use chrono::DateTime;
 use clap::Parser;
-use db::{insert_trade_result, is_registered, upsert_company};
-use model::{asset::Asset, generated::EarningsEvent, generated::TickerRegistration};
+use db::{insert_trade_result, is_registered, upsert_company, upsert_special_event};
+use model::{
+    asset::Asset,
+    generated::{EarningsEvent, SpecialEvent, TickerRegistration},
+};
 use prost::Message;
 use rdkafka::{
     consumer::{CommitMode, Consumer, StreamConsumer},
@@ -33,6 +37,9 @@ struct Args {
 
     #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = "company.tickers")]
     tickers_topic: String,
+
+    #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = "special.events")]
+    special_events_topic: String,
 }
 
 /// Handles a raw `TickerRegistration` protobuf payload from the
@@ -104,7 +111,11 @@ async fn main() {
         .expect("failed to create kafka consumer");
 
     consumer
-        .subscribe(&[args.tickers_topic.as_str(), args.topic.as_str()])
+        .subscribe(&[
+            args.tickers_topic.as_str(),
+            args.topic.as_str(),
+            args.special_events_topic.as_str(),
+        ])
         .expect("failed to subscribe");
 
     let pricer = YahooPriceProvider::new();
@@ -113,6 +124,7 @@ async fn main() {
         brokers = %args.brokers,
         earnings_topic = %args.topic,
         tickers_topic = %args.tickers_topic,
+        special_events_topic = %args.special_events_topic,
         group_id = %args.group_id,
         "signal consumer started"
     );
@@ -175,6 +187,52 @@ async fn main() {
                             }
                         }
                         Err(e) => error!("strategy evaluation failed for {}: {e}", event.ticker),
+                    }
+                } else if topic == args.special_events_topic {
+                    let event = match SpecialEvent::decode(payload) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            warn!("malformed SpecialEvent protobuf, skipping: {e}");
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
+                        }
+                    };
+
+                    let Some(occurred_at) =
+                        DateTime::from_timestamp(event.occurred_at_unix_secs, 0)
+                    else {
+                        warn!(
+                            ticker = %event.ticker,
+                            secs = event.occurred_at_unix_secs,
+                            "invalid occurred_at timestamp, skipping"
+                        );
+                        consumer.commit_message(&msg, CommitMode::Async).ok();
+                        continue;
+                    };
+
+                    let description = if event.description.is_empty() {
+                        None
+                    } else {
+                        Some(event.description.as_str())
+                    };
+
+                    if let Err(e) = upsert_special_event(
+                        &pool,
+                        &event.ticker,
+                        &event.event_type,
+                        occurred_at,
+                        description,
+                    )
+                    .await
+                    {
+                        warn!(ticker = %event.ticker, error = %e, "failed to persist special event");
+                    } else {
+                        info!(
+                            ticker = %event.ticker,
+                            event_type = %event.event_type,
+                            occurred_at = %occurred_at,
+                            "special event persisted"
+                        );
                     }
                 } else {
                     warn!(topic, "message from unknown topic, skipping");
