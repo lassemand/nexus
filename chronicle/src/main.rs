@@ -7,7 +7,7 @@ mod parse;
 use clap::Parser;
 use edgar::{EdgarClient, Filing};
 use kafka::ChronicleProducer;
-use model::generated::EarningsEvent;
+use model::generated::{EarningsEvent, SpecialEvent};
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info, warn};
 
@@ -25,6 +25,9 @@ struct Args {
 
     #[arg(long, env = "KAFKA_GROUP_ID", default_value = "chronicle")]
     group_id: String,
+
+    #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = "special.events")]
+    special_events_topic: String,
 }
 
 #[tokio::main]
@@ -118,6 +121,19 @@ async fn main() {
                     error!("failed to mark {accession_number} as published: {e}");
                 } else {
                     info!("published {ticker} filing {accession_number} filed {filed_at} period {report_date}");
+                }
+
+                let special = SpecialEvent {
+                    ticker: ticker.to_string(),
+                    event_type: "earnings".to_string(),
+                    occurred_at_unix_secs: event.announced_at_unix_secs,
+                    description: String::new(),
+                };
+                if let Err(e) = producer
+                    .publish_special_event(&args.special_events_topic, &special)
+                    .await
+                {
+                    error!("special event publish failed for {ticker}: {e}");
                 }
             }
         }

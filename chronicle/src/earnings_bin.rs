@@ -7,7 +7,10 @@ use chrono::{Duration, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use clap::Parser;
 use earnings_db::{load_unpublished_earnings, mark_earnings_published, upsert_earnings_date};
 use kafka::ChronicleProducer;
-use model::{asset::Asset, generated::EarningsEvent};
+use model::{
+    asset::Asset,
+    generated::{EarningsEvent, SpecialEvent},
+};
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info, warn};
 
@@ -29,6 +32,9 @@ struct Args {
 
     #[arg(long, env = "LOOKBACK_YEARS", default_value = "10")]
     lookback_years: u32,
+
+    #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = "special.events")]
+    special_events_topic: String,
 }
 
 #[tokio::main]
@@ -160,6 +166,30 @@ async fn main() {
                             fiscal_quarter = record.fiscal_quarter,
                             "published EarningsEvent"
                         );
+                    }
+
+                    let eps = record.eps_actual.unwrap_or(0.0);
+                    let rev = record.revenue_actual.unwrap_or(0.0);
+                    let description = if eps != 0.0 || rev != 0.0 {
+                        let rev_m = rev / 1_000_000.0;
+                        format!(
+                            "Q{} {}: EPS ${:.2}, Rev ${:.0}M",
+                            record.fiscal_quarter, record.fiscal_year, eps, rev_m
+                        )
+                    } else {
+                        String::new()
+                    };
+                    let special = SpecialEvent {
+                        ticker: ticker.to_string(),
+                        event_type: "earnings".to_string(),
+                        occurred_at_unix_secs: announced_at_unix_secs,
+                        description,
+                    };
+                    if let Err(e) = producer
+                        .publish_special_event(&args.special_events_topic, &special)
+                        .await
+                    {
+                        error!(ticker = %ticker, error = %e, "special event publish failed");
                     }
                 }
                 Err(e) => {
