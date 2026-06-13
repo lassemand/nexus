@@ -1,0 +1,22 @@
+prometheus:
+  alertmanager:
+    enabled: false
+
+  kube-state-metrics:
+    enabled: false
+
+  prometheus-node-exporter:
+    enabled: false
+
+  prometheus-pushgateway:
+    enabled: false
+
+  server:
+    retention: "15d"
+
+    persistentVolume:
+      enabled: false
+
+    service:
+      type: NodePort
+      nodePort: 32090
