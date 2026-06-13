@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Include jobVersion in the name so bumping the value triggers a new Job.
+  name: model-trainer-{{ .Values.jobVersion }}
+  namespace: signal
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+
+      containers:
+        - name: trainer
+          image: {{ .Values.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - pip install --quiet -r /scripts/requirements.txt &&
+              python /scripts/train_insider_score.py
+              --database-url "$(DATABASE_URL)"
+              --label-threshold {{ .Values.labelThreshold | quote }}
+              --min-rows {{ .Values.minRows | quote }}
+              --output-path {{ .Values.outputPath | quote }}
+
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: signal-secret
+                  key: DATABASE_URL
+
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: model
+              mountPath: /model
+
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+
+      volumes:
+        - name: scripts
+          configMap:
+            name: model-trainer-script
+        - name: model
+          persistentVolumeClaim:
+            claimName: insider-model

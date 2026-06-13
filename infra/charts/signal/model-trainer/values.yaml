@@ -1,0 +1,8 @@
+image: python:3.12-slim
+
+# Bump to re-trigger training (ArgoCD creates a new Job on the next sync).
+jobVersion: "1"
+
+labelThreshold: "0.08"
+minRows: "50"
+outputPath: /model/insider_score.onnx
