@@ -4,6 +4,11 @@ use sqlx::PgPool;
 
 use crate::features::{Bar, PreEventFeatures};
 
+pub struct UnlabeledEvent {
+    pub id: i64,
+    pub event_date: NaiveDate,
+}
+
 pub struct TradeResult {
     pub ticker: String,
     pub earnings_date: NaiveDate,
@@ -165,6 +170,90 @@ pub async fn insert_event_signal(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Returns unlabeled event_signals rows for `ticker` whose `event_date` falls
+/// within 8 calendar days before `bar_date` (≈ 5 trading days, accounting for
+/// weekends). These events now have post-event bars available for truth labeling.
+pub async fn fetch_unlabeled_events_needing_bar(
+    pool: &PgPool,
+    ticker: &str,
+    bar_date: NaiveDate,
+) -> sqlx::Result<Vec<UnlabeledEvent>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        r#"
+        SELECT id, event_date FROM event_signals
+        WHERE ticker = $1
+          AND truth_labeled_at IS NULL
+          AND event_date <= $2
+          AND event_date >= $2 - INTERVAL '8 days'
+        ORDER BY event_date
+        "#,
+    )
+    .bind(ticker)
+    .bind(bar_date)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| UnlabeledEvent {
+            id: r.get("id"),
+            event_date: r.get("event_date"),
+        })
+        .collect())
+}
+
+/// Fills in the post-event truth columns on an event_signals row.
+pub async fn label_event_truth(
+    pool: &PgPool,
+    id: i64,
+    post_ar_1d: f64,
+    post_ar_5d: f64,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE event_signals
+        SET post_ar_1d = $1, post_ar_5d = $2, truth_labeled_at = NOW()
+        WHERE id = $3
+        "#,
+    )
+    .bind(post_ar_1d)
+    .bind(post_ar_5d)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Fetches up to `limit` bars strictly after `after_date` for `ticker`,
+/// returned in chronological order (ascending date).
+pub async fn fetch_bars_after(
+    pool: &PgPool,
+    ticker: &str,
+    after_date: NaiveDate,
+    limit: i64,
+) -> sqlx::Result<Vec<Bar>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT close, volume FROM bars \
+         WHERE ticker = $1 AND date > $2 \
+         ORDER BY date ASC LIMIT $3",
+    )
+    .bind(ticker)
+    .bind(after_date)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| Bar {
+            close: r.get("close"),
+            volume: r.get("volume"),
+        })
+        .collect())
 }
 
 /// Returns `true` if the ticker exists in the `companies` table.

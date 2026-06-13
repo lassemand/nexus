@@ -181,6 +181,51 @@ fn daily_returns_ref(bars: &[&Bar]) -> Vec<Option<f64>> {
         .collect()
 }
 
+pub struct PostEventAr {
+    pub ar_1d: f64,
+    pub ar_5d: f64,
+}
+
+/// Compute post-event abnormal returns from a bar slice that covers
+/// [baseline_start, event_date + 6 calendar days].
+///
+/// `bars` are sorted ascending. The function splits at `event_date`:
+/// bars before it form the baseline; bars after it are the post-event window.
+/// Returns `None` when fewer than 3 post-event bars are available.
+pub fn compute_post_event_ar(bars: &[Bar], event_idx: usize) -> Option<PostEventAr> {
+    // bars[..event_idx] = pre-event (baseline), bars[event_idx..] = post-event
+    let post_bars = &bars[event_idx..];
+    if post_bars.len() < 3 {
+        return None;
+    }
+
+    // Baseline: bars before event_idx (need at least a pair for returns)
+    let baseline_bars = &bars[..event_idx];
+    let baseline_returns: Vec<f64> = daily_returns(baseline_bars).into_iter().flatten().collect();
+    let expected_return = mean(&baseline_returns);
+
+    // Post-event returns: need the last pre-event bar as reference for day +1
+    // Build extended = [last baseline bar] + post_bars
+    let extended: Vec<&Bar> = baseline_bars
+        .last()
+        .into_iter()
+        .chain(post_bars.iter())
+        .collect();
+    let post_returns: Vec<f64> = daily_returns_ref(&extended).into_iter().flatten().collect();
+
+    // ar_1d = abnormal return on the first post-event bar
+    let ar_1d = post_returns.first().map(|&r| r - expected_return)?;
+
+    // ar_5d = cumulative abnormal return over up to 5 post-event bars
+    let ar_5d: f64 = post_returns
+        .iter()
+        .take(5)
+        .map(|&r| r - expected_return)
+        .sum();
+
+    Some(PostEventAr { ar_1d, ar_5d })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +288,64 @@ mod tests {
             f.max_abvol_20d.unwrap() > 0.0,
             "max_abvol should be positive"
         );
+    }
+
+    // ── post-event AR tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_post_event_insufficient_bars_returns_none() {
+        // 60 baseline + 2 post-event bars — fewer than the required 3
+        let mut bars = flat_bars(60, 100.0, 1_000_000);
+        bars.push(Bar {
+            close: 110.0,
+            volume: 1_000_000,
+        });
+        bars.push(Bar {
+            close: 111.0,
+            volume: 1_000_000,
+        });
+        assert!(compute_post_event_ar(&bars, 60).is_none());
+    }
+
+    #[test]
+    fn test_post_event_flat_ar_near_zero() {
+        // 60 baseline bars at 100, 5 post-event bars also at 100 (no move)
+        let mut bars = flat_bars(60, 100.0, 1_000_000);
+        bars.extend(flat_bars(5, 100.0, 1_000_000));
+        let ar = compute_post_event_ar(&bars, 60).unwrap();
+        assert!(ar.ar_1d.abs() < 1e-10, "ar_1d should be ≈ 0");
+        assert!(ar.ar_5d.abs() < 1e-10, "ar_5d should be ≈ 0");
+    }
+
+    #[test]
+    fn test_post_event_large_move_ar_positive() {
+        // 60 flat baseline bars at 100, then a +10% jump on day +1
+        let mut bars = flat_bars(60, 100.0, 1_000_000);
+        bars.push(Bar {
+            close: 110.0,
+            volume: 1_000_000,
+        }); // day +1: +10%
+        bars.push(Bar {
+            close: 110.0,
+            volume: 1_000_000,
+        });
+        bars.push(Bar {
+            close: 110.0,
+            volume: 1_000_000,
+        });
+        bars.push(Bar {
+            close: 110.0,
+            volume: 1_000_000,
+        });
+        bars.push(Bar {
+            close: 110.0,
+            volume: 1_000_000,
+        }); // days +2..+5: flat
+        let ar = compute_post_event_ar(&bars, 60).unwrap();
+        assert!(
+            ar.ar_1d > 0.05,
+            "ar_1d should be significantly positive (≈ 0.10)"
+        );
+        assert!(ar.ar_5d > 0.05, "ar_5d should be significantly positive");
     }
 }

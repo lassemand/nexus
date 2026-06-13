@@ -6,10 +6,11 @@ use alpha::{CompanyProvider, PolygonSectorProvider, YahooPriceProvider};
 use chrono::DateTime;
 use clap::Parser;
 use db::{
-    fetch_bars_before, insert_event_signal, insert_trade_result, is_registered, upsert_bar,
-    upsert_company, upsert_special_event,
+    fetch_bars_after, fetch_bars_before, fetch_unlabeled_events_needing_bar, insert_event_signal,
+    insert_trade_result, is_registered, label_event_truth, upsert_bar, upsert_company,
+    upsert_special_event,
 };
-use features::compute_pre_event_features;
+use features::{compute_post_event_ar, compute_pre_event_features};
 use model::{
     asset::Asset,
     generated::{EarningsEvent, MarketEvent, SpecialEvent, TickerRegistration},
@@ -303,6 +304,68 @@ async fn main() {
                         warn!(ticker = %event.ticker, date = %date, error = %e, "failed to persist bar");
                     } else {
                         info!(ticker = %event.ticker, date = %date, "bar persisted");
+                    }
+
+                    // Lazy truth labeling: check if this bar completes the
+                    // post-event window for any unlabeled event_signals rows.
+                    match fetch_unlabeled_events_needing_bar(&pool, &event.ticker, date).await {
+                        Err(e) => {
+                            warn!(ticker = %event.ticker, error = %e, "failed to fetch unlabeled events")
+                        }
+                        Ok(unlabeled_events) => {
+                            for unlabeled in unlabeled_events {
+                                // Fetch baseline + pre-event bars, then post-event bars separately
+                                // so we don't need a date field on Bar to split them.
+                                let pre_bars = match fetch_bars_before(
+                                    &pool,
+                                    &event.ticker,
+                                    unlabeled.event_date,
+                                    80,
+                                )
+                                .await
+                                {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        warn!(error = %e, "failed to fetch pre-event bars for truth labeling");
+                                        continue;
+                                    }
+                                };
+                                let post_bars = match fetch_bars_after(
+                                    &pool,
+                                    &event.ticker,
+                                    unlabeled.event_date,
+                                    5,
+                                )
+                                .await
+                                {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        warn!(error = %e, "failed to fetch post-event bars for truth labeling");
+                                        continue;
+                                    }
+                                };
+                                let event_idx = pre_bars.len();
+                                let mut combined = pre_bars;
+                                combined.extend(post_bars);
+                                if let Some(ar) = compute_post_event_ar(&combined, event_idx) {
+                                    if let Err(e) =
+                                        label_event_truth(&pool, unlabeled.id, ar.ar_1d, ar.ar_5d)
+                                            .await
+                                    {
+                                        warn!(id = unlabeled.id, error = %e, "failed to label event truth");
+                                    } else {
+                                        info!(
+                                            id = unlabeled.id,
+                                            event_date = %unlabeled.event_date,
+                                            ticker = %event.ticker,
+                                            ar_1d = ar.ar_1d,
+                                            ar_5d = ar.ar_5d,
+                                            "event truth labeled"
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 } else {
                     warn!(topic, "message from unknown topic, skipping");
