@@ -79,6 +79,7 @@ Drop a Helm chart directory under `infra/charts/<namespace>/<chart>/` containing
 | Kafka bootstrap (external) | — | `localhost:32092` |
 | Vault | `vault.nexus.svc.cluster.local:8200` | `localhost:32200` |
 | Prometheus | — | `localhost:32090` |
+| Grafana | — | `localhost:32300` |
 | ArgoCD | — | `localhost:30443` |
 
 ### Postgres credential secret
