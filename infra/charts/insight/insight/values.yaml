@@ -4,11 +4,8 @@ image:
 
 replicaCount: 1
 
-# insight uses rmcp transport-io (stdio) and cannot serve network traffic.
-# Enable only after the binary is updated to use transport-sse or
-# transport-streamable-http.
 service:
-  enabled: false
+  enabled: true
 
 resources:
   requests:

@@ -1,6 +1,6 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use clap::Parser;
-use rmcp::{model::*, tool, Error as McpError, ServerHandler, ServiceExt};
+use rmcp::{model::*, tool, Error as McpError, ServerHandler};
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 
@@ -140,11 +140,15 @@ impl ServerHandler for InsightServer {
 struct Args {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
+
+    #[arg(long, env = "PORT", default_value = "8080")]
+    port: u16,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
+    tracing_subscriber::fmt::init();
 
     let args = Args::parse();
 
@@ -153,9 +157,14 @@ async fn main() -> anyhow::Result<()> {
         .connect(&args.database_url)
         .await?;
 
-    let server = InsightServer { pool };
-    let service = server.serve(rmcp::transport::stdio()).await?;
-    service.waiting().await?;
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], args.port));
+    tracing::info!(%addr, "insight MCP server listening");
+
+    rmcp::transport::SseServer::serve(addr)
+        .await?
+        .with_service(move || InsightServer { pool: pool.clone() })
+        .cancelled()
+        .await;
 
     Ok(())
 }
