@@ -125,6 +125,75 @@ data:
               "rawSql": "SELECT transaction_date AS time,\n  CASE WHEN transaction_code = 'P' THEN 'Buy' ELSE 'Sell' END AS direction,\n  SUM(shares * price_per_share) AS total_value\nFROM insider_filings\nWHERE transaction_date >= NOW() - INTERVAL '90 days'\n  AND transaction_code IN ('P', 'S')\nGROUP BY transaction_date, transaction_code\nORDER BY transaction_date"
             }
           ]
+        },
+        {
+          "id": 5,
+          "type": "table",
+          "title": "Ticker Insider Consistency",
+          "gridPos": { "x": 0, "y": 46, "w": 24, "h": 14 },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "consistency_score" },
+                "properties": [{ "id": "custom.displayMode", "value": "color-background" },
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 0.5 },
+                    { "color": "red", "value": 1.0 }
+                  ]}}]
+              },
+              {
+                "matcher": { "id": "byName", "options": "move_rate" },
+                "properties": [{ "id": "custom.displayMode", "value": "color-text" },
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 0.5 },
+                    { "color": "red", "value": 0.8 }
+                  ]}}]
+              },
+              {
+                "matcher": { "id": "byName", "options": "insider_purchase_rate" },
+                "properties": [{ "id": "custom.displayMode", "value": "color-text" },
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 0.3 },
+                    { "color": "red", "value": 0.6 }
+                  ]}}]
+              }
+            ]
+          },
+          "options": { "sortBy": [{ "displayName": "consistency_score", "desc": true }] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+              "format": "table",
+              "rawSql": "SELECT ticker, event_count, move_rate, avg_abvol_before_event,\n  avg_suspicion, insider_purchase_rate, consistency_score\nFROM ticker_event_consistency\nORDER BY consistency_score DESC\nLIMIT 50"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "barchart",
+          "title": "Top 20 Tickers by Consistency Score",
+          "gridPos": { "x": 0, "y": 60, "w": 24, "h": 12 },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+          "fieldConfig": { "defaults": {}, "overrides": [] },
+          "options": {
+            "xField": "ticker",
+            "orientation": "horizontal",
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+              "format": "table",
+              "rawSql": "SELECT ticker, consistency_score, move_rate, insider_purchase_rate\nFROM ticker_event_consistency\nORDER BY consistency_score DESC\nLIMIT 20"
+            }
+          ]
         }
       ]
     }
