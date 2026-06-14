@@ -6,6 +6,10 @@ schedules:
   chronicle: "0 6 * * *"
   market: "0 22 * * 1-5"
   earnings: "0 7 * * *"
+  filings: "0 6 * * 1-5"
+
+filings:
+  lookbackDays: "90"
 
 resources:
   requests:

@@ -15,6 +15,10 @@ path = "src/market.rs"
 name = "earnings"
 path = "src/earnings_bin.rs"
 
+[[bin]]
+name = "filings"
+path = "src/filings.rs"
+
 [dependencies]
 model = { path = "../model" }
 alpha = { path = "../alpha" }
@@ -32,3 +36,5 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
+quick-xml = { version = "0.37", features = ["serialize"] }
+anyhow = "1"
