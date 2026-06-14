@@ -3,6 +3,7 @@ pub struct Bar {
     pub volume: i64,
 }
 
+#[allow(dead_code)]
 pub struct PreEventFeatures {
     pub car_20d: Option<f64>,
     pub car_10d: Option<f64>,
@@ -181,6 +182,7 @@ fn daily_returns_ref(bars: &[&Bar]) -> Vec<Option<f64>> {
         .collect()
 }
 
+#[allow(dead_code)]
 pub struct PostEventAr {
     pub ar_1d: f64,
     pub ar_5d: f64,
@@ -192,6 +194,7 @@ pub struct PostEventAr {
 /// `bars` are sorted ascending. The function splits at `event_date`:
 /// bars before it form the baseline; bars after it are the post-event window.
 /// Returns `None` when fewer than 3 post-event bars are available.
+#[allow(dead_code)]
 pub fn compute_post_event_ar(bars: &[Bar], event_idx: usize) -> Option<PostEventAr> {
     // bars[..event_idx] = pre-event (baseline), bars[event_idx..] = post-event
     let post_bars = &bars[event_idx..];

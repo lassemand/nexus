@@ -1,0 +1,15 @@
+image:
+  repository: "lmapwns/nexus"
+  tag: "latest"
+
+schedule: "0 23 * * 1-5"
+
+lookbackDays: "30"
+threshold: "0.0"
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
