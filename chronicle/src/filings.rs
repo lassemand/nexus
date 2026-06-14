@@ -91,8 +91,13 @@ async fn form4_accessions(
     Ok(result)
 }
 
-/// Parse a Form 4 XML document and return InsiderFiling records for "P" transactions.
-fn parse_form4(xml: &str, ticker: &str, cik: &str, filing_date: NaiveDate) -> Vec<InsiderFiling> {
+/// Parse a Form 4 XML document and return InsiderFiling records for P and S transactions.
+fn parse_form4(
+    xml: &str,
+    ticker: &str,
+    issuer_cik: &str,
+    filing_date: NaiveDate,
+) -> Vec<InsiderFiling> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -106,6 +111,7 @@ fn parse_form4(xml: &str, ticker: &str, cik: &str, filing_date: NaiveDate) -> Ve
 
     // Extract owner info (single per filing)
     let mut filer_name = String::new();
+    let mut filer_cik = String::new();
     let mut filer_role = String::new();
 
     // Per-transaction state
@@ -161,7 +167,8 @@ fn parse_form4(xml: &str, ticker: &str, cik: &str, filing_date: NaiveDate) -> Ve
                 let name = std::str::from_utf8(name_bytes.as_ref()).unwrap_or("");
                 match name {
                     "nonDerivativeTransaction" => {
-                        if in_non_deriv_txn && txn_code.trim() == "P" {
+                        let code = txn_code.trim().to_string();
+                        if in_non_deriv_txn && (code == "P" || code == "S") {
                             let txn_date =
                                 NaiveDate::parse_from_str(txn_date_str.trim(), "%Y-%m-%d").ok();
                             let txn_date_unix = txn_date
@@ -176,14 +183,15 @@ fn parse_form4(xml: &str, ticker: &str, cik: &str, filing_date: NaiveDate) -> Ve
 
                             results.push(InsiderFiling {
                                 ticker: ticker.to_string(),
-                                cik: cik.to_string(),
+                                issuer_cik: issuer_cik.to_string(),
                                 filer_name: filer_name.clone(),
+                                filer_cik: filer_cik.clone(),
                                 filer_role: filer_role.clone(),
                                 transaction_date_unix_secs: txn_date_unix,
                                 filing_date_unix_secs: filing_date_unix,
                                 shares,
                                 price_per_share: price,
-                                transaction_code: "P".to_string(),
+                                transaction_code: code,
                             });
                         }
                         in_non_deriv_txn = false;
@@ -226,6 +234,7 @@ fn parse_form4(xml: &str, ticker: &str, cik: &str, filing_date: NaiveDate) -> Ve
                 // These tags appear outside transactions too
                 match current_tag.as_str() {
                     "rptOwnerName" if filer_name.is_empty() => filer_name = text.clone(),
+                    "rptOwnerCik" if filer_cik.is_empty() => filer_cik = text.clone(),
                     "isDirector" if in_relationship => is_director = text.trim() == "1",
                     "isOfficer" if in_relationship => is_officer = text.trim() == "1",
                     "isTenPercentOwner" if in_relationship => is_ten_pct = text.trim() == "1",
