@@ -1,5 +1,5 @@
 use chrono::{DateTime, NaiveDate, Utc};
-use model::sector::Sector;
+use model::{generated::InsiderFiling, sector::Sector};
 use sqlx::PgPool;
 
 use crate::features::{Bar, PreEventFeatures};
@@ -253,6 +253,68 @@ pub async fn fetch_bars_after(
             close: r.get("close"),
             volume: r.get("volume"),
         })
+        .collect())
+}
+
+/// Inserts an insider filing, ignoring duplicates (idempotent).
+pub async fn upsert_insider_filing(pool: &PgPool, f: &InsiderFiling) -> sqlx::Result<()> {
+    let transaction_date = DateTime::from_timestamp(f.transaction_date_unix_secs, 0)
+        .map(|dt| dt.date_naive())
+        .unwrap_or_default();
+    let filing_date = DateTime::from_timestamp(f.filing_date_unix_secs, 0)
+        .map(|dt| dt.date_naive())
+        .unwrap_or_default();
+
+    sqlx::query(
+        r#"
+        INSERT INTO insider_filings
+            (ticker, cik, filer_name, filer_role, transaction_date, filing_date,
+             shares, price_per_share, transaction_code)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (cik, ticker, transaction_date, filer_name, shares) DO NOTHING
+        "#,
+    )
+    .bind(&f.ticker)
+    .bind(&f.cik)
+    .bind(&f.filer_name)
+    .bind(&f.filer_role)
+    .bind(transaction_date)
+    .bind(filing_date)
+    .bind(f.shares)
+    .bind(f.price_per_share)
+    .bind(&f.transaction_code)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Returns tickers with at least one insider purchase on or after `since`,
+/// used by the prospective scanner (NEX-55).
+/// along with a semicolon-separated list of filer descriptions.
+#[allow(dead_code)]
+pub async fn fetch_recent_insider_activity(
+    pool: &PgPool,
+    since: NaiveDate,
+) -> sqlx::Result<Vec<(String, String)>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            ticker,
+            string_agg(filer_name || ' (' || filer_role || ')', '; '
+                       ORDER BY transaction_date DESC) AS triggering_filers
+        FROM insider_filings
+        WHERE transaction_date >= $1
+        GROUP BY ticker
+        "#,
+    )
+    .bind(since)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.get("ticker"), r.get("triggering_filers")))
         .collect())
 }
 

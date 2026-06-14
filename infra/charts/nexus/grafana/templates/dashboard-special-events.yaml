@@ -69,6 +69,28 @@ data:
               "rawSql": "SELECT occurred_at, ticker, event_type, description\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nORDER BY occurred_at DESC"
             }
           ]
+        },
+        {
+          "id": 3,
+          "type": "table",
+          "title": "Recent Insider Purchases",
+          "gridPos": { "x": 0, "y": 22, "w": 24, "h": 12 },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "sortBy": [{ "displayName": "transaction_date", "desc": true }]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+              "format": "table",
+              "rawSql": "SELECT ticker, filer_name, filer_role, transaction_date, shares, price_per_share, shares * price_per_share AS total_value\nFROM insider_filings\nORDER BY transaction_date DESC\nLIMIT 100"
+            }
+          ]
         }
       ]
     }

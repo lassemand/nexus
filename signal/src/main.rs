@@ -8,12 +8,12 @@ use clap::Parser;
 use db::{
     fetch_bars_after, fetch_bars_before, fetch_unlabeled_events_needing_bar, insert_event_signal,
     insert_trade_result, is_registered, label_event_truth, upsert_bar, upsert_company,
-    upsert_special_event,
+    upsert_insider_filing, upsert_special_event,
 };
 use features::{compute_post_event_ar, compute_pre_event_features};
 use model::{
     asset::Asset,
-    generated::{EarningsEvent, MarketEvent, SpecialEvent, TickerRegistration},
+    generated::{EarningsEvent, InsiderFiling, MarketEvent, SpecialEvent, TickerRegistration},
 };
 use prost::Message;
 use rdkafka::{
@@ -49,6 +49,9 @@ struct Args {
 
     #[arg(long, env = "MARKET_BARS_TOPIC", default_value = "market.bars")]
     market_bars_topic: String,
+
+    #[arg(long, env = "INSIDER_FILINGS_TOPIC", default_value = "insider.filings")]
+    insider_filings_topic: String,
 }
 
 /// Handles a raw `TickerRegistration` protobuf payload from the
@@ -125,6 +128,7 @@ async fn main() {
             args.topic.as_str(),
             args.special_events_topic.as_str(),
             args.market_bars_topic.as_str(),
+            args.insider_filings_topic.as_str(),
         ])
         .expect("failed to subscribe");
 
@@ -366,6 +370,32 @@ async fn main() {
                                 }
                             }
                         }
+                    }
+                } else if topic == args.insider_filings_topic {
+                    let filing = match InsiderFiling::decode(payload) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            warn!("malformed InsiderFiling protobuf, skipping: {e}");
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
+                        }
+                    };
+
+                    let txn_date = DateTime::from_timestamp(filing.transaction_date_unix_secs, 0)
+                        .map(|dt| dt.date_naive());
+
+                    if let Err(e) = upsert_insider_filing(&pool, &filing).await {
+                        warn!(ticker = %filing.ticker, error = %e, "failed to persist insider filing");
+                    } else {
+                        info!(
+                            ticker = %filing.ticker,
+                            filer = %filing.filer_name,
+                            role = %filing.filer_role,
+                            date = ?txn_date,
+                            shares = filing.shares,
+                            price = filing.price_per_share,
+                            "insider filing persisted"
+                        );
                     }
                 } else {
                     warn!(topic, "message from unknown topic, skipping");
