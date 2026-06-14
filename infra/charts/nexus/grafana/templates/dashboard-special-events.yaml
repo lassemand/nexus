@@ -69,6 +69,23 @@ data:
               "rawSql": "SELECT occurred_at, ticker, event_type, description\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nORDER BY occurred_at DESC"
             }
           ]
+        },
+        {
+          "id": 3,
+          "type": "table",
+          "title": "Scanner Alerts",
+          "gridPos": { "x": 0, "y": 22, "w": 24, "h": 14 },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+          "fieldConfig": { "defaults": {}, "overrides": [] },
+          "options": { "sortBy": [{ "displayName": "score_date", "desc": true }] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+              "format": "table",
+              "rawSql": "SELECT ts.ticker, ts.score_date, ts.insider_score, ts.car_5d, ts.mean_abvol_20d,\n  (\n    SELECT string_agg(p.filer_name || ' (' ||\n      (SELECT filer_role FROM insider_filings f WHERE f.person_id = p.id AND f.ticker = ts.ticker LIMIT 1)\n      || ')', '; ')\n    FROM persons p WHERE p.id = ANY(ts.triggering_person_ids)\n  ) AS triggered_by\nFROM ticker_scores ts\nORDER BY ts.score_date DESC, ts.insider_score DESC\nLIMIT 100"
+            }
+          ]
         }
       ]
     }

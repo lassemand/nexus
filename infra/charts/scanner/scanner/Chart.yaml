@@ -1,0 +1,6 @@
+apiVersion: v2
+name: scanner
+description: Daily prospective insider fingerprint scanner.
+type: application
+version: 0.1.0
+appVersion: "latest"
