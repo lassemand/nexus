@@ -7,6 +7,10 @@ edition = "2021"
 name = "signal"
 path = "src/main.rs"
 
+[[bin]]
+name = "scanner"
+path = "src/scanner.rs"
+
 [dependencies]
 model = { path = "../model" }
 alpha = { path = "../alpha" }
@@ -20,3 +24,5 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+ndarray = "0.17"

@@ -125,6 +125,23 @@ data:
               "rawSql": "SELECT transaction_date AS time,\n  CASE WHEN transaction_code = 'P' THEN 'Buy' ELSE 'Sell' END AS direction,\n  SUM(shares * price_per_share) AS total_value\nFROM insider_filings\nWHERE transaction_date >= NOW() - INTERVAL '90 days'\n  AND transaction_code IN ('P', 'S')\nGROUP BY transaction_date, transaction_code\nORDER BY transaction_date"
             }
           ]
+        },
+        {
+          "id": 5,
+          "type": "table",
+          "title": "Scanner Alerts",
+          "gridPos": { "x": 0, "y": 46, "w": 24, "h": 14 },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+          "fieldConfig": { "defaults": {}, "overrides": [] },
+          "options": { "sortBy": [{ "displayName": "score_date", "desc": true }] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+              "format": "table",
+              "rawSql": "SELECT ts.ticker, ts.score_date, ts.insider_score, ts.car_5d, ts.mean_abvol_20d,\n  (\n    SELECT string_agg(p.filer_name || ' (' ||\n      (SELECT filer_role FROM insider_filings f WHERE f.person_id = p.id AND f.ticker = ts.ticker LIMIT 1)\n      || ')', '; ')\n    FROM persons p WHERE p.id = ANY(ts.triggering_person_ids)\n  ) AS triggered_by\nFROM ticker_scores ts\nORDER BY ts.score_date DESC, ts.insider_score DESC\nLIMIT 100"
+            }
+          ]
         }
       ]
     }

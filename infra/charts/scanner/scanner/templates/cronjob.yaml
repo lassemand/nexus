@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scanner
+  labels:
+    app: scanner
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: scanner
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: scanner
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/scanner"]
+              env:
+                - name: LOOKBACK_DAYS
+                  value: {{ .Values.lookbackDays | quote }}
+                - name: THRESHOLD
+                  value: {{ .Values.threshold | quote }}
+                - name: INSIDER_MODEL_PATH
+                  value: /model/insider_score.onnx
+              envFrom:
+                - secretRef:
+                    name: scanner-secret
+              volumeMounts:
+                - name: model
+                  mountPath: /model
+                  readOnly: true
+              resources:
+                requests:
+                  memory: {{ .Values.resources.requests.memory | quote }}
+                  cpu: {{ .Values.resources.requests.cpu | quote }}
+                limits:
+                  memory: {{ .Values.resources.limits.memory | quote }}
+          volumes:
+            - name: model
+              persistentVolumeClaim:
+                claimName: insider-model
+                readOnly: true
