@@ -1,0 +1,15 @@
+syntax = "proto3";
+package nexus;
+
+message InsiderFiling {
+  string ticker                     = 1;
+  string issuer_cik                 = 2;  // company CIK (zero-padded 10-digit)
+  string filer_name                 = 3;
+  string filer_role                 = 4;  // "director" | "officer" | "10-percent-owner" | "other"
+  int64  transaction_date_unix_secs = 5;
+  int64  filing_date_unix_secs      = 6;
+  double shares                     = 7;
+  double price_per_share            = 8;
+  string transaction_code           = 9;  // "P" = purchase, "S" = sale
+  string filer_cik                  = 10; // reporting person's SEC CIK; empty if unknown
+}

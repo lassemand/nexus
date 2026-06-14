@@ -6,6 +6,7 @@ fn main() {
             "proto/earnings.proto",
             "proto/ticker.proto",
             "proto/special_event.proto",
+            "proto/insider_filing.proto",
         ],
         &["proto/"],
     )
