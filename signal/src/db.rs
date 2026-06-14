@@ -1,5 +1,5 @@
 use chrono::{DateTime, NaiveDate, Utc};
-use model::sector::Sector;
+use model::{generated::InsiderFiling, sector::Sector};
 use sqlx::PgPool;
 
 use crate::features::{Bar, PreEventFeatures};
@@ -253,6 +253,98 @@ pub async fn fetch_bars_after(
             close: r.get("close"),
             volume: r.get("volume"),
         })
+        .collect())
+}
+
+/// Upserts a person record and inserts the filing, all in one transaction.
+///
+/// - If `filer_cik` is non-empty: upserts on the partial unique index, updating the name.
+/// - If `filer_cik` is empty: always inserts a new person row (nullable CIK).
+/// - Filing insert is `ON CONFLICT DO NOTHING` (idempotent).
+pub async fn upsert_insider_filing(pool: &PgPool, f: &InsiderFiling) -> sqlx::Result<()> {
+    use sqlx::Row;
+    let transaction_date = DateTime::from_timestamp(f.transaction_date_unix_secs, 0)
+        .map(|dt| dt.date_naive())
+        .unwrap_or_default();
+    let filing_date = DateTime::from_timestamp(f.filing_date_unix_secs, 0)
+        .map(|dt| dt.date_naive())
+        .unwrap_or_default();
+
+    let mut tx = pool.begin().await?;
+
+    let person_id: i64 = if f.filer_cik.is_empty() {
+        sqlx::query("INSERT INTO persons (filer_cik, filer_name) VALUES (NULL, $1) RETURNING id")
+            .bind(&f.filer_name)
+            .fetch_one(&mut *tx)
+            .await?
+            .get("id")
+    } else {
+        sqlx::query(
+            r#"
+            INSERT INTO persons (filer_cik, filer_name)
+            VALUES ($1, $2)
+            ON CONFLICT (filer_cik) WHERE filer_cik IS NOT NULL
+            DO UPDATE SET filer_name = EXCLUDED.filer_name, updated_at = NOW()
+            RETURNING id
+            "#,
+        )
+        .bind(&f.filer_cik)
+        .bind(&f.filer_name)
+        .fetch_one(&mut *tx)
+        .await?
+        .get("id")
+    };
+
+    sqlx::query(
+        r#"
+        INSERT INTO insider_filings
+            (person_id, ticker, issuer_cik, filer_role,
+             transaction_date, filing_date, shares, price_per_share, transaction_code)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (person_id, ticker, transaction_date, shares, transaction_code) DO NOTHING
+        "#,
+    )
+    .bind(person_id)
+    .bind(&f.ticker)
+    .bind(&f.issuer_cik)
+    .bind(&f.filer_role)
+    .bind(transaction_date)
+    .bind(filing_date)
+    .bind(f.shares)
+    .bind(f.price_per_share)
+    .bind(&f.transaction_code)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Returns tickers with at least one insider purchase (`P`) on or after `since`,
+/// along with the person_ids of those buyers. Used by the prospective scanner (NEX-55).
+#[allow(dead_code)]
+pub async fn fetch_recent_insider_activity(
+    pool: &PgPool,
+    since: NaiveDate,
+) -> sqlx::Result<Vec<(String, Vec<i64>)>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        r#"
+        SELECT ticker,
+               array_agg(DISTINCT person_id ORDER BY person_id) AS person_ids
+        FROM insider_filings
+        WHERE transaction_date >= $1
+          AND transaction_code = 'P'
+        GROUP BY ticker
+        "#,
+    )
+    .bind(since)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.get("ticker"), r.get("person_ids")))
         .collect())
 }
 

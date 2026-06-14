@@ -69,6 +69,62 @@ data:
               "rawSql": "SELECT occurred_at, ticker, event_type, description\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nORDER BY occurred_at DESC"
             }
           ]
+        },
+        {
+          "id": 3,
+          "type": "table",
+          "title": "Insider Filings",
+          "gridPos": { "x": 0, "y": 22, "w": 24, "h": 14 },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "direction" },
+                "properties": [
+                  {
+                    "id": "custom.displayMode",
+                    "value": "color-text"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      { "type": "value", "options": { "Buy":  { "color": "green", "index": 0 } } },
+                      { "type": "value", "options": { "Sell": { "color": "red",   "index": 1 } } }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "sortBy": [{ "displayName": "transaction_date", "desc": true }]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+              "format": "table",
+              "rawSql": "SELECT p.filer_name, p.filer_cik, f.filer_role, f.ticker, f.transaction_date,\n  CASE WHEN f.transaction_code = 'P' THEN 'Buy' ELSE 'Sell' END AS direction,\n  f.shares, f.price_per_share, f.shares * f.price_per_share AS total_value\nFROM insider_filings f\nJOIN persons p ON p.id = f.person_id\nORDER BY f.transaction_date DESC\nLIMIT 200"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Daily Insider Buy vs Sell Volume (90 days)",
+          "gridPos": { "x": 0, "y": 36, "w": 24, "h": 10 },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+          "fieldConfig": { "defaults": {}, "overrides": [] },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+              "format": "time_series",
+              "rawSql": "SELECT transaction_date AS time,\n  CASE WHEN transaction_code = 'P' THEN 'Buy' ELSE 'Sell' END AS direction,\n  SUM(shares * price_per_share) AS total_value\nFROM insider_filings\nWHERE transaction_date >= NOW() - INTERVAL '90 days'\n  AND transaction_code IN ('P', 'S')\nGROUP BY transaction_date, transaction_code\nORDER BY transaction_date"
+            }
+          ]
         }
       ]
     }
