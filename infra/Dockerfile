@@ -74,7 +74,6 @@ COPY --from=builder /build/target/release/market    /usr/local/bin/market
 COPY --from=builder /build/target/release/earnings  /usr/local/bin/earnings
 COPY --from=builder /build/target/release/filings   /usr/local/bin/filings
 COPY --from=builder /build/target/release/signal    /usr/local/bin/signal
-COPY --from=builder /build/target/release/scanner   /usr/local/bin/scanner
 COPY --from=builder /build/target/release/insight   /usr/local/bin/insight
 
 USER nexus
