@@ -1,7 +1,13 @@
 # ApplicationSet — Git directory generator over infra/charts/<namespace>/<chart>/
 #
+# Split into two ApplicationSets:
+#   nexus-infra-charts  — infrastructure apps (kafka, postgres, vault, grafana, etc.)
+#                         No image tracking annotations; Image Updater skips these.
+#   nexus-app-charts    — application services (signal, chronicle, market, insight)
+#                         Image Updater tracks lmapwns/nexus and writes back semver tags.
+#
 # Directory layout: infra/charts/<namespace>/<chart>/
-#   {{path[2]}}      → namespace  (e.g. nexus, signal, chronicle, market)
+#   {{path[2]}}       → namespace  (e.g. nexus, signal, chronicle, market)
 #   {{path.basename}} → chart name (e.g. kafka, signal, chronicle, market)
 #
 # Adding infra/charts/<namespace>/<chart>/ is enough for ArgoCD to deploy it —
@@ -10,13 +16,14 @@
 # Naming:    <namespace>-<chart>  (e.g. nexus-kafka, signal-signal)
 # Namespace: derived from path   (e.g. nexus, signal, chronicle, market)
 # Sync:      automated with prune + selfHeal
+---
+# ── Infrastructure apps (no image tracking) ──────────────────────────────────
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
-  name: nexus-charts
+  name: nexus-infra-charts
   namespace: argocd
 spec:
-  # Reconcile every 3 minutes even without a webhook push.
   syncPolicy:
     applicationsSync: sync
 
@@ -25,12 +32,12 @@ spec:
         repoURL: https://github.com/lassemand/nexus.git
         revision: main
         directories:
-          - path: infra/charts/*/*
+          - path: infra/charts/nexus/*
+          - path: infra/charts/argocd/*
+          - path: infra/charts/scanner/*
 
   template:
     metadata:
-      # e.g. "nexus-kafka" for infra/charts/nexus/kafka
-      #      "signal-signal" for infra/charts/signal/signal
       name: '{{path[2]}}-{{path.basename}}'
       labels:
         app.kubernetes.io/managed-by: argocd-applicationset
@@ -38,22 +45,71 @@ spec:
         nexus/namespace: '{{path[2]}}'
     spec:
       project: default
-
       source:
         repoURL: https://github.com/lassemand/nexus.git
         targetRevision: main
-        # Points at the chart directory itself (e.g. infra/charts/nexus/kafka)
         path: '{{path}}'
         helm:
           releaseName: '{{path.basename}}'
           valueFiles:
             - values.yaml
-
       destination:
         server: https://kubernetes.default.svc
-        # Namespace derived from directory structure: infra/charts/<namespace>/...
         namespace: '{{path[2]}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+---
+# ── Application services (Image Updater tracks lmapwns/nexus) ─────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: nexus-app-charts
+  namespace: argocd
+spec:
+  syncPolicy:
+    applicationsSync: sync
 
+  generators:
+    - git:
+        repoURL: https://github.com/lassemand/nexus.git
+        revision: main
+        directories:
+          - path: infra/charts/signal/*
+          - path: infra/charts/chronicle/*
+          - path: infra/charts/market/*
+          - path: infra/charts/insight/*
+
+  template:
+    metadata:
+      name: '{{path[2]}}-{{path.basename}}'
+      labels:
+        app.kubernetes.io/managed-by: argocd-applicationset
+        nexus/chart: '{{path.basename}}'
+        nexus/namespace: '{{path[2]}}'
+      annotations:
+        argocd-image-updater.argoproj.io/image-list: nexus=lmapwns/nexus
+        argocd-image-updater.argoproj.io/nexus.update-strategy: semver
+        argocd-image-updater.argoproj.io/nexus.semver-constraint: ">=0.0.0"
+        argocd-image-updater.argoproj.io/write-back-method: git
+        argocd-image-updater.argoproj.io/git-branch: main
+        argocd-image-updater.argoproj.io/write-back-target: "helmvalues:./values.yaml"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/lassemand/nexus.git
+        targetRevision: main
+        path: '{{path}}'
+        helm:
+          releaseName: '{{path.basename}}'
+          valueFiles:
+            - values.yaml
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{path[2]}}'
       syncPolicy:
         automated:
           prune: true
