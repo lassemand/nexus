@@ -1,6 +1,6 @@
 image:
-  repository: "lmapwns/nexus"  # TODO: replace with real Docker Hub username
-  tag: "0.0.9"
+  repository: "lmapwns/nexus"
+  tag: "0.0.15"
 
 replicaCount: 1
 
