@@ -1,0 +1,12 @@
+apiVersion: v2
+name: argocd-image-updater
+description: >
+  Umbrella chart for Argo CD Image Updater — watches ArgoCD Applications and
+  automatically commits updated image tags when new versions are published.
+type: application
+version: 0.1.0
+appVersion: "v1.2.1"
+dependencies:
+  - name: argocd-image-updater
+    version: "1.2.2"
+    repository: https://argoproj.github.io/argo-helm
