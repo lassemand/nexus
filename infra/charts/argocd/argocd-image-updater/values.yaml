@@ -1,0 +1,19 @@
+argocd-image-updater:
+  # Run in the argocd namespace alongside ArgoCD itself.
+  fullnameOverride: argocd-image-updater
+
+  serviceAccount:
+    create: true
+
+  # RBAC: ClusterRole must be enabled so Image Updater can list/watch
+  # Application objects across all namespaces.
+  rbac:
+    enabled: true
+
+  config:
+    logLevel: info
+    # Use the in-cluster ArgoCD API server.
+    argocd:
+      serverAddr: argocd-server.argocd.svc.cluster.local:443
+      insecure: true
+      plaintext: false
