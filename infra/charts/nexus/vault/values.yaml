@@ -7,7 +7,7 @@ vault:
     dataStorage:
       enabled: true
       size: 1Gi
-      storageClass: standard   # minikube default storageclass
+      storageClass: local-path
 
   injector:
     enabled: false             # Vault Agent Injector is out of scope for this setup

@@ -28,7 +28,7 @@ spec:
   numberOfInstances: 1
   volume:
     size: 5Gi
-    storageClass: standard      # minikube default StorageClass; change for other environments
+    storageClass: local-path
   users:
     nexus:
       - superuser
