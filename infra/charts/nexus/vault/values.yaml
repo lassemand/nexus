@@ -9,12 +9,43 @@ vault:
       size: 1Gi
       storageClass: standard   # minikube default storageclass
 
+    # Auto-unseal on pod start: reads the unseal key from the vault-unseal-key
+    # Kubernetes Secret (created once manually after vault operator init).
+    # Without this, Vault comes back sealed after every pod restart.
+    extraInitContainers:
+      - name: auto-unseal
+        image: hashicorp/vault:1.21.2
+        command:
+          - /bin/sh
+          - -c
+          - |
+            until vault status 2>/dev/null | grep -q "Initialized.*true"; do
+              echo "Waiting for Vault to start..."; sleep 2
+            done
+            if vault status 2>/dev/null | grep -q "Sealed.*true"; then
+              echo "Vault is sealed, unsealing..."
+              vault operator unseal "$(cat /vault-unseal/key)"
+              echo "Vault unsealed"
+            else
+              echo "Vault already unsealed"
+            fi
+        env:
+          - name: VAULT_ADDR
+            value: "http://127.0.0.1:8200"
+        volumeMounts:
+          - name: unseal-key
+            mountPath: /vault-unseal
+            readOnly: true
+
+    extraVolumes:
+      - type: secret
+        name: vault-unseal-key
+        path: /vault-unseal
+
   injector:
-    enabled: false             # Vault Agent Injector is out of scope for this setup
+    enabled: false
 
   ui:
     enabled: true
-    # Expose Vault UI at localhost:32200 on the minikube host.
-    # minikube must be started with --ports=32200:32200.
     serviceType: NodePort
     serviceNodePort: 32200
