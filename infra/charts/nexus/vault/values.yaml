@@ -47,5 +47,4 @@ vault:
 
   ui:
     enabled: true
-    serviceType: NodePort
-    serviceNodePort: 32200
+    serviceType: LoadBalancer
