@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent — optional port-forward for ArgoCD on OrbStack.
+
+  On OrbStack, argocd-server is a LoadBalancer service with a direct IP,
+  so the UI is accessible at https://<lb-ip> without any port-forward.
+  This plist is kept for convenience if you prefer https://localhost:8080.
+
+  Install once:
+    cp infra/argocd/overlays/orbstack/io.nexus.argocd-port-forward.plist \
+       ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+
+  Uninstall:
+    launchctl unload -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+    rm ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+
+  Logs:
+    tail -f /tmp/argocd-port-forward.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.nexus.argocd-port-forward</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/kubectl</string>
+    <string>--context</string>
+    <string>orbstack</string>
+    <string>port-forward</string>
+    <string>svc/argocd-server</string>
+    <string>8080:443</string>
+    <string>-n</string>
+    <string>argocd</string>
+  </array>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/argocd-port-forward.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/argocd-port-forward.log</string>
+</dict>
+</plist>
