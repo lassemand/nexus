@@ -18,5 +18,4 @@ prometheus:
       enabled: false
 
     service:
-      type: NodePort
-      nodePort: 32090
+      type: LoadBalancer
