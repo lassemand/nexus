@@ -7,7 +7,7 @@ vault:
     dataStorage:
       enabled: true
       size: 1Gi
-      storageClass: standard   # minikube default storageclass
+      storageClass: local-path
 
     # Auto-unseal on pod start: reads the unseal key from the vault-unseal-key
     # Kubernetes Secret (created once manually after vault operator init).
