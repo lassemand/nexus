@@ -13,6 +13,7 @@ spec:
           imageName: lmapwns/nexus
           manifestTargets:
             helm:
+              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
@@ -27,6 +28,7 @@ spec:
           imageName: lmapwns/nexus
           manifestTargets:
             helm:
+              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
@@ -41,6 +43,7 @@ spec:
           imageName: lmapwns/nexus
           manifestTargets:
             helm:
+              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
@@ -55,6 +58,7 @@ spec:
           imageName: lmapwns/nexus
           manifestTargets:
             helm:
+              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
