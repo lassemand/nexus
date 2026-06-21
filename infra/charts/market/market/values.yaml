@@ -1,6 +1,6 @@
 image:
   repository: "lmapwns/nexus"
-  tag: "0.0.15"
+  tag: "0.0.16"
 
 schedule: "0 2 * * 2-6"
 
