@@ -172,6 +172,36 @@ pub async fn insert_event_signal(
     Ok(())
 }
 
+/// Returns the id of an event_signals row matching (ticker, event_type, event_date),
+/// or `None` if no such row exists.
+pub async fn fetch_event_signal_id(
+    pool: &PgPool,
+    ticker: &str,
+    event_type: &str,
+    event_date: NaiveDate,
+) -> sqlx::Result<Option<i64>> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT id FROM event_signals WHERE ticker = $1 AND event_type = $2 AND event_date = $3",
+    )
+    .bind(ticker)
+    .bind(event_type)
+    .bind(event_date)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.get("id")))
+}
+
+/// Updates the `insider_score` and `scored_at` columns on an event_signals row.
+pub async fn update_insider_score(pool: &PgPool, id: i64, score: f32) -> sqlx::Result<()> {
+    sqlx::query("UPDATE event_signals SET insider_score = $1, scored_at = NOW() WHERE id = $2")
+        .bind(score as f64)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Returns unlabeled event_signals rows for `ticker` whose `event_date` falls
 /// within 8 calendar days before `bar_date` (≈ 5 trading days, accounting for
 /// weekends). These events now have post-event bars available for truth labeling.

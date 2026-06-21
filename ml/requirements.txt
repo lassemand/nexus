@@ -1,0 +1,8 @@
+xgboost>=2.0
+onnxmltools>=1.12
+skl2onnx>=1.16
+pandas>=2.0
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+scikit-learn>=1.3
+numpy>=1.24
