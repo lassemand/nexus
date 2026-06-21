@@ -10,9 +10,10 @@ spec:
     - namePattern: "signal-signal"
       images:
         - alias: nexus
-          imageName: lmapwns/nexus
+          imageName: docker.io/lmapwns/nexus
           manifestTargets:
             helm:
+              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
@@ -23,9 +24,10 @@ spec:
     - namePattern: "chronicle-chronicle"
       images:
         - alias: nexus
-          imageName: lmapwns/nexus
+          imageName: docker.io/lmapwns/nexus
           manifestTargets:
             helm:
+              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
@@ -36,9 +38,10 @@ spec:
     - namePattern: "market-market"
       images:
         - alias: nexus
-          imageName: lmapwns/nexus
+          imageName: docker.io/lmapwns/nexus
           manifestTargets:
             helm:
+              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
@@ -49,9 +52,10 @@ spec:
     - namePattern: "insight-insight"
       images:
         - alias: nexus
-          imageName: lmapwns/nexus
+          imageName: docker.io/lmapwns/nexus
           manifestTargets:
             helm:
+              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
