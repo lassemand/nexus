@@ -10,7 +10,7 @@ spec:
     - namePattern: "signal-signal"
       images:
         - alias: nexus
-          imageName: docker.io/lmapwns/nexus
+          imageName: lmapwns/nexus
           manifestTargets:
             helm:
               name: image.tag
@@ -23,7 +23,7 @@ spec:
     - namePattern: "chronicle-chronicle"
       images:
         - alias: nexus
-          imageName: docker.io/lmapwns/nexus
+          imageName: lmapwns/nexus
           manifestTargets:
             helm:
               name: image.tag
@@ -36,7 +36,7 @@ spec:
     - namePattern: "market-market"
       images:
         - alias: nexus
-          imageName: docker.io/lmapwns/nexus
+          imageName: lmapwns/nexus
           manifestTargets:
             helm:
               name: image.tag
@@ -49,7 +49,7 @@ spec:
     - namePattern: "insight-insight"
       images:
         - alias: nexus
-          imageName: docker.io/lmapwns/nexus
+          imageName: lmapwns/nexus
           manifestTargets:
             helm:
               name: image.tag
