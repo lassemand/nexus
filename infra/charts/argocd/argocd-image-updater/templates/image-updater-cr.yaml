@@ -13,53 +13,53 @@ spec:
           imageName: lmapwns/nexus
           manifestTargets:
             helm:
-              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
         gitConfig:
           repository: https://github.com/lassemand/nexus.git
           branch: main
-          writeBackTarget: helmvalues:infra/charts/signal/signal/values.yaml
+          writeBackTarget: helmvalues:./values.yaml
+          credentials: secret:argocd/git-creds#githubAppID,githubAppInstallationID,githubAppPrivateKey
     - namePattern: "chronicle-chronicle"
       images:
         - alias: nexus
           imageName: lmapwns/nexus
           manifestTargets:
             helm:
-              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
         gitConfig:
           repository: https://github.com/lassemand/nexus.git
           branch: main
-          writeBackTarget: helmvalues:infra/charts/chronicle/chronicle/values.yaml
+          writeBackTarget: helmvalues:./values.yaml
+          credentials: secret:argocd/git-creds#githubAppID,githubAppInstallationID,githubAppPrivateKey
     - namePattern: "market-market"
       images:
         - alias: nexus
           imageName: lmapwns/nexus
           manifestTargets:
             helm:
-              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
         gitConfig:
           repository: https://github.com/lassemand/nexus.git
           branch: main
-          writeBackTarget: helmvalues:infra/charts/market/market/values.yaml
+          writeBackTarget: helmvalues:./values.yaml
+          credentials: secret:argocd/git-creds#githubAppID,githubAppInstallationID,githubAppPrivateKey
     - namePattern: "insight-insight"
       images:
         - alias: nexus
           imageName: lmapwns/nexus
           manifestTargets:
             helm:
-              name: image.repository
               tag: image.tag
       writeBackConfig:
         method: git
         gitConfig:
           repository: https://github.com/lassemand/nexus.git
           branch: main
-          writeBackTarget: helmvalues:infra/charts/insight/insight/values.yaml
+          writeBackTarget: helmvalues:./values.yaml
+          credentials: secret:argocd/git-creds#githubAppID,githubAppInstallationID,githubAppPrivateKey
