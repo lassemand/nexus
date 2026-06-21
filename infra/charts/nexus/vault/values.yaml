@@ -9,33 +9,16 @@ vault:
       size: 1Gi
       storageClass: local-path
 
-    # Auto-unseal on pod start: reads the unseal key from the vault-unseal-key
-    # Kubernetes Secret (created once manually after vault operator init).
-    # Without this, Vault comes back sealed after every pod restart.
-    extraInitContainers:
-      - name: auto-unseal
-        image: hashicorp/vault:1.21.2
-        command:
-          - /bin/sh
-          - -c
-          - |
-            until vault status 2>/dev/null | grep -q "Initialized.*true"; do
-              echo "Waiting for Vault to start..."; sleep 2
-            done
-            if vault status 2>/dev/null | grep -q "Sealed.*true"; then
-              echo "Vault is sealed, unsealing..."
-              vault operator unseal "$(cat /vault-unseal/key)"
-              echo "Vault unsealed"
-            else
-              echo "Vault already unsealed"
-            fi
-        env:
-          - name: VAULT_ADDR
-            value: "http://127.0.0.1:8200"
-        volumeMounts:
-          - name: userconfig-vault-unseal-key
-            mountPath: /vault-unseal
-            readOnly: true
+    # Auto-unseal via postStart lifecycle hook: runs inside the vault container
+    # after it starts, reads the unseal key from the vault-unseal-key Secret.
+    postStart:
+      - /bin/sh
+      - -c
+      - |
+        sleep 5
+        if vault status 2>/dev/null | grep -q "Sealed.*true"; then
+          vault operator unseal "$(cat /vault-unseal/key)" || true
+        fi
 
     extraVolumes:
       - type: secret
