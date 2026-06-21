@@ -1,0 +1,61 @@
+apiVersion: argocd-image-updater.argoproj.io/v1alpha1
+kind: ImageUpdater
+metadata:
+  name: nexus-services
+  namespace: argocd
+spec:
+  commonUpdateSettings:
+    updateStrategy: semver
+  applicationRefs:
+    - namePattern: "signal-signal"
+      images:
+        - alias: nexus
+          imageName: docker.io/lmapwns/nexus
+          manifestTargets:
+            helm:
+              name: image.tag
+      writeBackConfig:
+        method: git
+        gitConfig:
+          repository: https://github.com/lassemand/nexus.git
+          branch: main
+          writeBackTarget: helmvalues:infra/charts/signal/signal/values.yaml
+    - namePattern: "chronicle-chronicle"
+      images:
+        - alias: nexus
+          imageName: docker.io/lmapwns/nexus
+          manifestTargets:
+            helm:
+              name: image.tag
+      writeBackConfig:
+        method: git
+        gitConfig:
+          repository: https://github.com/lassemand/nexus.git
+          branch: main
+          writeBackTarget: helmvalues:infra/charts/chronicle/chronicle/values.yaml
+    - namePattern: "market-market"
+      images:
+        - alias: nexus
+          imageName: docker.io/lmapwns/nexus
+          manifestTargets:
+            helm:
+              name: image.tag
+      writeBackConfig:
+        method: git
+        gitConfig:
+          repository: https://github.com/lassemand/nexus.git
+          branch: main
+          writeBackTarget: helmvalues:infra/charts/market/market/values.yaml
+    - namePattern: "insight-insight"
+      images:
+        - alias: nexus
+          imageName: docker.io/lmapwns/nexus
+          manifestTargets:
+            helm:
+              name: image.tag
+      writeBackConfig:
+        method: git
+        gitConfig:
+          repository: https://github.com/lassemand/nexus.git
+          branch: main
+          writeBackTarget: helmvalues:infra/charts/insight/insight/values.yaml

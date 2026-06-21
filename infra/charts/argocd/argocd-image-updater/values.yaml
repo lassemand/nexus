@@ -17,3 +17,10 @@ argocd-image-updater:
       serverAddr: argocd-server.argocd.svc.cluster.local:443
       insecure: true
       plaintext: false
+    # Docker Hub registry — required even for public images to list tags.
+    registries:
+      - name: Docker Hub
+        api_url: https://registry-1.docker.io
+        prefix: docker.io
+        ping: yes
+        defaultns: library
