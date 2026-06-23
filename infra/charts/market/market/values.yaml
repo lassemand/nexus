@@ -1,9 +1,7 @@
 image:
   repository: "lmapwns/nexus"
-  tag: "0.0.16"
-
+  tag: "0.0.17"
 schedule: "0 2 * * 2-6"
-
 resources:
   requests:
     memory: "128Mi"
