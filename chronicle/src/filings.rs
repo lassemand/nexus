@@ -4,18 +4,13 @@ use std::collections::HashMap;
 
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use clap::Parser;
-use kafka::ChronicleProducer;
+use kafka::{load_tickers, ChronicleProducer};
 use model::generated::InsiderFiling;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::Row;
 use tracing::{error, info, warn};
 
 #[derive(Parser)]
 #[command(about = "Fetch SEC Form 4 open-market purchases and publish as InsiderFiling to Kafka")]
 struct Args {
-    #[arg(long, env = "DATABASE_URL")]
-    database_url: String,
-
     #[arg(long, env = "KAFKA_BROKERS")]
     kafka_brokers: String,
 
@@ -24,6 +19,9 @@ struct Args {
 
     #[arg(long, env = "LOOKBACK_DAYS", default_value = "90")]
     lookback_days: i64,
+
+    #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = "company.tickers")]
+    tickers_topic: String,
 }
 
 /// Build the ticker → zero-padded 10-digit CIK map from EDGAR.
@@ -271,26 +269,14 @@ async fn main() {
 
     let args = Args::parse();
 
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&args.database_url)
-        .await
-        .expect("failed to connect to postgres");
-
-    let tickers: Vec<String> = sqlx::query("SELECT ticker FROM companies ORDER BY ticker")
-        .fetch_all(&pool)
-        .await
-        .expect("failed to load tickers")
-        .into_iter()
-        .map(|r| r.get("ticker"))
-        .collect();
+    let tickers = load_tickers(&args.kafka_brokers, &args.tickers_topic);
 
     if tickers.is_empty() {
-        warn!("no tickers registered — register tickers first");
+        warn!("no tickers registered — publish a TickerRegistration to the company.tickers topic first");
         return;
     }
 
-    info!(count = tickers.len(), "loaded tickers");
+    info!(count = tickers.len(), "loaded tickers from kafka");
 
     let client = reqwest::Client::builder()
         .user_agent("nexus lasse.alm@gsfleet.io")
