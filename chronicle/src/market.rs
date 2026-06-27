@@ -1,11 +1,9 @@
-mod db;
 mod kafka;
 
 use alpha::{BarProvider, PolygonBarProvider};
 use clap::Parser;
-use kafka::ChronicleProducer;
+use kafka::{load_tickers, ChronicleProducer};
 use model::asset::Asset;
-use sqlx::postgres::PgPoolOptions;
 use time::macros::format_description;
 use time::Date;
 use tracing::{error, info, warn};
@@ -13,9 +11,6 @@ use tracing::{error, info, warn};
 #[derive(Parser)]
 #[command(about = "Fetch EOD bars from Polygon and publish as MarketEvent to Kafka")]
 struct Args {
-    #[arg(long, env = "DATABASE_URL")]
-    database_url: String,
-
     #[arg(long, env = "POLYGON_API_KEY")]
     api_key: String,
 
@@ -24,6 +19,9 @@ struct Args {
 
     #[arg(long, env = "KAFKA_TOPIC", default_value = "market.bars")]
     topic: String,
+
+    #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = "company.tickers")]
+    tickers_topic: String,
 
     #[arg(long)]
     from: String,
@@ -46,22 +44,14 @@ async fn main() {
     let from = parse_date(&args.from);
     let to = parse_date(&args.to);
 
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&args.database_url)
-        .await
-        .expect("failed to connect to postgres");
-
-    let tickers = db::load_tickers(&pool)
-        .await
-        .expect("failed to load tickers from companies table");
+    let tickers = load_tickers(&args.brokers, &args.tickers_topic);
 
     if tickers.is_empty() {
-        warn!("no tickers registered in the companies table — register tickers via the company.tickers Kafka topic first");
+        warn!("no tickers registered — publish a TickerRegistration to the company.tickers topic first");
         return;
     }
 
-    info!(count = tickers.len(), "loaded tickers from companies table");
+    info!(count = tickers.len(), "loaded tickers from kafka");
 
     let polygon = PolygonBarProvider::new(&args.api_key);
     let producer = ChronicleProducer::new(&args.brokers).expect("failed to connect to Kafka");
