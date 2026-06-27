@@ -19,6 +19,10 @@ path = "src/earnings_bin.rs"
 name = "filings"
 path = "src/filings.rs"
 
+[[bin]]
+name = "ticker"
+path = "src/ticker.rs"
+
 [dependencies]
 model = { path = "../model" }
 alpha = { path = "../alpha" }

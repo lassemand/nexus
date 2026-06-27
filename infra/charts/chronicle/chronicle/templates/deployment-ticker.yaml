@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ticker
+  labels:
+    app: ticker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ticker
+  template:
+    metadata:
+      labels:
+        app: ticker
+    spec:
+      containers:
+        - name: ticker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/ticker"]
+          envFrom:
+            - secretRef:
+                name: chronicle-secret
+          resources:
+            requests:
+              memory: {{ .Values.resources.requests.memory | quote }}
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+            limits:
+              memory: {{ .Values.resources.limits.memory | quote }}
