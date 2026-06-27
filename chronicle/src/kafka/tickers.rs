@@ -81,6 +81,9 @@ pub fn load_tickers(brokers: &str, topic: &str) -> Vec<String> {
 
     let mut result: Vec<String> = tickers.into_iter().collect();
     result.sort();
-    info!(count = result.len(), topic, "loaded tickers from kafka topic");
+    info!(
+        count = result.len(),
+        topic, "loaded tickers from kafka topic"
+    );
     result
 }
