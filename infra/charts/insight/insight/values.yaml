@@ -4,6 +4,7 @@ image:
 replicaCount: 1
 service:
   enabled: true
+  type: LoadBalancer
 resources:
   requests:
     memory: "64Mi"
