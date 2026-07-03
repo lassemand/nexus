@@ -6,7 +6,7 @@ mod parse;
 
 use clap::Parser;
 use edgar::{EdgarClient, Filing};
-use kafka::{load_tickers, ChronicleProducer};
+use kafka::ChronicleProducer;
 use model::generated::{EarningsEvent, SpecialEvent};
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info, warn};
@@ -28,9 +28,6 @@ struct Args {
 
     #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = "special.events")]
     special_events_topic: String,
-
-    #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = "company.tickers")]
-    tickers_topic: String,
 }
 
 #[tokio::main]
@@ -51,14 +48,16 @@ async fn main() {
         .await
         .expect("migrations failed");
 
-    let tickers = load_tickers(&args.brokers, &args.tickers_topic);
+    let tickers = db::load_tickers(&pool)
+        .await
+        .expect("failed to load tickers from companies table");
 
     if tickers.is_empty() {
-        warn!("no tickers registered — publish a TickerRegistration to the company.tickers topic first");
+        warn!("no tickers registered in the companies table — register tickers via the company.tickers Kafka topic first");
         return;
     }
 
-    info!(count = tickers.len(), "loaded tickers from kafka");
+    info!(count = tickers.len(), "loaded tickers from companies table");
 
     let edgar = EdgarClient::new().expect("failed to create EDGAR client");
     let producer = ChronicleProducer::new(&args.brokers).expect("failed to connect to Kafka");
