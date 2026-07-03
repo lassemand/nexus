@@ -23,7 +23,7 @@ grafana:
           uid: nexus-postgres
           type: postgres
           url: nexus-postgres.nexus.svc.cluster.local:5432
-          database: nexus
+          database: backtest
           user: nexus
           secureJsonData:
             password: ${GF_DATABASE_PASSWORD}
