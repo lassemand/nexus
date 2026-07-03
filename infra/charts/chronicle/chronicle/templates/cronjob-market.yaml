@@ -27,6 +27,9 @@ spec:
                   exec /usr/local/bin/market \
                     --from="$(date -d yesterday +%Y-%m-%d)" \
                     --to="$(date +%Y-%m-%d)"
+              env:
+                - name: KAFKA_TOPIC
+                  value: market.bars
               envFrom:
                 - secretRef:
                     name: chronicle-secret
