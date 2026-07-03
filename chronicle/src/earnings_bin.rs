@@ -6,7 +6,7 @@ use alpha::{EarningsProvider, PolygonEarningsError, PolygonEarningsProvider};
 use chrono::{Duration, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use clap::Parser;
 use earnings_db::{load_unpublished_earnings, mark_earnings_published, upsert_earnings_date};
-use kafka::ChronicleProducer;
+use kafka::{load_tickers, ChronicleProducer};
 use model::{
     asset::Asset,
     generated::{EarningsEvent, SpecialEvent},
@@ -35,6 +35,9 @@ struct Args {
 
     #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = "special.events")]
     special_events_topic: String,
+
+    #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = "company.tickers")]
+    tickers_topic: String,
 }
 
 #[tokio::main]
@@ -55,16 +58,14 @@ async fn main() {
         .await
         .expect("migrations failed");
 
-    let tickers = db::load_tickers(&pool)
-        .await
-        .expect("failed to load tickers from companies table");
+    let tickers = load_tickers(&args.kafka_brokers, &args.tickers_topic);
 
     if tickers.is_empty() {
-        warn!("no tickers registered in the companies table — register tickers first");
+        warn!("no tickers registered — publish a TickerRegistration to the company.tickers topic first");
         return;
     }
 
-    info!(count = tickers.len(), "loaded tickers from companies table");
+    info!(count = tickers.len(), "loaded tickers from kafka");
 
     let polygon = PolygonEarningsProvider::new(&args.polygon_api_key);
     let producer = ChronicleProducer::new(&args.kafka_brokers).expect("failed to connect to Kafka");
