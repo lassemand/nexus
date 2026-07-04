@@ -19,12 +19,12 @@ data:
         {
           "id": 1,
           "type": "barchart",
-          "title": "Special Events by Month",
+          "title": "Special Events",
           "gridPos": { "x": 0, "y": 0, "w": 24, "h": 10 },
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
           "fieldConfig": { "defaults": {}, "overrides": [] },
           "options": {
-            "xField": "month",
+            "xField": "day",
             "orientation": "auto",
             "legend": { "displayMode": "list", "placement": "bottom" },
             "tooltip": { "mode": "single" }
@@ -34,7 +34,7 @@ data:
               "refId": "A",
               "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
               "format": "table",
-              "rawSql": "SELECT\n  TO_CHAR(DATE_TRUNC('month', occurred_at), 'YYYY-MM') AS month,\n  COUNT(*) AS events\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nGROUP BY DATE_TRUNC('month', occurred_at)\nORDER BY DATE_TRUNC('month', occurred_at)"
+              "rawSql": "SELECT\n  TO_CHAR(DATE_TRUNC('day', occurred_at), 'YYYY-MM-DD') AS day,\n  COUNT(*) AS events\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nGROUP BY DATE_TRUNC('day', occurred_at)\nORDER BY DATE_TRUNC('day', occurred_at)"
             }
           ]
         },
