@@ -28,7 +28,7 @@ grafana:
           secureJsonData:
             password: ${GF_DATABASE_PASSWORD}
           jsonData:
-            sslmode: disable
+            sslmode: require
             timescaledb: false
           editable: false
 
