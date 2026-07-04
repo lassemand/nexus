@@ -43,8 +43,8 @@ data:
             {
               "refId": "A",
               "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
-              "format": "time_series",
-              "rawSql": "SELECT\n  occurred_at AS time,\n  1 AS value,\n  ticker || ' — ' || COALESCE(description, event_type) AS metric\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nORDER BY occurred_at"
+              "format": "table",
+              "rawSql": "SELECT\n  occurred_at AS time,\n  1.0::float AS value,\n  ticker || ' — ' || COALESCE(description, event_type) AS metric\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nORDER BY occurred_at"
             }
           ]
         },
