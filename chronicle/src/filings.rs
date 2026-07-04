@@ -89,6 +89,17 @@ async fn form4_accessions(
     Ok(result)
 }
 
+/// Extract the XML block from an EDGAR .txt filing.
+///
+/// EDGAR wraps the actual form XML inside `<XML>...</XML>` tags, preceded by a
+/// non-standard SEC header that is not valid XML. This strips everything outside
+/// the first `<XML>...</XML>` block so the parser only sees well-formed content.
+fn extract_xml_block(raw: &str) -> &str {
+    let start = raw.find("<XML>").map(|i| i + 5).unwrap_or(0);
+    let end = raw.find("</XML>").unwrap_or(raw.len());
+    raw[start..end].trim()
+}
+
 /// Parse a Form 4 XML document and return InsiderFiling records for P and S transactions.
 fn parse_form4(
     xml: &str,
@@ -337,7 +348,11 @@ async fn main() {
                 }
             };
 
-            let filings = parse_form4(&xml, ticker, &cik, *filing_date);
+            // EDGAR .txt filings wrap the actual XML in <XML>...</XML> tags,
+            // preceded by a non-XML SEC header that confuses strict XML parsers.
+            // Extract only the XML portion before parsing.
+            let xml_content = extract_xml_block(&xml);
+            let filings = parse_form4(xml_content, ticker, &cik, *filing_date);
 
             for filing in &filings {
                 if let Err(e) = producer.publish(&args.kafka_topic, ticker, filing).await {
