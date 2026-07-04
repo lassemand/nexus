@@ -130,7 +130,9 @@ fn parse_form4(
     let mut txn_shares_str = String::new();
     let mut txn_price_str = String::new();
 
-    // Tracking current element path
+    // Track element stack so we know the parent of each <value> tag.
+    // e.g. when current_tag == "value" and parent == "transactionShares" → shares field.
+    let mut tag_stack: Vec<String> = Vec::new();
     let mut current_tag = String::new();
     let mut in_relationship = false;
     let mut is_director = false;
@@ -152,6 +154,7 @@ fn parse_form4(
                 let name = std::str::from_utf8(e.name().as_ref())
                     .unwrap_or("")
                     .to_string();
+                tag_stack.push(current_tag.clone());
                 current_tag = name.clone();
                 match name.as_str() {
                     "nonDerivativeTransaction" => {
@@ -220,21 +223,21 @@ fn parse_form4(
                     }
                     _ => {}
                 }
-                current_tag.clear();
+                current_tag = tag_stack.pop().unwrap_or_default();
             }
 
             Ok(Event::Text(e)) => {
                 let text = e.unescape().unwrap_or_default().to_string();
                 if in_non_deriv_txn {
+                    // Use the parent element (tag_stack.last()) to identify which
+                    // <value> child we're reading. This avoids mis-matching securityTitle,
+                    // transactionDate, transactionShares, and transactionPricePerShare.
+                    let parent = tag_stack.last().map(|s| s.as_str()).unwrap_or("");
                     match current_tag.as_str() {
                         "transactionCode" => txn_code = text.clone(),
-                        "value" if txn_date_str.is_empty() && text.contains('-') => {
-                            txn_date_str = text.clone()
-                        }
-                        "value" if txn_shares_str.is_empty() && !text.contains('-') => {
-                            txn_shares_str = text.clone()
-                        }
-                        "value" if txn_price_str.is_empty() && !text.contains('-') => {
+                        "value" if parent == "transactionDate" => txn_date_str = text.clone(),
+                        "value" if parent == "transactionShares" => txn_shares_str = text.clone(),
+                        "value" if parent == "transactionPricePerShare" => {
                             txn_price_str = text.clone()
                         }
                         _ => {}
