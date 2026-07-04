@@ -28,13 +28,13 @@ grafana:
 
         - name: Nexus Postgres
           uid: nexus-postgres
-          type: postgres
+          type: grafana-postgresql-datasource
           url: nexus-postgres.nexus.svc.cluster.local:5432
-          database: backtest
           user: nexus
           secureJsonData:
             password: ${GF_DATABASE_PASSWORD}
           jsonData:
+            database: backtest
             sslmode: require
             timescaledb: false
           editable: false
