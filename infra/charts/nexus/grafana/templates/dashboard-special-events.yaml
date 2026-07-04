@@ -18,33 +18,23 @@ data:
       "panels": [
         {
           "id": 1,
-          "type": "timeseries",
+          "type": "barchart",
           "title": "Special Events",
           "gridPos": { "x": 0, "y": 0, "w": 24, "h": 10 },
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
-          "fieldConfig": {
-            "defaults": {
-              "custom": {
-                "drawStyle": "points",
-                "lineWidth": 0,
-                "barAlignment": 0,
-                "pointSize": 6,
-                "showPoints": "always",
-                "axisPlacement": "hidden"
-              }
-            },
-            "overrides": []
-          },
+          "fieldConfig": { "defaults": {}, "overrides": [] },
           "options": {
-            "legend": { "displayMode": "hidden", "placement": "bottom" },
-            "tooltip": { "mode": "single", "sort": "none" }
+            "xField": "day",
+            "orientation": "auto",
+            "legend": { "displayMode": "list", "placement": "bottom" },
+            "tooltip": { "mode": "single" }
           },
           "targets": [
             {
               "refId": "A",
               "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
               "format": "table",
-              "rawSql": "SELECT\n  occurred_at AS time,\n  1.0::float AS value,\n  ticker || ' — ' || COALESCE(description, event_type) AS metric\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nORDER BY occurred_at"
+              "rawSql": "SELECT\n  TO_CHAR(DATE_TRUNC('day', occurred_at), 'YYYY-MM-DD') AS day,\n  COUNT(*) AS events\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nGROUP BY DATE_TRUNC('day', occurred_at)\nORDER BY DATE_TRUNC('day', occurred_at)"
             }
           ]
         },

@@ -130,7 +130,11 @@ fn parse_form4(
     let mut txn_shares_str = String::new();
     let mut txn_price_str = String::new();
 
-    // Tracking current element path
+    // Flags set when we enter specific parent elements, cleared on exit.
+    // Used to identify which <value> child we're reading without heuristics.
+    let mut in_txn_date = false;
+    let mut in_txn_shares = false;
+    let mut in_txn_price = false;
     let mut current_tag = String::new();
     let mut in_relationship = false;
     let mut is_director = false;
@@ -161,6 +165,9 @@ fn parse_form4(
                         txn_shares_str.clear();
                         txn_price_str.clear();
                     }
+                    "transactionDate" => in_txn_date = true,
+                    "transactionShares" => in_txn_shares = true,
+                    "transactionPricePerShare" => in_txn_price = true,
                     "reportingOwnerRelationship" => {
                         in_relationship = true;
                         is_director = false;
@@ -205,6 +212,9 @@ fn parse_form4(
                         }
                         in_non_deriv_txn = false;
                     }
+                    "transactionDate" => in_txn_date = false,
+                    "transactionShares" => in_txn_shares = false,
+                    "transactionPricePerShare" => in_txn_price = false,
                     "reportingOwnerRelationship" => {
                         filer_role = if is_director {
                             "director"
@@ -228,15 +238,9 @@ fn parse_form4(
                 if in_non_deriv_txn {
                     match current_tag.as_str() {
                         "transactionCode" => txn_code = text.clone(),
-                        "value" if txn_date_str.is_empty() && text.contains('-') => {
-                            txn_date_str = text.clone()
-                        }
-                        "value" if txn_shares_str.is_empty() && !text.contains('-') => {
-                            txn_shares_str = text.clone()
-                        }
-                        "value" if txn_price_str.is_empty() && !text.contains('-') => {
-                            txn_price_str = text.clone()
-                        }
+                        "value" if in_txn_date => txn_date_str = text.clone(),
+                        "value" if in_txn_shares => txn_shares_str = text.clone(),
+                        "value" if in_txn_price => txn_price_str = text.clone(),
                         _ => {}
                     }
                 }
