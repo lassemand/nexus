@@ -5,7 +5,14 @@ grafana:
   persistence:
     enabled: false
 
-  # Admin credentials injected from the grafana-secret ExternalSecret.
+  # Admin credentials sourced from Vault via grafana-secret ExternalSecret.
+  # Using existingSecret prevents the helm chart from generating a random
+  # admin password on each install/restart.
+  admin:
+    existingSecret: grafana-secret
+    userKey: GF_SECURITY_ADMIN_USER
+    passwordKey: GF_SECURITY_ADMIN_PASSWORD
+
   envFromSecret: grafana-secret
 
   datasources:
