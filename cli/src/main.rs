@@ -318,9 +318,7 @@ async fn cmd_calendar_sync(country: String, year: i32) -> Result<()> {
         sqlx::query(
             "INSERT INTO trading_holidays (country, date, status, note)
              VALUES ($1, $2, $3, $4)
-             ON CONFLICT (country, date) DO UPDATE
-               SET status = EXCLUDED.status,
-                   note   = EXCLUDED.note",
+             ON CONFLICT (country, date) DO NOTHING",
         )
         .bind(&country)
         .bind(entry.date)
