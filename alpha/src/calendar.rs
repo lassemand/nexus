@@ -4,13 +4,18 @@
 /// (`https://date.nager.at`) — free, no API key required — and maps it
 /// to exchange-specific closure rules.
 ///
-/// # Supported exchanges
+/// # Adding a new exchange
 ///
-/// | MIC   | Exchange                               | Country |
-/// |-------|----------------------------------------|---------|
-/// | FNSE  | Nasdaq First North Growth Market SE    | Sweden  |
-/// | XNYS  | New York Stock Exchange                | US      |
-/// | XNAS  | Nasdaq US                              | US      |
+/// Add one entry to [`EXCHANGE_CALENDARS`]:
+/// ```text
+/// ExchangeCalendar {
+///     mic:         "XHEL",
+///     country:     "FI",
+///     skip:        &["..."],
+///     half_days:   &[],
+/// }
+/// ```
+/// No code changes elsewhere required.
 use chrono::{Datelike, NaiveDate, Weekday};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -22,7 +27,7 @@ pub enum CalendarError {
     #[error("Nager.Date API request failed: {0}")]
     Http(#[from] reqwest::Error),
 
-    #[error("exchange {0} is not supported by CalendarProvider")]
+    #[error("exchange {0} is not supported — add it to EXCHANGE_CALENDARS in alpha::calendar")]
     UnsupportedExchange(String),
 }
 
@@ -35,6 +40,76 @@ pub struct CalendarEntry {
     /// Human-readable label from the data source (e.g. `"Good Friday"`).
     pub note: String,
 }
+
+// ── Static exchange → calendar mapping ───────────────────────────────────
+
+/// Mapping from an exchange MIC to its Nager.Date country code and filtering rules.
+struct ExchangeCalendar {
+    /// ISO 10383 Market Identifier Code.
+    mic: &'static str,
+    /// ISO 3166-1 alpha-2 country code used by Nager.Date.
+    country: &'static str,
+    /// Holiday names (substring match) that the exchange does NOT observe.
+    skip: &'static [&'static str],
+    /// Holiday names (substring match) that are early-close (half day) rather
+    /// than full closures.
+    half_days: &'static [&'static str],
+}
+
+/// Static table of supported exchanges.
+///
+/// Multiple MICs can reference the same `country` + rules — e.g. XNYS and
+/// XNAS both use the US NYSE calendar. Adding a new exchange is a single
+/// entry here; no code changes elsewhere are needed.
+const EXCHANGE_CALENDARS: &[ExchangeCalendar] = &[
+    // ── Sweden ────────────────────────────────────────────────────────────
+    ExchangeCalendar {
+        mic: "FNSE",
+        country: "SE",
+        skip: &[
+            "Epiphany",        // Jan 6 — not observed by Nasdaq Stockholm
+            "Easter Sunday",   // always a Sunday
+            "Pentecost",       // always a Sunday
+            "Whit Sunday",     // alternate name for Pentecost
+            "Midsummer Day",   // the Saturday — Midsummer Eve (Friday) is the closure
+            "All Saints' Day", // Nov 1 — not observed
+        ],
+        half_days: &[
+            "Christmas Eve",  // Dec 24 — early close 13:00 CET
+            "New Year's Eve", // Dec 31 — early close 13:00 CET
+        ],
+    },
+    // ── United States (NYSE calendar) ─────────────────────────────────────
+    // NYSE observes: New Year's Day, MLK Day, Presidents Day, Good Friday,
+    // Memorial Day, Juneteenth (from 2021), Independence Day, Labor Day,
+    // Thanksgiving, Christmas Day.
+    ExchangeCalendar {
+        mic: "XNYS",
+        country: "US",
+        skip: &[
+            "Lincoln's Birthday",      // state holiday, not NYSE
+            "Truman Day",              // Missouri state holiday
+            "Columbus Day",            // not observed by NYSE
+            "Indigenous Peoples' Day", // not observed by NYSE
+            "Veterans Day",            // not observed by NYSE
+        ],
+        half_days: &[],
+    },
+    ExchangeCalendar {
+        mic: "XNAS",
+        country: "US",
+        skip: &[
+            "Lincoln's Birthday",
+            "Truman Day",
+            "Columbus Day",
+            "Indigenous Peoples' Day",
+            "Veterans Day",
+        ],
+        half_days: &[],
+    },
+];
+
+// ── Provider ──────────────────────────────────────────────────────────────
 
 /// Fetches trading holiday data from the Nager.Date API for a given year and
 /// exchange, applying exchange-specific filtering and half-day mapping.
@@ -60,28 +135,14 @@ impl CalendarProvider {
         exchange_mic: &str,
         year: i32,
     ) -> Result<Vec<CalendarEntry>, CalendarError> {
-        match exchange_mic {
-            "FNSE" => self.fnse_holidays(year).await,
-            "XNYS" | "XNAS" => self.nyse_holidays(year).await,
-            other => Err(CalendarError::UnsupportedExchange(other.to_string())),
-        }
+        let cal = EXCHANGE_CALENDARS
+            .iter()
+            .find(|c| c.mic == exchange_mic)
+            .ok_or_else(|| CalendarError::UnsupportedExchange(exchange_mic.to_string()))?;
+
+        let raw = self.fetch(year, cal.country).await?;
+        Ok(filter_holidays(raw, cal.skip, cal.half_days))
     }
-
-    // ── FNSE ─────────────────────────────────────────────────────────────
-
-    async fn fnse_holidays(&self, year: i32) -> Result<Vec<CalendarEntry>, CalendarError> {
-        let raw = self.fetch(year, "SE").await?;
-        Ok(filter_holidays(raw, FNSE_SKIP, FNSE_HALF_DAY))
-    }
-
-    // ── XNYS / XNAS ──────────────────────────────────────────────────────
-
-    async fn nyse_holidays(&self, year: i32) -> Result<Vec<CalendarEntry>, CalendarError> {
-        let raw = self.fetch(year, "US").await?;
-        Ok(filter_holidays(raw, NYSE_SKIP, &[]))
-    }
-
-    // ── shared fetch ─────────────────────────────────────────────────────
 
     async fn fetch(&self, year: i32, country: &str) -> Result<Vec<NagerHoliday>, CalendarError> {
         let url = format!("https://date.nager.at/api/v3/publicholidays/{year}/{country}");
@@ -103,13 +164,9 @@ impl Default for CalendarProvider {
     }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────
+
 /// Apply exchange-specific filtering and half-day mapping to a raw holiday list.
-///
-/// - Skips weekends (always non-trading).
-/// - Skips holidays whose name contains any entry in `skip`.
-/// - Maps to `half_day` if the name contains any entry in `half_day_names`.
-/// - Deduplicates by date — the US feed has duplicate entries for the same
-///   date (e.g. Good Friday appears as both national and state-level).
 fn filter_holidays(
     raw: Vec<NagerHoliday>,
     skip: &[&str],
@@ -148,41 +205,3 @@ struct NagerHoliday {
     date: NaiveDate,
     name: String,
 }
-
-// ── FNSE mapping rules ────────────────────────────────────────────────────
-
-/// Swedish public holidays that Nasdaq Stockholm / First North (FNSE) does
-/// NOT observe as a closure.
-const FNSE_SKIP: &[&str] = &[
-    "Epiphany",        // Jan 6 — not observed
-    "Easter Sunday",   // always a Sunday
-    "Pentecost",       // always a Sunday
-    "Whit Sunday",     // alternate name for Pentecost
-    "Midsummer Day",   // the Saturday — Midsummer Eve (Friday) is the closure
-    "All Saints' Day", // Nov 1 — not observed
-];
-
-/// Holidays Nasdaq Stockholm observes as an early close (half day, 13:00 CET)
-/// rather than a full closure.
-const FNSE_HALF_DAY: &[&str] = &[
-    "Christmas Eve",  // Dec 24
-    "New Year's Eve", // Dec 31
-];
-
-// ── NYSE / XNAS mapping rules ─────────────────────────────────────────────
-
-/// US public holidays that NYSE and Nasdaq US do NOT observe as closures.
-///
-/// NYSE closes for: New Year's Day, MLK Day, Presidents Day, Good Friday,
-/// Memorial Day, Juneteenth, Independence Day, Labor Day, Thanksgiving,
-/// Christmas Day.
-///
-/// Not observed: Lincoln's Birthday (state holiday), Truman Day (Missouri),
-/// Columbus Day / Indigenous Peoples' Day, Veterans Day.
-const NYSE_SKIP: &[&str] = &[
-    "Lincoln's Birthday",      // state holiday, not a NYSE closure
-    "Truman Day",              // Missouri state holiday
-    "Columbus Day",            // not observed by NYSE
-    "Indigenous Peoples' Day", // not observed by NYSE
-    "Veterans Day",            // not observed by NYSE
-];
