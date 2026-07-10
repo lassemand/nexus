@@ -1,6 +1,7 @@
 use chrono::{DateTime, NaiveDate, Utc};
-use model::{generated::InsiderFiling, sector::Sector};
+use model::{calendar::DynamicCalendar, generated::InsiderFiling, sector::Sector};
 use sqlx::PgPool;
+use std::collections::HashSet;
 
 use crate::features::{Bar, PreEventFeatures};
 
@@ -379,6 +380,50 @@ pub async fn upsert_company(pool: &PgPool, ticker: &str, sector: Sector) -> sqlx
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Load a [`DynamicCalendar`] for `exchange_mic` from the `trading_holidays` table.
+// Used by the upcoming Nordic bar-gap validation task.
+#[allow(dead_code)]
+///
+/// Returns an error if the DB is unreachable. Returns an empty calendar (all
+/// weekdays treated as `Open`) if no rows exist for the given MIC — callers
+/// should log a warning in that case.
+pub async fn load_trading_calendar(
+    pool: &PgPool,
+    exchange_mic: &str,
+) -> sqlx::Result<DynamicCalendar> {
+    use sqlx::Row;
+    let rows = sqlx::query("SELECT date, status FROM trading_holidays WHERE exchange_mic = $1")
+        .bind(exchange_mic)
+        .fetch_all(pool)
+        .await?;
+
+    let mut closed = HashSet::new();
+    let mut half_days = HashSet::new();
+
+    for row in rows {
+        let date: NaiveDate = row.get("date");
+        let status: &str = row.get("status");
+        match status {
+            "closed" => {
+                closed.insert(date);
+            }
+            "half_day" => {
+                half_days.insert(date);
+            }
+            other => {
+                tracing::warn!(
+                    exchange_mic,
+                    %date,
+                    status = other,
+                    "unknown trading_holidays status, skipping"
+                );
+            }
+        }
+    }
+
+    Ok(DynamicCalendar::new(closed, half_days))
 }
 
 #[cfg(test)]
