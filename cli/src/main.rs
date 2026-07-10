@@ -34,6 +34,12 @@ enum Commands {
         #[arg(required = true)]
         tickers: Vec<String>,
 
+        /// ISO 10383 Market Identifier Code for the exchange these tickers
+        /// trade on. Defaults to XNAS (Nasdaq US). Use FNSE for Nasdaq First
+        /// North Growth Market Stockholm, XNYS for NYSE, etc.
+        #[arg(long, env = "EXCHANGE_MIC", default_value = "XNAS")]
+        exchange_mic: String,
+
         /// Kafka broker addresses.
         #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:9092")]
         brokers: String,
@@ -105,9 +111,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Register {
             tickers,
+            exchange_mic,
             brokers,
             topic,
-        } => cmd_register(tickers, brokers, topic).await,
+        } => cmd_register(tickers, exchange_mic, brokers, topic).await,
 
         Commands::Completions {
             shell: CompletionsShell::Zsh,
@@ -149,7 +156,12 @@ async fn validate_ticker(client: &reqwest::Client, ticker: &str) -> Result<bool>
 
 /// Validate each ticker against Yahoo Finance, then publish `TickerRegistration`
 /// protobuf messages for valid ones to Kafka.
-async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> Result<()> {
+async fn cmd_register(
+    tickers: Vec<String>,
+    exchange_mic: String,
+    brokers: String,
+    topic: String,
+) -> Result<()> {
     let http = reqwest::Client::new();
 
     // Validate all tickers concurrently.
@@ -195,10 +207,12 @@ async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> R
         .map(|ticker| {
             let topic = topic.clone();
             let producer = producer.clone();
+            let exchange_mic = exchange_mic.clone();
 
             async move {
                 let payload = TickerRegistration {
                     ticker: ticker.clone(),
+                    exchange_mic: exchange_mic.clone(),
                 }
                 .encode_to_vec();
 
@@ -244,6 +258,7 @@ mod tests {
     fn ticker_registration_round_trip() {
         let original = TickerRegistration {
             ticker: "aapl".to_string(),
+            exchange_mic: "XNAS".to_string(),
         };
         let encoded = original.encode_to_vec();
         let decoded = TickerRegistration::decode(encoded.as_slice()).unwrap();

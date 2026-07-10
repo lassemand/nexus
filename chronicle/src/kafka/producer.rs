@@ -45,6 +45,7 @@ impl ChronicleProducer {
             volume: bar.volume as u64,
             currency: "USD".to_string(),
             timestamp_unix_secs: ts,
+            exchange_mic: bar.asset.exchange_mic.clone(),
         };
 
         self.publish(topic, &bar.asset.ticker, &event).await

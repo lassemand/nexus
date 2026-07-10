@@ -7,4 +7,9 @@ message TickerRegistration {
   // Raw ticker symbol as provided by the publisher.
   // Normalisation to uppercase is performed by the consumer, not here.
   string ticker = 1;
+  // ISO 10383 Market Identifier Code (MIC) for the exchange this ticker
+  // trades on. Empty string means the consumer should fall back to a
+  // sensible default (XNAS for US instruments).
+  // Added in field 2 — do not renumber field 1.
+  string exchange_mic = 2;
 }
