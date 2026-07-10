@@ -1,3 +1,4 @@
+use alpha::country_for_exchange;
 use chrono::{DateTime, NaiveDate, Utc};
 use model::{calendar::DynamicCalendar, generated::InsiderFiling, sector::Sector};
 use sqlx::PgPool;
@@ -383,21 +384,41 @@ pub async fn upsert_company(pool: &PgPool, ticker: &str, sector: Sector) -> sqlx
 }
 
 /// Load a [`DynamicCalendar`] for `exchange_mic` from the `trading_holidays` table.
+///
+/// Resolves the exchange MIC to a country code via [`alpha::country_for_exchange`],
+/// then fetches all rows for that country. Returns an empty calendar with a
+/// warning if no rows exist.
 // Used by the upcoming Nordic bar-gap validation task.
 #[allow(dead_code)]
-///
-/// Returns an error if the DB is unreachable. Returns an empty calendar (all
-/// weekdays treated as `Open`) if no rows exist for the given MIC — callers
-/// should log a warning in that case.
 pub async fn load_trading_calendar(
     pool: &PgPool,
     exchange_mic: &str,
 ) -> sqlx::Result<DynamicCalendar> {
     use sqlx::Row;
-    let rows = sqlx::query("SELECT date, status FROM trading_holidays WHERE exchange_mic = $1")
-        .bind(exchange_mic)
+
+    let country = match country_for_exchange(exchange_mic) {
+        Some(c) => c,
+        None => {
+            tracing::warn!(
+                exchange_mic,
+                "no country mapping found for exchange, returning empty calendar"
+            );
+            return Ok(DynamicCalendar::new(Default::default(), Default::default()));
+        }
+    };
+
+    let rows = sqlx::query("SELECT date, status FROM trading_holidays WHERE country = $1")
+        .bind(country)
         .fetch_all(pool)
         .await?;
+
+    if rows.is_empty() {
+        tracing::warn!(
+            exchange_mic,
+            country,
+            "no trading_holidays rows found for country, returning empty calendar"
+        );
+    }
 
     let mut closed = HashSet::new();
     let mut half_days = HashSet::new();
@@ -415,6 +436,7 @@ pub async fn load_trading_calendar(
             other => {
                 tracing::warn!(
                     exchange_mic,
+                    country,
                     %date,
                     status = other,
                     "unknown trading_holidays status, skipping"

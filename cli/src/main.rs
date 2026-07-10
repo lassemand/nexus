@@ -76,15 +76,19 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum CalendarAction {
-    /// Fetch trading holidays for a year from Nager.Date and upsert into the DB.
+    /// Fetch trading holidays for a country from Nager.Date and upsert into the DB.
     ///
-    /// Reads DATABASE_URL from the environment (set automatically in the
-    /// cluster via the signal-secret ExternalSecret).
+    /// Uses country codes (ISO 3166-1 alpha-2), not exchange MICs.
+    /// Multiple exchanges may share the same country calendar (e.g. XNYS
+    /// and XNAS both use "US"). Reads DATABASE_URL from the environment.
+    ///
+    /// Examples:
+    ///   nexus calendar sync --country SE --year 2029
+    ///   nexus calendar sync --country US --year 2029
     Sync {
-        /// ISO 10383 MIC of the exchange to sync. Currently only FNSE
-        /// (Nasdaq First North Growth Market Stockholm) is supported.
-        #[arg(long, default_value = "FNSE")]
-        exchange: String,
+        /// ISO 3166-1 alpha-2 country code (e.g. SE, US).
+        #[arg(long)]
+        country: String,
 
         /// Calendar year to fetch (e.g. 2028).
         #[arg(long)]
@@ -149,8 +153,8 @@ async fn main() -> Result<()> {
         } => cmd_register(tickers, exchange_mic, brokers, topic).await,
 
         Commands::Calendar {
-            action: CalendarAction::Sync { exchange, year },
-        } => cmd_calendar_sync(exchange, year).await,
+            action: CalendarAction::Sync { country, year },
+        } => cmd_calendar_sync(country, year).await,
 
         Commands::Completions {
             shell: CompletionsShell::Zsh,
@@ -287,20 +291,21 @@ fn cmd_completions_zsh() -> Result<()> {
 
 /// Fetch trading holidays via alpha::CalendarProvider and upsert into the DB.
 ///
+/// `country` is an ISO 3166-1 alpha-2 code (e.g. `"SE"`, `"US"`).
 /// DATABASE_URL is read from the environment — set automatically in the
 /// cluster via the signal-secret ExternalSecret.
-async fn cmd_calendar_sync(exchange: String, year: i32) -> Result<()> {
+async fn cmd_calendar_sync(country: String, year: i32) -> Result<()> {
     let database_url =
         std::env::var("DATABASE_URL").context("DATABASE_URL environment variable not set")?;
 
     let provider = CalendarProvider::new();
     let entries = provider
-        .holidays(&exchange, year)
+        .holidays_for_country(&country, year)
         .await
         .context("failed to fetch holidays from Nager.Date")?;
 
     if entries.is_empty() {
-        println!("No weekday entries to upsert for {exchange} {year}.");
+        println!("No weekday entries to upsert for {country} {year}.");
         return Ok(());
     }
 
@@ -311,13 +316,13 @@ async fn cmd_calendar_sync(exchange: String, year: i32) -> Result<()> {
     let mut upserted = 0usize;
     for entry in &entries {
         sqlx::query(
-            "INSERT INTO trading_holidays (exchange_mic, date, status, note)
+            "INSERT INTO trading_holidays (country, date, status, note)
              VALUES ($1, $2, $3, $4)
-             ON CONFLICT (exchange_mic, date) DO UPDATE
+             ON CONFLICT (country, date) DO UPDATE
                SET status = EXCLUDED.status,
                    note   = EXCLUDED.note",
         )
-        .bind(&exchange)
+        .bind(&country)
         .bind(entry.date)
         .bind(entry.status)
         .bind(&entry.note)
@@ -329,7 +334,7 @@ async fn cmd_calendar_sync(exchange: String, year: i32) -> Result<()> {
         upserted += 1;
     }
 
-    println!("\n✓ {upserted} entries upserted for {exchange} {year}");
+    println!("\n✓ {upserted} entries upserted for {country} {year}");
     Ok(())
 }
 

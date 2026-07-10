@@ -1,21 +1,25 @@
 /// Trading calendar data provider.
 ///
 /// Fetches public holiday data from the Nager.Date API
-/// (`https://date.nager.at`) — free, no API key required — and maps it
-/// to exchange-specific closure rules.
+/// (`https://date.nager.at`) — free, no API key required — and stores
+/// it as **country calendars** in Postgres. Exchanges map to a country
+/// calendar; multiple exchanges in the same country share one calendar row.
+///
+/// # Data model
+///
+/// ```text
+/// trading_holidays table  ──keyed by──►  (country, date)
+///      ▲
+///      │  resolved via
+/// EXCHANGE_TO_COUNTRY    ──maps──►  exchange MIC → country code
+/// ```
 ///
 /// # Adding a new exchange
 ///
-/// Add one entry to [`EXCHANGE_CALENDARS`]:
-/// ```text
-/// ExchangeCalendar {
-///     mic:         "XHEL",
-///     country:     "FI",
-///     skip:        &["..."],
-///     half_days:   &[],
-/// }
-/// ```
-/// No code changes elsewhere required.
+/// 1. If the exchange is in a new country: add a `CountryCalendar` entry to
+///    [`COUNTRY_CALENDARS`] with the Nager.Date country code and filter rules.
+/// 2. Add the exchange MIC and its country code to [`EXCHANGE_TO_COUNTRY`].
+/// 3. Run `nexus calendar sync --country <CODE> --year <YEAR>` to seed the DB.
 use chrono::{Datelike, NaiveDate, Weekday};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -27,8 +31,11 @@ pub enum CalendarError {
     #[error("Nager.Date API request failed: {0}")]
     Http(#[from] reqwest::Error),
 
-    #[error("exchange {0} is not supported — add it to EXCHANGE_CALENDARS in alpha::calendar")]
-    UnsupportedExchange(String),
+    #[error("exchange MIC {0} not found in EXCHANGE_TO_COUNTRY")]
+    UnknownExchange(String),
+
+    #[error("country {0} not found in COUNTRY_CALENDARS")]
+    UnknownCountry(String),
 }
 
 /// A single trading-day exception fetched from an external calendar source.
@@ -41,30 +48,25 @@ pub struct CalendarEntry {
     pub note: String,
 }
 
-// ── Static exchange → calendar mapping ───────────────────────────────────
+// ── Country calendar rules ────────────────────────────────────────────────
 
-/// Mapping from an exchange MIC to its Nager.Date country code and filtering rules.
-struct ExchangeCalendar {
-    /// ISO 10383 Market Identifier Code.
-    mic: &'static str,
-    /// ISO 3166-1 alpha-2 country code used by Nager.Date.
+/// Filtering rules for a country's public holiday feed from Nager.Date.
+struct CountryCalendar {
+    /// ISO 3166-1 alpha-2 country code (matches Nager.Date API path).
     country: &'static str,
-    /// Holiday names (substring match) that the exchange does NOT observe.
+    /// Holiday name substrings to skip (not observed by any exchange in this
+    /// country, or always falls on a weekend and has no weekday effect).
     skip: &'static [&'static str],
-    /// Holiday names (substring match) that are early-close (half day) rather
-    /// than full closures.
+    /// Holiday name substrings that are early-close sessions rather than full
+    /// closures.
     half_days: &'static [&'static str],
 }
 
-/// Static table of supported exchanges.
+/// Country-level calendar rules.
 ///
-/// Multiple MICs can reference the same `country` + rules — e.g. XNYS and
-/// XNAS both use the US NYSE calendar. Adding a new exchange is a single
-/// entry here; no code changes elsewhere are needed.
-const EXCHANGE_CALENDARS: &[ExchangeCalendar] = &[
-    // ── Sweden ────────────────────────────────────────────────────────────
-    ExchangeCalendar {
-        mic: "FNSE",
+/// One entry per country. All exchanges in the same country share these rules.
+const COUNTRY_CALENDARS: &[CountryCalendar] = &[
+    CountryCalendar {
         country: "SE",
         skip: &[
             "Epiphany",        // Jan 6 — not observed by Nasdaq Stockholm
@@ -79,40 +81,50 @@ const EXCHANGE_CALENDARS: &[ExchangeCalendar] = &[
             "New Year's Eve", // Dec 31 — early close 13:00 CET
         ],
     },
-    // ── United States (NYSE calendar) ─────────────────────────────────────
-    // NYSE observes: New Year's Day, MLK Day, Presidents Day, Good Friday,
-    // Memorial Day, Juneteenth (from 2021), Independence Day, Labor Day,
-    // Thanksgiving, Christmas Day.
-    ExchangeCalendar {
-        mic: "XNYS",
+    CountryCalendar {
         country: "US",
+        // NYSE/Nasdaq US observe: New Year's Day, MLK Day, Presidents Day,
+        // Good Friday, Memorial Day, Juneteenth (from 2021), Independence Day,
+        // Labor Day, Thanksgiving, Christmas Day.
         skip: &[
             "Lincoln's Birthday",      // state holiday, not NYSE
             "Truman Day",              // Missouri state holiday
-            "Columbus Day",            // not observed by NYSE
-            "Indigenous Peoples' Day", // not observed by NYSE
-            "Veterans Day",            // not observed by NYSE
-        ],
-        half_days: &[],
-    },
-    ExchangeCalendar {
-        mic: "XNAS",
-        country: "US",
-        skip: &[
-            "Lincoln's Birthday",
-            "Truman Day",
-            "Columbus Day",
-            "Indigenous Peoples' Day",
-            "Veterans Day",
+            "Columbus Day",            // not observed by NYSE/Nasdaq
+            "Indigenous Peoples' Day", // not observed by NYSE/Nasdaq
+            "Veterans Day",            // not observed by NYSE/Nasdaq
         ],
         half_days: &[],
     },
 ];
 
+// ── Exchange → country mapping ────────────────────────────────────────────
+
+/// Static mapping from exchange MIC to ISO 3166-1 alpha-2 country code.
+///
+/// Multiple MICs can share the same country (e.g. XNYS and XNAS both use
+/// the US calendar). The country code determines which rows to read from
+/// the `trading_holidays` table and which Nager.Date feed to fetch.
+pub const EXCHANGE_TO_COUNTRY: &[(&str, &str)] = &[
+    ("FNSE", "SE"), // Nasdaq First North Growth Market Stockholm
+    ("XSTO", "SE"), // Nasdaq Stockholm
+    ("XNYS", "US"), // New York Stock Exchange
+    ("XNAS", "US"), // Nasdaq US
+];
+
+/// Resolve the country code for an exchange MIC.
+///
+/// Returns `None` if the MIC is not in [`EXCHANGE_TO_COUNTRY`].
+pub fn country_for_exchange(mic: &str) -> Option<&'static str> {
+    EXCHANGE_TO_COUNTRY
+        .iter()
+        .find(|(m, _)| *m == mic)
+        .map(|(_, c)| *c)
+}
+
 // ── Provider ──────────────────────────────────────────────────────────────
 
-/// Fetches trading holiday data from the Nager.Date API for a given year and
-/// exchange, applying exchange-specific filtering and half-day mapping.
+/// Fetches trading holiday data from the Nager.Date API for a given country
+/// and year, applying the country-specific filtering rules.
 pub struct CalendarProvider {
     client: reqwest::Client,
 }
@@ -124,24 +136,33 @@ impl CalendarProvider {
         }
     }
 
-    /// Fetch trading exceptions for `exchange_mic` in `year`.
+    /// Fetch trading exceptions for `country` in `year`.
     ///
-    /// Returns a list of [`CalendarEntry`] values for weekday dates only.
-    /// Weekend occurrences are omitted — callers handle those separately.
-    /// Duplicate dates (e.g. Good Friday appearing as both national and
-    /// state-level in the US feed) are deduplicated, keeping the first entry.
-    pub async fn holidays(
+    /// `country` is an ISO 3166-1 alpha-2 code (e.g. `"SE"`, `"US"`).
+    /// Use [`country_for_exchange`] to resolve a MIC first if needed.
+    pub async fn holidays_for_country(
+        &self,
+        country: &str,
+        year: i32,
+    ) -> Result<Vec<CalendarEntry>, CalendarError> {
+        let cal = COUNTRY_CALENDARS
+            .iter()
+            .find(|c| c.country == country)
+            .ok_or_else(|| CalendarError::UnknownCountry(country.to_string()))?;
+
+        let raw = self.fetch(year, cal.country).await?;
+        Ok(filter_holidays(raw, cal.skip, cal.half_days))
+    }
+
+    /// Convenience: resolve `exchange_mic` to a country, then fetch.
+    pub async fn holidays_for_exchange(
         &self,
         exchange_mic: &str,
         year: i32,
     ) -> Result<Vec<CalendarEntry>, CalendarError> {
-        let cal = EXCHANGE_CALENDARS
-            .iter()
-            .find(|c| c.mic == exchange_mic)
-            .ok_or_else(|| CalendarError::UnsupportedExchange(exchange_mic.to_string()))?;
-
-        let raw = self.fetch(year, cal.country).await?;
-        Ok(filter_holidays(raw, cal.skip, cal.half_days))
+        let country = country_for_exchange(exchange_mic)
+            .ok_or_else(|| CalendarError::UnknownExchange(exchange_mic.to_string()))?;
+        self.holidays_for_country(country, year).await
     }
 
     async fn fetch(&self, year: i32, country: &str) -> Result<Vec<NagerHoliday>, CalendarError> {
@@ -166,7 +187,6 @@ impl Default for CalendarProvider {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-/// Apply exchange-specific filtering and half-day mapping to a raw holiday list.
 fn filter_holidays(
     raw: Vec<NagerHoliday>,
     skip: &[&str],
@@ -182,7 +202,7 @@ fn filter_holidays(
                 return None;
             }
             if !seen_dates.insert(h.date) {
-                return None; // duplicate date
+                return None;
             }
             let status = if half_day_names.iter().any(|s| h.name.contains(s)) {
                 "half_day"

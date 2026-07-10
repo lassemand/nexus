@@ -29,9 +29,9 @@ spec:
                 - |
                   CURRENT_YEAR=$(date +%Y)
                   NEXT_YEAR=$((CURRENT_YEAR + 1))
-                  for EXCHANGE in FNSE XNYS; do
-                    nexus calendar sync --exchange "$EXCHANGE" --year "$CURRENT_YEAR"
-                    nexus calendar sync --exchange "$EXCHANGE" --year "$NEXT_YEAR"
+                  for COUNTRY in SE US; do
+                    nexus calendar sync --country "$COUNTRY" --year "$CURRENT_YEAR"
+                    nexus calendar sync --country "$COUNTRY" --year "$NEXT_YEAR"
                   done
               envFrom:
                 - secretRef:

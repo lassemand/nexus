@@ -9,7 +9,9 @@ pub mod provider;
 pub mod yahoo;
 
 pub use bar_provider::BarProvider;
-pub use calendar::{CalendarEntry, CalendarError, CalendarProvider};
+pub use calendar::{
+    country_for_exchange, CalendarEntry, CalendarError, CalendarProvider, EXCHANGE_TO_COUNTRY,
+};
 pub use company::CompanyProvider;
 pub use earnings::{EarningsProvider, QuarterlyEarnings};
 pub use polygon::PolygonBarProvider;
