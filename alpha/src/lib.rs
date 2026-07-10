@@ -1,4 +1,5 @@
 pub mod bar_provider;
+pub mod calendar;
 pub mod company;
 pub mod earnings;
 pub mod polygon;
@@ -8,6 +9,7 @@ pub mod provider;
 pub mod yahoo;
 
 pub use bar_provider::BarProvider;
+pub use calendar::{CalendarEntry, CalendarError, CalendarProvider};
 pub use company::CompanyProvider;
 pub use earnings::{EarningsProvider, QuarterlyEarnings};
 pub use polygon::PolygonBarProvider;

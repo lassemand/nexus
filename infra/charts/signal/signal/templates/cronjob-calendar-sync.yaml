@@ -1,0 +1,42 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: calendar-sync
+  labels:
+    app: calendar-sync
+spec:
+  # Run on Jan 2 each year (Jan 1 is a holiday; let the cluster settle first).
+  # Fetches next year's + current year's trading holidays from Nager.Date
+  # and upserts them into the trading_holidays table.
+  schedule: "0 6 2 1 *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: calendar-sync
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: calendar-sync
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  CURRENT_YEAR=$(date +%Y)
+                  NEXT_YEAR=$((CURRENT_YEAR + 1))
+                  nexus calendar sync --exchange FNSE --year "$CURRENT_YEAR"
+                  nexus calendar sync --exchange FNSE --year "$NEXT_YEAR"
+              envFrom:
+                - secretRef:
+                    name: signal-secret
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "25m"
+                limits:
+                  memory: "128Mi"

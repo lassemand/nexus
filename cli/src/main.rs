@@ -1,5 +1,5 @@
+use alpha::CalendarProvider;
 use anyhow::{Context, Result};
-use chrono::{Datelike, NaiveDate, Weekday};
 use clap::{Parser, Subcommand};
 use futures::future::join_all;
 use model::generated::TickerRegistration;
@@ -77,6 +77,9 @@ enum Commands {
 #[derive(Subcommand)]
 enum CalendarAction {
     /// Fetch trading holidays for a year from Nager.Date and upsert into the DB.
+    ///
+    /// Reads DATABASE_URL from the environment (set automatically in the
+    /// cluster via the signal-secret ExternalSecret).
     Sync {
         /// ISO 10383 MIC of the exchange to sync. Currently only FNSE
         /// (Nasdaq First North Growth Market Stockholm) is supported.
@@ -86,10 +89,6 @@ enum CalendarAction {
         /// Calendar year to fetch (e.g. 2028).
         #[arg(long)]
         year: i32,
-
-        /// Postgres connection URL for the signal/backtest database.
-        #[arg(long, env = "DATABASE_URL")]
-        database_url: String,
     },
 }
 
@@ -150,13 +149,8 @@ async fn main() -> Result<()> {
         } => cmd_register(tickers, exchange_mic, brokers, topic).await,
 
         Commands::Calendar {
-            action:
-                CalendarAction::Sync {
-                    exchange,
-                    year,
-                    database_url,
-                },
-        } => cmd_calendar_sync(exchange, year, database_url).await,
+            action: CalendarAction::Sync { exchange, year },
+        } => cmd_calendar_sync(exchange, year).await,
 
         Commands::Completions {
             shell: CompletionsShell::Zsh,
@@ -291,96 +285,31 @@ fn cmd_completions_zsh() -> Result<()> {
     Ok(())
 }
 
-// ── Nager.Date API types ──────────────────────────────────────────────────
+/// Fetch trading holidays via alpha::CalendarProvider and upsert into the DB.
+///
+/// DATABASE_URL is read from the environment — set automatically in the
+/// cluster via the signal-secret ExternalSecret.
+async fn cmd_calendar_sync(exchange: String, year: i32) -> Result<()> {
+    let database_url =
+        std::env::var("DATABASE_URL").context("DATABASE_URL environment variable not set")?;
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NagerHoliday {
-    date: NaiveDate,
-    name: String,
-}
-
-// ── FNSE holiday mapping ──────────────────────────────────────────────────
-
-/// Swedish public holidays that Nasdaq Stockholm / First North (FNSE) does
-/// NOT close for. Everything else from the SE Nager feed is treated as a
-/// full closure (unless remapped to half_day below).
-const FNSE_SKIP: &[&str] = &[
-    "Epiphany",        // Jan 6 — not observed by Nasdaq Stockholm
-    "Easter Sunday",   // always a Sunday, no exchange effect
-    "Pentecost",       // always a Sunday, no exchange effect
-    "Whit Sunday",     // alternate name
-    "Midsummer Day",   // the Saturday — Midsummer Eve (Friday) is the closure
-    "All Saints' Day", // Nov 1 — not observed by Nasdaq Stockholm
-];
-
-/// Holidays that Nasdaq Stockholm observes as an early-close (half day)
-/// rather than a full closure.
-const FNSE_HALF_DAY: &[&str] = &[
-    "Christmas Eve",  // Dec 24 — early close 13:00 CET
-    "New Year's Eve", // Dec 31 — early close 13:00 CET
-];
-
-/// Fetch trading holidays for `year` from Nager.Date, apply the FNSE
-/// mapping, and upsert the results into `trading_holidays`.
-async fn cmd_calendar_sync(exchange: String, year: i32, database_url: String) -> Result<()> {
-    if exchange != "FNSE" {
-        anyhow::bail!(
-            "only FNSE is currently supported; got {exchange}. \
-             Add a mapping in cmd_calendar_sync to support other exchanges."
-        );
-    }
-
-    // Fetch from Nager.Date (free, no key required).
-    let url = format!("https://date.nager.at/api/v3/publicholidays/{year}/SE");
-    let client = reqwest::Client::new();
-    let holidays: Vec<NagerHoliday> = client
-        .get(&url)
-        .header("User-Agent", "nexus-cli")
-        .send()
+    let provider = CalendarProvider::new();
+    let entries = provider
+        .holidays(&exchange, year)
         .await
-        .context("failed to contact Nager.Date API")?
-        .error_for_status()
-        .context("Nager.Date API returned an error")?
-        .json()
-        .await
-        .context("failed to parse Nager.Date response")?;
-
-    // Map to (date, status, note).
-    let mut entries: Vec<(NaiveDate, &str, &str)> = Vec::new();
-
-    for h in &holidays {
-        let wd = h.date.weekday();
-        // Skip weekends — they're already non-trading days.
-        if wd == Weekday::Sat || wd == Weekday::Sun {
-            continue;
-        }
-        // Skip holidays Nasdaq Stockholm doesn't observe.
-        if FNSE_SKIP.iter().any(|s| h.name.contains(s)) {
-            continue;
-        }
-
-        let status = if FNSE_HALF_DAY.iter().any(|s| h.name.contains(s)) {
-            "half_day"
-        } else {
-            "closed"
-        };
-
-        entries.push((h.date, status, &h.name));
-    }
+        .context("failed to fetch holidays from Nager.Date")?;
 
     if entries.is_empty() {
-        println!("No entries to upsert for {exchange} {year} — check the Nager.Date response.");
+        println!("No weekday entries to upsert for {exchange} {year}.");
         return Ok(());
     }
 
-    // Connect to DB and upsert.
     let pool = sqlx::PgPool::connect(&database_url)
         .await
         .context("failed to connect to database")?;
 
     let mut upserted = 0usize;
-    for (date, status, note) in &entries {
+    for entry in &entries {
         sqlx::query(
             "INSERT INTO trading_holidays (exchange_mic, date, status, note)
              VALUES ($1, $2, $3, $4)
@@ -389,14 +318,14 @@ async fn cmd_calendar_sync(exchange: String, year: i32, database_url: String) ->
                    note   = EXCLUDED.note",
         )
         .bind(&exchange)
-        .bind(date)
-        .bind(status)
-        .bind(note)
+        .bind(entry.date)
+        .bind(entry.status)
+        .bind(&entry.note)
         .execute(&pool)
         .await
-        .with_context(|| format!("failed to upsert {date}"))?;
+        .with_context(|| format!("failed to upsert {}", entry.date))?;
 
-        println!("  {date}  {status:<8}  {note}");
+        println!("  {}  {:<8}  {}", entry.date, entry.status, entry.note);
         upserted += 1;
     }
 

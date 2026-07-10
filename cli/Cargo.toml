@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 model = { path = "../model" }
+alpha = { path = "../alpha" }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 rdkafka = { version = "0.36", features = ["cmake-build", "tokio"] }
