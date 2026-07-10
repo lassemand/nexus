@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 model = { path = "../model" }
+alpha = { path = "../alpha" }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 rdkafka = { version = "0.36", features = ["cmake-build", "tokio"] }
@@ -17,3 +18,5 @@ reqwest = { version = "0.12", features = ["json"] }
 anyhow = "1"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono"] }
+chrono = { version = "0.4", features = ["serde"] }

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 prost = "0.13"
+chrono = "0.4"
 
 [build-dependencies]
 prost-build = "0.13"
