@@ -1,0 +1,36 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pdmr
+  labels:
+    app: pdmr
+spec:
+  # Run weekdays at 06:30 — 30 minutes after the filings (SEC Form 4) CronJob,
+  # aligned with the trading week. FI insiders have 3 business days to report,
+  # so daily polling is sufficient.
+  schedule: "30 6 * * 1-5"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: pdmr
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pdmr
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/pdmr"]
+              envFrom:
+                - secretRef:
+                    name: chronicle-secret
+              resources:
+                requests:
+                  memory: {{ .Values.resources.requests.memory | quote }}
+                  cpu: {{ .Values.resources.requests.cpu | quote }}
+                limits:
+                  memory: {{ .Values.resources.limits.memory | quote }}

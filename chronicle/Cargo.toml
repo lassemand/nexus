@@ -19,6 +19,10 @@ path = "src/earnings_bin.rs"
 name = "filings"
 path = "src/filings.rs"
 
+[[bin]]
+name = "pdmr"
+path = "src/pdmr.rs"
+
 [dependencies]
 model = { path = "../model" }
 alpha = { path = "../alpha" }
@@ -38,3 +42,4 @@ clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
 quick-xml = { version = "0.37", features = ["serialize"] }
 anyhow = "1"
+urlencoding = "2"
