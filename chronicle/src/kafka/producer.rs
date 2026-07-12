@@ -43,7 +43,7 @@ impl ChronicleProducer {
             low: bar.low,
             close: bar.close,
             volume: bar.volume as u64,
-            currency: "USD".to_string(),
+            currency: bar.currency.clone(),
             timestamp_unix_secs: ts,
             exchange_mic: bar.asset.exchange_mic.clone(),
         };
@@ -77,5 +77,82 @@ impl ChronicleProducer {
             .await
             .map_err(|(e, _)| ProducerError::Kafka(e.to_string()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use model::asset::{mic, Asset};
+
+    fn make_bar(exchange_mic: &'static str) -> Bar {
+        Bar {
+            asset: Asset::with_mic("TEST", exchange_mic),
+            open: 10.0,
+            high: 11.0,
+            low: 9.0,
+            close: 10.5,
+            volume: 5000.0,
+            timestamp: SystemTime::UNIX_EPOCH,
+            currency: mic::currency(exchange_mic).to_string(),
+        }
+    }
+
+    #[test]
+    fn usd_bar_encodes_usd_currency() {
+        use model::generated::MarketEvent;
+        use prost::Message;
+
+        let bar = make_bar(mic::XNAS);
+        // Simulate what publish_bar does when building the MarketEvent.
+        let ts = bar
+            .timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let event = MarketEvent {
+            ticker: bar.asset.ticker.clone(),
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume as u64,
+            currency: bar.currency.clone(), // must NOT be hardcoded "USD"
+            timestamp_unix_secs: ts,
+            exchange_mic: bar.asset.exchange_mic.clone(),
+        };
+        let encoded = event.encode_to_vec();
+        let decoded = MarketEvent::decode(encoded.as_slice()).unwrap();
+        assert_eq!(decoded.currency, "USD");
+    }
+
+    #[test]
+    fn sek_bar_encodes_sek_currency() {
+        use model::generated::MarketEvent;
+        use prost::Message;
+
+        let bar = make_bar(mic::FNSE);
+        let ts = bar
+            .timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let event = MarketEvent {
+            ticker: bar.asset.ticker.clone(),
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume as u64,
+            currency: bar.currency.clone(), // must NOT be hardcoded "USD"
+            timestamp_unix_secs: ts,
+            exchange_mic: bar.asset.exchange_mic.clone(),
+        };
+        let encoded = event.encode_to_vec();
+        let decoded = MarketEvent::decode(encoded.as_slice()).unwrap();
+        assert_eq!(
+            decoded.currency, "SEK",
+            "SEK bar must not be silently mislabeled as USD"
+        );
     }
 }
