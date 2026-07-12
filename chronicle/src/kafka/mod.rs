@@ -2,4 +2,5 @@ mod producer;
 mod tickers;
 
 pub use producer::ChronicleProducer;
-pub use tickers::load_tickers;
+#[allow(unused_imports)]
+pub use tickers::{load_ticker_registrations, load_tickers};
