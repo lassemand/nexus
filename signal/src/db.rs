@@ -562,11 +562,15 @@ mod tests {
     async fn test_unknown_slug_is_skipped_not_panicked(pool: PgPool) -> sqlx::Result<()> {
         // Insert a row with an unrecognized slug directly — bypassing upsert_company
         // to simulate schema drift or a future variant not yet known to this binary.
-        sqlx::query("INSERT INTO companies (ticker, sector) VALUES ($1, $2)")
-            .bind("BAD")
-            .bind("unknown_sector")
-            .execute(&pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO companies (ticker, exchange_mic, currency, sector) VALUES ($1, $2, $3, $4)",
+        )
+        .bind("BAD")
+        .bind("XNAS")
+        .bind("USD")
+        .bind("unknown_sector")
+        .execute(&pool)
+        .await?;
 
         let map = load_companies(&pool).await?;
         assert!(
