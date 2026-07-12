@@ -24,6 +24,13 @@ SEC EDGAR ──► chronicle ──► earnings.calendar (EarningsEvent)
 Polygon ────► market ────► market.bars       (MarketEvent)
 ```
 
+## Data sources
+
+| Market | Source | Notes |
+|---|---|---|
+| US equities (XNAS/XNYS) | Polygon API | Used by `chronicle/market` and `alpha::PolygonBarProvider` |
+| Nordic/First North (FNSE) | Saxo Bank OpenAPI | Planned — see `docs/adr/0001-saxo-openapi-nordic-data-source.md` |
+
 ## Commands
 
 ```bash
