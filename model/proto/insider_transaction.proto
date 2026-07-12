@@ -1,0 +1,68 @@
+syntax = "proto3";
+package nexus;
+
+// A PDMR (person discharging managerial responsibilities) insider transaction
+// disclosure sourced from a national regulatory register such as Sweden's
+// Finansinspektionen (FI) or equivalent MAR Article 19 registers.
+//
+// This message is intentionally distinct from InsiderFiling, which is shaped
+// around US SEC identifiers (CIK numbers) that have no equivalent in European
+// regulatory filings. Do not conflate the two.
+//
+// Transaction type classification:
+enum TransactionType {
+  TRANSACTION_TYPE_UNSPECIFIED = 0;
+  TRANSACTION_TYPE_BUY         = 1; // Acquisition / Förvärv
+  TRANSACTION_TYPE_SELL        = 2; // Disposal / Avyttring
+  TRANSACTION_TYPE_OTHER       = 3; // Allotment, subscription, exercise, etc.
+}
+
+message InsiderTransaction {
+  // ── Issuer identity ──────────────────────────────────────────────────────
+  // Ticker symbol of the issuer (uppercase, e.g. "GOMX").
+  string ticker       = 1;
+  // ISO 10383 Market Identifier Code of the exchange (e.g. "FNSE").
+  // Matches the exchange_mic field on Asset (NEX-75).
+  string exchange_mic = 2;
+
+  // ── PDMR identity ────────────────────────────────────────────────────────
+  // Full name of the reporting person (the PDMR or their close associate).
+  string pdmr_name = 3;
+  // Role/position of the PDMR (e.g. "CEO", "Board member", "Senior executive").
+  string pdmr_role = 4;
+  // True when the transaction was filed by a close associate of the PDMR
+  // rather than the PDMR themselves (i.e. "Närstående" in FI data).
+  bool is_close_associate = 5;
+
+  // ── Transaction details ───────────────────────────────────────────────────
+  // Unix timestamp (seconds) of the transaction execution date.
+  int64 transaction_date_unix_secs  = 6;
+  // Unix timestamp (seconds) of the publication/filing date.
+  int64 publication_date_unix_secs  = 7;
+  // Transaction direction (Buy, Sell, or Other).
+  TransactionType transaction_type  = 8;
+  // Number of units transacted (shares, warrants, etc.).
+  double volume                     = 9;
+  // Price per unit in `currency`.
+  double price_per_unit             = 10;
+  // ISO 4217 currency code (e.g. "SEK", "EUR", "USD").
+  string currency                   = 11;
+
+  // ── Instrument identity ───────────────────────────────────────────────────
+  // ISIN of the instrument (e.g. "SE0008348304").
+  string isin            = 12;
+  // Human-readable instrument type from the source register
+  // (e.g. "Aktie", "Warrant", "Teckningsrätt").
+  string instrument_type = 13;
+
+  // ── Metadata ──────────────────────────────────────────────────────────────
+  // True when this record is a correction/amendment of a previously published
+  // filing. Consumers should replace any earlier record for the same
+  // (ticker, pdmr_name, transaction_date_unix_secs) on seeing a correction.
+  bool is_correction = 14;
+  // Free-text description of what the correction changed (may be empty).
+  string correction_description = 15;
+  // Identifier of the source regulatory register, e.g. "FI" (Finansinspektionen),
+  // kept for future extensibility to other national MAR registers.
+  string source_registry = 16;
+}
