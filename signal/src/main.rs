@@ -12,7 +12,7 @@ use db::{
 };
 use features::{compute_post_event_ar, compute_pre_event_features};
 use model::{
-    asset::Asset,
+    asset::{mic, Asset},
     generated::{EarningsEvent, InsiderFiling, MarketEvent, SpecialEvent, TickerRegistration},
 };
 use prost::Message;
@@ -76,22 +76,37 @@ async fn handle_ticker_registration(
     };
 
     let ticker = msg.ticker.to_uppercase();
-    let asset = Asset::new(&ticker);
+    // Resolve exchange_mic: use the value from the proto if present, fall back to XNAS.
+    let exchange_mic = if msg.exchange_mic.is_empty() {
+        mic::XNAS.to_string()
+    } else {
+        msg.exchange_mic.clone()
+    };
+    // Resolve currency: use explicit proto value if present, else derive from MIC.
+    let currency = if msg.currency.is_empty() {
+        mic::currency(&exchange_mic).to_string()
+    } else {
+        msg.currency.clone()
+    };
+
+    let asset = Asset::with_mic(&ticker, &exchange_mic);
 
     let sector = match sector_provider.sector(&asset).await {
         Ok(s) => s,
         Err(e) => {
-            error!(ticker = %ticker, error = %e, "Polygon sector lookup failed, skipping ticker");
+            error!(ticker = %ticker, exchange_mic = %exchange_mic, error = %e,
+                   "Polygon sector lookup failed, skipping ticker");
             return;
         }
     };
 
-    if let Err(e) = upsert_company(pool, &ticker, sector).await {
-        error!(ticker = %ticker, error = %e, "failed to persist company sector to DB");
+    if let Err(e) = upsert_company(pool, &ticker, &exchange_mic, &currency, sector).await {
+        error!(ticker = %ticker, error = %e, "failed to persist company to DB");
         return;
     }
 
-    info!(ticker = %ticker, "ticker registered and sector persisted");
+    info!(ticker = %ticker, exchange_mic = %exchange_mic, currency = %currency,
+          "ticker registered and sector persisted");
 }
 
 #[tokio::main]

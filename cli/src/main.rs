@@ -253,6 +253,7 @@ async fn cmd_register(
                 let payload = TickerRegistration {
                     ticker: ticker.clone(),
                     exchange_mic: exchange_mic.clone(),
+                    currency: model::asset::mic::currency(&exchange_mic).to_string(),
                 }
                 .encode_to_vec();
 
@@ -346,6 +347,7 @@ mod tests {
         let original = TickerRegistration {
             ticker: "aapl".to_string(),
             exchange_mic: "XNAS".to_string(),
+            currency: "USD".to_string(),
         };
         let encoded = original.encode_to_vec();
         let decoded = TickerRegistration::decode(encoded.as_slice()).unwrap();

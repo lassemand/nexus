@@ -12,4 +12,8 @@ message TickerRegistration {
   // sensible default (XNAS for US instruments).
   // Added in field 2 — do not renumber field 1.
   string exchange_mic = 2;
+  // ISO 4217 currency code for the instrument (e.g. "USD", "SEK").
+  // Empty string means the consumer should derive it from exchange_mic.
+  // Added in field 3 — do not renumber existing fields.
+  string currency = 3;
 }
