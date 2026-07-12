@@ -365,18 +365,28 @@ pub async fn is_registered(pool: &PgPool, ticker: &str) -> sqlx::Result<bool> {
 
 /// Inserts or updates the sector mapping for a company.
 ///
-/// `ticker` is normalized to uppercase before being stored. On conflict the
-/// sector is overwritten with the new value.
-pub async fn upsert_company(pool: &PgPool, ticker: &str, sector: Sector) -> sqlx::Result<()> {
+/// Upsert a company into the registry.
+///
+/// `ticker` is normalized to uppercase. On conflict (ticker, exchange_mic) the
+/// sector is updated; exchange_mic and currency are immutable after first insert.
+pub async fn upsert_company(
+    pool: &PgPool,
+    ticker: &str,
+    exchange_mic: &str,
+    currency: &str,
+    sector: Sector,
+) -> sqlx::Result<()> {
     let ticker = ticker.to_uppercase();
     sqlx::query(
         r#"
-        INSERT INTO companies (ticker, sector)
-        VALUES ($1, $2)
-        ON CONFLICT (ticker) DO UPDATE SET sector = EXCLUDED.sector
+        INSERT INTO companies (ticker, exchange_mic, currency, sector)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (ticker, exchange_mic) DO UPDATE SET sector = EXCLUDED.sector
         "#,
     )
     .bind(&ticker)
+    .bind(exchange_mic)
+    .bind(currency)
     .bind(sector.slug())
     .execute(pool)
     .await?;
@@ -500,7 +510,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_upsert_inserts_new_row(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "AAPL", Sector::Technology).await?;
+        upsert_company(&pool, "AAPL", "XNAS", "USD", Sector::Technology).await?;
         let map = load_companies(&pool).await?;
         assert_eq!(map.get("AAPL"), Some(&Sector::Technology));
         Ok(())
@@ -508,8 +518,8 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_upsert_updates_sector_on_conflict(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "AAPL", Sector::Technology).await?;
-        upsert_company(&pool, "AAPL", Sector::Healthcare).await?;
+        upsert_company(&pool, "AAPL", "XNAS", "USD", Sector::Technology).await?;
+        upsert_company(&pool, "AAPL", "XNAS", "USD", Sector::Healthcare).await?;
         let map = load_companies(&pool).await?;
         assert_eq!(map.get("AAPL"), Some(&Sector::Healthcare));
         Ok(())
@@ -538,7 +548,7 @@ mod tests {
             ("T11", Sector::CommunicationServices),
         ];
         for (ticker, ref sector) in &fixtures {
-            upsert_company(&pool, ticker, sector.clone()).await?;
+            upsert_company(&pool, ticker, "XNAS", "USD", sector.clone()).await?;
         }
         let map = load_companies(&pool).await?;
         assert_eq!(map.len(), 11);
@@ -552,11 +562,15 @@ mod tests {
     async fn test_unknown_slug_is_skipped_not_panicked(pool: PgPool) -> sqlx::Result<()> {
         // Insert a row with an unrecognized slug directly — bypassing upsert_company
         // to simulate schema drift or a future variant not yet known to this binary.
-        sqlx::query("INSERT INTO companies (ticker, sector) VALUES ($1, $2)")
-            .bind("BAD")
-            .bind("unknown_sector")
-            .execute(&pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO companies (ticker, exchange_mic, currency, sector) VALUES ($1, $2, $3, $4)",
+        )
+        .bind("BAD")
+        .bind("XNAS")
+        .bind("USD")
+        .bind("unknown_sector")
+        .execute(&pool)
+        .await?;
 
         let map = load_companies(&pool).await?;
         assert!(
@@ -568,7 +582,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_ticker_normalization_to_uppercase(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "aapl", Sector::Technology).await?;
+        upsert_company(&pool, "aapl", "XNAS", "USD", Sector::Technology).await?;
         let map = load_companies(&pool).await?;
         assert_eq!(
             map.get("AAPL"),
@@ -584,7 +598,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_is_registered_returns_true_for_known_ticker(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "AAPL", Sector::Technology).await?;
+        upsert_company(&pool, "AAPL", "XNAS", "USD", Sector::Technology).await?;
         assert!(is_registered(&pool, "AAPL").await?);
         Ok(())
     }
@@ -597,12 +611,66 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_is_registered_is_case_sensitive(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "aapl", Sector::Technology).await?; // stored as AAPL
+        upsert_company(&pool, "aapl", "XNAS", "USD", Sector::Technology).await?; // stored as AAPL
         assert!(is_registered(&pool, "AAPL").await?, "uppercase must match");
         assert!(
             !is_registered(&pool, "aapl").await?,
             "lowercase must not match after normalisation"
         );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_nordic_ticker_stored_with_correct_mic_and_currency(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        use sqlx::Row;
+
+        // Register GOMX as an FNSE instrument with SEK currency.
+        upsert_company(&pool, "GOMX", "FNSE", "SEK", Sector::Technology).await?;
+
+        let row = sqlx::query(
+            "SELECT ticker, exchange_mic, currency FROM companies WHERE ticker = 'GOMX'",
+        )
+        .fetch_one(&pool)
+        .await?;
+
+        assert_eq!(row.get::<String, _>("ticker"), "GOMX");
+        assert_eq!(row.get::<String, _>("exchange_mic"), "FNSE");
+        assert_eq!(row.get::<String, _>("currency"), "SEK");
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_same_ticker_different_mic_does_not_collide(pool: PgPool) -> sqlx::Result<()> {
+        use sqlx::Row;
+
+        // Hypothetical: same ticker string on two different exchanges.
+        upsert_company(&pool, "GOMX", "XNAS", "USD", Sector::Technology).await?;
+        upsert_company(&pool, "GOMX", "FNSE", "SEK", Sector::Technology).await?;
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM companies WHERE ticker = 'GOMX'")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(
+            count, 2,
+            "same ticker on different exchanges must be separate rows"
+        );
+
+        let usd_row = sqlx::query(
+            "SELECT currency FROM companies WHERE ticker = 'GOMX' AND exchange_mic = 'XNAS'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(usd_row.get::<String, _>("currency"), "USD");
+
+        let sek_row = sqlx::query(
+            "SELECT currency FROM companies WHERE ticker = 'GOMX' AND exchange_mic = 'FNSE'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(sek_row.get::<String, _>("currency"), "SEK");
+
         Ok(())
     }
 }
