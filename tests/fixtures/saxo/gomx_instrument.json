@@ -1,0 +1,72 @@
+{
+  "search_result": {
+    "AssetType": "Stock",
+    "CurrencyCode": "SEK",
+    "Description": "GomSpace Group AB",
+    "ExchangeId": "SSE_FN-SE",
+    "GroupId": 9413,
+    "Identifier": 4769462,
+    "IssuerCountry": "SE",
+    "PrimaryListing": 4769462,
+    "SummaryType": "Instrument",
+    "Symbol": "GOMX:xome",
+    "TradableAs": ["Stock"]
+  },
+  "details": {
+    "AssetType": "Stock",
+    "CurrencyCode": "SEK",
+    "Description": "GomSpace Group AB",
+    "Exchange": {
+      "CountryCode": "SE",
+      "ExchangeId": "SSE_FN-SE",
+      "Name": "NASDAQ OMX Stockholm (First North)",
+      "TimeZoneId": "4"
+    },
+    "IsBailIn": false,
+    "IsComplex": false,
+    "IsTradable": true,
+    "NonTradableReason": "None",
+    "PriceCurrency": "SEK",
+    "PriceToContractFactor": 1.0,
+    "PrimaryListing": 4769462,
+    "Symbol": "GOMX:xome",
+    "TradableAs": ["Stock"],
+    "TradableOn": ["22478318"],
+    "TradingStatus": "Tradable",
+    "Uic": 4769462,
+    "UnderlyingTypeCategory": "Instrument"
+  },
+  "exchange": {
+    "ExchangeId": "SSE_FN-SE",
+    "IsoMic": "SSME",
+    "Mic": "XOME",
+    "Name": "NASDAQ OMX Stockholm (First North)",
+    "OperatingMic": "XSTO",
+    "PriceSourceName": "Nasdaq",
+    "CountryCode": "SE",
+    "Currency": "SEK",
+    "TimeZoneAbbreviation": "CEST",
+    "TimeZoneOffset": "02:00:00"
+  },
+  "price_subscription_snapshot": {
+    "PriceSource": "SSE_FN-SE",
+    "Quote": {
+      "ErrorCode": "None",
+      "PriceSource": "SSE_FN-SE",
+      "PriceSourceType": "Firm",
+      "PriceTypeAsk": "NoAccess",
+      "PriceTypeBid": "NoAccess"
+    }
+  },
+  "notes": {
+    "captured": "2026-07-12",
+    "token_type": "24h SIM token",
+    "market_data_terms_accepted": false,
+    "no_access_reason": "MarketDataViaOpenApiTermsAccepted=false on account. Must accept terms in SaxoTrader GO and subscribe to SSE_FN-SE exchange entitlement to get live prices.",
+    "cfd_on_stock_result": "empty — no CfdOnStock listed for GOMX, only Stock AssetType available",
+    "first_north_exchange_id": "SSE_FN-SE",
+    "first_north_is_separate_exchange": true,
+    "uic": 4769462,
+    "chart_endpoint": "404 in SIM — not available without live market data subscription"
+  }
+}

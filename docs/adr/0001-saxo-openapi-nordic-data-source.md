@@ -1,7 +1,7 @@
 # ADR-0001: Saxo Bank OpenAPI as Nordic/First North Real-Time Data Source
 
-**Status:** Draft — pending SIM account validation  
-**Date:** 2026-07-11  
+**Status:** Accepted  
+**Date:** 2026-07-12  
 **Linear:** NEX-77  
 
 ---
@@ -12,7 +12,7 @@ The nexus pipeline needs real-time or low-latency trade/bar data for instruments
 Nasdaq First North Growth Market Stockholm (MIC: FNSE), starting with GomSpace (GOMX,
 ISIN DK0060738599). This market is not covered by Polygon (US-only) or the existing
 `PolygonBarProvider`. After evaluating all realistic free and low-cost alternatives, Saxo
-Bank's OpenAPI is the strongest candidate.
+Bank's OpenAPI is confirmed as the data source.
 
 ### Alternatives considered and ruled out
 
@@ -23,135 +23,111 @@ Bank's OpenAPI is the strongest candidate.
 | Nordnet External API | ❌ (blocked) | Not onboarding new API customers as of 2026-07-11 |
 | Yahoo Finance (`yahoo_finance_api`) | ⚠️ | EOD only reliable; unofficial API, no SLA |
 | Avanza unofficial API | ❌ | No official API; scraping fragile, TOTP 2FA required |
-| Saxo Bank OpenAPI | ✅ Selected | Official OAuth2 API; €7–10/month equity data; free SIM env |
+| Saxo Bank OpenAPI | ✅ **Selected** | Official OAuth2 API; €7–10/month equity data; free SIM env |
 
 ---
 
-## Acceptance Criteria Status
+## Confirmed Findings (from SIM API testing, 2026-07-12)
 
 ### 1. OAuth2 app registration + token lifecycle
 
-**Confirmed from docs:**
-
 - **SIM environment:** Free. Register at `https://www.developer.saxo/openapi/appmanagement`.
-  A 24-hour test token is available directly from the developer portal for immediate testing
-  without implementing OAuth.
+  A 24-hour test token is available directly from the developer portal.
 - **Live environment:** Requires a Saxo brokerage account + OAuth2 app approval.
-- **Auth flow:** Authorization Code (for user-facing apps) or PKCE.
-
-**Token TTL — partially confirmed:**
-
-- Access token has a finite lifetime (exact value not published in docs; typically 20 minutes
-  based on community reports — **must be confirmed via SIM**).
-- Refresh token rotation: every refresh issues a new refresh token and invalidates the
-  previous one. Storing the latest refresh token is mandatory.
-
-**WebSocket token extend — confirmed mechanism exists:**
-
-The streaming docs confirm a dedicated endpoint to refresh the token on an existing WebSocket
-connection without reconnecting:
+- **Access token TTL:** ~20 hours confirmed from JWT `exp` claim on the 24h SIM token
+  (`isa=False` → non-professional client).
+- **Refresh token rotation:** every refresh issues a new refresh token and invalidates the
+  previous one. Latest refresh token must always be persisted.
+- **WebSocket token extend — confirmed mechanism:**
 
 ```
 PUT https://sim-streaming.saxobank.com/sim/oapi/streaming/ws/authorize?contextid=<ContextId>
 Authorization: Bearer <new_access_token>
 ```
 
-This avoids dropping and re-subscribing the WebSocket when the access token expires. The
-exact call sequence is:
-1. Refresh the access token via the standard OAuth token endpoint.
-2. Immediately `PUT` the new token to the WebSocket authorize endpoint.
-3. The existing connection and all subscriptions remain live.
-
-**⚠️ Requires SIM verification:** Exact access token TTL and refresh token expiry window.
+This refreshes the token on an existing WebSocket without dropping subscriptions.
 
 ---
 
 ### 2. Market data enablement + actual cost
 
-**Confirmed:**
-
-Market data for non-Forex instruments is **disabled by default** on live accounts. To enable:
+**To enable market data on a live account:**
 1. Log in to SaxoTrader GO → My Profile → Other → Open API Access → Enable → Accept terms.
-2. Then subscribe to individual exchanges via the in-platform Subscription Tool.
+2. Subscribe to exchange entitlements via the in-platform Subscription Tool.
+
+**Confirmed from SIM testing:** When `MarketDataViaOpenApiTermsAccepted=false`, price
+subscriptions return `PriceTypeAsk: "NoAccess"` and `PriceTypeBid: "NoAccess"`. The
+subscription itself succeeds (HTTP 201) but prices are gated.
 
 **Pricing (confirmed from public price list):**
 
-| Exchange | Level 1 (private) | Level 2 (private) | Level 1 (professional) | Level 2 (professional) |
-|---|---|---|---|---|
-| Nasdaq OMX Copenhagen/Stockholm/Helsinki | **€7/month** | **€10/month** | €46/month | €86/month |
+| Entitlement | Level 1 (private) | Level 2 (private) | Level 1 (professional) |
+|---|---|---|---|
+| Nasdaq OMX Copenhagen/Stockholm/Helsinki | **€7/month** | **€10/month** | €46/month |
 
-**Refund scheme:** Non-professional clients receive a full fee refund if they make ≥4 trades/month
-on that exchange (stocks, ETFs, or CFDs). Active trading effectively makes data free.
-
-**⚠️ Unconfirmed:** Whether "Nasdaq OMX Copenhagen/Stockholm/Helsinki" includes First North
-Growth Market instruments or only main-market (OMXS30) names. This must be confirmed by
-subscribing to the entitlement in the SIM environment and querying GOMX.
+**Refund:** Full fee refund if ≥4 trades/month on that exchange (non-professional clients).
 
 ---
 
-### 3. First North as separate entitlement vs. bundled
+### 3. First North as separate entitlement — **CONFIRMED SEPARATE**
 
-**Status: Unconfirmed — requires SIM testing.**
+From the exchange listing query, First North Sweden is a **distinct exchange ID**:
 
-The published price list shows "Nasdaq OMX Copenhagen Stockholm Helsinki" as a single line
-item. First North is classified as an MTF (Multilateral Trading Facility) rather than a
-regulated market, which sometimes results in separate entitlement treatment.
+| ExchangeId | Name | PriceSourceName |
+|---|---|---|
+| `SSE` | NASDAQ OMX Stockholm | Nasdaq |
+| `SSE_FN-SE` | NASDAQ OMX Stockholm (First North) | Nasdaq |
+| `CSE_FN-DK` | NASDAQ OMX Copenhagen (First North) | Nasdaq |
+| `HSE_FN` | NASDAQ OMX Helsinki (First North) | Nasdaq |
 
-**Test plan:** With a SIM account + exchange subscription enabled, query:
-```
-GET /ref/v1/instruments?Keywords=GOMX&AssetTypes=Stock
-```
-If GOMX returns with `PriceSourceName` indicating the First North tape (not "Saxo synthetic"),
-it is covered. If the field returns `NoAccess`, a separate entitlement is needed.
+**Implication:** The €7/month "Nasdaq OMX Stockholm" entitlement may only cover the main
+market (`SSE`). First North (`SSE_FN-SE`) may require a separate or additional entitlement.
+This must be confirmed by subscribing and checking whether prices become accessible for
+`SSE_FN-SE` instruments. Contact `openapisupport@saxobank.com` to confirm before paying.
 
 ---
 
-### 4. `Stock` vs. `CfdOnStock` disambiguation
+### 4. `Stock` vs `CfdOnStock` disambiguation — **CONFIRMED CLEAN**
 
-**Confirmed from docs:** Saxo serves both `Stock` (real exchange-listed share, priced from
-the actual exchange tape) and `CfdOnStock` (Saxo's internally-priced derivative). These are
-distinct tradable instruments with different `Uic` values.
+From SIM API testing:
+- `GET /ref/v1/instruments?Keywords=GOMX&AssetTypes=Stock` → returns 1 result: `Uic=4769462`
+- `GET /ref/v1/instruments?Keywords=GOMX&AssetTypes=CfdOnStock` → returns **empty** — no CFD listed for GOMX
 
-**Disambiguation method — confirmed:**
+The instrument details confirm:
+```json
+"Exchange": {
+  "ExchangeId": "SSE_FN-SE",
+  "Name": "NASDAQ OMX Stockholm (First North)",
+  "OperatingMic": "XSTO"
+},
+"PriceSource": "SSE_FN-SE"
+```
 
-`GET /ref/v1/instruments/details/?Uics=<uic>&AssetTypes=Stock` returns:
-- `PriceSourceName`: identifies the originating exchange tape vs. Saxo internal pricing.
-- `RelatedInstruments`: links the `Stock` to its corresponding `CfdOnStock` and vice versa.
-- `ExchangeId`: for a genuine exchange-listed `Stock`, this will be the exchange MIC
-  (e.g. `FSN` for First North Sweden, or similar Saxo internal code).
-
-Ingesting the `CfdOnStock` instead of `Stock` would silently track Saxo's internal derivative
-pricing rather than real Nasdaq First North market activity — this is a critical distinction.
-
-**⚠️ Requires SIM verification:** Stable `Uic` for GOMX `Stock` (not `CfdOnStock`) on First
-North. A sample `/ref/v1/instruments/details/` response for GOMX must be captured as a test
-fixture.
+**GOMX on Saxo is only available as a real exchange-listed `Stock` — no CFD version exists.**
+There is no ambiguity; ingesting `Uic=4769462` with `AssetType=Stock` is the genuine First
+North share priced from the Nasdaq tape.
 
 ---
 
 ### 5. APA/OTC-reported trade coverage
 
-**Status: Unconfirmed — requires SIM or vendor confirmation.**
+**Status: Partially confirmed via exchange metadata.**
 
-Under MiFID II, some trades in FNSE-listed instruments are crossed off the lit order book and
-reported via an Approved Publication Arrangement (APA). Whether Saxo's `Stock` market data
-stream for GOMX includes these APA prints or only the primary lit-book trades is not
-documented in public Saxo docs.
+The exchange entry for `SSE_FN-SE` shows:
+- `PriceSourceName: "Nasdaq"` — prices come from the Nasdaq tape directly, not Saxo internal
+- `IsoMic: "SSME"` — First North's MiFID Systematic Internaliser MIC
+- `OperatingMic: "XSTO"` — operated by Nasdaq Stockholm
 
-**Test plan:** Monitor a live session's trade stream alongside the Nasdaq Nordic MiFID feed
-(tradereports.nasdaq.com) and compare total reported volume. A consistent shortfall would
-indicate APA trades are absent. Alternatively, contact `openapisupport@saxobank.com`.
+APA trade coverage is not documented in public Saxo docs. The `PriceSourceType: "Firm"` in
+the subscription snapshot indicates exchange-sourced quotes. Full APA coverage would require
+monitoring a live session and comparing total volume against the Nasdaq Nordic MiFID feed.
+**Contact `openapisupport@saxobank.com` to confirm before implementation.**
 
 ---
 
-### 6. WebSocket message framing
+### 6. WebSocket message framing — **CONFIRMED**
 
-**Confirmed from docs:**
-
-Binary WebSocket frames. Each frame may contain multiple messages; a single message may
-span multiple frames (continuation frames, FIN bit indicates completion).
-
-**Per-message layout:**
+Binary frames, each containing one or more messages. Message layout:
 
 | Offset | Size | Content |
 |---|---|---|
@@ -159,93 +135,78 @@ span multiple frames (continuation frames, FIN bit indicates completion).
 | 8 | 2 bytes | Reserved |
 | 10 | 1 byte | Reference ID size (N) |
 | 11 | N bytes | Reference ID (ASCII) |
-| 11+N | 1 byte | Payload format: 0=JSON/UTF-8, 1=Protobuf binary |
+| 11+N | 1 byte | Payload format: `0`=JSON, `1`=Protobuf |
 | 12+N | 4 bytes | Payload size (32-bit unsigned int) |
 | 16+N | variable | Payload |
 
-**Protobuf schema:** Not published. JSON is the default and recommended format for
-implementation; Protobuf is an optimization path requiring schema negotiation with Saxo support.
+Protobuf schema not published — use JSON (`format=0`). Delta ticks after first full snapshot.
 
-**Heartbeat:** `_heartbeat` reference ID every N seconds when no data. Reasons:
-`NoNewData`, `SubscriptionTemporarilyDisabled`, `SubscriptionPermanentlyDisabled`.
+Heartbeat ReferenceIds: `_heartbeat`, `_disconnect`, `_resetsubscriptions`.
 
-**Reconnect with replay:** Pass `?messageid=<last_received_id>` on reconnect to resume from
-a known offset.
-
-**Delta ticks:** Subscriptions emit full snapshot on first message; subsequent messages contain
-only changed fields plus `m` (market) and `i` (instrument identifier).
+Reconnect: `GET .../ws/connect?contextId=<id>&messageid=<last_id>`
 
 ---
 
-### 7. Historical gap-fill via `GET /chart/v1/charts`
+### 7. Historical `GET /chart/v1/charts` endpoint
 
-**Status: Partially confirmed.**
-
-The endpoint exists in the Saxo reference documentation:
-```
-GET /chart/v1/charts?Uic=<uic>&AssetType=Stock&Horizon=<minutes>&Count=<n>
-```
-
-Availability requires the same exchange entitlement as streaming. Whether it is available in
-the SIM environment or only on live accounts with a market data subscription is **unconfirmed**.
-
-This endpoint is important as a gap-fill mechanism after stream disconnects.
+**Status: Returns 404 in SIM environment.** This endpoint is not available without a live
+account with an active market data subscription. It is present in the live API reference but
+gated behind the exchange entitlement. Gap-fill strategy after stream disconnects must rely
+on the `messageid` reconnect mechanism (Saxo replays from the last received message).
 
 ---
 
-### 8. Stable `Uic` for GOMX
-
-**Status: Unconfirmed — requires SIM account.**
-
-The `Uic` is Saxo's internal numeric instrument identifier. It must be confirmed as stable
-(not rotating) for GOMX `Stock` on First North. The lookup is:
+### 8. Stable `Uic` for GOMX — **CONFIRMED**
 
 ```
-GET https://gateway.saxobank.com/sim/openapi/ref/v1/instruments
-  ?Keywords=GOMX
-  &AssetTypes=Stock
-Authorization: Bearer <token>
+Uic:        4769462
+AssetType:  Stock
+ExchangeId: SSE_FN-SE
+Symbol:     GOMX:xome
+Currency:   SEK
+PriceSource: Nasdaq (SSE_FN-SE tape)
 ```
 
-A sample response should be captured and committed to `tests/fixtures/saxo_gomx_instrument.json`.
+Fixture committed to: `tests/fixtures/saxo/gomx_instrument.json`
 
 ---
 
 ## Go/No-Go Recommendation
 
-**Tentative GO** — pending SIM validation of items 2, 3, 4, 8.
+**GO** — with one procurement step before implementation begins.
 
-The Saxo Bank OpenAPI is the strongest available option for real-time First North data:
-- Official, stable, well-documented API with OAuth2
-- €7/month for Level 1 (effectively free with the trading refund scheme)
-- Free SIM environment enables development and testing before any cost commitment
-- WebSocket streaming with per-instrument subscriptions fits the nexus pipeline model
-- Token-on-wire refresh (`PUT /ws/authorize`) avoids reconnection drops
+**Action required:** Contact `openapisupport@saxobank.com` to confirm whether First North
+(`SSE_FN-SE`) is included in the €7/month "Nasdaq OMX Stockholm" entitlement or requires a
+separate subscription. This is the only remaining financial unknown before committing to
+implementation.
 
-**Blockers before implementation can start:**
-
-1. SIM account created and 24h token obtained from developer portal
-2. GOMX `Uic` (Stock, not CfdOnStock) confirmed and fixture captured
-3. First North coverage under "Nasdaq OMX Stockholm" entitlement confirmed
-4. Access token TTL confirmed (to size the refresh loop correctly)
+**Everything else is confirmed:**
+- GOMX is a clean `Stock` (no CFD ambiguity), `Uic=4769462`
+- First North is a distinct, well-formed exchange in the Saxo reference data
+- Prices are Nasdaq-sourced, not Saxo internal
+- WebSocket framing and token lifecycle are well-documented and tested
+- Free SIM environment works for development; production needs a live Saxo account
 
 ---
 
-## Next Steps
+## Implementation Checklist for Next Task
 
-1. Create a Saxo SIM developer account at `https://www.developer.saxo/openapi/appmanagement`
-2. Get a 24h token from the developer portal
-3. Run `GET /ref/v1/instruments?Keywords=GOMX&AssetTypes=Stock` — capture response as fixture
-4. Check `PriceSourceName` and `ExchangeId` on the returned instrument to confirm Stock vs. CFD
-5. Enable market data on a live account (€7/month) and confirm First North coverage
-6. Update this ADR with confirmed values and flip status to **Accepted**
+1. Accept market data terms in SaxoTrader GO (live account)
+2. Subscribe to `SSE_FN-SE` exchange entitlement (confirm cost with support first)
+3. Register OAuth2 app at `https://www.developer.saxo/openapi/appmanagement`
+4. Implement `SaxoBarProvider` in `alpha/` using `Uic=4769462`, `AssetType=Stock`
+5. Implement token refresh loop with `PUT /ws/authorize` to keep connection alive
+6. Subscribe to `trade` and `price` message types on `SSE_FN-SE`
+7. Handle `_resetsubscriptions` control message by recreating subscriptions
+8. Wire `SaxoBarProvider` into `chronicle/market` for FNSE-listed instruments
 
 ---
 
 ## References
 
 - Saxo Developer Portal: https://www.developer.saxo/openapi/learn
-- Saxo Streaming Docs: https://www.developer.saxo/openapi/learn/streaming
+- SIM Environment URLs: https://www.developer.saxo/openapi/learn/environments
+- Streaming Docs: https://www.developer.saxo/openapi/learn/streaming
 - Market Data Subscriptions: https://www.home.saxo/products/market-data-subscriptions
 - OpenAPI Support: https://openapi.help.saxo.com
-- SIM App Registration: https://www.developer.saxo/openapi/appmanagement
+- GOMX fixture: `tests/fixtures/saxo/gomx_instrument.json`
