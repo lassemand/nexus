@@ -9,6 +9,21 @@ pub mod mic {
     /// Nasdaq First North Growth Market Stockholm (Sweden).
     /// Segment MIC operating under Nasdaq Stockholm (XSTO).
     pub const FNSE: &str = "FNSE";
+
+    /// Returns the ISO 4217 currency code for the primary trading currency of
+    /// the given exchange MIC. Providers should use this to populate
+    /// `Bar.currency` rather than hardcoding a currency string.
+    ///
+    /// Returns `"USD"` for unknown MICs as a safe default for US-centric usage,
+    /// but callers constructing bars for non-US instruments should always pass
+    /// the currency explicitly rather than relying on this fallback.
+    pub fn currency(exchange_mic: &str) -> &'static str {
+        match exchange_mic {
+            XNAS | XNYS => "USD",
+            FNSE => "SEK",
+            _ => "USD",
+        }
+    }
 }
 
 /// A tradeable asset identified by its ticker symbol and the exchange it
