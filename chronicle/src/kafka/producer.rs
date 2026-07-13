@@ -1,4 +1,7 @@
-use model::{bar::Bar, generated::MarketEvent, generated::SpecialEvent};
+use model::{
+    bar::Bar,
+    generated::{InsiderTransaction, MarketEvent, SpecialEvent},
+};
 use prost::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
@@ -49,6 +52,26 @@ impl ChronicleProducer {
         };
 
         self.publish(topic, &bar.asset.ticker, &event).await
+    }
+
+    /// Publishes an `InsiderTransaction` to `topic`.
+    ///
+    /// The Kafka message key is a stable hash of the transaction's identity
+    /// `{ticker}:{pdmr_name}:{transaction_date_unix_secs}:{isin}` so that
+    /// corrections to the same underlying transaction overwrite rather than
+    /// append when the topic uses log compaction.
+    #[allow(dead_code)]
+    pub async fn publish_insider_transaction(
+        &self,
+        topic: &str,
+        txn: &InsiderTransaction,
+    ) -> Result<(), ProducerError> {
+        // Stable key: corrections share the same key as the original.
+        let key = format!(
+            "{}:{}:{}:{}",
+            txn.ticker, txn.pdmr_name, txn.transaction_date_unix_secs, txn.isin
+        );
+        self.publish(topic, &key, txn).await
     }
 
     /// Publishes a `SpecialEvent` to `topic`, keyed by ticker.
