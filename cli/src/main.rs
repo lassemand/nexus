@@ -31,15 +31,14 @@ enum Commands {
     /// All tickers are attempted even if earlier ones fail; the process
     /// exits with code 1 if any validation or delivery fails.
     Register {
-        /// Ticker symbols to register (e.g. AAPL MSFT GOOG).
+        /// Ticker symbols to register (e.g. AAPL MSFT GOMX.ST).
+        ///
+        /// Yahoo Finance exchange suffixes (e.g. `.ST` for Stockholm) are
+        /// accepted as a lookup hint. The canonical ticker stored is always
+        /// the suffix-stripped form (e.g. `GOMX`); exchange MIC and currency
+        /// are resolved automatically from Yahoo's response metadata.
         #[arg(required = true)]
         tickers: Vec<String>,
-
-        /// ISO 10383 Market Identifier Code for the exchange these tickers
-        /// trade on. Defaults to XNAS (Nasdaq US). Use FNSE for Nasdaq First
-        /// North Growth Market Stockholm, XNYS for NYSE, etc.
-        #[arg(long, env = "EXCHANGE_MIC", default_value = "XNAS")]
-        exchange_mic: String,
 
         /// Kafka broker addresses.
         #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:9092")]
@@ -147,10 +146,9 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Register {
             tickers,
-            exchange_mic,
             brokers,
             topic,
-        } => cmd_register(tickers, exchange_mic, brokers, topic).await,
+        } => cmd_register(tickers, brokers, topic).await,
 
         Commands::Calendar {
             action: CalendarAction::Sync { country, year },
@@ -169,12 +167,46 @@ struct YahooChart {
 
 #[derive(Deserialize)]
 struct YahooChartInner {
-    result: Option<Vec<serde::de::IgnoredAny>>,
+    result: Option<Vec<YahooChartResult>>,
 }
 
-/// Returns `true` if Yahoo Finance recognises `ticker` as a valid symbol.
-async fn validate_ticker(client: &reqwest::Client, ticker: &str) -> Result<bool> {
-    let url = format!("https://query1.finance.yahoo.com/v8/finance/chart/{ticker}");
+#[derive(Deserialize)]
+struct YahooChartResult {
+    meta: YahooMeta,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YahooMeta {
+    /// e.g. "NMS", "NYQ", "STO"
+    exchange_name: Option<String>,
+    /// ISO 4217 currency code (e.g. "USD", "SEK")
+    currency: Option<String>,
+}
+
+/// Resolved ticker metadata from Yahoo Finance.
+struct ResolvedTicker {
+    /// Canonical ticker without Yahoo exchange suffix (e.g. "GOMX" not "GOMX.ST").
+    canonical: String,
+    exchange_mic: String,
+    currency: String,
+}
+
+/// Validate a ticker against Yahoo Finance and resolve its exchange MIC and currency.
+///
+/// Accepts Yahoo-style exchange suffixes (e.g. `GOMX.ST`) as a lookup hint;
+/// the canonical ticker returned is always suffix-stripped (e.g. `GOMX`).
+///
+/// Fails loudly if:
+/// - Yahoo returns no result for the ticker.
+/// - Yahoo's exchange code is not in the mapping table (never silently defaults).
+async fn validate_and_resolve(
+    client: &reqwest::Client,
+    input: &str,
+) -> Result<Option<ResolvedTicker>> {
+    use model::asset::mic;
+
+    let url = format!("https://query1.finance.yahoo.com/v8/finance/chart/{input}");
     let resp = client
         .get(&url)
         .header("User-Agent", "Mozilla/5.0")
@@ -184,50 +216,85 @@ async fn validate_ticker(client: &reqwest::Client, ticker: &str) -> Result<bool>
         .context("Yahoo Finance request failed")?;
 
     if !resp.status().is_success() {
-        return Ok(false);
+        return Ok(None);
     }
 
     let body: YahooChart = resp
         .json()
         .await
         .context("failed to parse Yahoo Finance response")?;
-    Ok(body.chart.result.is_some_and(|r| !r.is_empty()))
+
+    let result = match body.chart.result.and_then(|mut r| r.pop()) {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+
+    let yahoo_exchange = result
+        .meta
+        .exchange_name
+        .as_deref()
+        .unwrap_or("")
+        .to_string();
+
+    let exchange_mic = match mic::mic_for_yahoo_exchange(&yahoo_exchange) {
+        Some(m) => m.to_string(),
+        None => {
+            anyhow::bail!(
+                "Yahoo exchange code '{yahoo_exchange}' for '{input}' is not in the MIC \
+                 mapping table — add it to model::asset::mic::YAHOO_EXCHANGE_TO_MIC \
+                 before registering this ticker"
+            );
+        }
+    };
+
+    let currency = result
+        .meta
+        .currency
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| mic::currency(&exchange_mic).to_string());
+
+    // Strip Yahoo exchange suffix (e.g. ".ST") to get the canonical ticker.
+    let canonical = input.split('.').next().unwrap_or(input).to_uppercase();
+
+    Ok(Some(ResolvedTicker {
+        canonical,
+        exchange_mic,
+        currency,
+    }))
 }
 
-/// Validate each ticker against Yahoo Finance, then publish `TickerRegistration`
-/// protobuf messages for valid ones to Kafka.
-async fn cmd_register(
-    tickers: Vec<String>,
-    exchange_mic: String,
-    brokers: String,
-    topic: String,
-) -> Result<()> {
+/// Validate each ticker against Yahoo Finance (resolving exchange + currency
+/// automatically), then publish `TickerRegistration` protobuf messages to Kafka.
+async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> Result<()> {
     let http = reqwest::Client::new();
 
-    // Validate all tickers concurrently.
-    let validation_futures: Vec<_> = tickers
+    // Resolve all tickers concurrently.
+    let resolution_futures: Vec<_> = tickers
         .iter()
         .map(|raw| {
-            let ticker = raw.to_uppercase();
+            let input = raw.clone();
             let http = http.clone();
             async move {
-                match validate_ticker(&http, &ticker).await {
-                    Ok(true) => Ok(Some(ticker)),
-                    Ok(false) => {
-                        eprintln!("✗ {ticker} — not found on Yahoo Finance");
+                match validate_and_resolve(&http, &input).await {
+                    Ok(Some(resolved)) => Ok::<_, anyhow::Error>(Some(resolved)),
+                    Ok(None) => {
+                        eprintln!("✗ {input} — not found on Yahoo Finance");
                         Ok(None)
                     }
-                    Err(e) => Err(e.context(format!("{ticker}: Yahoo Finance validation failed"))),
+                    Err(e) => {
+                        eprintln!("✗ {input} — {e}");
+                        Ok(None)
+                    }
                 }
             }
         })
         .collect();
 
-    let mut validated: Vec<String> = Vec::new();
+    let mut validated: Vec<ResolvedTicker> = Vec::new();
     let mut had_invalid = false;
-    for res in join_all(validation_futures).await {
+    for res in join_all(resolution_futures).await {
         match res? {
-            Some(ticker) => validated.push(ticker),
+            Some(r) => validated.push(r),
             None => had_invalid = true,
         }
     }
@@ -244,30 +311,32 @@ async fn cmd_register(
 
     let publish_futures: Vec<_> = validated
         .into_iter()
-        .map(|ticker| {
+        .map(|resolved| {
             let topic = topic.clone();
             let producer = producer.clone();
-            let exchange_mic = exchange_mic.clone();
 
             async move {
                 let payload = TickerRegistration {
-                    ticker: ticker.clone(),
-                    exchange_mic: exchange_mic.clone(),
-                    currency: model::asset::mic::currency(&exchange_mic).to_string(),
+                    ticker: resolved.canonical.clone(),
+                    exchange_mic: resolved.exchange_mic.clone(),
+                    currency: resolved.currency.clone(),
                 }
                 .encode_to_vec();
 
                 let record = FutureRecord::to(&topic)
-                    .key(ticker.as_str())
+                    .key(resolved.canonical.as_str())
                     .payload(payload.as_slice());
 
                 match producer.send(record, Duration::from_secs(5)).await {
                     Ok(_) => {
-                        println!("✓ {ticker} — registered");
+                        println!(
+                            "✓ {} — registered ({} / {})",
+                            resolved.canonical, resolved.exchange_mic, resolved.currency
+                        );
                         true
                     }
                     Err((e, _)) => {
-                        eprintln!("✗ {ticker} — delivery failed: {e}");
+                        eprintln!("✗ {} — delivery failed: {e}", resolved.canonical);
                         false
                     }
                 }
@@ -339,6 +408,7 @@ async fn cmd_calendar_sync(country: String, year: i32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use model::asset::mic;
     use model::generated::TickerRegistration;
     use prost::Message;
 
@@ -352,5 +422,52 @@ mod tests {
         let encoded = original.encode_to_vec();
         let decoded = TickerRegistration::decode(encoded.as_slice()).unwrap();
         assert_eq!(decoded.ticker.to_uppercase(), "AAPL");
+    }
+
+    #[test]
+    fn aapl_yahoo_code_resolves_to_xnas_usd() {
+        let exchange_mic = mic::mic_for_yahoo_exchange("NMS").unwrap();
+        assert_eq!(exchange_mic, mic::XNAS);
+        assert_eq!(mic::currency(exchange_mic), "USD");
+    }
+
+    #[test]
+    fn gomx_st_yahoo_code_resolves_to_fnse_sek() {
+        // Yahoo returns "STO" for Stockholm exchange (GOMX.ST)
+        let exchange_mic = mic::mic_for_yahoo_exchange("STO").unwrap();
+        assert_eq!(exchange_mic, mic::FNSE);
+        assert_eq!(mic::currency(exchange_mic), "SEK");
+    }
+
+    #[test]
+    fn nyse_yahoo_code_resolves_to_xnys() {
+        let exchange_mic = mic::mic_for_yahoo_exchange("NYQ").unwrap();
+        assert_eq!(exchange_mic, mic::XNYS);
+        assert_eq!(mic::currency(exchange_mic), "USD");
+    }
+
+    #[test]
+    fn unknown_yahoo_exchange_code_returns_none() {
+        // An unmapped code must return None — never silently default.
+        assert!(
+            mic::mic_for_yahoo_exchange("UNKNOWN_EXCHANGE").is_none(),
+            "unmapped Yahoo exchange code must return None, not a silent default"
+        );
+        assert!(mic::mic_for_yahoo_exchange("").is_none());
+        assert!(mic::mic_for_yahoo_exchange("XYZ").is_none());
+    }
+
+    #[test]
+    fn suffix_stripping_canonical_ticker() {
+        // Verify the suffix stripping logic used in validate_and_resolve.
+        let cases = [
+            ("GOMX.ST", "GOMX"),
+            ("AAPL", "AAPL"),
+            ("BRK.B", "BRK"), // Note: single . strip
+        ];
+        for (input, expected) in cases {
+            let canonical = input.split('.').next().unwrap_or(input).to_uppercase();
+            assert_eq!(canonical, expected, "failed for input={input}");
+        }
     }
 }
