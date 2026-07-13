@@ -10,6 +10,54 @@ pub mod mic {
     /// Segment MIC operating under Nasdaq Stockholm (XSTO).
     pub const FNSE: &str = "FNSE";
 
+    /// Mapping from Yahoo Finance `exchangeName` codes to ISO 10383 MIC codes.
+    ///
+    /// Yahoo's `exchangeName` field (from `chart/meta.exchangeName`) uses
+    /// abbreviated codes that differ from ISO MICs. This table maps known
+    /// codes to their canonical MIC. An unmapped code must fail loudly —
+    /// never silently default to a US exchange.
+    ///
+    /// Sources:
+    /// - Yahoo Finance chart API `meta.exchangeName` observed values
+    /// - SWIFT ISO 10383 MIC registry
+    pub const YAHOO_EXCHANGE_TO_MIC: &[(&str, &str)] = &[
+        // ── United States ─────────────────────────────────────────────────
+        ("NMS", XNAS),   // Nasdaq Global Select Market
+        ("NGM", XNAS),   // Nasdaq Global Market
+        ("NCM", XNAS),   // Nasdaq Capital Market
+        ("NYQ", XNYS),   // New York Stock Exchange
+        ("ASE", "XASE"), // NYSE American (formerly AMEX)
+        ("PCX", "ARCX"), // NYSE Arca
+        ("BTS", "XBTS"), // CBOE BZX Exchange
+        // ── Sweden ────────────────────────────────────────────────────────
+        ("STO", FNSE), // Nasdaq Stockholm / First North
+        // ── Denmark ───────────────────────────────────────────────────────
+        ("CPH", "XCSE"), // Nasdaq Copenhagen
+        // ── Finland ───────────────────────────────────────────────────────
+        ("HEL", "XHEL"), // Nasdaq Helsinki
+        // ── Norway ────────────────────────────────────────────────────────
+        ("OSL", "XOSL"), // Oslo Børs
+        // ── Germany ───────────────────────────────────────────────────────
+        ("GER", "XFRA"), // Frankfurt Stock Exchange / Deutsche Börse
+        ("FRA", "XFRA"),
+        // ── United Kingdom ────────────────────────────────────────────────
+        ("LSE", "XLON"), // London Stock Exchange
+        // ── Canada ────────────────────────────────────────────────────────
+        ("TOR", "XTSE"), // Toronto Stock Exchange
+        ("VAN", "XTSX"), // TSX Venture Exchange
+    ];
+
+    /// Resolve a Yahoo Finance `exchangeName` code to an ISO 10383 MIC.
+    ///
+    /// Returns `None` if the code is not in the mapping table — callers
+    /// must fail loudly on `None` rather than silently defaulting.
+    pub fn mic_for_yahoo_exchange(yahoo_code: &str) -> Option<&'static str> {
+        YAHOO_EXCHANGE_TO_MIC
+            .iter()
+            .find(|(code, _)| *code == yahoo_code)
+            .map(|(_, mic)| *mic)
+    }
+
     /// Returns the ISO 4217 currency code for the primary trading currency of
     /// the given exchange MIC. Providers should use this to populate
     /// `Bar.currency` rather than hardcoding a currency string.
