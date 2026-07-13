@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saxo-stream
+  labels:
+    app: saxo-stream
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: saxo-stream
+  template:
+    metadata:
+      labels:
+        app: saxo-stream
+    spec:
+      containers:
+        - name: saxo-stream
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/saxo_stream"]
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 2
+          envFrom:
+            - secretRef:
+                name: chronicle-secret
+            - secretRef:
+                name: saxo-secret
+          resources:
+            requests:
+              memory: {{ .Values.resources.requests.memory | quote }}
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+            limits:
+              memory: {{ .Values.resources.limits.memory | quote }}
