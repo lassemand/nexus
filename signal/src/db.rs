@@ -11,6 +11,7 @@ pub struct UnlabeledEvent {
     pub event_date: NaiveDate,
 }
 
+#[derive(Debug)]
 pub struct TradeResult {
     pub ticker: String,
     pub earnings_date: NaiveDate,
@@ -20,14 +21,18 @@ pub struct TradeResult {
     pub sell_price: f64,
     pub pnl: f64,
     pub pnl_pct: f64,
+    /// ISO 4217 currency code for all price fields in this result (e.g. "USD", "SEK").
+    /// Both buy_price and sell_price are always in this currency — cross-currency
+    /// trades are rejected at the strategy layer before reaching here.
+    pub currency: String,
 }
 
 /// Persists a completed trade simulation result.
 pub async fn insert_trade_result(pool: &PgPool, r: &TradeResult) -> sqlx::Result<()> {
     sqlx::query(
         r#"
-        INSERT INTO trade_results (ticker, earnings_date, buy_date, sell_date, buy_price, sell_price, pnl, pnl_pct)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO trade_results (ticker, earnings_date, buy_date, sell_date, buy_price, sell_price, pnl, pnl_pct, currency)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         "#,
     )
     .bind(&r.ticker)
@@ -38,6 +43,7 @@ pub async fn insert_trade_result(pool: &PgPool, r: &TradeResult) -> sqlx::Result
     .bind(r.sell_price)
     .bind(r.pnl)
     .bind(r.pnl_pct)
+    .bind(&r.currency)
     .execute(pool)
     .await?;
     Ok(())

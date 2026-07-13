@@ -71,46 +71,60 @@ impl InsightServer {
             ""
         };
 
+        // PnL is grouped by currency to prevent silent cross-currency aggregation.
+        // Summing USD and SEK PnL produces a meaningless number — we surface
+        // per-currency breakdowns instead. See NEX-84.
         let query = format!(
             r#"
             SELECT
+                currency,
                 COUNT(*)            AS total_trades,
                 SUM(pnl)            AS total_pnl,
                 AVG(pnl_pct)        AS avg_pnl_pct,
                 COUNT(*) FILTER (WHERE pnl > 0) AS winning_trades
             FROM trade_results
             {where_clause}
+            GROUP BY currency
+            ORDER BY currency
             "#
         );
 
         #[derive(Serialize, sqlx::FromRow)]
-        struct Summary {
+        struct CurrencySummary {
+            currency: String,
             total_trades: i64,
             total_pnl: Option<f64>,
             avg_pnl_pct: Option<f64>,
             winning_trades: i64,
         }
 
-        let row: Summary = if let Some(ref t) = ticker {
-            sqlx::query_as(&query).bind(t).fetch_one(&self.pool).await
+        let rows: Vec<CurrencySummary> = if let Some(ref t) = ticker {
+            sqlx::query_as(&query).bind(t).fetch_all(&self.pool).await
         } else {
-            sqlx::query_as(&query).fetch_one(&self.pool).await
+            sqlx::query_as(&query).fetch_all(&self.pool).await
         }
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let win_rate = if row.total_trades > 0 {
-            row.winning_trades as f64 / row.total_trades as f64 * 100.0
-        } else {
-            0.0
-        };
+        let by_currency: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                let win_rate = if row.total_trades > 0 {
+                    row.winning_trades as f64 / row.total_trades as f64 * 100.0
+                } else {
+                    0.0
+                };
+                serde_json::json!({
+                    "currency": row.currency,
+                    "total_trades": row.total_trades,
+                    "winning_trades": row.winning_trades,
+                    "win_rate_pct": win_rate,
+                    "total_pnl": row.total_pnl.unwrap_or(0.0),
+                    "avg_pnl_pct": row.avg_pnl_pct.unwrap_or(0.0),
+                })
+            })
+            .collect();
 
-        let summary = serde_json::json!({
-            "total_trades": row.total_trades,
-            "winning_trades": row.winning_trades,
-            "win_rate_pct": win_rate,
-            "total_pnl": row.total_pnl.unwrap_or(0.0),
-            "avg_pnl_pct": row.avg_pnl_pct.unwrap_or(0.0),
-        });
+        let summary = serde_json::json!({ "by_currency": by_currency });
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&summary).unwrap(),
