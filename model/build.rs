@@ -7,6 +7,7 @@ fn main() {
             "proto/ticker.proto",
             "proto/special_event.proto",
             "proto/insider_filing.proto",
+            "proto/insider_transaction.proto",
         ],
         &["proto/"],
     )
