@@ -6,6 +6,7 @@ pub mod polygon;
 pub mod polygon_company;
 pub mod polygon_earnings;
 pub mod provider;
+pub mod saxo;
 pub mod yahoo;
 
 pub use bar_provider::BarProvider;
