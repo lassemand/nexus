@@ -144,7 +144,6 @@ impl BarAggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use model::asset::mic;
 
     fn gomx_asset() -> Asset {
