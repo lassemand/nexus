@@ -57,8 +57,12 @@ pub mod aggregator;
 pub mod auth;
 pub mod stream;
 pub mod uic;
+pub mod validation;
 
 pub use aggregator::BarAggregator;
 pub use auth::{SaxoAuth, SaxoToken};
 pub use stream::{SaxoBarStream, SaxoConfig};
 pub use uic::{ResolvedUic, UicResolver, UicResolverError};
+pub use validation::{
+    GapBoundary, GapClassifier, OhlcError, OhlcValidator, SilenceCause, TickDeduplicator,
+};
