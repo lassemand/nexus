@@ -52,3 +52,19 @@ spec:
   replicas: 1
   config:
     retention.ms: "604800000"   # 7 days
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: insider-transactions-nordic
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  topicName: insider.transactions
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "-1"          # retain indefinitely — MAR insider disclosures are sparse and historically significant
