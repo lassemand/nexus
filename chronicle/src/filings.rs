@@ -2,7 +2,7 @@ mod kafka;
 
 use std::collections::HashMap;
 
-use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{Duration, NaiveDate, Utc};
 use clap::Parser;
 use kafka::{load_tickers, ChronicleProducer};
 use model::{
@@ -155,6 +155,97 @@ impl From<SecFormFourTransaction> for UnifiedInsiderTransaction {
     }
 }
 
+/// Wire-format shape of an SEC Form 4 XML document (`<ownershipDocument>`),
+/// covering only what this ingestion path needs. Mirrors the same "raw wire
+/// struct, deserialized via serde" pattern already used on the Saxo side
+/// (`alpha::saxo::stream::QuotePayload`, `alpha::saxo::uic::InstrumentSummary`)
+/// instead of a hand-rolled XML event loop.
+#[derive(Debug, serde::Deserialize)]
+struct OwnershipDocument {
+    #[serde(rename = "reportingOwner", default)]
+    reporting_owner: Vec<ReportingOwner>,
+    #[serde(rename = "nonDerivativeTable", default)]
+    non_derivative_table: Option<NonDerivativeTable>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ReportingOwner {
+    #[serde(rename = "reportingOwnerId")]
+    id: ReportingOwnerId,
+    #[serde(rename = "reportingOwnerRelationship")]
+    relationship: ReportingOwnerRelationship,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ReportingOwnerId {
+    #[serde(rename = "rptOwnerCik")]
+    cik: String,
+    #[serde(rename = "rptOwnerName")]
+    name: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ReportingOwnerRelationship {
+    #[serde(rename = "isDirector", default)]
+    is_director: String,
+    #[serde(rename = "isOfficer", default)]
+    is_officer: String,
+    #[serde(rename = "isTenPercentOwner", default)]
+    is_ten_percent_owner: String,
+}
+
+impl ReportingOwnerRelationship {
+    fn role(&self) -> &'static str {
+        if self.is_director.trim() == "1" {
+            "director"
+        } else if self.is_officer.trim() == "1" {
+            "officer"
+        } else if self.is_ten_percent_owner.trim() == "1" {
+            "10-percent-owner"
+        } else {
+            "other"
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct NonDerivativeTable {
+    #[serde(rename = "nonDerivativeTransaction", default)]
+    transaction: Vec<NonDerivativeTransaction>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct NonDerivativeTransaction {
+    #[serde(rename = "transactionDate")]
+    transaction_date: ValueField,
+    #[serde(rename = "transactionCoding")]
+    transaction_coding: TransactionCoding,
+    #[serde(rename = "transactionAmounts")]
+    transaction_amounts: TransactionAmounts,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct TransactionCoding {
+    #[serde(rename = "transactionCode")]
+    transaction_code: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct TransactionAmounts {
+    #[serde(rename = "transactionShares")]
+    transaction_shares: ValueField,
+    #[serde(rename = "transactionPricePerShare", default)]
+    transaction_price_per_share: Option<ValueField>,
+}
+
+/// SEC's Form 4 schema wraps most atomic values in a `<value>` child element
+/// (sibling to an optional `<footnoteId>`), rather than as the parent
+/// element's own text content.
+#[derive(Debug, serde::Deserialize)]
+struct ValueField {
+    value: String,
+}
+
 /// Parse a Form 4 XML document and return raw `SecFormFourTransaction` records
 /// for P (purchase) and S (sale) transactions.
 fn parse_form4(
@@ -163,179 +254,86 @@ fn parse_form4(
     issuer_cik: &str,
     filing_date: NaiveDate,
 ) -> Vec<SecFormFourTransaction> {
-    use quick_xml::events::Event;
-    use quick_xml::Reader;
-
-    let _filing_date_unix =
-        NaiveDateTime::new(filing_date, NaiveTime::from_hms_opt(0, 0, 0).unwrap())
-            .and_utc()
-            .timestamp();
-
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-
-    // Extract owner info (single per filing)
-    let mut filer_name = String::new();
-    let mut filer_cik = String::new();
-    let mut filer_role = String::new();
-
-    // Per-transaction state
-    let mut in_non_deriv_txn = false;
-    let mut txn_code = String::new();
-    let mut txn_date_str = String::new();
-    let mut txn_shares_str = String::new();
-    let mut txn_price_str = String::new();
-
-    // Flags set when we enter specific parent elements, cleared on exit.
-    // Used to identify which <value> child we're reading without heuristics.
-    let mut in_txn_date = false;
-    let mut in_txn_shares = false;
-    let mut in_txn_price = false;
-    let mut current_tag = String::new();
-    let mut in_relationship = false;
-    let mut is_director = false;
-    let mut is_officer = false;
-    let mut is_ten_pct = false;
-
-    let mut results = Vec::new();
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Err(e) => {
-                warn!("XML parse error: {e}");
-                break;
-            }
-            Ok(Event::Eof) => break,
-
-            Ok(Event::Start(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())
-                    .unwrap_or("")
-                    .to_string();
-                current_tag = name.clone();
-                match name.as_str() {
-                    "nonDerivativeTransaction" => {
-                        in_non_deriv_txn = true;
-                        txn_code.clear();
-                        txn_date_str.clear();
-                        txn_shares_str.clear();
-                        txn_price_str.clear();
-                    }
-                    "transactionDate" => in_txn_date = true,
-                    "transactionShares" => in_txn_shares = true,
-                    "transactionPricePerShare" => in_txn_price = true,
-                    "reportingOwnerRelationship" => {
-                        in_relationship = true;
-                        is_director = false;
-                        is_officer = false;
-                        is_ten_pct = false;
-                    }
-                    _ => {}
-                }
-            }
-
-            Ok(Event::End(e)) => {
-                let name_bytes = e.name();
-                let name = std::str::from_utf8(name_bytes.as_ref()).unwrap_or("");
-                match name {
-                    "nonDerivativeTransaction" => {
-                        let code = txn_code.trim().to_string();
-                        if in_non_deriv_txn && (code == "P" || code == "S") {
-                            let txn_date =
-                                NaiveDate::parse_from_str(txn_date_str.trim(), "%Y-%m-%d").ok();
-                            let _txn_date_unix = txn_date
-                                .map(|d| {
-                                    NaiveDateTime::new(d, NaiveTime::from_hms_opt(0, 0, 0).unwrap())
-                                        .and_utc()
-                                        .timestamp()
-                                })
-                                .unwrap_or(0);
-                            let shares = txn_shares_str.trim().parse::<f64>().unwrap_or(0.0);
-                            let price = txn_price_str.trim().parse::<f64>().unwrap_or(0.0);
-                            let txn_date_str = txn_date_str.trim().to_string();
-                            let filing_date_str = filing_date.format("%Y-%m-%d").to_string();
-
-                            let unified_type = match code.as_str() {
-                                "P" => model::generated::UnifiedTransactionType::Buy as i32,
-                                "S" => model::generated::UnifiedTransactionType::Sell as i32,
-                                _ => model::generated::UnifiedTransactionType::Other as i32,
-                            };
-
-                            let txn_id = transaction_id("SEC", ticker, &filer_name, &txn_date_str);
-
-                            let filing_url = form4_xml_url(
-                                issuer_cik.trim_start_matches('0'),
-                                // accession not available here; leave empty — caller sets it
-                                "",
-                            );
-
-                            results.push(SecFormFourTransaction {
-                                ticker: ticker.to_string(),
-                                exchange_mic: "XNAS".to_string(), // SEC tickers default to XNAS; signal updates per registry
-                                person_name: filer_name.clone(),
-                                person_role: filer_role.clone(),
-                                transaction_date: txn_date_str,
-                                published_date: filing_date_str,
-                                transaction_type: unified_type,
-                                volume: shares,
-                                price_per_unit: price,
-                                currency: "USD".to_string(),
-                                issuer_cik: issuer_cik.to_string(),
-                                filer_cik: filer_cik.clone(),
-                                raw_transaction_code: code,
-                                filing_url,
-                            });
-                            let _ = txn_id; // computed for future use in amended_transaction_id
-                        }
-                        in_non_deriv_txn = false;
-                    }
-                    "transactionDate" => in_txn_date = false,
-                    "transactionShares" => in_txn_shares = false,
-                    "transactionPricePerShare" => in_txn_price = false,
-                    "reportingOwnerRelationship" => {
-                        filer_role = if is_director {
-                            "director"
-                        } else if is_officer {
-                            "officer"
-                        } else if is_ten_pct {
-                            "10-percent-owner"
-                        } else {
-                            "other"
-                        }
-                        .to_string();
-                        in_relationship = false;
-                    }
-                    _ => {}
-                }
-                current_tag.clear();
-            }
-
-            Ok(Event::Text(e)) => {
-                let text = e.unescape().unwrap_or_default().to_string();
-                if in_non_deriv_txn {
-                    match current_tag.as_str() {
-                        "transactionCode" => txn_code = text.clone(),
-                        "value" if in_txn_date => txn_date_str = text.clone(),
-                        "value" if in_txn_shares => txn_shares_str = text.clone(),
-                        "value" if in_txn_price => txn_price_str = text.clone(),
-                        _ => {}
-                    }
-                }
-                // These tags appear outside transactions too
-                match current_tag.as_str() {
-                    "rptOwnerName" if filer_name.is_empty() => filer_name = text.clone(),
-                    "rptOwnerCik" if filer_cik.is_empty() => filer_cik = text.clone(),
-                    "isDirector" if in_relationship => is_director = text.trim() == "1",
-                    "isOfficer" if in_relationship => is_officer = text.trim() == "1",
-                    "isTenPercentOwner" if in_relationship => is_ten_pct = text.trim() == "1",
-                    _ => {}
-                }
-            }
-            _ => {}
+    let doc: OwnershipDocument = match quick_xml::de::from_str(xml) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(ticker = %ticker, "Form 4 XML parse error: {e}");
+            return Vec::new();
         }
-        buf.clear();
-    }
-    results
+    };
+
+    // Real Form 4 filings almost always list exactly one reporting owner;
+    // joint filings can list more, but (matching this path's existing scope)
+    // only the first is tracked as "the" filer for every transaction below.
+    let Some(owner) = doc.reporting_owner.first() else {
+        warn!(ticker = %ticker, "Form 4 filing has no reportingOwner, skipping");
+        return Vec::new();
+    };
+
+    let filer_name = owner.id.name.trim().to_string();
+    let filer_cik = owner.id.cik.trim().to_string();
+    let filer_role = owner.relationship.role().to_string();
+    let filing_date_str = filing_date.format("%Y-%m-%d").to_string();
+
+    doc.non_derivative_table
+        .map(|t| t.transaction)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|txn| {
+            let code = txn.transaction_coding.transaction_code.trim().to_string();
+            if code != "P" && code != "S" {
+                return None;
+            }
+
+            let transaction_date = txn.transaction_date.value.trim().to_string();
+            let shares = txn
+                .transaction_amounts
+                .transaction_shares
+                .value
+                .trim()
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let price = txn
+                .transaction_amounts
+                .transaction_price_per_share
+                .as_ref()
+                .and_then(|v| v.value.trim().parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let unified_type = match code.as_str() {
+                "P" => model::generated::UnifiedTransactionType::Buy as i32,
+                "S" => model::generated::UnifiedTransactionType::Sell as i32,
+                _ => model::generated::UnifiedTransactionType::Other as i32,
+            };
+
+            // Computed for future use in `amended_transaction_id` once SEC
+            // amendment (Form 4/A) handling is added.
+            let _txn_id = transaction_id("SEC", ticker, &filer_name, &transaction_date);
+
+            let filing_url = form4_xml_url(
+                issuer_cik.trim_start_matches('0'),
+                // accession not available here; leave empty — caller sets it
+                "",
+            );
+
+            Some(SecFormFourTransaction {
+                ticker: ticker.to_string(),
+                exchange_mic: "XNAS".to_string(), // SEC tickers default to XNAS; signal updates per registry
+                person_name: filer_name.clone(),
+                person_role: filer_role.clone(),
+                transaction_date,
+                published_date: filing_date_str.clone(),
+                transaction_type: unified_type,
+                volume: shares,
+                price_per_unit: price,
+                currency: "USD".to_string(),
+                issuer_cik: issuer_cik.to_string(),
+                filer_cik: filer_cik.clone(),
+                raw_transaction_code: code,
+                filing_url,
+            })
+        })
+        .collect()
 }
 
 /// EDGAR XML URL from accession number (e.g. "0001234567-24-000001").
@@ -452,5 +450,148 @@ async fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod parse_form4_tests {
+    use super::*;
+
+    /// A trimmed-but-schema-accurate SEC Form 4 XML body: one reporting owner
+    /// (an officer), one qualifying open-market purchase ("P"), and one
+    /// non-qualifying transaction code ("A", an award/grant) that must be
+    /// filtered out.
+    const SAMPLE_FORM4_XML: &str = r#"
+<ownershipDocument>
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001234567</rptOwnerCik>
+            <rptOwnerName>Jane Doe</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerRelationship>
+            <isDirector>0</isDirector>
+            <isOfficer>1</isOfficer>
+            <isTenPercentOwner>0</isTenPercentOwner>
+            <officerTitle>Chief Executive Officer</officerTitle>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2024-03-15</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>P</transactionCode>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>1000</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>12.5</value>
+                </transactionPricePerShare>
+            </transactionAmounts>
+        </nonDerivativeTransaction>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2024-03-16</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>A</transactionCode>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>500</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>0</value>
+                </transactionPricePerShare>
+            </transactionAmounts>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+</ownershipDocument>
+"#;
+
+    #[test]
+    fn parses_qualifying_purchase_and_filters_non_qualifying_code() {
+        let filing_date = NaiveDate::from_ymd_opt(2024, 3, 18).unwrap();
+        let results = parse_form4(SAMPLE_FORM4_XML, "ACME", "0000012345", filing_date);
+
+        // The "A" (award/grant) transaction must be filtered out — only P/S qualify.
+        assert_eq!(results.len(), 1);
+        let txn = &results[0];
+
+        assert_eq!(txn.ticker, "ACME");
+        assert_eq!(txn.exchange_mic, "XNAS");
+        assert_eq!(txn.person_name, "Jane Doe");
+        assert_eq!(txn.person_role, "officer");
+        assert_eq!(txn.transaction_date, "2024-03-15");
+        assert_eq!(txn.published_date, "2024-03-18");
+        assert_eq!(
+            txn.transaction_type,
+            model::generated::UnifiedTransactionType::Buy as i32
+        );
+        assert_eq!(txn.volume, 1000.0);
+        assert_eq!(txn.price_per_unit, 12.5);
+        assert_eq!(txn.currency, "USD");
+        assert_eq!(txn.issuer_cik, "0000012345");
+        assert_eq!(txn.filer_cik, "0001234567");
+        assert_eq!(txn.raw_transaction_code, "P");
+    }
+
+    #[test]
+    fn missing_reporting_owner_yields_no_transactions() {
+        let xml = r#"<ownershipDocument><nonDerivativeTable/></ownershipDocument>"#;
+        let filing_date = NaiveDate::from_ymd_opt(2024, 3, 18).unwrap();
+        let results = parse_form4(xml, "ACME", "0000012345", filing_date);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn missing_price_per_share_defaults_to_zero_rather_than_erroring() {
+        let xml = r#"
+<ownershipDocument>
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001234567</rptOwnerCik>
+            <rptOwnerName>Jane Doe</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerRelationship>
+            <isDirector>1</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>0</isTenPercentOwner>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <transactionDate><value>2024-03-15</value></transactionDate>
+            <transactionCoding>
+                <transactionCode>S</transactionCode>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares><value>200</value></transactionShares>
+            </transactionAmounts>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+</ownershipDocument>
+"#;
+        let filing_date = NaiveDate::from_ymd_opt(2024, 3, 18).unwrap();
+        let results = parse_form4(xml, "ACME", "0000012345", filing_date);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].price_per_unit, 0.0);
+        assert_eq!(results[0].person_role, "director");
+        assert_eq!(
+            results[0].transaction_type,
+            model::generated::UnifiedTransactionType::Sell as i32
+        );
     }
 }
