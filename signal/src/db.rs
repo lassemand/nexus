@@ -1,6 +1,10 @@
 use alpha::country_for_exchange;
 use chrono::{DateTime, NaiveDate, Utc};
-use model::{calendar::DynamicCalendar, generated::InsiderFiling, sector::Sector};
+use model::{
+    calendar::DynamicCalendar,
+    generated::{unified_insider_transaction, UnifiedInsiderTransaction},
+    sector::Sector,
+};
 use sqlx::PgPool;
 use std::collections::HashSet;
 
@@ -264,43 +268,60 @@ pub async fn fetch_bars_after(
         .collect())
 }
 
-/// Upserts a person record and inserts the filing, all in one transaction.
+/// Upserts a person record and inserts the filing from a `UnifiedInsiderTransaction`.
 ///
-/// - If `filer_cik` is non-empty: upserts on the partial unique index, updating the name.
-/// - If `filer_cik` is empty: always inserts a new person row (nullable CIK).
-/// - Filing insert is `ON CONFLICT DO NOTHING` (idempotent).
-pub async fn upsert_insider_filing(pool: &PgPool, f: &InsiderFiling) -> sqlx::Result<()> {
+/// Extracts SEC-specific fields (CIK, transaction code) from `SecDetail` when present.
+/// For FI transactions, `filer_cik` is left NULL (FI uses LEI, not CIK).
+/// Filing insert is `ON CONFLICT DO NOTHING` (idempotent).
+pub async fn upsert_insider_filing(
+    pool: &PgPool,
+    txn: &UnifiedInsiderTransaction,
+) -> sqlx::Result<()> {
     use sqlx::Row;
-    let transaction_date = DateTime::from_timestamp(f.transaction_date_unix_secs, 0)
-        .map(|dt| dt.date_naive())
-        .unwrap_or_default();
-    let filing_date = DateTime::from_timestamp(f.filing_date_unix_secs, 0)
-        .map(|dt| dt.date_naive())
-        .unwrap_or_default();
+
+    let transaction_date =
+        NaiveDate::parse_from_str(&txn.transaction_date, "%Y-%m-%d").unwrap_or_default();
+    let filing_date =
+        NaiveDate::parse_from_str(&txn.published_date, "%Y-%m-%d").unwrap_or_default();
+
+    // Extract SEC-specific fields from oneof.
+    let (issuer_cik, filer_cik, transaction_code) = match txn.source_detail.as_ref() {
+        Some(unified_insider_transaction::SourceDetail::Sec(sec)) => (
+            sec.issuer_cik.clone(),
+            if sec.filer_cik.is_empty() {
+                None
+            } else {
+                Some(sec.filer_cik.clone())
+            },
+            sec.raw_transaction_code.clone(),
+        ),
+        _ => (String::new(), None, String::new()),
+    };
 
     let mut tx = pool.begin().await?;
 
-    let person_id: i64 = if f.filer_cik.is_empty() {
-        sqlx::query("INSERT INTO persons (filer_cik, filer_name) VALUES (NULL, $1) RETURNING id")
-            .bind(&f.filer_name)
-            .fetch_one(&mut *tx)
-            .await?
-            .get("id")
-    } else {
-        sqlx::query(
-            r#"
-            INSERT INTO persons (filer_cik, filer_name)
-            VALUES ($1, $2)
-            ON CONFLICT (filer_cik) WHERE filer_cik IS NOT NULL
-            DO UPDATE SET filer_name = EXCLUDED.filer_name, updated_at = NOW()
-            RETURNING id
-            "#,
+    let person_id: i64 = match &filer_cik {
+        None => sqlx::query(
+            "INSERT INTO persons (filer_cik, filer_name) VALUES (NULL, $1) RETURNING id",
         )
-        .bind(&f.filer_cik)
-        .bind(&f.filer_name)
+        .bind(&txn.person_name)
         .fetch_one(&mut *tx)
         .await?
-        .get("id")
+        .get("id"),
+        Some(cik) => sqlx::query(
+            r#"
+                INSERT INTO persons (filer_cik, filer_name)
+                VALUES ($1, $2)
+                ON CONFLICT (filer_cik) WHERE filer_cik IS NOT NULL
+                DO UPDATE SET filer_name = EXCLUDED.filer_name, updated_at = NOW()
+                RETURNING id
+                "#,
+        )
+        .bind(cik)
+        .bind(&txn.person_name)
+        .fetch_one(&mut *tx)
+        .await?
+        .get("id"),
     };
 
     sqlx::query(
@@ -313,14 +334,14 @@ pub async fn upsert_insider_filing(pool: &PgPool, f: &InsiderFiling) -> sqlx::Re
         "#,
     )
     .bind(person_id)
-    .bind(&f.ticker)
-    .bind(&f.issuer_cik)
-    .bind(&f.filer_role)
+    .bind(&txn.ticker)
+    .bind(&issuer_cik)
+    .bind(&txn.person_role)
     .bind(transaction_date)
     .bind(filing_date)
-    .bind(f.shares)
-    .bind(f.price_per_share)
-    .bind(&f.transaction_code)
+    .bind(txn.volume)
+    .bind(txn.price_per_unit)
+    .bind(&transaction_code)
     .execute(&mut *tx)
     .await?;
 
