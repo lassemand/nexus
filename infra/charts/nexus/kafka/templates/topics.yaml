@@ -63,7 +63,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  topicName: insider.transactions.nordic
+  topicName: insider.transactions
   partitions: 1
   replicas: 1
   config:
