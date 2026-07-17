@@ -433,9 +433,10 @@ async fn main() {
             let xml_content = extract_xml_block(&xml);
             let filings = parse_form4(xml_content, ticker, &cik, *filing_date);
 
-            for filing in &filings {
+            for raw_filing in filings {
+                let filing = model::generated::UnifiedInsiderTransaction::from(raw_filing);
                 if let Err(e) = producer
-                    .publish_unified_insider_transaction(&args.kafka_topic, filing.clone())
+                    .publish_unified_insider_transaction(&args.kafka_topic, &filing)
                     .await
                 {
                     error!(ticker = %ticker, error = %e, "failed to publish UnifiedInsiderTransaction");
