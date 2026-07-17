@@ -85,19 +85,20 @@ impl ChronicleProducer {
     /// — matches the `transaction_id()` scheme so amendments overwrite originals
     /// under log compaction.
     #[allow(dead_code)]
-    pub async fn publish_unified_insider_transaction(
+    pub async fn publish_unified_insider_transaction<T: Into<UnifiedInsiderTransaction>>(
         &self,
         topic: &str,
-        txn: &UnifiedInsiderTransaction,
+        txn: T,
     ) -> Result<(), ProducerError> {
         use model::generated::SourceRegistry;
+        let txn: UnifiedInsiderTransaction = txn.into();
         let source = if txn.source_registry == SourceRegistry::Sec as i32 {
             "SEC"
         } else {
             "FI"
         };
         let key = transaction_id(source, &txn.ticker, &txn.person_name, &txn.transaction_date);
-        self.publish(topic, &key, txn).await
+        self.publish(topic, &key, &txn).await
     }
 
     /// Publishes a `SpecialEvent` to `topic`, keyed by ticker.
