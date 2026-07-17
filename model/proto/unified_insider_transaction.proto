@@ -1,0 +1,99 @@
+syntax = "proto3";
+package nexus;
+
+// Unified insider-transaction schema for all regulatory sources.
+//
+// Replaces both:
+//   - InsiderFiling (SEC Form 4, insider.filings topic)
+//   - InsiderTransaction/NEX-81 (FI PDMR, insider.transactions.nordic topic)
+//
+// Published to the single unified topic: insider.transactions
+//
+// The two prior types had incompatible field layouts with no self-description.
+// Decoding an SEC record as an FI record (or vice versa) silently produces
+// garbage in protobuf. This schema resolves that by putting both in one
+// type with a source discriminator.
+//
+// Source-specific fields live in the `source_detail` oneof so nothing is
+// lost and the common fields are not overloaded with dual meanings.
+//
+// Transaction ID scheme (used in amended_transaction_id):
+//   Format: "{source_registry}:{ticker}:{person_name}:{transaction_date}"
+//   Example: "SEC:AAPL:Tim Cook:2026-01-15"
+//   All components upper-cased and trimmed. This is stable across re-ingestion
+//   of the same underlying record. For SEC records the transaction_date is the
+//   Form 4 transactionDate field; for FI records it is the Transaktionsdatum.
+//   The key is intentionally coarse — a person can file multiple transactions
+//   on the same day, so amended_transaction_id points at the date-level bucket
+//   and consumers correlate on the full record content when needed.
+
+enum SourceRegistry {
+  SOURCE_REGISTRY_UNSPECIFIED = 0;
+  SOURCE_REGISTRY_SEC = 1; // U.S. Securities and Exchange Commission (Form 4)
+  SOURCE_REGISTRY_FI  = 2; // Finansinspektionen, Sweden (MAR Article 19 PDMR)
+}
+
+// Unified transaction type — broader than the FI-only TransactionType in
+// insider_transaction.proto, which this message will eventually supersede.
+enum UnifiedTransactionType {
+  UNIFIED_TRANSACTION_TYPE_UNSPECIFIED = 0;
+  UNIFIED_TRANSACTION_TYPE_BUY            = 1; // Purchase / Acquisition / Förvärv
+  UNIFIED_TRANSACTION_TYPE_SELL           = 2; // Disposal / Avyttring / Sale
+  UNIFIED_TRANSACTION_TYPE_GRANT          = 3; // Award or grant (options, RSUs, etc.)
+  UNIFIED_TRANSACTION_TYPE_OPTION_EXERCISE = 4;
+  UNIFIED_TRANSACTION_TYPE_GIFT           = 5;
+  UNIFIED_TRANSACTION_TYPE_OTHER          = 6; // Subscription, exchange, internal transfer, etc.
+}
+
+message UnifiedInsiderTransaction {
+  // ── Common fields (present for all sources) ──────────────────────────────
+
+  string ticker       = 1; // Uppercase ticker symbol (e.g. "AAPL", "GOMX")
+  string exchange_mic = 2; // ISO 10383 MIC (e.g. "XNAS", "FNSE")
+
+  SourceRegistry source_registry = 3; // which regulatory registry this came from
+
+  string person_name = 4; // Reporting person / PDMR name
+  string person_role = 5; // Role at time of filing (e.g. "CEO", "Director")
+
+  // ISO 8601 date strings (YYYY-MM-DD). Strings rather than unix timestamps
+  // so the wire format is human-readable and timezone-unambiguous (FI and SEC
+  // both treat these as date-only, not datetime).
+  string transaction_date = 6; // Date the transaction was executed
+  string published_date   = 7; // Date the filing/disclosure was published
+
+  UnifiedTransactionType transaction_type = 8;
+
+  double volume       = 9;  // Number of units (shares, warrants, etc.)
+  double price_per_unit = 10; // Price in `currency`
+  string currency     = 11; // ISO 4217 (e.g. "USD", "SEK")
+
+  // Amendment / correction
+  bool   is_amendment           = 12;
+  string amended_transaction_id = 13; // ID of the original being amended
+
+  // ── Source-specific fields ────────────────────────────────────────────────
+
+  oneof source_detail {
+    SecDetail sec = 14;
+    FiDetail  fi  = 15;
+  }
+}
+
+// SEC Form 4 source-specific fields.
+message SecDetail {
+  string issuer_cik          = 1; // Zero-padded 10-digit SEC CIK of the issuer
+  string filer_cik           = 2; // Zero-padded 10-digit SEC CIK of the filer
+  string raw_transaction_code = 3; // Verbatim SEC Form 4 code: P/S/A/F/G/M/C/…
+  string filing_url          = 4; // URL to the EDGAR filing document
+}
+
+// FI (Finansinspektionen) PDMR source-specific fields.
+// Derived from what chronicle/src/pdmr.rs actually extracts (NEX-83/PR #110).
+message FiDetail {
+  string lei             = 1; // Legal Entity Identifier of the issuer
+  string isin            = 2; // Instrument ISIN (e.g. "SE0008348304")
+  string instrument_type = 3; // FI instrument category (e.g. "Aktie", "Warrant")
+  bool   is_close_associate = 4; // Närstående — filed by associate, not the PDMR
+  string correction_description = 5; // Free-text from FI's "Beskrivning av korrigering"
+}

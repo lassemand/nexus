@@ -8,6 +8,7 @@ fn main() {
             "proto/special_event.proto",
             "proto/insider_filing.proto",
             "proto/insider_transaction.proto",
+            "proto/unified_insider_transaction.proto",
         ],
         &["proto/"],
     )
