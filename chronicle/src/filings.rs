@@ -107,14 +107,62 @@ fn extract_xml_block(raw: &str) -> &str {
     raw[start..end].trim()
 }
 
-/// Parse a Form 4 XML document and return `UnifiedInsiderTransaction` records
+/// Raw fields extracted from a single SEC Form 4 non-derivative transaction,
+/// before conversion into the wire-level `UnifiedInsiderTransaction`. Keeping
+/// parsing decoupled from the proto type means `parse_form4` doesn't need to
+/// know about `SourceDetail`/`SecDetail` wrapping at all.
+#[derive(Debug, Clone)]
+struct SecFormFourTransaction {
+    ticker: String,
+    exchange_mic: String,
+    person_name: String,
+    person_role: String,
+    transaction_date: String,
+    published_date: String,
+    transaction_type: i32,
+    volume: f64,
+    price_per_unit: f64,
+    currency: String,
+    issuer_cik: String,
+    filer_cik: String,
+    raw_transaction_code: String,
+    filing_url: String,
+}
+
+impl From<SecFormFourTransaction> for UnifiedInsiderTransaction {
+    fn from(r: SecFormFourTransaction) -> Self {
+        UnifiedInsiderTransaction {
+            ticker: r.ticker,
+            exchange_mic: r.exchange_mic,
+            source_registry: SourceRegistry::Sec as i32,
+            person_name: r.person_name,
+            person_role: r.person_role,
+            transaction_date: r.transaction_date,
+            published_date: r.published_date,
+            transaction_type: r.transaction_type,
+            volume: r.volume,
+            price_per_unit: r.price_per_unit,
+            currency: r.currency,
+            is_amendment: false,
+            amended_transaction_id: String::new(),
+            source_detail: Some(unified_insider_transaction::SourceDetail::Sec(SecDetail {
+                issuer_cik: r.issuer_cik,
+                filer_cik: r.filer_cik,
+                raw_transaction_code: r.raw_transaction_code,
+                filing_url: r.filing_url,
+            })),
+        }
+    }
+}
+
+/// Parse a Form 4 XML document and return raw `SecFormFourTransaction` records
 /// for P (purchase) and S (sale) transactions.
 fn parse_form4(
     xml: &str,
     ticker: &str,
     issuer_cik: &str,
     filing_date: NaiveDate,
-) -> Vec<UnifiedInsiderTransaction> {
+) -> Vec<SecFormFourTransaction> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -221,10 +269,9 @@ fn parse_form4(
                                 "",
                             );
 
-                            results.push(UnifiedInsiderTransaction {
+                            results.push(SecFormFourTransaction {
                                 ticker: ticker.to_string(),
                                 exchange_mic: "XNAS".to_string(), // SEC tickers default to XNAS; signal updates per registry
-                                source_registry: SourceRegistry::Sec as i32,
                                 person_name: filer_name.clone(),
                                 person_role: filer_role.clone(),
                                 transaction_date: txn_date_str,
@@ -233,16 +280,10 @@ fn parse_form4(
                                 volume: shares,
                                 price_per_unit: price,
                                 currency: "USD".to_string(),
-                                is_amendment: false,
-                                amended_transaction_id: String::new(),
-                                source_detail: Some(
-                                    unified_insider_transaction::SourceDetail::Sec(SecDetail {
-                                        issuer_cik: issuer_cik.to_string(),
-                                        filer_cik: filer_cik.clone(),
-                                        raw_transaction_code: code,
-                                        filing_url,
-                                    }),
-                                ),
+                                issuer_cik: issuer_cik.to_string(),
+                                filer_cik: filer_cik.clone(),
+                                raw_transaction_code: code,
+                                filing_url,
                             });
                             let _ = txn_id; // computed for future use in amended_transaction_id
                         }
@@ -396,7 +437,7 @@ async fn main() {
 
             for filing in &filings {
                 if let Err(e) = producer
-                    .publish_unified_insider_transaction(&args.kafka_topic, filing)
+                    .publish_unified_insider_transaction(&args.kafka_topic, filing.clone())
                     .await
                 {
                     error!(ticker = %ticker, error = %e, "failed to publish UnifiedInsiderTransaction");
