@@ -5,16 +5,23 @@ use std::collections::HashMap;
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use clap::Parser;
 use kafka::{load_tickers, ChronicleProducer};
-use model::generated::InsiderFiling;
+use model::{
+    generated::{
+        unified_insider_transaction, SecDetail, SourceRegistry, UnifiedInsiderTransaction,
+    },
+    insider::transaction_id,
+};
 use tracing::{error, info, warn};
 
 #[derive(Parser)]
-#[command(about = "Fetch SEC Form 4 open-market purchases and publish as InsiderFiling to Kafka")]
+#[command(
+    about = "Fetch SEC Form 4 open-market purchases and publish as UnifiedInsiderTransaction to Kafka"
+)]
 struct Args {
     #[arg(long, env = "KAFKA_BROKERS")]
     kafka_brokers: String,
 
-    #[arg(long, env = "KAFKA_TOPIC", default_value = "insider.filings")]
+    #[arg(long, env = "KAFKA_TOPIC", default_value = "insider.transactions")]
     kafka_topic: String,
 
     #[arg(long, env = "LOOKBACK_DAYS", default_value = "90")]
@@ -100,17 +107,18 @@ fn extract_xml_block(raw: &str) -> &str {
     raw[start..end].trim()
 }
 
-/// Parse a Form 4 XML document and return InsiderFiling records for P and S transactions.
+/// Parse a Form 4 XML document and return `UnifiedInsiderTransaction` records
+/// for P (purchase) and S (sale) transactions.
 fn parse_form4(
     xml: &str,
     ticker: &str,
     issuer_cik: &str,
     filing_date: NaiveDate,
-) -> Vec<InsiderFiling> {
+) -> Vec<UnifiedInsiderTransaction> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
-    let filing_date_unix =
+    let _filing_date_unix =
         NaiveDateTime::new(filing_date, NaiveTime::from_hms_opt(0, 0, 0).unwrap())
             .and_utc()
             .timestamp();
@@ -187,7 +195,7 @@ fn parse_form4(
                         if in_non_deriv_txn && (code == "P" || code == "S") {
                             let txn_date =
                                 NaiveDate::parse_from_str(txn_date_str.trim(), "%Y-%m-%d").ok();
-                            let txn_date_unix = txn_date
+                            let _txn_date_unix = txn_date
                                 .map(|d| {
                                     NaiveDateTime::new(d, NaiveTime::from_hms_opt(0, 0, 0).unwrap())
                                         .and_utc()
@@ -196,19 +204,47 @@ fn parse_form4(
                                 .unwrap_or(0);
                             let shares = txn_shares_str.trim().parse::<f64>().unwrap_or(0.0);
                             let price = txn_price_str.trim().parse::<f64>().unwrap_or(0.0);
+                            let txn_date_str = txn_date_str.trim().to_string();
+                            let filing_date_str = filing_date.format("%Y-%m-%d").to_string();
 
-                            results.push(InsiderFiling {
+                            let unified_type = match code.as_str() {
+                                "P" => model::generated::UnifiedTransactionType::Buy as i32,
+                                "S" => model::generated::UnifiedTransactionType::Sell as i32,
+                                _ => model::generated::UnifiedTransactionType::Other as i32,
+                            };
+
+                            let txn_id = transaction_id("SEC", ticker, &filer_name, &txn_date_str);
+
+                            let filing_url = form4_xml_url(
+                                issuer_cik.trim_start_matches('0'),
+                                // accession not available here; leave empty — caller sets it
+                                "",
+                            );
+
+                            results.push(UnifiedInsiderTransaction {
                                 ticker: ticker.to_string(),
-                                issuer_cik: issuer_cik.to_string(),
-                                filer_name: filer_name.clone(),
-                                filer_cik: filer_cik.clone(),
-                                filer_role: filer_role.clone(),
-                                transaction_date_unix_secs: txn_date_unix,
-                                filing_date_unix_secs: filing_date_unix,
-                                shares,
-                                price_per_share: price,
-                                transaction_code: code,
+                                exchange_mic: "XNAS".to_string(), // SEC tickers default to XNAS; signal updates per registry
+                                source_registry: SourceRegistry::Sec as i32,
+                                person_name: filer_name.clone(),
+                                person_role: filer_role.clone(),
+                                transaction_date: txn_date_str,
+                                published_date: filing_date_str,
+                                transaction_type: unified_type,
+                                volume: shares,
+                                price_per_unit: price,
+                                currency: "USD".to_string(),
+                                is_amendment: false,
+                                amended_transaction_id: String::new(),
+                                source_detail: Some(
+                                    unified_insider_transaction::SourceDetail::Sec(SecDetail {
+                                        issuer_cik: issuer_cik.to_string(),
+                                        filer_cik: filer_cik.clone(),
+                                        raw_transaction_code: code,
+                                        filing_url,
+                                    }),
+                                ),
                             });
+                            let _ = txn_id; // computed for future use in amended_transaction_id
                         }
                         in_non_deriv_txn = false;
                     }
@@ -359,15 +395,18 @@ async fn main() {
             let filings = parse_form4(xml_content, ticker, &cik, *filing_date);
 
             for filing in &filings {
-                if let Err(e) = producer.publish(&args.kafka_topic, ticker, filing).await {
-                    error!(ticker = %ticker, error = %e, "failed to publish InsiderFiling");
+                if let Err(e) = producer
+                    .publish_unified_insider_transaction(&args.kafka_topic, filing)
+                    .await
+                {
+                    error!(ticker = %ticker, error = %e, "failed to publish UnifiedInsiderTransaction");
                 } else {
                     info!(
                         ticker = %ticker,
-                        filer = %filing.filer_name,
-                        shares = filing.shares,
-                        price = filing.price_per_share,
-                        "published InsiderFiling"
+                        filer = %filing.person_name,
+                        volume = filing.volume,
+                        price = filing.price_per_unit,
+                        "published UnifiedInsiderTransaction (SEC)"
                     );
                 }
             }

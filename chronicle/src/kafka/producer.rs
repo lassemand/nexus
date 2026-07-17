@@ -1,6 +1,7 @@
 use model::{
     bar::Bar,
-    generated::{InsiderTransaction, MarketEvent, SpecialEvent},
+    generated::{InsiderTransaction, MarketEvent, SpecialEvent, UnifiedInsiderTransaction},
+    insider::transaction_id,
 };
 use prost::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -71,6 +72,27 @@ impl ChronicleProducer {
             "{}:{}:{}:{}",
             txn.ticker, txn.pdmr_name, txn.transaction_date_unix_secs, txn.isin
         );
+        self.publish(topic, &key, txn).await
+    }
+
+    /// Publishes a `UnifiedInsiderTransaction` to `topic`.
+    ///
+    /// Kafka message key: `{source}:{ticker}:{person_name}:{transaction_date}`
+    /// — matches the `transaction_id()` scheme so amendments overwrite originals
+    /// under log compaction.
+    #[allow(dead_code)]
+    pub async fn publish_unified_insider_transaction(
+        &self,
+        topic: &str,
+        txn: &UnifiedInsiderTransaction,
+    ) -> Result<(), ProducerError> {
+        use model::generated::SourceRegistry;
+        let source = if txn.source_registry == SourceRegistry::Sec as i32 {
+            "SEC"
+        } else {
+            "FI"
+        };
+        let key = transaction_id(source, &txn.ticker, &txn.person_name, &txn.transaction_date);
         self.publish(topic, &key, txn).await
     }
 

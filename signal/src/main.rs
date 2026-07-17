@@ -13,7 +13,9 @@ use db::{
 use features::{compute_post_event_ar, compute_pre_event_features};
 use model::{
     asset::{mic, Asset},
-    generated::{EarningsEvent, InsiderFiling, MarketEvent, SpecialEvent, TickerRegistration},
+    generated::{
+        EarningsEvent, MarketEvent, SpecialEvent, TickerRegistration, UnifiedInsiderTransaction,
+    },
 };
 use prost::Message;
 use rdkafka::{
@@ -50,8 +52,12 @@ struct Args {
     #[arg(long, env = "MARKET_BARS_TOPIC", default_value = "market.bars")]
     market_bars_topic: String,
 
-    #[arg(long, env = "INSIDER_FILINGS_TOPIC", default_value = "insider.filings")]
-    insider_filings_topic: String,
+    #[arg(
+        long,
+        env = "INSIDER_TRANSACTIONS_TOPIC",
+        default_value = "insider.transactions"
+    )]
+    insider_transactions_topic: String,
 }
 
 /// Handles a raw `TickerRegistration` protobuf payload from the
@@ -143,7 +149,7 @@ async fn main() {
             args.topic.as_str(),
             args.special_events_topic.as_str(),
             args.market_bars_topic.as_str(),
-            args.insider_filings_topic.as_str(),
+            args.insider_transactions_topic.as_str(),
         ])
         .expect("failed to subscribe");
 
@@ -386,32 +392,28 @@ async fn main() {
                             }
                         }
                     }
-                } else if topic == args.insider_filings_topic {
-                    let filing = match InsiderFiling::decode(payload) {
-                        Ok(f) => f,
+                } else if topic == args.insider_transactions_topic {
+                    let txn = match UnifiedInsiderTransaction::decode(payload) {
+                        Ok(t) => t,
                         Err(e) => {
-                            warn!("malformed InsiderFiling protobuf, skipping: {e}");
+                            warn!("malformed UnifiedInsiderTransaction protobuf, skipping: {e}");
                             consumer.commit_message(&msg, CommitMode::Async).ok();
                             continue;
                         }
                     };
 
-                    let txn_date = DateTime::from_timestamp(filing.transaction_date_unix_secs, 0)
-                        .map(|dt| dt.date_naive());
-
-                    if let Err(e) = upsert_insider_filing(&pool, &filing).await {
-                        warn!(ticker = %filing.ticker, error = %e, "failed to persist insider filing");
+                    if let Err(e) = upsert_insider_filing(&pool, &txn).await {
+                        warn!(ticker = %txn.ticker, error = %e, "failed to persist insider transaction");
                     } else {
                         info!(
-                            ticker = %filing.ticker,
-                            filer = %filing.filer_name,
-                            filer_cik = %filing.filer_cik,
-                            role = %filing.filer_role,
-                            code = %filing.transaction_code,
-                            date = ?txn_date,
-                            shares = filing.shares,
-                            price = filing.price_per_share,
-                            "insider filing persisted"
+                            ticker = %txn.ticker,
+                            filer = %txn.person_name,
+                            role = %txn.person_role,
+                            source = txn.source_registry,
+                            txn_date = %txn.transaction_date,
+                            volume = txn.volume,
+                            price = txn.price_per_unit,
+                            "insider transaction persisted"
                         );
                     }
                 } else {
