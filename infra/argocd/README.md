@@ -288,4 +288,3 @@ reconcile interval (~3 minutes).
 
 - **SSO / OIDC** integration
 - **RBAC** customisation
-- **Notifications / Slack** on sync events

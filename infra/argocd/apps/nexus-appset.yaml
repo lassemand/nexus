@@ -43,6 +43,10 @@ spec:
         app.kubernetes.io/managed-by: argocd-applicationset
         nexus/chart: '{{path.basename}}'
         nexus/namespace: '{{path[2]}}'
+      annotations:
+        notifications.argoproj.io/subscribe.on-sync-succeeded.slack: "#nexus-deploys"
+        notifications.argoproj.io/subscribe.on-sync-failed.slack: "#nexus-deploys"
+        notifications.argoproj.io/subscribe.on-health-degraded.slack: "#nexus-deploys"
     spec:
       project: default
       source:
@@ -91,6 +95,9 @@ spec:
         nexus/chart: '{{path.basename}}'
         nexus/namespace: '{{path[2]}}'
       annotations:
+        notifications.argoproj.io/subscribe.on-sync-succeeded.slack: "#nexus-deploys"
+        notifications.argoproj.io/subscribe.on-sync-failed.slack: "#nexus-deploys"
+        notifications.argoproj.io/subscribe.on-health-degraded.slack: "#nexus-deploys"
         argocd-image-updater.argoproj.io/image-list: nexus=lmapwns/nexus
         argocd-image-updater.argoproj.io/nexus.update-strategy: semver
         argocd-image-updater.argoproj.io/nexus.semver-constraint: ">=0.0.0"

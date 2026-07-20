@@ -1,0 +1,9 @@
+apiVersion: v2
+name: argocd-notifications
+description: >
+  Configuration-only chart for ArgoCD Notifications — Slack integration for
+  sync and health events. The notifications controller is already deployed as
+  part of the stock ArgoCD install; this chart provides the ConfigMap, secret,
+  and RBAC wiring only.
+type: application
+version: 0.1.0
