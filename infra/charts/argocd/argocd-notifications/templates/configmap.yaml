@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  # ── Service ──────────────────────────────────────────────────────────────
+  # Bot Token auth — the bot must be invited to {{ .Values.slackChannel }}
+  # before messages will arrive (a valid token alone is not sufficient;
+  # Slack silently returns channel_not_found otherwise).
+  service.slack: |
+    token: $slack-token
+
+  # ── Triggers ─────────────────────────────────────────────────────────────
+  # To tune: comment out syncSucceeded if success messages are noisy,
+  # or add on-sync-running (condition: app.status.operationState.phase == 'Running')
+  # for in-progress visibility — one-line change in values.yaml.
+  {{- if .Values.triggers.syncSucceeded }}
+  trigger.on-sync-succeeded: |
+    - when: app.status.operationState.phase in ['Succeeded']
+      send: [app-sync-succeeded]
+  {{- end }}
+
+  {{- if .Values.triggers.syncFailed }}
+  trigger.on-sync-failed: |
+    - when: app.status.operationState.phase in ['Error', 'Failed']
+      send: [app-sync-failed]
+  {{- end }}
+
+  {{- if .Values.triggers.healthDegraded }}
+  trigger.on-health-degraded: |
+    - when: app.status.health.status == 'Degraded'
+      send: [app-health-degraded]
+  {{- end }}
+
+  # ── Templates ─────────────────────────────────────────────────────────────
+  template.app-sync-succeeded: |
+    message: |
+      :white_check_mark: *{{`{{.app.metadata.name}}`}}* synced successfully
+      Revision: `{{`{{.app.status.sync.revision | substr 0 7}}`}}`
+      <{{ .Values.argocdUrl }}/applications/{{`{{.app.metadata.name}}`}}|Open in ArgoCD>
+
+  template.app-sync-failed: |
+    message: |
+      :x: *{{`{{.app.metadata.name}}`}}* sync failed
+      Revision: `{{`{{.app.status.sync.revision | substr 0 7}}`}}`
+      Reason: {{`{{.app.status.operationState.message}}`}}
+      <{{ .Values.argocdUrl }}/applications/{{`{{.app.metadata.name}}`}}|Open in ArgoCD>
+
+  template.app-health-degraded: |
+    message: |
+      :warning: *{{`{{.app.metadata.name}}`}}* health is Degraded
+      Status: {{`{{.app.status.health.status}}`}}
+      <{{ .Values.argocdUrl }}/applications/{{`{{.app.metadata.name}}`}}|Open in ArgoCD>
