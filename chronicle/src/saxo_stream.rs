@@ -32,7 +32,7 @@ use clap::Parser;
 use kafka::ChronicleProducer;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -160,15 +160,26 @@ async fn load_fnse_tickers(pool: &sqlx::PgPool) -> anyhow::Result<Vec<String>> {
     Ok(rows.into_iter().map(|r| r.get("ticker")).collect())
 }
 
-async fn serve_health(port: u16, healthy: Arc<AtomicBool>) {
+/// Shared observability state updated by the main loop.
+struct Metrics {
+    /// WebSocket connection health (for /health endpoint).
+    ws_healthy: AtomicBool,
+    /// Unix timestamp when the current refresh token expires.
+    /// 0 = no successful rotation yet (bootstrap/grace state).
+    refresh_token_expires_at_unix: AtomicI64,
+    /// Total number of token refresh failures since startup.
+    refresh_failures_total: AtomicU64,
+}
+
+async fn serve_health(port: u16, metrics: Arc<Metrics>) {
     let listener = match TcpListener::bind(format!("0.0.0.0:{port}")).await {
         Ok(l) => l,
         Err(e) => {
-            error!(port, error = %e, "failed to bind health endpoint");
+            error!(port, error = %e, "failed to bind health/metrics endpoint");
             return;
         }
     };
-    info!(port, "health endpoint listening");
+    info!(port, "health/metrics endpoint listening");
 
     loop {
         match listener.accept().await {
@@ -177,16 +188,59 @@ async fn serve_health(port: u16, healthy: Arc<AtomicBool>) {
                 continue;
             }
             Ok((mut stream, _)) => {
-                let ok = healthy.load(Ordering::Relaxed);
-                let (status, body) = if ok {
-                    ("200 OK", "ok")
-                } else {
-                    ("503 Service Unavailable", "unhealthy")
+                // Read the first line to distinguish /health from /metrics.
+                let mut buf = [0u8; 256];
+                let n = match tokio::time::timeout(Duration::from_millis(100), stream.readable())
+                    .await
+                {
+                    Ok(Ok(())) => stream.try_read(&mut buf).unwrap_or(0),
+                    _ => 0,
                 };
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain\r\n\r\n{body}",
-                    body.len()
-                );
+                let req = std::str::from_utf8(&buf[..n]).unwrap_or("");
+                let is_metrics = req.starts_with("GET /metrics");
+
+                let response = if is_metrics {
+                    let now_unix = Utc::now().timestamp();
+                    let expires_at = metrics
+                        .refresh_token_expires_at_unix
+                        .load(Ordering::Relaxed);
+                    let seconds_remaining = if expires_at > 0 {
+                        (expires_at - now_unix).max(0)
+                    } else {
+                        -1 // -1 = no rotation yet (bootstrap)
+                    };
+                    let failures = metrics.refresh_failures_total.load(Ordering::Relaxed);
+
+                    let body = format!(
+                        "# HELP saxo_refresh_token_seconds_remaining \
+                         Seconds until the Saxo refresh token expires. \
+                         -1 means no successful rotation has occurred yet.\n\
+                         # TYPE saxo_refresh_token_seconds_remaining gauge\n\
+                         saxo_refresh_token_seconds_remaining {seconds_remaining}\n\
+                         # HELP saxo_refresh_token_failures_total \
+                         Total number of Saxo token refresh failures since startup.\n\
+                         # TYPE saxo_refresh_token_failures_total counter\n\
+                         saxo_refresh_token_failures_total {failures}\n"
+                    );
+                    format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Length: {}\r\n\
+                         Content-Type: text/plain; version=0.0.4\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                } else {
+                    let ok = metrics.ws_healthy.load(Ordering::Relaxed);
+                    let (status, body) = if ok {
+                        ("200 OK", "ok")
+                    } else {
+                        ("503 Service Unavailable", "unhealthy")
+                    };
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
                 let _ = stream.write_all(response.as_bytes()).await;
             }
         }
@@ -214,8 +268,12 @@ async fn main() -> anyhow::Result<()> {
     let producer =
         ChronicleProducer::new(&args.kafka_brokers).context("failed to create Kafka producer")?;
 
-    let healthy = Arc::new(AtomicBool::new(false));
-    tokio::spawn(serve_health(args.health_port, healthy.clone()));
+    let metrics = Arc::new(Metrics {
+        ws_healthy: AtomicBool::new(false),
+        refresh_token_expires_at_unix: AtomicI64::new(0),
+        refresh_failures_total: AtomicU64::new(0),
+    });
+    tokio::spawn(serve_health(args.health_port, metrics.clone()));
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let shutdown_tx = Arc::new(shutdown_tx);
@@ -367,7 +425,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         if stream_opt.is_none() && !current_tickers.is_empty() {
-            healthy.store(false, Ordering::Relaxed);
+            metrics.ws_healthy.store(false, Ordering::Relaxed);
 
             let access_token_snapshot = shared_token.lock().unwrap().access_token.clone();
 
@@ -403,7 +461,7 @@ async fn main() -> anyhow::Result<()> {
             {
                 Ok(s) => {
                     info!("Saxo WebSocket stream connected");
-                    healthy.store(true, Ordering::Relaxed);
+                    metrics.ws_healthy.store(true, Ordering::Relaxed);
                     stream_opt = Some(s);
                 }
                 Err(e) => {
@@ -433,7 +491,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Ok(None) => {
                     warn!("Saxo bar stream ended — will reconnect");
-                    healthy.store(false, Ordering::Relaxed);
+                    metrics.ws_healthy.store(false, Ordering::Relaxed);
                     stream_opt = None;
                 }
                 Err(_) => {}
