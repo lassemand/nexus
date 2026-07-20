@@ -1,6 +1,6 @@
 # Slack channel for ArgoCD sync/health notifications.
 # The bot must be invited to this channel before messages will arrive.
-# Use the channel name (e.g. #argocd-production) or ID (e.g. C01234ABCDE).
+# Use the channel name (e.g. #nexus-deploys) or ID (e.g. C01234ABCDE).
 slackChannel: "#argocd-production"
 
 # ArgoCD UI base URL — used to construct deep links in notification messages.
