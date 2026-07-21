@@ -267,6 +267,7 @@ version = "0.0.0"
 dependencies = [
  "alpha",
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "dotenvy",

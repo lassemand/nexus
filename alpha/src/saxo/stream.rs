@@ -32,7 +32,7 @@
 /// [`model::calendar::StockholmCalendar`]) are suppressed — the client
 /// does not reconnect-loop when the market is genuinely closed.
 use super::aggregator::{BarAggregator, Tick};
-use super::auth::{AuthError, RotatedToken, SaxoAuth, SaxoToken};
+use super::auth::{AuthError, SaxoToken, SharedToken};
 use super::uic::ResolvedUic;
 use chrono::Datelike;
 use chrono::Utc;
@@ -142,29 +142,26 @@ struct QuoteDetail {
 ///
 /// # Token rotation design
 ///
-/// `SaxoAuth` lives in the `alpha` crate, which has no Postgres dependency.
-/// The DB write-back (ADR-0003) is the caller's responsibility. After each
-/// successful rotation the stream sends the `RotatedToken` on `token_tx` so
-/// `chronicle/src/saxo_stream.rs` (which owns the DB pool) can write it to
-/// `saxo_tokens`. This keeps `alpha` free of DB concerns.
+/// Token refresh is *not* handled here. A separate periodic task (owned by
+/// the caller — see `chronicle/src/saxo_stream.rs`) refreshes the access
+/// token in-place via `SaxoAuth::refresh()` + `refresh_on_stream()` and
+/// writes the result into the shared [`SharedToken`] passed to `connect`.
+/// This stream only *reads* that shared state (once per connect/reconnect,
+/// for REST subscription calls) — it never drives refresh itself, and the
+/// read loop below never needs to break for token reasons.
 pub struct SaxoBarStream {
     pub receiver: mpsc::Receiver<Bar>,
-    /// Receives `RotatedToken` events after each successful in-place refresh.
-    /// The caller must persist the new `refresh_token` to Postgres immediately —
-    /// the old one is now invalid.
-    pub token_receiver: mpsc::Receiver<RotatedToken>,
 }
 
 impl SaxoBarStream {
     /// Connect to Saxo's WebSocket stream and begin emitting bars.
     ///
-    /// `auth` owns the refresh credentials and performs in-place token refresh
-    /// via `PUT /ws/authorize` — the WebSocket connection is never dropped on
-    /// token expiry (per NEX-82 AC and ADR-0001).
+    /// `shared_token` is read fresh on every connect/reconnect attempt, so
+    /// this always uses whatever the caller's periodic refresh task most
+    /// recently rotated to.
     pub async fn connect(
         config: SaxoConfig,
-        initial_token: SaxoToken,
-        mut auth: SaxoAuth,
+        shared_token: SharedToken,
         instruments: Vec<ResolvedUic>,
         http: reqwest::Client,
     ) -> Result<Self, StreamError> {
@@ -173,25 +170,17 @@ impl SaxoBarStream {
         }
 
         let (bar_tx, bar_rx) = mpsc::channel::<Bar>(256);
-        let (token_tx, token_rx) = mpsc::channel::<RotatedToken>(8);
         let config = std::sync::Arc::new(config);
         let instruments = std::sync::Arc::new(instruments);
-        let mut current_token = initial_token;
 
         tokio::spawn(async move {
             let mut backoff_secs = 1u64;
 
             loop {
-                match run_session(
-                    &config,
-                    &mut current_token,
-                    &mut auth,
-                    &instruments,
-                    &http,
-                    bar_tx.clone(),
-                    &token_tx,
-                )
-                .await
+                let token_snapshot = shared_token.lock().unwrap().clone();
+
+                match run_session(&config, &token_snapshot, &instruments, &http, bar_tx.clone())
+                    .await
                 {
                     Ok(()) => {
                         backoff_secs = 1;
@@ -220,26 +209,22 @@ impl SaxoBarStream {
             }
         });
 
-        Ok(Self {
-            receiver: bar_rx,
-            token_receiver: token_rx,
-        })
+        Ok(Self { receiver: bar_rx })
     }
 }
 
 /// Run a single WebSocket session.
 ///
-/// Token refreshes happen in-place (no disconnect) via `SaxoAuth::refresh()`
-/// + `refresh_on_stream()`. On each successful rotation the new tokens are
-///   sent on `token_tx` for the caller to persist to Postgres (ADR-0003).
+/// Does not refresh tokens itself — the access token is fixed for the
+/// lifetime of one session (refresh happens out-of-band via a REST call
+/// keyed by `context_id`, independent of any specific WebSocket object, so
+/// there is nothing for this loop to react to).
 async fn run_session(
     config: &SaxoConfig,
-    current_token: &mut SaxoToken,
-    auth: &mut SaxoAuth,
+    token: &SaxoToken,
     instruments: &[ResolvedUic],
     http: &reqwest::Client,
     tx: mpsc::Sender<Bar>,
-    token_tx: &mpsc::Sender<RotatedToken>,
 ) -> Result<(), StreamError> {
     let ws_url = format!(
         "{}/connect?contextId={}",
@@ -247,7 +232,7 @@ async fn run_session(
     );
 
     // Subscribe to price feed for each instrument via REST before connecting WS.
-    create_subscriptions(config, current_token, instruments, http).await?;
+    create_subscriptions(config, token, instruments, http).await?;
 
     let (ws_stream, _) = connect_async(
         tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
@@ -276,32 +261,6 @@ async fn run_session(
         .collect();
 
     loop {
-        if current_token.expires_within_secs(config.token_refresh_threshold_secs) {
-            info!("access token nearing expiry — refreshing in place");
-            match auth.refresh().await {
-                Ok(rotated) => {
-                    info!("token rotated successfully, reauthorizing WebSocket");
-                    if let Err(e) = auth
-                        .refresh_on_stream(
-                            &config.streaming_base,
-                            &config.context_id,
-                            &rotated.access_token.access_token,
-                        )
-                        .await
-                    {
-                        warn!(error = %e, "failed to reauthorize WebSocket after token rotation");
-                        return Err(StreamError::Auth(e));
-                    }
-                    *current_token = rotated.access_token.clone();
-                    let _ = token_tx.try_send(rotated);
-                }
-                Err(e) => {
-                    warn!(error = %e, "token refresh failed — will attempt reconnect");
-                    return Err(StreamError::Auth(e));
-                }
-            }
-        }
-
         let timeout = tokio::time::timeout(
             Duration::from_secs(config.heartbeat_timeout_secs),
             read.next(),

@@ -14,6 +14,7 @@
 /// (written to `saxo_tokens` Postgres table per ADR-0003) by the caller.
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -39,6 +40,12 @@ impl SaxoToken {
     }
 }
 
+/// The current access token, shared between the periodic refresh task (writer)
+/// and any reader that needs the latest value (e.g. `SaxoBarStream`'s connect/
+/// reconnect logic). A `std::sync::Mutex` is sufficient since critical sections
+/// are a plain struct read/write, never held across an `.await`.
+pub type SharedToken = Arc<Mutex<SaxoToken>>;
+
 /// The result of a successful token rotation.
 ///
 /// Both fields must be persisted: the access token is used to reauthorize
@@ -52,6 +59,23 @@ pub struct RotatedToken {
     pub refresh_token: String,
     /// Expiry of the refresh token itself (~3589 seconds from Saxo).
     pub refresh_token_expires_at: DateTime<Utc>,
+}
+
+/// Durably persists a rotated refresh token.
+///
+/// `alpha` has no Postgres dependency, so this trait is how `SaxoAuth` owns
+/// persistence as an integral part of `refresh()` (per ADR-0003) without the
+/// caller having to remember to do it separately. The concrete implementation
+/// (backed by the `saxo_tokens` table) lives in `chronicle`, which owns the
+/// DB pool, and is handed to `SaxoAuth::new` as a plain trait object.
+///
+/// Infallible by design: implementations are responsible for logging their
+/// own failures. A transient persistence failure must not unwind a
+/// successful rotation — the new access token is already valid and must
+/// still be used to reauthorize the WebSocket regardless.
+#[async_trait::async_trait]
+pub trait TokenStore: Send + Sync {
+    async fn save(&self, rotated: &RotatedToken);
 }
 
 #[derive(Deserialize)]
@@ -73,6 +97,7 @@ pub struct SaxoAuth {
     /// Current refresh token. Updated after each successful rotation so
     /// the next call uses the newly-rotated value.
     refresh_token: String,
+    store: Arc<dyn TokenStore>,
 }
 
 impl SaxoAuth {
@@ -82,6 +107,7 @@ impl SaxoAuth {
         client_id: impl Into<String>,
         client_secret: impl Into<String>,
         refresh_token: impl Into<String>,
+        store: Arc<dyn TokenStore>,
     ) -> Self {
         Self {
             client,
@@ -89,26 +115,15 @@ impl SaxoAuth {
             client_id: client_id.into(),
             client_secret: client_secret.into(),
             refresh_token: refresh_token.into(),
+            store,
         }
-    }
-
-    /// Update the internal refresh token (e.g. after reading a newer value
-    /// from the `saxo_tokens` Postgres table on startup).
-    pub fn set_refresh_token(&mut self, token: impl Into<String>) {
-        self.refresh_token = token.into();
-    }
-
-    /// Read the current refresh token (e.g. to initialize a new `SaxoAuth`
-    /// instance for a reconnect after a ticker-list change).
-    pub fn refresh_token(&self) -> &str {
-        &self.refresh_token
     }
 
     /// Exchange the current refresh token for a new access + refresh token pair.
     ///
-    /// Updates the internal refresh token so the next call works correctly.
-    /// The caller receives a `RotatedToken` and is responsible for persisting
-    /// the new `refresh_token` to Postgres (ADR-0003 write-back).
+    /// Updates the internal refresh token so the next call works correctly,
+    /// and persists the rotation via the configured `TokenStore` before
+    /// returning — the caller never needs to persist this itself.
     pub async fn refresh(&mut self) -> Result<RotatedToken, AuthError> {
         let resp: TokenResponse = self
             .client
@@ -142,14 +157,18 @@ impl SaxoAuth {
         let refresh_ttl = resp.refresh_token_expires_in.unwrap_or(3600);
         let refresh_expires_at = Utc::now() + chrono::Duration::seconds(refresh_ttl as i64);
 
-        Ok(RotatedToken {
+        let rotated = RotatedToken {
             access_token: SaxoToken {
                 access_token: resp.access_token,
                 expires_at: access_expires_at,
             },
             refresh_token: new_refresh,
             refresh_token_expires_at: refresh_expires_at,
-        })
+        };
+
+        self.store.save(&rotated).await;
+
+        Ok(rotated)
     }
 
     /// Reauthorize an existing WebSocket connection with a new access token.
