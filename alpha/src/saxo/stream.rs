@@ -179,8 +179,14 @@ impl SaxoBarStream {
             loop {
                 let token_snapshot = shared_token.lock().unwrap().clone();
 
-                match run_session(&config, &token_snapshot, &instruments, &http, bar_tx.clone())
-                    .await
+                match run_session(
+                    &config,
+                    &token_snapshot,
+                    &instruments,
+                    &http,
+                    bar_tx.clone(),
+                )
+                .await
                 {
                     Ok(()) => {
                         backoff_secs = 1;
