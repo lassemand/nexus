@@ -276,13 +276,11 @@ async fn run_session(
         .collect();
 
     loop {
-        // In-place token refresh — no disconnect.
         if current_token.expires_within_secs(config.token_refresh_threshold_secs) {
             info!("access token nearing expiry — refreshing in place");
             match auth.refresh().await {
                 Ok(rotated) => {
                     info!("token rotated successfully, reauthorizing WebSocket");
-                    // Reauthorize the existing WebSocket with the new access token.
                     if let Err(e) = auth
                         .refresh_on_stream(
                             &config.streaming_base,
@@ -294,10 +292,7 @@ async fn run_session(
                         warn!(error = %e, "failed to reauthorize WebSocket after token rotation");
                         return Err(StreamError::Auth(e));
                     }
-                    // Update the current token so this branch doesn't re-trigger immediately.
                     *current_token = rotated.access_token.clone();
-                    // Notify the caller (chronicle/saxo_stream.rs) to persist the new
-                    // refresh token to saxo_tokens Postgres table (ADR-0003 write-back).
                     let _ = token_tx.try_send(rotated);
                 }
                 Err(e) => {

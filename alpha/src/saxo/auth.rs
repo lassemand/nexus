@@ -134,13 +134,12 @@ impl SaxoAuth {
             .filter(|t| !t.is_empty())
             .ok_or(AuthError::MissingToken)?;
 
-        // Update internal state so the NEXT call uses the rotated token.
         self.refresh_token = new_refresh.clone();
 
         let access_ttl = resp.expires_in.unwrap_or(1200);
         let access_expires_at = Utc::now() + chrono::Duration::seconds(access_ttl as i64);
 
-        let refresh_ttl = resp.refresh_token_expires_in.unwrap_or(3589);
+        let refresh_ttl = resp.refresh_token_expires_in.unwrap_or(3600);
         let refresh_expires_at = Utc::now() + chrono::Duration::seconds(refresh_ttl as i64);
 
         Ok(RotatedToken {
@@ -178,8 +177,6 @@ mod tests {
 
     #[test]
     fn rotated_token_fields_are_accessible() {
-        // Verify the struct layout — the critical bug was that refresh_token
-        // was discarded, so a second rotation would fail with invalid_grant.
         let t = RotatedToken {
             access_token: SaxoToken {
                 access_token: "access1".to_string(),

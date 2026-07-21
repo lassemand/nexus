@@ -224,7 +224,6 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(Utc::now),
     };
 
-    // Bootstrap refresh token: DB table takes precedence over env var (ADR-0003).
     let bootstrap_refresh_token = match read_refresh_token(&pool).await {
         Ok(Some(t)) => {
             info!("loaded refresh token from saxo_tokens table");
@@ -248,8 +247,6 @@ async fn main() -> anyhow::Result<()> {
         bootstrap_refresh_token,
     );
 
-    // Tracks the best access token available for UIC resolution and reconnects.
-    // Initially from args; updated each time a rotation event is received.
     let mut current_access_token = token.clone();
 
     let mut refresh_ticker = interval(Duration::from_secs(args.ticker_refresh_interval_secs));
@@ -340,9 +337,6 @@ async fn main() -> anyhow::Result<()> {
         }
 
         if let Some(stream) = &mut stream_opt {
-            // Drain any token rotation events first — write-back before processing bars.
-            // This ensures the DB has the latest refresh token even if bar processing
-            // blocks for a moment. (ADR-0003 write-back)
             while let Ok(rotated) = stream.token_receiver.try_recv() {
                 info!(
                     refresh_token_expires_at = %rotated.refresh_token_expires_at,
@@ -351,9 +345,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) = write_rotated_token(&pool, &rotated).await {
                     error!(error = %e, "failed to persist rotated refresh token — will retry next rotation");
                 }
-                // Keep the latest access token for UIC resolution on reconnect.
                 current_access_token = rotated.access_token.clone();
-                // Update saxo_auth so reconnects spawn a new stream with the latest token.
                 saxo_auth.set_refresh_token(&rotated.refresh_token);
             }
 
