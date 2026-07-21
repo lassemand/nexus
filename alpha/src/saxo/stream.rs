@@ -32,7 +32,7 @@
 /// [`model::calendar::StockholmCalendar`]) are suppressed — the client
 /// does not reconnect-loop when the market is genuinely closed.
 use super::aggregator::{BarAggregator, Tick};
-use super::auth::{AuthError, SaxoToken};
+use super::auth::{AuthError, RotatedToken, SaxoAuth, SaxoToken};
 use super::uic::ResolvedUic;
 use chrono::Datelike;
 use chrono::Utc;
@@ -139,23 +139,32 @@ struct QuoteDetail {
 ///
 /// Created via [`SaxoBarStream::connect`]. Drives the connection in a background
 /// task and delivers completed OHLCV [`Bar`]s via an mpsc channel.
+///
+/// # Token rotation design
+///
+/// `SaxoAuth` lives in the `alpha` crate, which has no Postgres dependency.
+/// The DB write-back (ADR-0003) is the caller's responsibility. After each
+/// successful rotation the stream sends the `RotatedToken` on `token_tx` so
+/// `chronicle/src/saxo_stream.rs` (which owns the DB pool) can write it to
+/// `saxo_tokens`. This keeps `alpha` free of DB concerns.
 pub struct SaxoBarStream {
     pub receiver: mpsc::Receiver<Bar>,
+    /// Receives `RotatedToken` events after each successful in-place refresh.
+    /// The caller must persist the new `refresh_token` to Postgres immediately —
+    /// the old one is now invalid.
+    pub token_receiver: mpsc::Receiver<RotatedToken>,
 }
 
 impl SaxoBarStream {
     /// Connect to Saxo's WebSocket stream and begin emitting bars.
     ///
-    /// `get_token` is a closure called to obtain a fresh token; it is called
-    /// once at startup and again whenever the current token nears expiry.
-    /// Tokens are refreshed in-place via `PUT /ws/authorize` — the connection
-    /// is not dropped.
-    ///
-    /// `instruments` maps Uic → resolved instrument (used to build `Asset` and
-    /// look up currency).
+    /// `auth` owns the refresh credentials and performs in-place token refresh
+    /// via `PUT /ws/authorize` — the WebSocket connection is never dropped on
+    /// token expiry (per NEX-82 AC and ADR-0001).
     pub async fn connect(
         config: SaxoConfig,
-        mut token: SaxoToken,
+        initial_token: SaxoToken,
+        mut auth: SaxoAuth,
         instruments: Vec<ResolvedUic>,
         http: reqwest::Client,
     ) -> Result<Self, StreamError> {
@@ -163,17 +172,28 @@ impl SaxoBarStream {
             return Err(StreamError::NoInstruments);
         }
 
-        let (tx, rx) = mpsc::channel::<Bar>(256);
+        let (bar_tx, bar_rx) = mpsc::channel::<Bar>(256);
+        let (token_tx, token_rx) = mpsc::channel::<RotatedToken>(8);
         let config = std::sync::Arc::new(config);
         let instruments = std::sync::Arc::new(instruments);
+        let mut current_token = initial_token;
 
         tokio::spawn(async move {
             let mut backoff_secs = 1u64;
 
             loop {
-                match run_session(&config, &token, &instruments, &http, tx.clone()).await {
-                    Ok(new_token) => {
-                        token = new_token;
+                match run_session(
+                    &config,
+                    &mut current_token,
+                    &mut auth,
+                    &instruments,
+                    &http,
+                    bar_tx.clone(),
+                    &token_tx,
+                )
+                .await
+                {
+                    Ok(()) => {
                         backoff_secs = 1;
                     }
                     Err(e) => {
@@ -181,9 +201,6 @@ impl SaxoBarStream {
                         let wd = today.weekday();
                         let is_weekend = wd == chrono::Weekday::Sat || wd == chrono::Weekday::Sun;
                         if is_weekend {
-                            // Weekend: market is closed, don't restart-loop.
-                            // Full holiday awareness requires a DynamicCalendar from the DB;
-                            // that lookup lives in signal/chronicle, not here in alpha.
                             info!(error = %e, "WebSocket disconnected on weekend, not reconnecting");
                             break;
                         }
@@ -197,32 +214,40 @@ impl SaxoBarStream {
                     }
                 }
 
-                if tx.is_closed() {
+                if bar_tx.is_closed() {
                     break;
                 }
             }
         });
 
-        Ok(Self { receiver: rx })
+        Ok(Self {
+            receiver: bar_rx,
+            token_receiver: token_rx,
+        })
     }
 }
 
-/// Run a single WebSocket session. Returns Ok(token) on clean token-refresh
-/// reconnect, or Err on error.
+/// Run a single WebSocket session.
+///
+/// Token refreshes happen in-place (no disconnect) via `SaxoAuth::refresh()`
+/// + `refresh_on_stream()`. On each successful rotation the new tokens are
+///   sent on `token_tx` for the caller to persist to Postgres (ADR-0003).
 async fn run_session(
     config: &SaxoConfig,
-    token: &SaxoToken,
+    current_token: &mut SaxoToken,
+    auth: &mut SaxoAuth,
     instruments: &[ResolvedUic],
     http: &reqwest::Client,
     tx: mpsc::Sender<Bar>,
-) -> Result<SaxoToken, StreamError> {
+    token_tx: &mpsc::Sender<RotatedToken>,
+) -> Result<(), StreamError> {
     let ws_url = format!(
         "{}/connect?contextId={}",
         config.streaming_base, config.context_id
     );
 
     // Subscribe to price feed for each instrument via REST before connecting WS.
-    create_subscriptions(config, token, instruments, http).await?;
+    create_subscriptions(config, current_token, instruments, http).await?;
 
     let (ws_stream, _) = connect_async(
         tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
@@ -250,17 +275,36 @@ async fn run_session(
         .map(|i| (format!("P_{}", i.uic), i.uic))
         .collect();
 
-    let current_token = token.clone();
-
     loop {
-        // Proactively refresh token before it expires.
+        // In-place token refresh — no disconnect.
         if current_token.expires_within_secs(config.token_refresh_threshold_secs) {
-            info!("refreshing Saxo token in-place via PUT /ws/authorize");
-            // In a real implementation, obtain a new token via the auth module
-            // and call refresh_on_stream. Here we signal the caller to re-auth.
-            // For now, break and let the caller reconnect with a fresh token.
-            // TODO: integrate SaxoAuth::refresh_on_stream here.
-            break;
+            info!("access token nearing expiry — refreshing in place");
+            match auth.refresh().await {
+                Ok(rotated) => {
+                    info!("token rotated successfully, reauthorizing WebSocket");
+                    // Reauthorize the existing WebSocket with the new access token.
+                    if let Err(e) = auth
+                        .refresh_on_stream(
+                            &config.streaming_base,
+                            &config.context_id,
+                            &rotated.access_token.access_token,
+                        )
+                        .await
+                    {
+                        warn!(error = %e, "failed to reauthorize WebSocket after token rotation");
+                        return Err(StreamError::Auth(e));
+                    }
+                    // Update the current token so this branch doesn't re-trigger immediately.
+                    *current_token = rotated.access_token.clone();
+                    // Notify the caller (chronicle/saxo_stream.rs) to persist the new
+                    // refresh token to saxo_tokens Postgres table (ADR-0003 write-back).
+                    let _ = token_tx.try_send(rotated);
+                }
+                Err(e) => {
+                    warn!(error = %e, "token refresh failed — will attempt reconnect");
+                    return Err(StreamError::Auth(e));
+                }
+            }
         }
 
         let timeout = tokio::time::timeout(
@@ -307,7 +351,7 @@ async fn run_session(
         }
     }
 
-    Ok(current_token)
+    Ok(())
 }
 
 /// Create price subscriptions for all instruments via the REST API.

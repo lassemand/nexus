@@ -10,7 +10,7 @@
 mod db;
 mod kafka;
 
-use alpha::saxo::{SaxoBarStream, SaxoConfig, SaxoToken, UicResolver};
+use alpha::saxo::{RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken, UicResolver};
 use anyhow::Context;
 use chrono::Utc;
 use clap::Parser;
@@ -52,11 +52,26 @@ struct Args {
     )]
     saxo_streaming_base: String,
 
-    /// Initial OAuth2 access token. The service refreshes it in-place via
-    /// PUT /ws/authorize (per ADR-0001) without dropping the WebSocket.
+    /// OAuth2 client ID (from developer.saxo app registration).
+    #[arg(long, env = "SAXO_CLIENT_ID")]
+    saxo_client_id: String,
+
+    /// OAuth2 client secret.
+    #[arg(long, env = "SAXO_CLIENT_SECRET")]
+    saxo_client_secret: String,
+
+    /// Bootstrap refresh token — used only if saxo_tokens DB table is empty.
+    /// After first rotation the DB value takes precedence on restart.
+    #[arg(long, env = "SAXO_REFRESH_TOKEN")]
+    saxo_refresh_token: String,
+
+    /// Initial OAuth2 access token (bootstrap only).
     #[arg(long, env = "SAXO_ACCESS_TOKEN")]
     saxo_access_token: String,
 
+    /// Initial access token expiry as Unix timestamp.
+    /// Set to a near-future value (e.g. `$(date +%s -d '+10 seconds')`) for
+    /// local testing to force a rotation within seconds.
     #[arg(long, env = "SAXO_TOKEN_EXPIRES_AT")]
     saxo_token_expires_at: i64,
 
@@ -68,6 +83,35 @@ struct Args {
 
     #[arg(long, env = "BAR_WINDOW_SECS", default_value = "60")]
     bar_window_secs: i64,
+}
+
+/// Read the latest refresh token from `saxo_tokens`.
+/// Returns `None` if the table is empty (bootstrap state).
+async fn read_refresh_token(pool: &sqlx::PgPool) -> anyhow::Result<Option<String>> {
+    let row = sqlx::query("SELECT refresh_token FROM saxo_tokens WHERE id = 1")
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.get("refresh_token")))
+}
+
+/// Persist a rotated token to `saxo_tokens`.
+/// The old refresh token is now invalid — write the new one immediately.
+async fn write_rotated_token(pool: &sqlx::PgPool, rotated: &RotatedToken) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO saxo_tokens (id, refresh_token, refresh_token_expires_at, updated_at)
+        VALUES (1, $1, $2, NOW())
+        ON CONFLICT (id) DO UPDATE SET
+            refresh_token             = EXCLUDED.refresh_token,
+            refresh_token_expires_at  = EXCLUDED.refresh_token_expires_at,
+            updated_at                = NOW()
+        "#,
+    )
+    .bind(&rotated.refresh_token)
+    .bind(rotated.refresh_token_expires_at)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 async fn load_fnse_tickers(pool: &sqlx::PgPool) -> anyhow::Result<Vec<String>> {
@@ -180,6 +224,34 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(Utc::now),
     };
 
+    // Bootstrap refresh token: DB table takes precedence over env var (ADR-0003).
+    let bootstrap_refresh_token = match read_refresh_token(&pool).await {
+        Ok(Some(t)) => {
+            info!("loaded refresh token from saxo_tokens table");
+            t
+        }
+        Ok(None) => {
+            info!("saxo_tokens table empty — using bootstrap SAXO_REFRESH_TOKEN env var");
+            args.saxo_refresh_token.clone()
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to read saxo_tokens — using bootstrap env var");
+            args.saxo_refresh_token.clone()
+        }
+    };
+
+    let mut saxo_auth = SaxoAuth::new(
+        http.clone(),
+        format!("{}/token", "https://live.logonvalidation.net"),
+        args.saxo_client_id.clone(),
+        args.saxo_client_secret.clone(),
+        bootstrap_refresh_token,
+    );
+
+    // Tracks the best access token available for UIC resolution and reconnects.
+    // Initially from args; updated each time a rotation event is received.
+    let mut current_access_token = token.clone();
+
     let mut refresh_ticker = interval(Duration::from_secs(args.ticker_refresh_interval_secs));
     refresh_ticker.tick().await; // consume the immediate first tick
 
@@ -218,7 +290,7 @@ async fn main() -> anyhow::Result<()> {
             let mut resolved = Vec::new();
             for ticker in &current_tickers {
                 match uic_resolver
-                    .resolve_with_cfd_check(ticker, &token.access_token)
+                    .resolve_with_cfd_check(ticker, &current_access_token.access_token)
                     .await
                 {
                     Ok(uic) => {
@@ -237,8 +309,22 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
 
-            match SaxoBarStream::connect(config.clone(), token.clone(), resolved, http.clone())
-                .await
+            let auth_for_stream = SaxoAuth::new(
+                http.clone(),
+                format!("{}/token", "https://live.logonvalidation.net"),
+                args.saxo_client_id.clone(),
+                args.saxo_client_secret.clone(),
+                saxo_auth.refresh_token().to_string(),
+            );
+
+            match SaxoBarStream::connect(
+                config.clone(),
+                current_access_token.clone(),
+                auth_for_stream,
+                resolved,
+                http.clone(),
+            )
+            .await
             {
                 Ok(s) => {
                     info!("Saxo WebSocket stream connected");
@@ -254,6 +340,23 @@ async fn main() -> anyhow::Result<()> {
         }
 
         if let Some(stream) = &mut stream_opt {
+            // Drain any token rotation events first — write-back before processing bars.
+            // This ensures the DB has the latest refresh token even if bar processing
+            // blocks for a moment. (ADR-0003 write-back)
+            while let Ok(rotated) = stream.token_receiver.try_recv() {
+                info!(
+                    refresh_token_expires_at = %rotated.refresh_token_expires_at,
+                    "refresh token rotated — persisting to saxo_tokens"
+                );
+                if let Err(e) = write_rotated_token(&pool, &rotated).await {
+                    error!(error = %e, "failed to persist rotated refresh token — will retry next rotation");
+                }
+                // Keep the latest access token for UIC resolution on reconnect.
+                current_access_token = rotated.access_token.clone();
+                // Update saxo_auth so reconnects spawn a new stream with the latest token.
+                saxo_auth.set_refresh_token(&rotated.refresh_token);
+            }
+
             match tokio::time::timeout(Duration::from_secs(5), stream.receiver.recv()).await {
                 Ok(Some(bar)) => {
                     info!(
