@@ -18,6 +18,7 @@ data:
   {{- if .Values.triggers.syncSucceeded }}
   trigger.on-sync-succeeded: |
     - when: app.status.operationState.phase in ['Succeeded']
+      oncePer: app.status.operationState.syncResult.revision
       send: [app-sync-succeeded]
   {{- end }}
 
