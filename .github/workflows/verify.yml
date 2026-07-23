@@ -1,0 +1,40 @@
+name: E2E Verify
+
+# Runs automatically after every push to main and on a daily schedule.
+# Checks each NEX-87 acceptance criterion against the live cluster.
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 06:00 UTC daily — before First North opens (09:00 CEST).
+    - cron: "0 6 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: NEX-87 end-to-end verify
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y protobuf-compiler libssl-dev libsasl2-dev \
+            libcurl4-openssl-dev cmake
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build verify binary
+        run: cargo build --release -p chronicle --bin verify
+
+      - name: Run e2e verification
+        env:
+          # Secrets configured in GitHub repo settings → Actions secrets.
+          DATABASE_URL: ${{ secrets.SIGNAL_DATABASE_URL }}
+          VERIFY_TICKER: GOMX
+          LOOKBACK_DAYS: "90"
+        run: ./target/release/verify
