@@ -16,7 +16,7 @@
 /// `refresh_on_stream()` — a REST call keyed by `context_id`, decoupled from
 /// any specific stream object — so the stream's own reconnect logic never
 /// needs to know about refresh at all; it just reads the latest token from
-/// `SharedToken` on each connect/reconnect. Persistence to `saxo_tokens` is
+/// `SharedToken` on each connect/reconnect. Persistence to `oauth_tokens` is
 /// not this binary's main loop's job either — it happens inside
 /// `SaxoAuth::refresh()` itself via the `PgTokenStore` handle below.
 mod db;
@@ -75,7 +75,7 @@ struct Args {
     #[arg(long, env = "SAXO_CLIENT_SECRET")]
     saxo_client_secret: String,
 
-    /// Bootstrap refresh token — used only if saxo_tokens DB table is empty.
+    /// Bootstrap refresh token — used only if oauth_tokens DB table is empty.
     /// After first rotation the DB value takes precedence on restart.
     #[arg(long, env = "SAXO_REFRESH_TOKEN")]
     saxo_refresh_token: String,
@@ -100,20 +100,27 @@ struct Args {
     bar_window_secs: i64,
 }
 
-/// `TokenStore` backed by the `saxo_tokens` table. This is the only place in
+/// Identifies which OAuth token an `oauth_tokens` row represents. Only one
+/// exists today, but keying by a meaningful value instead of an opaque
+/// `id = 1` singleton leaves room to add more later (e.g. a second broker
+/// or environment) without another schema redesign.
+const SAXO_TOKEN_SOURCE: &str = "saxo";
+
+/// `TokenStore` backed by the `oauth_tokens` table. This is the only place in
 /// the binary that knows about Postgres for token persistence — both the
 /// bootstrap read in `main` and every write `SaxoAuth::refresh()` triggers
 /// (ADR-0003) go through this one type, so there's a single owner of the
-/// `saxo_tokens` table's SQL.
+/// `oauth_tokens` table's SQL.
 struct PgTokenStore {
     pool: sqlx::PgPool,
 }
 
 impl PgTokenStore {
-    /// Read the latest refresh token from `saxo_tokens`.
-    /// Returns `None` if the table is empty (bootstrap state).
+    /// Read the latest refresh token from `oauth_tokens`.
+    /// Returns `None` if the row doesn't exist yet (bootstrap state).
     async fn load_refresh_token(&self) -> anyhow::Result<Option<String>> {
-        let row = sqlx::query("SELECT refresh_token FROM saxo_tokens WHERE id = 1")
+        let row = sqlx::query("SELECT refresh_token FROM oauth_tokens WHERE source = $1")
+            .bind(SAXO_TOKEN_SOURCE)
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(|r| r.get("refresh_token")))
@@ -125,21 +132,22 @@ impl TokenStore for PgTokenStore {
     async fn save(&self, rotated: &RotatedToken) {
         let result = sqlx::query(
             r#"
-            INSERT INTO saxo_tokens (id, refresh_token, refresh_token_expires_at, updated_at)
-            VALUES (1, $1, $2, NOW())
-            ON CONFLICT (id) DO UPDATE SET
+            INSERT INTO oauth_tokens (source, refresh_token, refresh_token_expires_at, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (source) DO UPDATE SET
                 refresh_token             = EXCLUDED.refresh_token,
                 refresh_token_expires_at  = EXCLUDED.refresh_token_expires_at,
                 updated_at                = NOW()
             "#,
         )
+        .bind(SAXO_TOKEN_SOURCE)
         .bind(&rotated.refresh_token)
         .bind(rotated.refresh_token_expires_at)
         .execute(&self.pool)
         .await;
 
         if let Err(e) = result {
-            error!(error = %e, "failed to persist rotated refresh token to saxo_tokens");
+            error!(error = %e, "failed to persist rotated refresh token to oauth_tokens");
         }
     }
 }
@@ -258,15 +266,15 @@ async fn main() -> anyhow::Result<()> {
 
     let bootstrap_refresh_token = match pg_token_store.load_refresh_token().await {
         Ok(Some(t)) => {
-            info!("loaded refresh token from saxo_tokens table");
+            info!("loaded refresh token from oauth_tokens table");
             t
         }
         Ok(None) => {
-            info!("saxo_tokens table empty — using bootstrap SAXO_REFRESH_TOKEN env var");
+            info!("oauth_tokens table empty — using bootstrap SAXO_REFRESH_TOKEN env var");
             args.saxo_refresh_token.clone()
         }
         Err(e) => {
-            warn!(error = %e, "failed to read saxo_tokens — using bootstrap env var");
+            warn!(error = %e, "failed to read oauth_tokens — using bootstrap env var");
             args.saxo_refresh_token.clone()
         }
     };

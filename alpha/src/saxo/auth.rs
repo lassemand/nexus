@@ -11,7 +11,7 @@
 /// after each successful call, so successive `refresh()` calls all work.
 /// The caller receives a `RotatedToken` with both the new access token
 /// and the new refresh token — the refresh token must be persisted
-/// (written to `saxo_tokens` Postgres table per ADR-0003) by the caller.
+/// (written to `oauth_tokens` Postgres table per ADR-0003) by the caller.
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
@@ -55,7 +55,7 @@ pub type SharedToken = Arc<Mutex<SaxoToken>>;
 pub struct RotatedToken {
     pub access_token: SaxoToken,
     /// The new refresh token to use on the next rotation.
-    /// Write this to `saxo_tokens` immediately — the previous value is now invalid.
+    /// Write this to `oauth_tokens` immediately — the previous value is now invalid.
     pub refresh_token: String,
     /// Expiry of the refresh token itself (~3589 seconds from Saxo).
     pub refresh_token_expires_at: DateTime<Utc>,
@@ -66,7 +66,7 @@ pub struct RotatedToken {
 /// `alpha` has no Postgres dependency, so this trait is how `SaxoAuth` owns
 /// persistence as an integral part of `refresh()` (per ADR-0003) without the
 /// caller having to remember to do it separately. The concrete implementation
-/// (backed by the `saxo_tokens` table) lives in `chronicle`, which owns the
+/// (backed by the `oauth_tokens` table) lives in `chronicle`, which owns the
 /// DB pool, and is handed to `SaxoAuth::new` as a plain trait object.
 ///
 /// Infallible by design: implementations are responsible for logging their
