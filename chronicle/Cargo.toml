@@ -27,6 +27,10 @@ path = "src/pdmr.rs"
 name = "saxo_stream"
 path = "src/saxo_stream.rs"
 
+[[bin]]
+name = "verify"
+path = "src/verify.rs"
+
 [dependencies]
 model = { path = "../model" }
 alpha = { path = "../alpha" }
