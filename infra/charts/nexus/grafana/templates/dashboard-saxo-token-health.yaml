@@ -1,0 +1,128 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-saxo-token-health
+  namespace: nexus
+  labels:
+    grafana_dashboard: "1"
+data:
+  saxo-token-health.json: |
+    {
+      "uid": "saxo-token-health",
+      "title": "Saxo Token Health",
+      "tags": ["nexus", "saxo"],
+      "timezone": "browser",
+      "time": { "from": "now-6h", "to": "now" },
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Refresh Token Time Remaining",
+          "gridPos": { "x": 0, "y": 0, "w": 8, "h": 6 },
+          "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red",    "value": null },
+                  { "color": "orange", "value": 1800 },
+                  { "color": "green",  "value": 3000 }
+                ]
+              },
+              "mappings": [
+                { "type": "value", "options": { "-1": { "text": "No rotation yet", "color": "blue", "index": 0 } } }
+              ]
+            },
+            "overrides": []
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
+              "expr": "saxo_refresh_token_seconds_remaining",
+              "legendFormat": "seconds remaining"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Token Seconds Remaining Over Time",
+          "gridPos": { "x": 8, "y": 0, "w": 16, "h": 6 },
+          "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red",    "value": null },
+                  { "color": "orange", "value": 1800 },
+                  { "color": "green",  "value": 3000 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
+              "expr": "saxo_refresh_token_seconds_remaining",
+              "legendFormat": "seconds remaining"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Refresh Failures (total)",
+          "gridPos": { "x": 0, "y": 6, "w": 8, "h": 4 },
+          "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red",   "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
+              "expr": "saxo_refresh_token_failures_total",
+              "legendFormat": "failures"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Refresh Failures Rate",
+          "gridPos": { "x": 8, "y": 6, "w": 16, "h": 4 },
+          "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
+          "fieldConfig": { "defaults": {}, "overrides": [] },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
+              "expr": "increase(saxo_refresh_token_failures_total[10m])",
+              "legendFormat": "failures per 10m"
+            }
+          ]
+        }
+      ]
+    }

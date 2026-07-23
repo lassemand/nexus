@@ -33,6 +33,10 @@ prometheus:
           - matchers:
               - severity = critical
             repeat_interval: 1h
+          # Saxo token alerts are especially time-sensitive.
+          - matchers:
+              - alertname =~ "SaxoRefreshToken.*"
+            repeat_interval: 30m
 
       receivers:
         - name: slack-alerts
@@ -69,14 +73,64 @@ prometheus:
     service:
       type: LoadBalancer
 
+    # Scrape saxo_stream Prometheus metrics from its /metrics endpoint.
+    extraScrapeConfigs: |
+      - job_name: saxo-stream
+        static_configs:
+          - targets:
+            - saxo-stream.chronicle.svc.cluster.local:8080
+        metrics_path: /metrics
+
   # ── Alert rules ──────────────────────────────────────────────────────────
   serverFiles:
     alerting_rules.yml:
       groups:
+        - name: nexus.saxo-token
+          rules:
+            # Fire when token expires in <30 min AND a rotation has occurred.
+            # The -1 sentinel suppresses alerts in bootstrap/no-rotation state.
+            - alert: SaxoRefreshTokenExpiringSoon
+              expr: >
+                saxo_refresh_token_seconds_remaining >= 0
+                and saxo_refresh_token_seconds_remaining < 1800
+              for: 2m
+              labels:
+                severity: critical
+              annotations:
+                summary: "Saxo refresh token expires in {{ $value | humanizeDuration }}"
+                description: >-
+                  The saxo_stream OAuth refresh token will expire in
+                  {{ $value | humanizeDuration }}. If it expires the entire Nordic
+                  data pipeline goes dark and manual re-authentication is required.
+                runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+
+            - alert: SaxoRefreshTokenExpired
+              expr: saxo_refresh_token_seconds_remaining == 0
+              for: 1m
+              labels:
+                severity: critical
+              annotations:
+                summary: "Saxo refresh token has expired"
+                description: >-
+                  The Saxo refresh token has expired. The Nordic data pipeline is
+                  dark. Immediate manual re-authentication required.
+                runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+
+            - alert: SaxoRefreshTokenFailure
+              expr: increase(saxo_refresh_token_failures_total[10m]) > 0
+              for: 0m
+              labels:
+                severity: warning
+              annotations:
+                summary: "Saxo token refresh failed"
+                description: >-
+                  The saxo_stream service encountered a token refresh failure.
+                  If this persists the refresh token chain will break within ~1 hour.
+                runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+
         - name: nexus.ingestion
           rules:
             # Saxo WebSocket stream pod has been not-ready for >2m.
-            # Means live Nordic bar data is not flowing into Kafka.
             - alert: SaxoStreamDown
               expr: |
                 absent(kube_pod_status_ready{namespace="chronicle", pod=~"saxo-stream.*", condition="true"})
@@ -90,8 +144,6 @@ prometheus:
                   The saxo-stream Deployment has had no ready pod for >2m.
                   Live Nordic bar ingestion has stopped.
 
-            # Any chronicle CronJob (market, earnings, filings, pdmr) has
-            # a failed run that hasn't been cleaned up yet.
             - alert: ChronicleJobFailed
               expr: kube_job_status_failed{namespace="chronicle"} > 0
               for: 0m
@@ -105,7 +157,6 @@ prometheus:
 
         - name: nexus.database
           rules:
-            # Postgres primary pod is not ready.
             - alert: PostgresPrimaryDown
               expr: |
                 kube_pod_status_ready{namespace="nexus", pod="nexus-postgres-0", condition="true"} == 0
@@ -120,7 +171,6 @@ prometheus:
 
         - name: nexus.reliability
           rules:
-            # Any pod in the data-path namespaces is crash-looping.
             - alert: PodCrashLooping
               expr: |
                 rate(kube_pod_container_status_restarts_total{
