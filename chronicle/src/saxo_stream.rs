@@ -100,20 +100,24 @@ struct Args {
     bar_window_secs: i64,
 }
 
-/// Read the latest refresh token from `saxo_tokens`.
-/// Returns `None` if the table is empty (bootstrap state).
-async fn read_refresh_token(pool: &sqlx::PgPool) -> anyhow::Result<Option<String>> {
-    let row = sqlx::query("SELECT refresh_token FROM saxo_tokens WHERE id = 1")
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|r| r.get("refresh_token")))
-}
-
 /// `TokenStore` backed by the `saxo_tokens` table. This is the only place in
-/// the binary that knows about Postgres for token persistence — `SaxoAuth`
-/// just calls `save()` as part of every successful `refresh()` (ADR-0003).
+/// the binary that knows about Postgres for token persistence — both the
+/// bootstrap read in `main` and every write `SaxoAuth::refresh()` triggers
+/// (ADR-0003) go through this one type, so there's a single owner of the
+/// `saxo_tokens` table's SQL.
 struct PgTokenStore {
     pool: sqlx::PgPool,
+}
+
+impl PgTokenStore {
+    /// Read the latest refresh token from `saxo_tokens`.
+    /// Returns `None` if the table is empty (bootstrap state).
+    async fn load_refresh_token(&self) -> anyhow::Result<Option<String>> {
+        let row = sqlx::query("SELECT refresh_token FROM saxo_tokens WHERE id = 1")
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get("refresh_token")))
+    }
 }
 
 #[async_trait::async_trait]
@@ -250,7 +254,9 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(Utc::now),
     };
 
-    let bootstrap_refresh_token = match read_refresh_token(&pool).await {
+    let pg_token_store = PgTokenStore { pool: pool.clone() };
+
+    let bootstrap_refresh_token = match pg_token_store.load_refresh_token().await {
         Ok(Some(t)) => {
             info!("loaded refresh token from saxo_tokens table");
             t
@@ -265,7 +271,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let token_store: Arc<dyn TokenStore> = Arc::new(PgTokenStore { pool: pool.clone() });
+    let token_store: Arc<dyn TokenStore> = Arc::new(pg_token_store);
 
     let mut saxo_auth = SaxoAuth::new(
         http.clone(),
