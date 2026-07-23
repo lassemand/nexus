@@ -59,6 +59,12 @@ RUN sed -i "s/version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml \
         mcp/src/*.rs \
     && cargo build --frozen --release
 
+# sqlx-cli for initContainer-driven migrations (kept off the runtime image's
+# critical path — only the compiled binary is copied out below). Matches the
+# app's own sqlx feature set (rustls + postgres) to avoid pulling in a
+# different TLS stack than what the services themselves use.
+RUN cargo install sqlx-cli --version ^0.8 --no-default-features --features rustls,postgres
+
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -75,5 +81,14 @@ COPY --from=builder /build/target/release/earnings  /usr/local/bin/earnings
 COPY --from=builder /build/target/release/filings   /usr/local/bin/filings
 COPY --from=builder /build/target/release/signal    /usr/local/bin/signal
 COPY --from=builder /build/target/release/insight   /usr/local/bin/insight
+
+# sqlx-cli + raw migration files, for initContainer-driven migrations only —
+# the application binaries above still embed and run their own migrations
+# via sqlx::migrate! at startup; this is strictly for the separate
+# signal/migrations set that saxo-stream's initContainer applies before the
+# app container starts (see infra/charts/chronicle/chronicle/templates/
+# deployment-saxo-stream.yaml).
+COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
+COPY signal/migrations /app/migrations/signal
 
 USER nexus

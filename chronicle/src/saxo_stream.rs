@@ -7,10 +7,25 @@
 /// Health: `GET /health` on `HEALTH_PORT` (default 8080) returns 200 when
 /// the WebSocket is connected, 503 when it is not — so k8s restarts the pod
 /// on a wedged connection, not just a crashed process.
+///
+/// # Token rotation
+///
+/// A periodic task (spawned in `main`, independent of the WebSocket stream)
+/// owns the only `SaxoAuth` instance and is the sole writer of the shared
+/// `SharedToken`. It reauthorizes whatever connection is currently live via
+/// `refresh_on_stream()` — a REST call keyed by `context_id`, decoupled from
+/// any specific stream object — so the stream's own reconnect logic never
+/// needs to know about refresh at all; it just reads the latest token from
+/// `SharedToken` on each connect/reconnect. Persistence to `oauth_tokens` is
+/// not this binary's main loop's job either — it happens inside
+/// `SaxoAuth::refresh()` itself via the `PgTokenStore` handle below.
 mod db;
 mod kafka;
 
-use alpha::saxo::{SaxoBarStream, SaxoConfig, SaxoToken, UicResolver};
+use alpha::saxo::{
+    RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken, SharedToken, TokenStore,
+    UicResolver,
+};
 use anyhow::Context;
 use chrono::Utc;
 use clap::Parser;
@@ -18,7 +33,7 @@ use kafka::ChronicleProducer;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -52,11 +67,26 @@ struct Args {
     )]
     saxo_streaming_base: String,
 
-    /// Initial OAuth2 access token. The service refreshes it in-place via
-    /// PUT /ws/authorize (per ADR-0001) without dropping the WebSocket.
+    /// OAuth2 client ID (from developer.saxo app registration).
+    #[arg(long, env = "SAXO_CLIENT_ID")]
+    saxo_client_id: String,
+
+    /// OAuth2 client secret.
+    #[arg(long, env = "SAXO_CLIENT_SECRET")]
+    saxo_client_secret: String,
+
+    /// Bootstrap refresh token — used only if oauth_tokens DB table is empty.
+    /// After first rotation the DB value takes precedence on restart.
+    #[arg(long, env = "SAXO_REFRESH_TOKEN")]
+    saxo_refresh_token: String,
+
+    /// Initial OAuth2 access token (bootstrap only).
     #[arg(long, env = "SAXO_ACCESS_TOKEN")]
     saxo_access_token: String,
 
+    /// Initial access token expiry as Unix timestamp.
+    /// Set to a near-future value (e.g. `$(date +%s -d '+10 seconds')`) for
+    /// local testing to force a rotation within seconds.
     #[arg(long, env = "SAXO_TOKEN_EXPIRES_AT")]
     saxo_token_expires_at: i64,
 
@@ -68,6 +98,58 @@ struct Args {
 
     #[arg(long, env = "BAR_WINDOW_SECS", default_value = "60")]
     bar_window_secs: i64,
+}
+
+/// Identifies which OAuth token an `oauth_tokens` row represents. Only one
+/// exists today, but keying by a meaningful value instead of an opaque
+/// `id = 1` singleton leaves room to add more later (e.g. a second broker
+/// or environment) without another schema redesign.
+const SAXO_TOKEN_SOURCE: &str = "saxo";
+
+/// `TokenStore` backed by the `oauth_tokens` table. This is the only place in
+/// the binary that knows about Postgres for token persistence — both the
+/// bootstrap read in `main` and every write `SaxoAuth::refresh()` triggers
+/// (ADR-0003) go through this one type, so there's a single owner of the
+/// `oauth_tokens` table's SQL.
+struct PgTokenStore {
+    pool: sqlx::PgPool,
+}
+
+impl PgTokenStore {
+    /// Read the latest refresh token from `oauth_tokens`.
+    /// Returns `None` if the row doesn't exist yet (bootstrap state).
+    async fn load_refresh_token(&self) -> anyhow::Result<Option<String>> {
+        let row = sqlx::query("SELECT refresh_token FROM oauth_tokens WHERE source = $1")
+            .bind(SAXO_TOKEN_SOURCE)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get("refresh_token")))
+    }
+}
+
+#[async_trait::async_trait]
+impl TokenStore for PgTokenStore {
+    async fn save(&self, rotated: &RotatedToken) {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO oauth_tokens (source, refresh_token, refresh_token_expires_at, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (source) DO UPDATE SET
+                refresh_token             = EXCLUDED.refresh_token,
+                refresh_token_expires_at  = EXCLUDED.refresh_token_expires_at,
+                updated_at                = NOW()
+            "#,
+        )
+        .bind(SAXO_TOKEN_SOURCE)
+        .bind(&rotated.refresh_token)
+        .bind(rotated.refresh_token_expires_at)
+        .execute(&self.pool)
+        .await;
+
+        if let Err(e) = result {
+            error!(error = %e, "failed to persist rotated refresh token to oauth_tokens");
+        }
+    }
 }
 
 async fn load_fnse_tickers(pool: &sqlx::PgPool) -> anyhow::Result<Vec<String>> {
@@ -180,6 +262,78 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(Utc::now),
     };
 
+    let pg_token_store = PgTokenStore { pool: pool.clone() };
+
+    let bootstrap_refresh_token = match pg_token_store.load_refresh_token().await {
+        Ok(Some(t)) => {
+            info!("loaded refresh token from oauth_tokens table");
+            t
+        }
+        Ok(None) => {
+            info!("oauth_tokens table empty — using bootstrap SAXO_REFRESH_TOKEN env var");
+            args.saxo_refresh_token.clone()
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to read oauth_tokens — using bootstrap env var");
+            args.saxo_refresh_token.clone()
+        }
+    };
+
+    let token_store: Arc<dyn TokenStore> = Arc::new(pg_token_store);
+
+    let mut saxo_auth = SaxoAuth::new(
+        http.clone(),
+        format!("{}/token", "https://live.logonvalidation.net"),
+        args.saxo_client_id.clone(),
+        args.saxo_client_secret.clone(),
+        bootstrap_refresh_token,
+        token_store,
+    );
+
+    let shared_token: SharedToken = Arc::new(Mutex::new(token));
+
+    {
+        let shared_token = shared_token.clone();
+        let streaming_base = args.saxo_streaming_base.clone();
+        let context_id = config.context_id.clone();
+        let threshold_secs = config.token_refresh_threshold_secs;
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+
+                let needs_refresh = shared_token
+                    .lock()
+                    .unwrap()
+                    .expires_within_secs(threshold_secs);
+                if !needs_refresh {
+                    continue;
+                }
+
+                match saxo_auth.refresh().await {
+                    Ok(rotated) => {
+                        if let Err(e) = saxo_auth
+                            .refresh_on_stream(
+                                &streaming_base,
+                                &context_id,
+                                &rotated.access_token.access_token,
+                            )
+                            .await
+                        {
+                            error!(error = %e, "failed to reauthorize WebSocket after token rotation");
+                            continue;
+                        }
+                        *shared_token.lock().unwrap() = rotated.access_token;
+                        info!("Saxo access token rotated and WebSocket reauthorized");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Saxo token refresh failed — will retry next tick");
+                    }
+                }
+            }
+        });
+    }
+
     let mut refresh_ticker = interval(Duration::from_secs(args.ticker_refresh_interval_secs));
     refresh_ticker.tick().await; // consume the immediate first tick
 
@@ -215,10 +369,12 @@ async fn main() -> anyhow::Result<()> {
         if stream_opt.is_none() && !current_tickers.is_empty() {
             healthy.store(false, Ordering::Relaxed);
 
+            let access_token_snapshot = shared_token.lock().unwrap().access_token.clone();
+
             let mut resolved = Vec::new();
             for ticker in &current_tickers {
                 match uic_resolver
-                    .resolve_with_cfd_check(ticker, &token.access_token)
+                    .resolve_with_cfd_check(ticker, &access_token_snapshot)
                     .await
                 {
                     Ok(uic) => {
@@ -237,8 +393,13 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
 
-            match SaxoBarStream::connect(config.clone(), token.clone(), resolved, http.clone())
-                .await
+            match SaxoBarStream::connect(
+                config.clone(),
+                shared_token.clone(),
+                resolved,
+                http.clone(),
+            )
+            .await
             {
                 Ok(s) => {
                     info!("Saxo WebSocket stream connected");

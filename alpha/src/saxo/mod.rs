@@ -60,7 +60,7 @@ pub mod uic;
 pub mod validation;
 
 pub use aggregator::BarAggregator;
-pub use auth::{SaxoAuth, SaxoToken};
+pub use auth::{RotatedToken, SaxoAuth, SaxoToken, SharedToken, TokenStore};
 pub use stream::{SaxoBarStream, SaxoConfig};
 pub use uic::{ResolvedUic, UicResolver, UicResolverError};
 pub use validation::{
