@@ -132,7 +132,15 @@ pub struct CalendarProvider {
 impl CalendarProvider {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            // A default (unset) reqwest client has no timeout at all — an
+            // unresponsive (not just erroring) Nager.Date would hang forever
+            // rather than fail cleanly. Matters a lot now that callers of
+            // this (chronicle/src/verify.rs) run as a PR-gating smoke test:
+            // a hang blocks CI far worse than a fast, clean failure does.
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
         }
     }
 

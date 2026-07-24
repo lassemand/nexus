@@ -401,8 +401,16 @@ async fn main() -> Result<()> {
         .await
         .context("failed to connect to postgres")?;
 
+    // A timeout matters here specifically because this runs as a PR-gating
+    // smoke test — an unresponsive (not just erroring) FI endpoint would
+    // otherwise hang the job rather than failing cleanly and quickly.
+    // fetch_fi_transactions already treats a request error as advisory
+    // (CheckResult::warn, not fail), so a timeout here degrades the same way
+    // an outright connection failure does — it doesn't newly introduce a
+    // failure mode, it just bounds how long we wait to hit the existing one.
     let http = reqwest::Client::builder()
         .user_agent("nexus/verify lasse.alm@gsfleet.io")
+        .timeout(std::time::Duration::from_secs(15))
         .build()?;
 
     info!(ticker = %args.ticker, lookback_days = args.lookback_days, bootstrap = args.bootstrap, "starting e2e verification");

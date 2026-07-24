@@ -1,8 +1,17 @@
 name: E2E Verify
 
-# Runs automatically after every push to main and on a daily schedule.
-# Checks each NEX-87 acceptance criterion against the live cluster.
+# Runs as a smoke test on every PR, after every push to main, and on a daily
+# schedule. Checks each NEX-87 acceptance criterion against the live cluster.
+#
+# The two checks that depend on an external third-party source
+# (fi_pdmr_ingested -> FI's public API, holidays_populated's --bootstrap ->
+# Nager.Date) are both designed to degrade to an advisory pass rather than
+# fail the run if that source is unreachable or slow (see
+# chronicle/src/verify.rs's CheckResult::warn paths, and the timeouts on
+# both reqwest clients) — so a flaky/down external source cannot block a PR
+# merge here, only ever downgrade that one check to "advisory" in the output.
 on:
+  pull_request:
   push:
     branches: [main]
   schedule:
@@ -42,5 +51,9 @@ jobs:
           # they depend on a separate Kafka consumer catching up, and
           # bars_flowing can never be automated (requires a manual Saxo
           # market-data subscription). See chronicle/src/verify.rs module docs.
-          VERIFY_BOOTSTRAP: "true"
+          #
+          # Only bootstraps on push/schedule/dispatch, not on pull_request —
+          # a PR smoke test shouldn't be writing to the shared live database
+          # on every push; that's reserved for the post-merge/scheduled run.
+          VERIFY_BOOTSTRAP: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
         run: ./target/release/verify
