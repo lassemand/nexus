@@ -37,4 +37,10 @@ jobs:
           DATABASE_URL: ${{ secrets.SIGNAL_DATABASE_URL }}
           VERIFY_TICKER: GOMX
           LOOKBACK_DAYS: "90"
+          # Self-heals holidays_populated only (a direct, idempotent Postgres
+          # upsert) — company_registered/fi_pdmr_ingested stay read-only since
+          # they depend on a separate Kafka consumer catching up, and
+          # bars_flowing can never be automated (requires a manual Saxo
+          # market-data subscription). See chronicle/src/verify.rs module docs.
+          VERIFY_BOOTSTRAP: "true"
         run: ./target/release/verify

@@ -12,6 +12,19 @@
 /// 4. **holidays_populated**  — FNSE trading holidays populated for the current year
 ///
 /// Checks 3 and 4 are advisory (the Saxo subscription is a prerequisite for 3).
+///
+/// # `--bootstrap`
+///
+/// Only `holidays_populated` can be meaningfully self-healed here: it's a
+/// single direct Postgres write (via [`alpha::calendar::CalendarProvider`],
+/// the same logic `nexus calendar sync` uses), no other service involved.
+/// `company_registered` and `fi_pdmr_ingested` both go through Kafka to a
+/// separate `signal` consumer before anything lands in Postgres — "ensuring"
+/// those would mean triggering a publish and then polling for a consumer
+/// this binary doesn't own to catch up, which is real scope beyond a verify
+/// tool. `bars_flowing` requires enabling a paid Saxo market-data
+/// subscription on the account — not something any code path can do. Both
+/// stay pure read-only checks regardless of `--bootstrap`.
 use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
 use clap::Parser;
@@ -34,6 +47,11 @@ struct Args {
     /// Ticker to verify (default: GOMX).
     #[arg(long, env = "VERIFY_TICKER", default_value = "GOMX")]
     ticker: String,
+
+    /// Attempt to self-heal the holidays_populated check before reporting
+    /// (see module docs — the only check this applies to).
+    #[arg(long, env = "VERIFY_BOOTSTRAP", default_value_t = false)]
+    bootstrap: bool,
 }
 
 // ── FI API types (mirrors chronicle/src/pdmr.rs) ─────────────────────────
@@ -279,12 +297,24 @@ async fn check_bars_flowing(pool: &sqlx::PgPool, ticker: &str) -> CheckResult {
 
 // ── Check 4: trading holidays populated ──────────────────────────────────
 
+/// `trading_holidays` is keyed by `country` (ISO 3166-1 alpha-2), not by
+/// exchange MIC — there is no `exchange_mic` column on that table at all.
+/// `alpha::calendar::country_for_exchange` is the same mapping
+/// `nexus calendar sync` uses to resolve "FNSE" -> "SE".
 async fn check_holidays_populated(pool: &sqlx::PgPool) -> CheckResult {
     let current_year = Utc::now().year();
+    let Some(country) = alpha::calendar::country_for_exchange("FNSE") else {
+        return CheckResult::fail(
+            "holidays_populated",
+            "FNSE has no country mapping in alpha::calendar::EXCHANGE_TO_COUNTRY".to_string(),
+        );
+    };
+
     let row = sqlx::query(
         "SELECT COUNT(*) FROM trading_holidays \
-         WHERE exchange_mic = 'FNSE' AND EXTRACT(year FROM date) = $1",
+         WHERE country = $1 AND EXTRACT(year FROM date) = $2",
     )
+    .bind(country)
     .bind(current_year)
     .fetch_one(pool)
     .await;
@@ -295,17 +325,65 @@ async fn check_holidays_populated(pool: &sqlx::PgPool) -> CheckResult {
             if cnt == 0 {
                 CheckResult::warn(
                     "holidays_populated",
-                    format!("no FNSE trading holidays for {current_year} — run the holiday ingestion CronJob"),
+                    format!("no {country} trading holidays for {current_year} — run `nexus calendar sync --country {country} --year {current_year}` (or pass --bootstrap)"),
                 )
             } else {
                 CheckResult::pass(
                     "holidays_populated",
-                    format!("{cnt} FNSE trading holidays populated for {current_year}"),
+                    format!("{cnt} {country} trading holidays populated for {current_year}"),
                 )
             }
         }
         Err(e) => CheckResult::fail("holidays_populated", format!("DB error: {e}")),
     }
+}
+
+/// Self-heals `holidays_populated` if it's failing: fetches the current
+/// year's holidays from Nager.Date and upserts them into `trading_holidays`.
+/// Identical logic to `cli`'s `nexus calendar sync`, inlined here so this
+/// binary doesn't depend on the `nexus` CLI binary being present in the
+/// runtime image (it currently isn't — see infra/Dockerfile).
+async fn bootstrap_holidays(pool: &sqlx::PgPool) -> Result<()> {
+    let current_year = Utc::now().year();
+    let country = alpha::calendar::country_for_exchange("FNSE")
+        .context("FNSE has no country mapping in alpha::calendar::EXCHANGE_TO_COUNTRY")?;
+
+    let provider = alpha::calendar::CalendarProvider::new();
+    let entries = provider
+        .holidays_for_country(country, current_year)
+        .await
+        .context("failed to fetch holidays from Nager.Date")?;
+
+    if entries.is_empty() {
+        info!(
+            country,
+            current_year, "no holiday entries returned to upsert"
+        );
+        return Ok(());
+    }
+
+    let mut upserted = 0usize;
+    for entry in &entries {
+        sqlx::query(
+            "INSERT INTO trading_holidays (country, date, status, note)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (country, date) DO NOTHING",
+        )
+        .bind(country)
+        .bind(entry.date)
+        .bind(entry.status)
+        .bind(&entry.note)
+        .execute(pool)
+        .await
+        .with_context(|| format!("failed to upsert {}", entry.date))?;
+        upserted += 1;
+    }
+
+    info!(
+        country,
+        current_year, upserted, "bootstrapped trading_holidays"
+    );
+    Ok(())
 }
 
 // ── main ──────────────────────────────────────────────────────────────────
@@ -327,7 +405,16 @@ async fn main() -> Result<()> {
         .user_agent("nexus/verify lasse.alm@gsfleet.io")
         .build()?;
 
-    info!(ticker = %args.ticker, lookback_days = args.lookback_days, "starting e2e verification");
+    info!(ticker = %args.ticker, lookback_days = args.lookback_days, bootstrap = args.bootstrap, "starting e2e verification");
+
+    if args.bootstrap {
+        // Only holidays_populated is self-healable here — see module docs.
+        // Attempted unconditionally (upsert is idempotent) rather than
+        // pre-checking first, so a currently-passing check just no-ops.
+        if let Err(e) = bootstrap_holidays(&pool).await {
+            warn!(error = %e, "bootstrap: failed to seed trading_holidays — check will report as-is");
+        }
+    }
 
     let results = vec![
         check_company_registered(&pool, &args.ticker).await,
