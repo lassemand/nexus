@@ -1,7 +1,10 @@
 name: E2E Verify
 
-# Runs as a smoke test on every PR, after every push to main, and on a daily
-# schedule. Checks each NEX-87 acceptance criterion against the live cluster.
+# Runs as a smoke test on every PR and on a daily schedule (deliberately NOT
+# on push to main — every commit that lands on main already went through
+# this as a PR check, so re-running immediately post-merge is redundant; the
+# daily schedule is what re-validates the live pipeline's ongoing health).
+# Checks each NEX-87 acceptance criterion against the live cluster.
 #
 # The two checks that depend on an external third-party source
 # (fi_pdmr_ingested -> FI's public API, holidays_populated's --bootstrap ->
@@ -12,8 +15,6 @@ name: E2E Verify
 # merge here, only ever downgrade that one check to "advisory" in the output.
 on:
   pull_request:
-  push:
-    branches: [main]
   schedule:
     # 06:00 UTC daily — before First North opens (09:00 CEST).
     - cron: "0 6 * * 1-5"

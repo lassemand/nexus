@@ -1,6 +1,16 @@
 /target
 .env
 
+# IDE project files (root .idea/ and per-module ones like chronicle/.idea/)
+# — IntelliJ-family IDEs auto-generate and can auto-stage these on branch
+# switches. This doesn't retroactively untrack the handful of root .idea/
+# files already committed before this existed, but stops any further ones
+# (like chronicle/.idea/, added by accident) from being tracked going forward.
+**/.idea/
+
+# macOS Finder noise
+.DS_Store
+
 # protobuf generated output
 **/OUT_DIR
 target/debug/build/**/out/*.rs
