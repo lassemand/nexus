@@ -2,12 +2,14 @@ name: E2E Verify
 
 # Two independent jobs, split by trigger:
 #
-# - smoke-test (pull_request only): runs chronicle/src/verify.rs's
-#   #[cfg(test)] smoke_test module against a throwaway Postgres service
-#   container and an in-process wiremock server standing in for FI's API
-#   and Nager.Date. No live cluster, no GitHub secret, no external network
-#   dependency at all — a flaky/down third-party source cannot affect this,
-#   because nothing here talks to a third party.
+# - smoke-test (pull_request only): runs chronicle/src/smoke_test.rs (a
+#   #[cfg(test)] mod smoke_test; declared from verify.rs, since chronicle
+#   has no lib target for a proper tests/ integration test to reach these
+#   private check functions from outside) against a throwaway Postgres
+#   service container and an in-process wiremock server standing in for
+#   FI's API and Nager.Date. No live cluster, no GitHub secret, no external
+#   network dependency at all — a flaky/down third-party source cannot
+#   affect this, because nothing here talks to a third party.
 #
 # - live-verify (schedule/workflow_dispatch only, deliberately NOT
 #   pull_request or push to main): builds and runs the real verify binary
