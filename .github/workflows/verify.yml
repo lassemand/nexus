@@ -1,18 +1,21 @@
 name: E2E Verify
 
-# Runs as a smoke test on every PR and on a daily schedule (deliberately NOT
-# on push to main — every commit that lands on main already went through
-# this as a PR check, so re-running immediately post-merge is redundant; the
-# daily schedule is what re-validates the live pipeline's ongoing health).
-# Checks each NEX-87 acceptance criterion against the live cluster.
+# Two independent jobs, split by trigger:
 #
-# The two checks that depend on an external third-party source
-# (fi_pdmr_ingested -> FI's public API, holidays_populated's --bootstrap ->
-# Nager.Date) are both designed to degrade to an advisory pass rather than
-# fail the run if that source is unreachable or slow (see
-# chronicle/src/verify.rs's CheckResult::warn paths, and the timeouts on
-# both reqwest clients) — so a flaky/down external source cannot block a PR
-# merge here, only ever downgrade that one check to "advisory" in the output.
+# - smoke-test (pull_request only): runs chronicle/src/verify.rs's
+#   #[cfg(test)] smoke_test module against a throwaway Postgres service
+#   container and an in-process wiremock server standing in for FI's API
+#   and Nager.Date. No live cluster, no GitHub secret, no external network
+#   dependency at all — a flaky/down third-party source cannot affect this,
+#   because nothing here talks to a third party.
+#
+# - live-verify (schedule/workflow_dispatch only, deliberately NOT
+#   pull_request or push to main): builds and runs the real verify binary
+#   against the live cluster via the SIGNAL_DATABASE_URL secret, checking
+#   each NEX-87 acceptance criterion for real. This is what actually
+#   exercises the live Kafka-consumer pipeline and the real FI/Nager.Date
+#   APIs — deliberately kept off the PR path so its network dependencies
+#   (and the DB-mutating --bootstrap self-heal) never gate a merge.
 on:
   pull_request:
   schedule:
@@ -21,8 +24,51 @@ on:
   workflow_dispatch:
 
 jobs:
-  verify:
-    name: NEX-87 end-to-end verify
+  smoke-test:
+    name: PR smoke test (mocked APIs, ephemeral Postgres)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus
+          POSTGRES_DB: chronicle
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y protobuf-compiler libssl-dev libsasl2-dev \
+            libcurl4-openssl-dev cmake
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run smoke test
+        env:
+          # Consumed by chronicle/src/verify.rs's smoke_test module — points
+          # at the ephemeral Postgres service container above, migrated via
+          # signal/migrations at test-run time (sqlx::migrate!, not the
+          # initContainer path real deployments use).
+          TEST_DATABASE_URL: postgres://nexus:nexus@localhost:5432/chronicle
+        run: cargo test -p chronicle --bin verify
+
+  live-verify:
+    name: NEX-87 end-to-end verify (live cluster)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
@@ -52,9 +98,5 @@ jobs:
           # they depend on a separate Kafka consumer catching up, and
           # bars_flowing can never be automated (requires a manual Saxo
           # market-data subscription). See chronicle/src/verify.rs module docs.
-          #
-          # Only bootstraps on push/schedule/dispatch, not on pull_request —
-          # a PR smoke test shouldn't be writing to the shared live database
-          # on every push; that's reserved for the post-merge/scheduled run.
-          VERIFY_BOOTSTRAP: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+          VERIFY_BOOTSTRAP: "true"
         run: ./target/release/verify
