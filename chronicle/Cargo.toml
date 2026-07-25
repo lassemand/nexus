@@ -27,10 +27,6 @@ path = "src/pdmr.rs"
 name = "saxo_stream"
 path = "src/saxo_stream.rs"
 
-[lib]
-name = "chronicle"
-path = "src/lib.rs"
-
 [dependencies]
 model = { path = "../model" }
 alpha = { path = "../alpha" }
