@@ -1,19 +1,22 @@
-/// End-to-end pipeline verifier for GomSpace (GOMX / FNSE).
+/// End-to-end pipeline check logic for GomSpace (GOMX / FNSE).
 ///
-/// Checks each acceptance criterion of NEX-87 automatically against the live
-/// database and external APIs. Exits 0 when all checks pass, 1 when any fail,
-/// so it can be used as a CI step or Kubernetes CronJob.
+/// Checks each acceptance criterion of NEX-87 against a Postgres pool and
+/// external APIs the caller provides. Library-only — no binary, no CLI, no
+/// `main()`. The only caller today is `chronicle/tests/smoke_test.rs`, which
+/// exercises these against an ephemeral Postgres service container and a
+/// mocked FI/Nager.Date via `wiremock` (see that file, and
+/// `.github/workflows/verify.yml`).
 ///
 /// # Checks
 ///
-/// 1. **company_registered** — GOMX present in `companies` with `exchange_mic = 'FNSE'`
-/// 2. **fi_pdmr_ingested**   — FI public register transactions for GOMX present in DB
-/// 3. **bars_flowing**        — bars exist for GOMX in the `bars` table
+/// 1. **company_registered** — a ticker present in `companies` with `exchange_mic = 'FNSE'`
+/// 2. **fi_pdmr_ingested**   — FI public register transactions for that ticker present in DB
+/// 3. **bars_flowing**        — bars exist for that ticker in the `bars` table
 /// 4. **holidays_populated**  — FNSE trading holidays populated for the current year
 ///
 /// Checks 3 and 4 are advisory (the Saxo subscription is a prerequisite for 3).
 ///
-/// # `--bootstrap`
+/// # `bootstrap_holidays`
 ///
 /// Only `holidays_populated` can be meaningfully self-healed here: it's a
 /// single direct Postgres write (via [`alpha::calendar::CalendarProvider`],
@@ -21,44 +24,21 @@
 /// `company_registered` and `fi_pdmr_ingested` both go through Kafka to a
 /// separate `signal` consumer before anything lands in Postgres — "ensuring"
 /// those would mean triggering a publish and then polling for a consumer
-/// this binary doesn't own to catch up, which is real scope beyond a verify
-/// tool. `bars_flowing` requires enabling a paid Saxo market-data
-/// subscription on the account — not something any code path can do. Both
-/// stay pure read-only checks regardless of `--bootstrap`.
+/// this crate doesn't own to catch up, real scope beyond this check logic.
+/// `bars_flowing` requires enabling a paid Saxo market-data subscription on
+/// the account — not something any code path can do. Both stay pure
+/// read-only checks regardless of bootstrapping.
 use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
-use clap::Parser;
 use serde::Deserialize;
-use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
-use tracing::{error, info, warn};
-
-#[derive(Parser)]
-#[command(about = "Automated end-to-end pipeline verification for GomSpace (GOMX/FNSE) — NEX-87")]
-struct Args {
-    /// Signal/backtest Postgres URL (contains bars, companies, insider_filings).
-    #[arg(long, env = "DATABASE_URL")]
-    database_url: String,
-
-    /// How many days back to fetch from FI when comparing with DB.
-    #[arg(long, env = "LOOKBACK_DAYS", default_value = "90")]
-    lookback_days: i64,
-
-    /// Ticker to verify (default: GOMX).
-    #[arg(long, env = "VERIFY_TICKER", default_value = "GOMX")]
-    ticker: String,
-
-    /// Attempt to self-heal the holidays_populated check before reporting
-    /// (see module docs — the only check this applies to).
-    #[arg(long, env = "VERIFY_BOOTSTRAP", default_value_t = false)]
-    bootstrap: bool,
-}
+use tracing::{info, warn};
 
 // ── FI API types (mirrors chronicle/src/pdmr.rs) ─────────────────────────
 
 /// Root of FI's public register — overridable so tests can point this at a
 /// local mock server instead of the real internet endpoint.
-const FI_ROOT: &str = "https://marknadssok.fi.se";
+pub const FI_ROOT: &str = "https://marknadssok.fi.se";
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
@@ -82,10 +62,10 @@ struct FiRow {
 // ── Check result ──────────────────────────────────────────────────────────
 
 #[derive(Debug)]
-struct CheckResult {
-    name: &'static str,
-    passed: bool,
-    detail: String,
+pub struct CheckResult {
+    pub name: &'static str,
+    pub passed: bool,
+    pub detail: String,
 }
 
 impl CheckResult {
@@ -115,7 +95,7 @@ impl CheckResult {
 
 // ── Check 1: company registered ──────────────────────────────────────────
 
-async fn check_company_registered(pool: &sqlx::PgPool, ticker: &str) -> CheckResult {
+pub async fn check_company_registered(pool: &sqlx::PgPool, ticker: &str) -> CheckResult {
     let row = sqlx::query(
         "SELECT exchange_mic, currency FROM companies WHERE ticker = $1 AND exchange_mic = 'FNSE'",
     )
@@ -201,7 +181,7 @@ async fn fetch_fi_transactions(
         .collect())
 }
 
-async fn check_fi_pdmr_ingested(
+pub async fn check_fi_pdmr_ingested(
     pool: &sqlx::PgPool,
     http: &reqwest::Client,
     fi_root: &str,
@@ -274,7 +254,7 @@ async fn check_fi_pdmr_ingested(
 
 // ── Check 3: bars flowing ─────────────────────────────────────────────────
 
-async fn check_bars_flowing(pool: &sqlx::PgPool, ticker: &str) -> CheckResult {
+pub async fn check_bars_flowing(pool: &sqlx::PgPool, ticker: &str) -> CheckResult {
     let row =
         sqlx::query("SELECT COUNT(*) as cnt, MAX(date) as latest FROM bars WHERE ticker = $1")
             .bind(ticker)
@@ -307,7 +287,7 @@ async fn check_bars_flowing(pool: &sqlx::PgPool, ticker: &str) -> CheckResult {
 /// exchange MIC — there is no `exchange_mic` column on that table at all.
 /// `alpha::calendar::country_for_exchange` is the same mapping
 /// `nexus calendar sync` uses to resolve "FNSE" -> "SE".
-async fn check_holidays_populated(pool: &sqlx::PgPool) -> CheckResult {
+pub async fn check_holidays_populated(pool: &sqlx::PgPool) -> CheckResult {
     let current_year = Utc::now().year();
     let Some(country) = alpha::calendar::country_for_exchange("FNSE") else {
         return CheckResult::fail(
@@ -331,7 +311,7 @@ async fn check_holidays_populated(pool: &sqlx::PgPool) -> CheckResult {
             if cnt == 0 {
                 CheckResult::warn(
                     "holidays_populated",
-                    format!("no {country} trading holidays for {current_year} — run `nexus calendar sync --country {country} --year {current_year}` (or pass --bootstrap)"),
+                    format!("no {country} trading holidays for {current_year} — run `nexus calendar sync --country {country} --year {current_year}` (or call bootstrap_holidays)"),
                 )
             } else {
                 CheckResult::pass(
@@ -346,10 +326,10 @@ async fn check_holidays_populated(pool: &sqlx::PgPool) -> CheckResult {
 
 /// Self-heals `holidays_populated` if it's failing: fetches the current
 /// year's holidays from Nager.Date and upserts them into `trading_holidays`.
-/// Identical logic to `cli`'s `nexus calendar sync`, inlined here so this
-/// binary doesn't depend on the `nexus` CLI binary being present in the
-/// runtime image (it currently isn't — see infra/Dockerfile).
-async fn bootstrap_holidays(
+/// Identical logic to `cli`'s `nexus calendar sync`, duplicated here so
+/// this doesn't depend on the `nexus` CLI binary being present wherever
+/// this runs (it currently isn't in the runtime image — see infra/Dockerfile).
+pub async fn bootstrap_holidays(
     pool: &sqlx::PgPool,
     provider: &alpha::calendar::CalendarProvider,
 ) -> Result<()> {
@@ -393,84 +373,3 @@ async fn bootstrap_holidays(
     );
     Ok(())
 }
-
-// ── main ──────────────────────────────────────────────────────────────────
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
-    tracing_subscriber::fmt::init();
-
-    let args = Args::parse();
-
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&args.database_url)
-        .await
-        .context("failed to connect to postgres")?;
-
-    // A timeout matters here specifically because this runs as a PR-gating
-    // smoke test — an unresponsive (not just erroring) FI endpoint would
-    // otherwise hang the job rather than failing cleanly and quickly.
-    // fetch_fi_transactions already treats a request error as advisory
-    // (CheckResult::warn, not fail), so a timeout here degrades the same way
-    // an outright connection failure does — it doesn't newly introduce a
-    // failure mode, it just bounds how long we wait to hit the existing one.
-    let http = reqwest::Client::builder()
-        .user_agent("nexus/verify lasse.alm@gsfleet.io")
-        .timeout(std::time::Duration::from_secs(15))
-        .build()?;
-
-    info!(ticker = %args.ticker, lookback_days = args.lookback_days, bootstrap = args.bootstrap, "starting e2e verification");
-
-    if args.bootstrap {
-        // Only holidays_populated is self-healable here — see module docs.
-        // Attempted unconditionally (upsert is idempotent) rather than
-        // pre-checking first, so a currently-passing check just no-ops.
-        let calendar_provider = alpha::calendar::CalendarProvider::new();
-        if let Err(e) = bootstrap_holidays(&pool, &calendar_provider).await {
-            warn!(error = %e, "bootstrap: failed to seed trading_holidays — check will report as-is");
-        }
-    }
-
-    let results = vec![
-        check_company_registered(&pool, &args.ticker).await,
-        check_fi_pdmr_ingested(&pool, &http, FI_ROOT, &args.ticker, args.lookback_days).await,
-        check_bars_flowing(&pool, &args.ticker).await,
-        check_holidays_populated(&pool).await,
-    ];
-
-    println!("\n=== NEX-87 E2E Verification: {} ===\n", args.ticker);
-
-    let mut any_failed = false;
-    for r in &results {
-        let icon = if r.passed { "✅" } else { "❌" };
-        println!("{icon} {}: {}", r.name, r.detail);
-        if !r.passed {
-            any_failed = true;
-        }
-    }
-
-    let failed_count = results.iter().filter(|r| !r.passed).count();
-    let passed_count = results.iter().filter(|r| r.passed).count();
-    println!(
-        "\n{passed_count}/{} checks passed{}",
-        results.len(),
-        if any_failed {
-            format!(" — {failed_count} FAILED")
-        } else {
-            String::new()
-        }
-    );
-
-    if any_failed {
-        error!("verification FAILED — see above");
-        std::process::exit(1);
-    }
-
-    info!("verification PASSED");
-    Ok(())
-}
-
-#[cfg(test)]
-mod smoke_test;

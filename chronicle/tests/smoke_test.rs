@@ -1,10 +1,26 @@
-use super::*;
+//! PR-gating smoke test for `chronicle::verify`'s check logic — a genuine
+//! Rust integration test (this file), not an inline `#[cfg(test)]` module,
+//! now that `chronicle` has a lib target to import from.
+//!
+//! Runs against an ephemeral Postgres service container (migrated via
+//! `signal/migrations` at test-run time) and an in-process `wiremock` server
+//! standing in for FI's public API and Nager.Date. No live cluster, no
+//! GitHub secret, no real third-party network dependency at all — see
+//! `.github/workflows/verify.yml`.
+
+use chronicle::verify::{
+    bootstrap_holidays, check_bars_flowing, check_company_registered, check_fi_pdmr_ingested,
+    check_holidays_populated,
+};
+use chrono::{Datelike, Duration, NaiveDate, Utc};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::Row;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// A weekday date within `year` — `filter_holidays` (alpha::calendar)
-/// drops anything landing on a Saturday/Sunday, so a hardcoded date
-/// like Dec 25 would be flaky depending on which year this runs in.
+/// A weekday date within `year` — `filter_holidays` (alpha::calendar) drops
+/// anything landing on a Saturday/Sunday, so a hardcoded date like Dec 25
+/// would be flaky depending on which year this runs in.
 fn a_weekday_in(year: i32) -> NaiveDate {
     let mut d = NaiveDate::from_ymd_opt(year, 6, 15).expect("valid date");
     while d.weekday() == chrono::Weekday::Sat || d.weekday() == chrono::Weekday::Sun {

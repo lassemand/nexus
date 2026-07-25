@@ -39,4 +39,4 @@ jobs:
       - name: Run smoke test
         env:
           TEST_DATABASE_URL: postgres://nexus:nexus@localhost:5432/chronicle
-        run: cargo test -p chronicle --bin verify
+        run: cargo test -p chronicle --test smoke_test

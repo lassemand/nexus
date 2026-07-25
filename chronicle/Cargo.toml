@@ -27,9 +27,9 @@ path = "src/pdmr.rs"
 name = "saxo_stream"
 path = "src/saxo_stream.rs"
 
-[[bin]]
-name = "verify"
-path = "src/verify.rs"
+[lib]
+name = "chronicle"
+path = "src/lib.rs"
 
 [dependencies]
 model = { path = "../model" }
@@ -54,7 +54,7 @@ urlencoding = "2"
 async-trait = "0.1"
 
 [dev-dependencies]
-# In-process mock HTTP server for the PR smoke test (chronicle/tests/verify_smoke.rs) —
+# In-process mock HTTP server for the PR smoke test (chronicle/tests/smoke_test.rs) —
 # stubs FI's public API and Nager.Date so the check logic can be exercised
 # deterministically without depending on the real internet endpoints.
 wiremock = "0.6"
