@@ -123,16 +123,34 @@ pub fn country_for_exchange(mic: &str) -> Option<&'static str> {
 
 // ── Provider ──────────────────────────────────────────────────────────────
 
+const NAGER_BASE_URL: &str = "https://date.nager.at";
+
 /// Fetches trading holiday data from the Nager.Date API for a given country
 /// and year, applying the country-specific filtering rules.
 pub struct CalendarProvider {
     client: reqwest::Client,
+    base_url: String,
 }
 
 impl CalendarProvider {
     pub fn new() -> Self {
+        Self::with_base_url(NAGER_BASE_URL)
+    }
+
+    /// Same as [`Self::new`] but pointed at a different base URL — for
+    /// tests to substitute a mock server instead of the real Nager.Date API.
+    pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            // A default (unset) reqwest client has no timeout at all — an
+            // unresponsive (not just erroring) Nager.Date would hang forever
+            // rather than fail cleanly. Matters a lot now that callers of
+            // this (chronicle/src/verify.rs) run as a PR-gating smoke test:
+            // a hang blocks CI far worse than a fast, clean failure does.
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
+            base_url: base_url.into(),
         }
     }
 
@@ -166,7 +184,7 @@ impl CalendarProvider {
     }
 
     async fn fetch(&self, year: i32, country: &str) -> Result<Vec<NagerHoliday>, CalendarError> {
-        let url = format!("https://date.nager.at/api/v3/publicholidays/{year}/{country}");
+        let url = format!("{}/api/v3/publicholidays/{year}/{country}", self.base_url);
         Ok(self
             .client
             .get(&url)
