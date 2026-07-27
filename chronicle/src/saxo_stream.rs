@@ -23,8 +23,7 @@ mod db;
 mod kafka;
 
 use alpha::saxo::{
-    RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken, SharedToken, TokenStore,
-    UicResolver,
+    RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SharedToken, TokenStore, UicResolver,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -90,18 +89,19 @@ struct Args {
 
     /// Bootstrap refresh token — used only if oauth_tokens DB table is empty.
     /// After first rotation the DB value takes precedence on restart.
+    ///
+    /// No separate access-token bootstrap is needed alongside this: at
+    /// startup this binary calls SaxoAuth::refresh() once, synchronously,
+    /// to derive a real access token from this refresh token directly,
+    /// before anything else runs. There used to be SAXO_ACCESS_TOKEN /
+    /// SAXO_TOKEN_EXPIRES_AT args for that, but they only ever held a
+    /// placeholder that the periodic refresh task would silently replace
+    /// within its first ~30s tick anyway — meanwhile UIC resolution and the
+    /// initial WebSocket connect could run against that placeholder in the
+    /// gap before the first tick. Refreshing eagerly at startup closes that
+    /// gap and removes two args that never did anything useful.
     #[arg(long, env = "SAXO_REFRESH_TOKEN")]
     saxo_refresh_token: String,
-
-    /// Initial OAuth2 access token (bootstrap only).
-    #[arg(long, env = "SAXO_ACCESS_TOKEN")]
-    saxo_access_token: String,
-
-    /// Initial access token expiry as Unix timestamp.
-    /// Set to a near-future value (e.g. `$(date +%s -d '+10 seconds')`) for
-    /// local testing to force a rotation within seconds.
-    #[arg(long, env = "SAXO_TOKEN_EXPIRES_AT")]
-    saxo_token_expires_at: i64,
 
     #[arg(long, env = "TICKER_REFRESH_INTERVAL_SECS", default_value = "300")]
     ticker_refresh_interval_secs: u64,
@@ -327,12 +327,6 @@ async fn main() -> anyhow::Result<()> {
         heartbeat_timeout_secs: 30,
     };
 
-    let token = SaxoToken {
-        access_token: args.saxo_access_token.clone(),
-        expires_at: chrono::DateTime::from_timestamp(args.saxo_token_expires_at, 0)
-            .unwrap_or_else(Utc::now),
-    };
-
     let pg_token_store = PgTokenStore { pool: pool.clone() };
 
     let bootstrap_refresh_token = match pg_token_store.load_refresh_token().await {
@@ -361,7 +355,18 @@ async fn main() -> anyhow::Result<()> {
         token_store,
     );
 
-    let shared_token: SharedToken = Arc::new(Mutex::new(token));
+    // Derive a real access token from the refresh token directly, before
+    // anything else runs — no separately-supplied access token needed (see
+    // Args::saxo_refresh_token's doc comment for why). Persists the
+    // rotated refresh token to oauth_tokens too, as a side effect of
+    // SaxoAuth::refresh() itself.
+    let initial_token = saxo_auth
+        .refresh()
+        .await
+        .context("initial token refresh failed — is SAXO_REFRESH_TOKEN valid?")?
+        .access_token;
+
+    let shared_token: SharedToken = Arc::new(Mutex::new(initial_token));
 
     {
         let shared_token = shared_token.clone();
