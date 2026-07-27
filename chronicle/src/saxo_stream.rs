@@ -67,6 +67,19 @@ struct Args {
     )]
     saxo_streaming_base: String,
 
+    /// Saxo's OAuth2/IdP host — was hardcoded to the live one; separate from
+    /// saxo_api_base/saxo_streaming_base because Saxo's auth server lives on
+    /// its own subdomain (`logonvalidation.net`, not `saxobank.com`). To run
+    /// against SIM locally, set this to https://sim.logonvalidation.net
+    /// *and* saxo_api_base/saxo_streaming_base to their /sim/ equivalents —
+    /// all three need to change together, this alone isn't enough.
+    #[arg(
+        long,
+        env = "SAXO_AUTH_BASE",
+        default_value = "https://live.logonvalidation.net"
+    )]
+    saxo_auth_base: String,
+
     /// OAuth2 client ID (from developer.saxo app registration).
     #[arg(long, env = "SAXO_CLIENT_ID")]
     saxo_client_id: String,
@@ -341,7 +354,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut saxo_auth = SaxoAuth::new(
         http.clone(),
-        format!("{}/token", "https://live.logonvalidation.net"),
+        format!("{}/token", args.saxo_auth_base),
         args.saxo_client_id.clone(),
         args.saxo_client_secret.clone(),
         bootstrap_refresh_token,
