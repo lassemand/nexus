@@ -85,9 +85,38 @@ async fn send_initialize_response(stdout: &Arc<Mutex<io::Stdout>>, id: Value) {
     .await;
 }
 
+/// Write a notification to /tmp/mcp-notify.json so the external watchdog
+/// (mcp-watchdog.sh) can pick it up and invoke `claude --print` directly.
+/// This is a fallback for when the channel notification mechanism doesn't
+/// wake an idle session (observed broken in Claude Code ≥2.1.153).
+fn write_notify_queue(event: &str, content: &str) {
+    use std::io::Write;
+    let payload = serde_json::json!({
+        "event": event,
+        "content": content,
+        "ts": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    });
+    let line = format!("{}\n", payload);
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/mcp-notify.jsonl")
+    {
+        Ok(mut f) => {
+            let _ = f.write_all(line.as_bytes());
+            log(&format!("notify queue: wrote {event} event"));
+        }
+        Err(e) => log(&format!("notify queue write error: {e}")),
+    }
+}
+
 /// Push a Linear issue into the Claude Code session as a channel event.
 async fn send_channel_notification(stdout: &Arc<Mutex<io::Stdout>>, issue: &LinearIssue) {
     let content = serde_json::to_string(issue).unwrap_or_default();
+    write_notify_queue("issue_todo", &content);
     write_mcp(
         stdout,
         json!({
@@ -409,6 +438,8 @@ async fn handle_issue_comment(state: &AppState, body: &[u8]) -> StatusCode {
     };
 
     log(&format!("[github] forwarding PR comment {} on {}#{} to Claude", event.comment_id, event.repo, event.pr_number));
+    let content = serde_json::to_string(&event).unwrap_or_default();
+    write_notify_queue("pr_comment", &content);
     send_github_channel_notification(&state.stdout, "pr_comment", &event).await;
 
     StatusCode::OK
@@ -449,6 +480,8 @@ async fn handle_review_comment(state: &AppState, body: &[u8]) -> StatusCode {
     };
 
     log(&format!("[github] forwarding PR review comment {} on {}#{} to Claude", event.comment_id, event.repo, event.pr_number));
+    let content = serde_json::to_string(&event).unwrap_or_default();
+    write_notify_queue("pr_review_comment", &content);
     send_github_channel_notification(&state.stdout, "pr_review_comment", &event).await;
 
     StatusCode::OK
