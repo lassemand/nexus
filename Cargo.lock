@@ -1309,8 +1309,11 @@ name = "mcp"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "hex",
+ "hmac",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 
