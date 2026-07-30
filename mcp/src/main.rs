@@ -217,8 +217,8 @@ async fn send_github_channel_notification(
                 "meta": {
                     "event": event,
                     "repo": comment.repo,
-                    "pr_number": comment.pr_number,
-                    "comment_id": comment.comment_id
+                    "pr_number": comment.pr_number.to_string(),
+                    "comment_id": comment.comment_id.to_string()
                 }
             }
         }),
