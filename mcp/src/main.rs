@@ -60,11 +60,11 @@ async fn send_initialize_response(stdout: &Arc<Mutex<io::Stdout>>, id: Value) {
                     }
                 },
                 "serverInfo": {
-                    "name": "linear-webhook",
+                    "name": "webhook",
                     "version": "0.1.0"
                 },
                 // Added to Claude's system prompt — tells it how to handle events
-                "instructions": "Events from Linear arrive as <channel source=\"linear-webhook\" event=\"issue_todo\">. \
+                "instructions": "Events from Linear arrive as <channel source=\"webhook\" event=\"issue_todo\">. \
                     When a task moves to Todo, extract the issue id, title, labels, and description, \
                     then route to the appropriate agent based on label: \
                     Bug → @agent-debugger, Feature → @agent-builder, PRD → @agent-scoper. \
