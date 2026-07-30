@@ -66,12 +66,6 @@ struct Args {
     )]
     saxo_streaming_base: String,
 
-    /// Saxo's OAuth2/IdP host — was hardcoded to the live one; separate from
-    /// saxo_api_base/saxo_streaming_base because Saxo's auth server lives on
-    /// its own subdomain (`logonvalidation.net`, not `saxobank.com`). To run
-    /// against SIM locally, set this to https://sim.logonvalidation.net
-    /// *and* saxo_api_base/saxo_streaming_base to their /sim/ equivalents —
-    /// all three need to change together, this alone isn't enough.
     #[arg(
         long,
         env = "SAXO_AUTH_BASE",
@@ -89,17 +83,6 @@ struct Args {
 
     /// Bootstrap refresh token — used only if oauth_tokens DB table is empty.
     /// After first rotation the DB value takes precedence on restart.
-    ///
-    /// No separate access-token bootstrap is needed alongside this: at
-    /// startup this binary calls SaxoAuth::refresh() once, synchronously,
-    /// to derive a real access token from this refresh token directly,
-    /// before anything else runs. There used to be SAXO_ACCESS_TOKEN /
-    /// SAXO_TOKEN_EXPIRES_AT args for that, but they only ever held a
-    /// placeholder that the periodic refresh task would silently replace
-    /// within its first ~30s tick anyway — meanwhile UIC resolution and the
-    /// initial WebSocket connect could run against that placeholder in the
-    /// gap before the first tick. Refreshing eagerly at startup closes that
-    /// gap and removes two args that never did anything useful.
     #[arg(long, env = "SAXO_REFRESH_TOKEN")]
     saxo_refresh_token: String,
 
@@ -355,11 +338,6 @@ async fn main() -> anyhow::Result<()> {
         token_store,
     );
 
-    // Derive a real access token from the refresh token directly, before
-    // anything else runs — no separately-supplied access token needed (see
-    // Args::saxo_refresh_token's doc comment for why). Persists the
-    // rotated refresh token to oauth_tokens too, as a side effect of
-    // SaxoAuth::refresh() itself.
     let initial_token = saxo_auth
         .refresh()
         .await
