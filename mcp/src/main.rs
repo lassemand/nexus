@@ -16,11 +16,33 @@ use tokio::sync::Mutex;
 
 /// Writes a JSON-RPC message to stdout (the MCP stdio transport).
 /// Each message is a single line of JSON followed by a newline.
+fn log(msg: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let line = format!("[{ts}] {msg}\n");
+    eprintln!("{}", line.trim());
+    // Also write to a file so it's visible outside the Claude subprocess pipe
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/mcp-debug.log")
+        .and_then(|mut f| { use std::io::Write; f.write_all(line.as_bytes()) });
+}
+
 async fn write_mcp(stdout: &Arc<Mutex<io::Stdout>>, msg: Value) {
     let line = format!("{}\n", msg);
+    log(&format!("write_mcp: {}", &line[..line.len().min(200)]));
     let mut out = stdout.lock().await;
-    let _ = out.write_all(line.as_bytes()).await;
-    let _ = out.flush().await;
+    match out.write_all(line.as_bytes()).await {
+        Ok(()) => log("write_all ok"),
+        Err(e) => log(&format!("write_all ERROR: {e}")),
+    }
+    match out.flush().await {
+        Ok(()) => log("flush ok"),
+        Err(e) => log(&format!("flush ERROR: {e}")),
+    }
 }
 
 /// Send the MCP initialize response, declaring the claude/channel capability.
@@ -31,7 +53,7 @@ async fn send_initialize_response(stdout: &Arc<Mutex<io::Stdout>>, id: Value) {
             "jsonrpc": "2.0",
             "id": id,
             "result": {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-11-25",
                 "capabilities": {
                     "experimental": {
                         "claude/channel": {}
@@ -304,10 +326,7 @@ async fn handle_webhook(State(state): State<AppState>, body: axum::body::Bytes) 
             .collect(),
     };
 
-    eprintln!(
-        "[linear-channel] Forwarding issue {} to Claude",
-        issue.identifier
-    );
+    log(&format!("[linear] forwarding issue {} to Claude", issue.identifier));
     send_channel_notification(&state.stdout, &issue).await;
 
     StatusCode::OK
@@ -389,10 +408,7 @@ async fn handle_issue_comment(state: &AppState, body: &[u8]) -> StatusCode {
         diff_hunk: None,
     };
 
-    eprintln!(
-        "[github-channel] forwarding PR comment {} on {}#{} to Claude",
-        event.comment_id, event.repo, event.pr_number
-    );
+    log(&format!("[github] forwarding PR comment {} on {}#{} to Claude", event.comment_id, event.repo, event.pr_number));
     send_github_channel_notification(&state.stdout, "pr_comment", &event).await;
 
     StatusCode::OK
@@ -432,10 +448,7 @@ async fn handle_review_comment(state: &AppState, body: &[u8]) -> StatusCode {
         diff_hunk: comment.diff_hunk,
     };
 
-    eprintln!(
-        "[github-channel] forwarding PR review comment {} on {}#{} to Claude",
-        event.comment_id, event.repo, event.pr_number
-    );
+    log(&format!("[github] forwarding PR review comment {} on {}#{} to Claude", event.comment_id, event.repo, event.pr_number));
     send_github_channel_notification(&state.stdout, "pr_review_comment", &event).await;
 
     StatusCode::OK
@@ -455,6 +468,8 @@ async fn stdio_loop(stdout: Arc<Mutex<io::Stdout>>) {
         if line.is_empty() {
             continue;
         }
+
+        log(&format!("stdin: {}", &line[..line.len().min(300)]));
 
         let msg: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
