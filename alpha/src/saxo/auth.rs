@@ -171,6 +171,67 @@ impl SaxoAuth {
         Ok(rotated)
     }
 
+    /// Exchange a one-time authorization code for the initial access + refresh token pair.
+    ///
+    /// This is the first leg of the OAuth2 Authorization Code Grant — called once after
+    /// the user completes the browser redirect and the authorization server returns a `code`.
+    /// Unlike [`refresh`](Self::refresh), this is a free function: there is no prior token
+    /// state and no persistence — the caller receives the [`RotatedToken`] and decides what
+    /// to do with it.
+    ///
+    /// # Errors
+    ///
+    /// - [`AuthError::Http`] — non-2xx response from the token endpoint.
+    /// - [`AuthError::MissingToken`] — the response JSON lacks a non-empty `access_token`
+    ///   or `refresh_token`.
+    pub async fn exchange_code(
+        client: &reqwest::Client,
+        token_url: &str,
+        client_id: &str,
+        client_secret: &str,
+        code: &str,
+        redirect_uri: &str,
+    ) -> Result<RotatedToken, AuthError> {
+        let resp: TokenResponse = client
+            .post(token_url)
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", redirect_uri),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        if resp.access_token.is_empty() {
+            return Err(AuthError::MissingToken);
+        }
+
+        let new_refresh = resp
+            .refresh_token
+            .filter(|t| !t.is_empty())
+            .ok_or(AuthError::MissingToken)?;
+
+        let access_ttl = resp.expires_in.unwrap_or(1200);
+        let access_expires_at = Utc::now() + chrono::Duration::seconds(access_ttl as i64);
+
+        let refresh_ttl = resp.refresh_token_expires_in.unwrap_or(3600);
+        let refresh_expires_at = Utc::now() + chrono::Duration::seconds(refresh_ttl as i64);
+
+        Ok(RotatedToken {
+            access_token: SaxoToken {
+                access_token: resp.access_token,
+                expires_at: access_expires_at,
+            },
+            refresh_token: new_refresh,
+            refresh_token_expires_at: refresh_expires_at,
+        })
+    }
+
     /// Reauthorize an existing WebSocket connection with a new access token.
     /// No reconnect; the connection and all subscriptions stay live.
     pub async fn refresh_on_stream(
@@ -221,6 +282,167 @@ mod tests {
         assert!(
             !soon.expires_within_secs(30),
             "should not fire at 30s threshold"
+        );
+    }
+
+    /// Validates that `exchange_code` correctly maps the TTL fields.
+    ///
+    /// Uses a mock HTTP server so no real Saxo endpoint is required.
+    #[tokio::test]
+    async fn exchange_code_parses_ttls_correctly() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .append_header("content-type", "application/json")
+                    .set_body_string(
+                        r#"{
+                            "access_token": "acc123",
+                            "expires_in": 900,
+                            "refresh_token": "ref456",
+                            "refresh_token_expires_in": 7200
+                        }"#,
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token_url = format!("{}/token", server.uri());
+        let result = SaxoAuth::exchange_code(
+            &client,
+            &token_url,
+            "client_id",
+            "client_secret",
+            "auth_code",
+            "https://localhost/callback",
+        )
+        .await
+        .expect("exchange_code should succeed");
+
+        assert_eq!(result.access_token.access_token, "acc123");
+        assert_eq!(result.refresh_token, "ref456");
+
+        // Access token should expire in ~900s; verify it's in the future and
+        // less than 1200s from now (the default).
+        let access_secs_remaining = (result.access_token.expires_at - Utc::now()).num_seconds();
+        assert!(
+            access_secs_remaining > 0 && access_secs_remaining <= 900,
+            "access TTL out of range: {access_secs_remaining}"
+        );
+
+        // Refresh token should expire in ~7200s.
+        let refresh_secs_remaining = (result.refresh_token_expires_at - Utc::now()).num_seconds();
+        assert!(
+            refresh_secs_remaining > 0 && refresh_secs_remaining <= 7200,
+            "refresh TTL out of range: {refresh_secs_remaining}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exchange_code_returns_missing_token_on_empty_access_token() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .append_header("content-type", "application/json")
+                    .set_body_string(r#"{"access_token": "", "refresh_token": "ref456"}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token_url = format!("{}/token", server.uri());
+        let err = SaxoAuth::exchange_code(
+            &client,
+            &token_url,
+            "id",
+            "secret",
+            "code",
+            "https://localhost/callback",
+        )
+        .await
+        .expect_err("should fail on empty access_token");
+
+        assert!(
+            matches!(err, AuthError::MissingToken),
+            "expected MissingToken, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exchange_code_returns_missing_token_on_absent_refresh_token() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .append_header("content-type", "application/json")
+                    .set_body_string(r#"{"access_token": "acc123"}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token_url = format!("{}/token", server.uri());
+        let err = SaxoAuth::exchange_code(
+            &client,
+            &token_url,
+            "id",
+            "secret",
+            "code",
+            "https://localhost/callback",
+        )
+        .await
+        .expect_err("should fail on absent refresh_token");
+
+        assert!(
+            matches!(err, AuthError::MissingToken),
+            "expected MissingToken, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exchange_code_surfaces_http_error_on_non_2xx() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_string(r#"{"error":"invalid_grant"}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token_url = format!("{}/token", server.uri());
+        let err = SaxoAuth::exchange_code(
+            &client,
+            &token_url,
+            "id",
+            "secret",
+            "bad_code",
+            "https://localhost/callback",
+        )
+        .await
+        .expect_err("should fail on 400");
+
+        assert!(
+            matches!(err, AuthError::Http(_)),
+            "expected Http error, got: {err}"
         );
     }
 }
