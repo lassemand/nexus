@@ -28,7 +28,10 @@ fn log(msg: &str) {
         .create(true)
         .append(true)
         .open("/tmp/mcp-debug.log")
-        .and_then(|mut f| { use std::io::Write; f.write_all(line.as_bytes()) });
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(line.as_bytes())
+        });
 }
 
 async fn write_mcp(stdout: &Arc<Mutex<io::Stdout>>, msg: Value) {
@@ -355,7 +358,10 @@ async fn handle_webhook(State(state): State<AppState>, body: axum::body::Bytes) 
             .collect(),
     };
 
-    log(&format!("[linear] forwarding issue {} to Claude", issue.identifier));
+    log(&format!(
+        "[linear] forwarding issue {} to Claude",
+        issue.identifier
+    ));
     send_channel_notification(&state.stdout, &issue).await;
 
     StatusCode::OK
@@ -437,7 +443,10 @@ async fn handle_issue_comment(state: &AppState, body: &[u8]) -> StatusCode {
         diff_hunk: None,
     };
 
-    log(&format!("[github] forwarding PR comment {} on {}#{} to Claude", event.comment_id, event.repo, event.pr_number));
+    log(&format!(
+        "[github] forwarding PR comment {} on {}#{} to Claude",
+        event.comment_id, event.repo, event.pr_number
+    ));
     let content = serde_json::to_string(&event).unwrap_or_default();
     write_notify_queue("pr_comment", &content);
     send_github_channel_notification(&state.stdout, "pr_comment", &event).await;
@@ -479,7 +488,10 @@ async fn handle_review_comment(state: &AppState, body: &[u8]) -> StatusCode {
         diff_hunk: comment.diff_hunk,
     };
 
-    log(&format!("[github] forwarding PR review comment {} on {}#{} to Claude", event.comment_id, event.repo, event.pr_number));
+    log(&format!(
+        "[github] forwarding PR review comment {} on {}#{} to Claude",
+        event.comment_id, event.repo, event.pr_number
+    ));
     let content = serde_json::to_string(&event).unwrap_or_default();
     write_notify_queue("pr_review_comment", &content);
     send_github_channel_notification(&state.stdout, "pr_review_comment", &event).await;
