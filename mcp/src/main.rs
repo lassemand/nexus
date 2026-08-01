@@ -28,7 +28,10 @@ fn log(msg: &str) {
         .create(true)
         .append(true)
         .open("/tmp/mcp-debug.log")
-        .and_then(|mut f| { use std::io::Write; f.write_all(line.as_bytes()) });
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(line.as_bytes())
+        });
 }
 
 async fn write_mcp(stdout: &Arc<Mutex<io::Stdout>>, msg: Value) {
@@ -74,20 +77,7 @@ async fn send_initialize_response(stdout: &Arc<Mutex<io::Stdout>>, id: Value) {
                     event=\"pr_review_comment\" — only for comments from a watched user. \
                     The content is JSON: repo, pr_number, comment_id, body, \
                     and (for review comments) file_path. \
-                    \
-                    When a PR review comment arrives, follow this decision process: \
-                    1. Read the comment body together with the full PR diff. \
-                    2. If the comment requests a clear, actionable change that makes sense given the \
-                       code context: implement the fix on the PR branch, push it, reply on the comment \
-                       describing exactly what was changed and why, then resolve the comment thread \
-                       using pull_request_review_write with method resolve_thread. \
-                    3. If the comment is ambiguous or does not specify what should change: reply on \
-                       the comment asking a focused question about what specifically needs to be \
-                       different — do not guess or make changes. \
-                    4. If the comment does not make sense in the context of the code (e.g. the \
-                       concern is already addressed, or the suggestion would introduce a bug): reply \
-                       explaining why the current code is correct and the comment does not apply. \
-                    Never silently ignore a comment. Always reply."
+                    See CLAUDE.md for how to handle these events."
             }
         }),
     )
@@ -357,7 +347,10 @@ async fn handle_webhook(State(state): State<AppState>, body: axum::body::Bytes) 
             .collect(),
     };
 
-    log(&format!("[linear] forwarding issue {} to Claude", issue.identifier));
+    log(&format!(
+        "[linear] forwarding issue {} to Claude",
+        issue.identifier
+    ));
     send_channel_notification(&state.stdout, &issue).await;
 
     StatusCode::OK
@@ -435,7 +428,10 @@ async fn handle_issue_comment(state: &AppState, body: &[u8]) -> StatusCode {
         file_path: None,
     };
 
-    log(&format!("[github] forwarding PR comment {} on {}#{} to Claude", event.comment_id, event.repo, event.pr_number));
+    log(&format!(
+        "[github] forwarding PR comment {} on {}#{} to Claude",
+        event.comment_id, event.repo, event.pr_number
+    ));
     let content = serde_json::to_string(&event).unwrap_or_default();
     write_notify_queue("pr_comment", &content);
     send_github_channel_notification(&state.stdout, "pr_comment", &event).await;
@@ -473,7 +469,10 @@ async fn handle_review_comment(state: &AppState, body: &[u8]) -> StatusCode {
         file_path: comment.path,
     };
 
-    log(&format!("[github] forwarding PR review comment {} on {}#{} to Claude", event.comment_id, event.repo, event.pr_number));
+    log(&format!(
+        "[github] forwarding PR review comment {} on {}#{} to Claude",
+        event.comment_id, event.repo, event.pr_number
+    ));
     let content = serde_json::to_string(&event).unwrap_or_default();
     write_notify_queue("pr_review_comment", &content);
     send_github_channel_notification(&state.stdout, "pr_review_comment", &event).await;
