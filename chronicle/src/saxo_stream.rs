@@ -23,8 +23,7 @@ mod db;
 mod kafka;
 
 use alpha::saxo::{
-    RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken, SharedToken, TokenStore,
-    UicResolver,
+    RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SharedToken, TokenStore, UicResolver,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -67,6 +66,13 @@ struct Args {
     )]
     saxo_streaming_base: String,
 
+    #[arg(
+        long,
+        env = "SAXO_AUTH_BASE",
+        default_value = "https://live.logonvalidation.net"
+    )]
+    saxo_auth_base: String,
+
     /// OAuth2 client ID (from developer.saxo app registration).
     #[arg(long, env = "SAXO_CLIENT_ID")]
     saxo_client_id: String,
@@ -79,16 +85,6 @@ struct Args {
     /// After first rotation the DB value takes precedence on restart.
     #[arg(long, env = "SAXO_REFRESH_TOKEN")]
     saxo_refresh_token: String,
-
-    /// Initial OAuth2 access token (bootstrap only).
-    #[arg(long, env = "SAXO_ACCESS_TOKEN")]
-    saxo_access_token: String,
-
-    /// Initial access token expiry as Unix timestamp.
-    /// Set to a near-future value (e.g. `$(date +%s -d '+10 seconds')`) for
-    /// local testing to force a rotation within seconds.
-    #[arg(long, env = "SAXO_TOKEN_EXPIRES_AT")]
-    saxo_token_expires_at: i64,
 
     #[arg(long, env = "TICKER_REFRESH_INTERVAL_SECS", default_value = "300")]
     ticker_refresh_interval_secs: u64,
@@ -314,12 +310,6 @@ async fn main() -> anyhow::Result<()> {
         heartbeat_timeout_secs: 30,
     };
 
-    let token = SaxoToken {
-        access_token: args.saxo_access_token.clone(),
-        expires_at: chrono::DateTime::from_timestamp(args.saxo_token_expires_at, 0)
-            .unwrap_or_else(Utc::now),
-    };
-
     let pg_token_store = PgTokenStore { pool: pool.clone() };
 
     let bootstrap_refresh_token = match pg_token_store.load_refresh_token().await {
@@ -341,14 +331,20 @@ async fn main() -> anyhow::Result<()> {
 
     let mut saxo_auth = SaxoAuth::new(
         http.clone(),
-        format!("{}/token", "https://live.logonvalidation.net"),
+        format!("{}/token", args.saxo_auth_base),
         args.saxo_client_id.clone(),
         args.saxo_client_secret.clone(),
         bootstrap_refresh_token,
         token_store,
     );
 
-    let shared_token: SharedToken = Arc::new(Mutex::new(token));
+    let initial_token = saxo_auth
+        .refresh()
+        .await
+        .context("initial token refresh failed — is SAXO_REFRESH_TOKEN valid?")?
+        .access_token;
+
+    let shared_token: SharedToken = Arc::new(Mutex::new(initial_token));
 
     {
         let shared_token = shared_token.clone();
