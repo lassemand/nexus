@@ -25,6 +25,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "model",
+ "rand 0.9.4",
  "reqwest",
  "serde",
  "serde_json",
@@ -33,6 +34,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "url",
  "wiremock",
  "yahoo_finance_api",
 ]
