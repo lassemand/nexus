@@ -71,14 +71,23 @@ async fn send_initialize_response(stdout: &Arc<Mutex<io::Stdout>>, id: Value) {
                     Begin work immediately. \
                     \
                     Events from GitHub arrive on the same channel as event=\"pr_comment\" or \
-                    event=\"pr_review_comment\" — only for comments from a watched user (see \
-                    GITHUB_WEBHOOK_USERS). The content is JSON: repo, pr_number, comment_id, author, \
-                    body, url, and (for review comments) file_path/line/diff_hunk. Read the comment \
-                    together with the PR's current diff. If what's being asked is clear and \
-                    actionable, make the change, commit, and push a fix to the PR branch, then reply \
-                    on the comment confirming what was fixed. If the comment is unclear or doesn't \
-                    specify exactly what should change, do not guess — reply on the comment asking \
-                    for clarification instead."
+                    event=\"pr_review_comment\" — only for comments from a watched user. \
+                    The content is JSON: repo, pr_number, comment_id, body, \
+                    and (for review comments) file_path. \
+                    \
+                    When a PR review comment arrives, follow this decision process: \
+                    1. Read the comment body together with the full PR diff. \
+                    2. If the comment requests a clear, actionable change that makes sense given the \
+                       code context: implement the fix on the PR branch, push it, reply on the comment \
+                       describing exactly what was changed and why, then resolve the comment thread \
+                       using pull_request_review_write with method resolve_thread. \
+                    3. If the comment is ambiguous or does not specify what should change: reply on \
+                       the comment asking a focused question about what specifically needs to be \
+                       different — do not guess or make changes. \
+                    4. If the comment does not make sense in the context of the code (e.g. the \
+                       concern is already addressed, or the suggestion would introduce a bug): reply \
+                       explaining why the current code is correct and the comment does not apply. \
+                    Never silently ignore a comment. Always reply."
             }
         }),
     )
@@ -204,7 +213,6 @@ struct IssueCommentIssue {
 struct IssueCommentBody {
     id: u64,
     body: String,
-    html_url: String,
     user: GithubUser,
 }
 
@@ -227,28 +235,22 @@ struct ReviewCommentPr {
 struct ReviewCommentBody {
     id: u64,
     body: String,
-    html_url: String,
     user: GithubUser,
     path: Option<String>,
-    line: Option<u64>,
-    diff_hunk: Option<String>,
 }
 
 /// Unified shape sent to Claude regardless of which GitHub event produced it.
+/// Kept intentionally minimal — only what the agent needs to act: where the
+/// PR lives, which comment to reply to/resolve, what was said, and (for review
+/// comments) which file the comment is on.
 #[derive(Debug, Serialize)]
 struct GithubPrComment {
     repo: String,
     pr_number: u64,
     comment_id: u64,
-    author: String,
     body: String,
-    url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    line: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    diff_hunk: Option<String>,
 }
 
 /// Push a GitHub PR comment into the Claude Code session as a channel event.
@@ -429,12 +431,8 @@ async fn handle_issue_comment(state: &AppState, body: &[u8]) -> StatusCode {
         repo: payload.repository.map(|r| r.full_name).unwrap_or_default(),
         pr_number: issue.number,
         comment_id: comment.id,
-        author: comment.user.login,
         body: comment.body,
-        url: comment.html_url,
         file_path: None,
-        line: None,
-        diff_hunk: None,
     };
 
     log(&format!("[github] forwarding PR comment {} on {}#{} to Claude", event.comment_id, event.repo, event.pr_number));
@@ -471,12 +469,8 @@ async fn handle_review_comment(state: &AppState, body: &[u8]) -> StatusCode {
         repo: payload.repository.map(|r| r.full_name).unwrap_or_default(),
         pr_number: pr.number,
         comment_id: comment.id,
-        author: comment.user.login,
         body: comment.body,
-        url: comment.html_url,
         file_path: comment.path,
-        line: comment.line,
-        diff_hunk: comment.diff_hunk,
     };
 
     log(&format!("[github] forwarding PR review comment {} on {}#{} to Claude", event.comment_id, event.repo, event.pr_number));
