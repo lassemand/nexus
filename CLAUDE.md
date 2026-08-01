@@ -96,3 +96,15 @@ Auto-created by the Zalando operator:
 nexus.nexus-postgres.credentials.postgresql.acid.zalan.do
 ```
 Keys: `username`, `password`.
+
+## GitHub PR comment handling
+
+GitHub PR comments arrive as channel events (`pr_comment` or `pr_review_comment`) with fields: `repo`, `pr_number`, `comment_id`, `body`, and (for review comments) `file_path`.
+
+When a comment arrives, apply this decision process:
+
+1. **Clear and actionable** — implement the fix on the PR branch, push it, reply on the comment describing what was changed and why, then resolve the thread using `pull_request_review_write` with `method: resolve_thread`.
+2. **Unclear or ambiguous** — reply asking a focused question about what specifically should change. Do not guess or make changes.
+3. **Does not make sense** — reply explaining why the current code is correct and the comment does not apply.
+
+Never silently ignore a comment. Always reply.
