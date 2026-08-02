@@ -64,6 +64,16 @@ enum Commands {
         action: CalendarAction,
     },
 
+    /// Saxo Bank OAuth2 operations.
+    ///
+    /// Example: nexus saxo auth --client-id <ID> --redirect-uri http://localhost:7878/callback \
+    ///   --register-endpoint http://localhost:8080/tokens
+    #[command(subcommand_required = true)]
+    Saxo {
+        #[command(subcommand)]
+        action: SaxoAction,
+    },
+
     /// Print shell completion scripts.
     ///
     /// Install with:
@@ -72,6 +82,57 @@ enum Commands {
     Completions {
         #[command(subcommand)]
         shell: CompletionsShell,
+    },
+}
+
+#[derive(Subcommand)]
+enum SaxoAction {
+    /// Perform the Saxo OAuth2 authorization-code flow and register the
+    /// resulting tokens with a running saxo_stream instance.
+    ///
+    /// Generates a CSRF state, opens the /authorize URL in the system browser,
+    /// listens for the callback redirect, exchanges the code for tokens, POSTs
+    /// them to --register-endpoint, then prints all token values to stdout.
+    Auth {
+        /// Saxo application OAuth2 client ID (from the Saxo developer portal).
+        #[arg(long, env = "SAXO_CLIENT_ID")]
+        client_id: String,
+
+        /// Saxo application OAuth2 client secret.
+        ///
+        /// Prefer SAXO_CLIENT_SECRET env var over a bare flag value —
+        /// CLI arguments are visible in `ps aux` and shell history.
+        #[arg(long, env = "SAXO_CLIENT_SECRET")]
+        client_secret: String,
+
+        /// Saxo authorization server base URL.
+        /// Use the SIM host (default) for testing, the Live host for production.
+        #[arg(
+            long,
+            env = "SAXO_AUTH_BASE",
+            default_value = "https://sim.logonvalidation.net"
+        )]
+        auth_base: String,
+
+        /// Redirect URI registered in the Saxo developer portal.
+        /// Must match exactly (scheme, host, port, path).
+        /// Example: http://localhost:7878/callback
+        #[arg(long, env = "SAXO_REDIRECT_URI")]
+        redirect_uri: String,
+
+        /// Local port to listen on for the OAuth callback redirect.
+        /// Must match the port in --redirect-uri.
+        #[arg(
+            long,
+            env = "SAXO_CALLBACK_PORT",
+            default_value_t = saxo_auth::DEFAULT_CALLBACK_PORT
+        )]
+        callback_port: u16,
+
+        /// saxo_stream /tokens endpoint to register the token pair with.
+        /// Typically reached via kubectl port-forward, e.g. http://localhost:8080/tokens
+        #[arg(long, env = "SAXO_REGISTER_ENDPOINT")]
+        register_endpoint: String,
     },
 }
 
@@ -155,6 +216,28 @@ async fn main() -> Result<()> {
         Commands::Calendar {
             action: CalendarAction::Sync { country, year },
         } => cmd_calendar_sync(country, year).await,
+
+        Commands::Saxo {
+            action:
+                SaxoAction::Auth {
+                    client_id,
+                    client_secret,
+                    auth_base,
+                    redirect_uri,
+                    callback_port,
+                    register_endpoint,
+                },
+        } => {
+            saxo_auth::cmd_saxo_auth(
+                &client_id,
+                &client_secret,
+                &auth_base,
+                &redirect_uri,
+                callback_port,
+                &register_endpoint,
+            )
+            .await
+        }
 
         Commands::Completions {
             shell: CompletionsShell::Zsh,
