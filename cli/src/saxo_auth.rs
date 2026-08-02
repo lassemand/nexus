@@ -1,16 +1,15 @@
-// Public API items are used by the CLI subcommand wiring task, which is not yet
-// implemented. Suppress dead_code until that task lands.
-#![allow(dead_code)]
-
-//! One-shot local OAuth2 callback listener for the Saxo authorization-code flow.
+//! Saxo Bank OAuth2 authorization-code flow for the `nexus saxo auth` CLI command.
 //!
-//! Saxo's authorization server redirects the user's browser to a registered
-//! `redirect_uri` (e.g. `http://localhost:7878/callback`) carrying the
-//! one-time authorization `code` and the CSRF `state` token.  This module
-//! binds a temporary TCP listener, catches that single request, delivers a
-//! confirmation page to the browser, then exits cleanly — leaving the port
-//! free for the next run.
+//! Orchestrates the full flow:
+//! 1. Generate a CSRF `state` token and build the `/authorize` URL.
+//! 2. Print the URL and best-effort open it in the system browser.
+//! 3. Bind a one-shot local HTTP listener to catch the authorization-server redirect.
+//! 4. Validate the echoed `state`, exchange the `code` for tokens.
+//! 5. POST the token pair to the running `saxo_stream` `/tokens` endpoint.
+//! 6. Print all token values to stdout so the operator always has a record.
 
+use alpha::saxo::auth::{authorize_url, generate_state, AuthError, SaxoAuth};
+use chrono::{DateTime, Utc};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -20,19 +19,152 @@ use tokio::net::TcpListener;
 ///
 /// Must match the `redirect_uri` registered in the Saxo developer portal
 /// (e.g. `http://localhost:7878/callback`).
-// Not yet referenced by a CLI subcommand — will be used in the
-// subcommand-wiring task.
-#[allow(dead_code)]
 pub const DEFAULT_CALLBACK_PORT: u16 = 7878;
 
 /// Default timeout in seconds to wait for the browser callback.
 ///
 /// If the user does not complete the authorization flow within this window,
 /// [`await_callback`] returns [`CallbackError::Timeout`].
-// Not yet referenced by a CLI subcommand — will be used in the
-// subcommand-wiring task.
-#[allow(dead_code)]
 pub const DEFAULT_CALLBACK_TIMEOUT_SECS: u64 = 120;
+
+/// JSON body for `POST /tokens` — sent to the running `saxo_stream` instance
+/// to register the initial token pair after the OAuth2 flow completes.
+///
+/// Matches the `TokenRegistrationBody` contract expected by `chronicle/src/saxo_stream.rs`.
+#[derive(serde::Serialize)]
+pub struct TokenRegistrationPayload {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub access_token_expires_at: DateTime<Utc>,
+    pub refresh_token_expires_at: DateTime<Utc>,
+}
+
+/// Run the full Saxo OAuth2 authorization-code flow and register the resulting
+/// tokens with a running `saxo_stream` instance.
+///
+/// # Flow
+///
+/// 1. Generates a CSRF `state` token via [`generate_state`].
+/// 2. Builds the `/authorize` URL and prints it to stderr.
+/// 3. Best-effort opens the URL in the system browser (non-fatal if it fails).
+/// 4. Waits for the browser redirect on `127.0.0.1:{callback_port}`.
+/// 5. Validates the echoed `state`, then exchanges the `code` for tokens via
+///    [`SaxoAuth::exchange_code`].
+/// 6. Always prints the four token values to **stdout** (even if step 7 fails),
+///    so the operator always has a manual fallback.
+/// 7. POSTs `{access_token, refresh_token, *_expires_at}` to `register_endpoint`.
+///    A non-2xx or network error is printed to stderr but does **not** cause a
+///    non-zero exit — the token exchange succeeding is the primary success condition.
+///
+/// # Errors
+///
+/// Returns an error (non-zero exit) on: listener timeout, `state` mismatch,
+/// OAuth `error` from the authorization server, or token exchange failure.
+pub async fn cmd_saxo_auth(
+    client_id: &str,
+    client_secret: &str,
+    auth_base: &str,
+    redirect_uri: &str,
+    callback_port: u16,
+    register_endpoint: &str,
+) -> anyhow::Result<()> {
+    // 1. Generate CSRF state and build the /authorize URL.
+    let state = generate_state();
+    let auth_url = authorize_url(auth_base, client_id, redirect_uri, &state)
+        .map_err(|e: AuthError| anyhow::anyhow!("failed to build authorize URL: {e}"))?;
+
+    // 2. Print URL and try to open browser (best-effort; non-fatal).
+    eprintln!("Open this URL in your browser to authorize:");
+    eprintln!("{auth_url}");
+    eprintln!();
+    if let Err(e) = open::that(&auth_url) {
+        eprintln!("(Could not auto-open browser: {e} — please copy the URL above)");
+    }
+
+    // 3. Wait for the callback redirect.
+    eprintln!("Waiting for callback on port {callback_port}…");
+    let callback = await_callback(callback_port, DEFAULT_CALLBACK_TIMEOUT_SECS)
+        .await
+        .map_err(|e| anyhow::anyhow!("callback listener error: {e}"))?;
+
+    // 4a. Surface any OAuth error from the authorization server (e.g. user denied).
+    if let Some(error) = &callback.error {
+        let desc = callback
+            .error_description
+            .as_deref()
+            .unwrap_or("(no description)");
+        anyhow::bail!("authorization server returned error: {error} — {desc}");
+    }
+
+    // 4b. Extract the code and validate the CSRF state.
+    let code = callback
+        .code
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("callback contained no authorization code"))?;
+
+    let returned_state = callback.state.as_deref().unwrap_or("");
+    if returned_state != state {
+        anyhow::bail!(
+            "CSRF state mismatch — possible replay attack or stale browser tab \
+             (expected {state}, got {returned_state})"
+        );
+    }
+
+    // 5. Exchange the authorization code for tokens.
+    let http = reqwest::Client::new();
+    let token_url = format!("{auth_base}/token");
+    let rotated = SaxoAuth::exchange_code(
+        &http,
+        &token_url,
+        client_id,
+        client_secret,
+        code,
+        redirect_uri,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("token exchange failed: {e}"))?;
+
+    // 6. Print token values to stdout — always, even if registration below fails.
+    println!("SAXO_REFRESH_TOKEN={}", rotated.refresh_token);
+    println!("SAXO_ACCESS_TOKEN={}", rotated.access_token.access_token);
+    println!(
+        "SAXO_REFRESH_TOKEN_EXPIRES_AT={}",
+        rotated.refresh_token_expires_at.to_rfc3339()
+    );
+    println!(
+        "SAXO_ACCESS_TOKEN_EXPIRES_AT={}",
+        rotated.access_token.expires_at.to_rfc3339()
+    );
+
+    // 7. POST to saxo_stream /tokens endpoint (best-effort).
+    let payload = TokenRegistrationPayload {
+        access_token: rotated.access_token.access_token.clone(),
+        refresh_token: rotated.refresh_token.clone(),
+        access_token_expires_at: rotated.access_token.expires_at,
+        refresh_token_expires_at: rotated.refresh_token_expires_at,
+    };
+
+    match http.post(register_endpoint).json(&payload).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            eprintln!("✓ tokens registered with saxo_stream at {register_endpoint}");
+        }
+        Ok(resp) => {
+            eprintln!(
+                "warning: registration POST returned HTTP {} — \
+                 tokens printed above must be delivered manually",
+                resp.status()
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: registration POST failed ({e}) — \
+                 tokens printed above must be delivered manually"
+            );
+        }
+    }
+
+    Ok(())
+}
 
 /// Query parameters extracted from the OAuth2 authorization-server redirect.
 ///
