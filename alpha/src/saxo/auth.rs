@@ -524,6 +524,56 @@ mod tests {
         );
     }
 
+    /// When the token endpoint omits `expires_in` and `refresh_token_expires_in`,
+    /// `exchange_code` must fall back to the same defaults as `refresh()`:
+    /// 1200 s for the access token and 3600 s for the refresh token.
+    #[tokio::test]
+    async fn exchange_code_applies_default_ttls_when_absent() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .append_header("content-type", "application/json")
+                    // Neither expires_in nor refresh_token_expires_in present.
+                    .set_body_string(
+                        r#"{"access_token": "acc_default", "refresh_token": "ref_default"}"#,
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token_url = format!("{}/token", server.uri());
+        let result = SaxoAuth::exchange_code(
+            &client,
+            &token_url,
+            "id",
+            "secret",
+            "code",
+            "https://localhost/callback",
+        )
+        .await
+        .expect("should succeed with default TTLs");
+
+        // Default access-token TTL is 1200 s.
+        let access_secs = (result.access_token.expires_at - Utc::now()).num_seconds();
+        assert!(
+            access_secs > 0 && access_secs <= 1200,
+            "access TTL should default to 1200s, got {access_secs}s"
+        );
+
+        // Default refresh-token TTL is 3600 s.
+        let refresh_secs = (result.refresh_token_expires_at - Utc::now()).num_seconds();
+        assert!(
+            refresh_secs > 0 && refresh_secs <= 3600,
+            "refresh TTL should default to 3600s, got {refresh_secs}s"
+        );
+    }
+
     #[tokio::test]
     async fn exchange_code_surfaces_http_error_on_non_2xx() {
         use wiremock::matchers::{method, path};
