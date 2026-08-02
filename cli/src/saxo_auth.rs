@@ -143,10 +143,24 @@ pub async fn cmd_saxo_auth(
         access_token_expires_at: rotated.access_token.expires_at,
         refresh_token_expires_at: rotated.refresh_token_expires_at,
     };
+    send_registration(&http, register_endpoint, &payload).await;
 
-    match http.post(register_endpoint).json(&payload).send().await {
+    Ok(())
+}
+
+/// POST the token pair to `endpoint` (the `saxo_stream` `/tokens` endpoint).
+///
+/// Best-effort and always returns — a non-2xx or network error is printed
+/// to stderr as a warning, not propagated. Extracted for targeted testing
+/// without running the full OAuth flow.
+pub(crate) async fn send_registration(
+    http: &reqwest::Client,
+    endpoint: &str,
+    payload: &TokenRegistrationPayload,
+) {
+    match http.post(endpoint).json(payload).send().await {
         Ok(resp) if resp.status().is_success() => {
-            eprintln!("✓ tokens registered with saxo_stream at {register_endpoint}");
+            eprintln!("✓ tokens registered with saxo_stream at {endpoint}");
         }
         Ok(resp) => {
             eprintln!(
@@ -162,8 +176,6 @@ pub async fn cmd_saxo_auth(
             );
         }
     }
-
-    Ok(())
 }
 
 /// Query parameters extracted from the OAuth2 authorization-server redirect.
@@ -474,5 +486,155 @@ mod tests {
             matches!(result, Err(CallbackError::Bind { .. })),
             "expected Bind error, got: {result:?}"
         );
+    }
+
+    // ── AC1 (malformed request line) ─────────────────────────────────────
+
+    #[test]
+    fn parse_malformed_truncated_key_without_value() {
+        // A key with no "=" and no value should be silently ignored.
+        let p = parse_query_from_request_line("GET /callback?code HTTP/1.1\r\n");
+        assert!(
+            p.code.is_none(),
+            "truncated key-only param must not produce a value"
+        );
+        assert!(p.state.is_none());
+
+        // Just a "?" with nothing after it.
+        let p2 = parse_query_from_request_line("GET /callback? HTTP/1.1\r\n");
+        assert!(p2.code.is_none());
+
+        // Mixed: one valid pair, one truncated key.
+        let p3 = parse_query_from_request_line("GET /callback?code=ABC&state HTTP/1.1\r\n");
+        assert_eq!(p3.code.as_deref(), Some("ABC"), "valid pair still parsed");
+        assert!(p3.state.is_none(), "truncated 'state' key must be ignored");
+    }
+
+    // ── AC2 (state mismatch) ─────────────────────────────────────────────
+
+    /// Sends a callback with a state that will never match `generate_state()`'s
+    /// 64-char hex output, and asserts that `cmd_saxo_auth` returns an error
+    /// without proceeding to token exchange.
+    #[tokio::test]
+    async fn cmd_saxo_auth_rejects_state_mismatch() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpStream;
+
+        let port = 19881u16;
+
+        // Spawn cmd_saxo_auth.  The authorize URL build and browser-open are
+        // non-fatal; the token/register endpoints are never reached because
+        // the state check fires first.
+        // Use `async move` so that `redirect_uri` (a non-'static String) is
+        // moved into the future and owned by it, satisfying tokio::spawn's
+        // 'static bound.
+        let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+        let task = tokio::spawn(async move {
+            cmd_saxo_auth(
+                "client_id",
+                "client_secret",
+                "https://sim.logonvalidation.net",
+                &redirect_uri,
+                port,
+                "http://127.0.0.1:1/tokens", // unreachable — never called
+            )
+            .await
+        });
+
+        // Give the listener time to bind.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Send a callback with a state that is guaranteed not to match
+        // generate_state()'s 64-char random hex output.
+        let mut conn = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        conn.write_all(
+            b"GET /callback?code=test_code&state=wrong_state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await
+        .unwrap();
+
+        let result = task.await.unwrap();
+        assert!(
+            result.is_err(),
+            "cmd_saxo_auth should fail on state mismatch"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("CSRF") || msg.contains("state"),
+            "error should mention CSRF or state, got: {msg}"
+        );
+    }
+
+    // ── AC5 (registration POST 200) ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn send_registration_completes_on_200() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tokens"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1) // exactly one call expected
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let payload = TokenRegistrationPayload {
+            access_token: "acc".to_string(),
+            refresh_token: "ref".to_string(),
+            access_token_expires_at: chrono::Utc::now() + chrono::Duration::seconds(1200),
+            refresh_token_expires_at: chrono::Utc::now() + chrono::Duration::seconds(3600),
+        };
+
+        // Must complete without panicking; return type is () — non-fatal by design.
+        send_registration(&http, &format!("{}/tokens", server.uri()), &payload).await;
+
+        // Verify the mock was hit exactly once (wiremock asserts on drop).
+    }
+
+    // ── AC6 (registration POST failure exits 0 / is non-fatal) ──────────
+
+    #[tokio::test]
+    async fn send_registration_is_non_fatal_on_non_2xx() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tokens"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let payload = TokenRegistrationPayload {
+            access_token: "acc".to_string(),
+            refresh_token: "ref".to_string(),
+            access_token_expires_at: chrono::Utc::now() + chrono::Duration::seconds(1200),
+            refresh_token_expires_at: chrono::Utc::now() + chrono::Duration::seconds(3600),
+        };
+
+        // A 503 must not panic or propagate an error — send_registration returns ().
+        // This verifies that a failed registration POST cannot prevent the CLI from
+        // exiting 0 when the OAuth exchange itself succeeded.
+        send_registration(&http, &format!("{}/tokens", server.uri()), &payload).await;
+    }
+
+    #[tokio::test]
+    async fn send_registration_is_non_fatal_on_network_error() {
+        // Point at a port that is not listening — should produce a network error,
+        // not a panic or a propagated failure.
+        let http = reqwest::Client::new();
+        let payload = TokenRegistrationPayload {
+            access_token: "acc".to_string(),
+            refresh_token: "ref".to_string(),
+            access_token_expires_at: chrono::Utc::now() + chrono::Duration::seconds(1200),
+            refresh_token_expires_at: chrono::Utc::now() + chrono::Duration::seconds(3600),
+        };
+
+        send_registration(&http, "http://127.0.0.1:1/tokens", &payload).await;
+        // Reaches here without panic — network failure is swallowed as a warning.
     }
 }
