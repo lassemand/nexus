@@ -23,7 +23,8 @@ mod db;
 mod kafka;
 
 use alpha::saxo::{
-    RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SharedToken, TokenStore, UicResolver,
+    RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken, SharedToken, TokenStore,
+    UicResolver,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -80,11 +81,6 @@ struct Args {
     /// OAuth2 client secret.
     #[arg(long, env = "SAXO_CLIENT_SECRET")]
     saxo_client_secret: String,
-
-    /// Bootstrap refresh token — used only if oauth_tokens DB table is empty.
-    /// After first rotation the DB value takes precedence on restart.
-    #[arg(long, env = "SAXO_REFRESH_TOKEN")]
-    saxo_refresh_token: String,
 
     #[arg(long, env = "TICKER_REFRESH_INTERVAL_SECS", default_value = "300")]
     ticker_refresh_interval_secs: u64,
@@ -243,6 +239,157 @@ async fn serve_health(port: u16, metrics: Arc<Metrics>) {
     }
 }
 
+/// Flat JSON body accepted by `POST /tokens`.
+///
+/// `nexus saxo auth` sends this after completing the OAuth2 authorization-code
+/// flow.  The struct mirrors what [`alpha::saxo::auth::SaxoAuth::exchange_code`]
+/// returns so the CLI can forward the result without extra transformation.
+#[derive(serde::Deserialize)]
+struct TokenRegistrationBody {
+    access_token: String,
+    refresh_token: String,
+    access_token_expires_at: chrono::DateTime<chrono::Utc>,
+    refresh_token_expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<TokenRegistrationBody> for RotatedToken {
+    fn from(b: TokenRegistrationBody) -> Self {
+        RotatedToken {
+            access_token: SaxoToken {
+                access_token: b.access_token,
+                expires_at: b.access_token_expires_at,
+            },
+            refresh_token: b.refresh_token,
+            refresh_token_expires_at: b.refresh_token_expires_at,
+        }
+    }
+}
+
+/// Attempt to read and handle one `POST /tokens` request from an accepted TCP stream.
+///
+/// Returns `Some(body)` if the request was valid and a `200 OK` was sent.
+/// Returns `None` for any other request (wrong method, malformed body, missing
+/// fields) after sending the appropriate 4xx response — the caller keeps listening.
+async fn handle_registration_request(
+    stream: tokio::net::TcpStream,
+) -> Option<TokenRegistrationBody> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+
+    // Read the HTTP request line.
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).await.is_err() {
+        return None;
+    }
+
+    // Only accept POST /tokens; return 405 for everything else.
+    if !request_line.trim_end().starts_with("POST /tokens") {
+        let _ = write_half
+            .write_all(
+                b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nAllow: POST\r\n\r\n",
+            )
+            .await;
+        return None;
+    }
+
+    // Read headers; extract Content-Length.
+    let mut content_length: usize = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).await.is_err() {
+            return None;
+        }
+        if line.trim().is_empty() {
+            break;
+        }
+        let lower = line.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("content-length:") {
+            content_length = rest.trim().parse().unwrap_or(0);
+        }
+    }
+
+    if content_length == 0 {
+        let _ = write_half
+            .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+            .await;
+        return None;
+    }
+
+    // Read exactly Content-Length bytes as the request body.
+    let mut body = vec![0u8; content_length];
+    if reader.read_exact(&mut body).await.is_err() {
+        let _ = write_half
+            .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+            .await;
+        return None;
+    }
+
+    // Deserialize and validate.
+    match serde_json::from_slice::<TokenRegistrationBody>(&body) {
+        Ok(reg) if !reg.access_token.is_empty() && !reg.refresh_token.is_empty() => {
+            let _ = write_half
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            Some(reg)
+        }
+        _ => {
+            let _ = write_half
+                .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            None
+        }
+    }
+}
+
+/// Block until a valid `POST /tokens` request arrives on `port`.
+///
+/// Binds a temporary `TcpListener` on `0.0.0.0:{port}`, loops accepting
+/// connections, and logs a heartbeat every 60 s so the pod doesn't look hung in
+/// `kubectl logs`.  Returns the parsed and validated token body as a
+/// [`RotatedToken`] on the first valid request; all invalid requests get a 4xx
+/// and are silently ignored so the loop keeps waiting.
+///
+/// The listener is dropped (port freed) before this function returns, so the
+/// caller can immediately bind the same port for `serve_health`.
+async fn await_token_registration(port: u16) -> anyhow::Result<RotatedToken> {
+    let listener = TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .with_context(|| format!("failed to bind registration listener on port {port}"))?;
+
+    info!(
+        port,
+        "no Saxo token in DB — listening for POST /tokens to bootstrap the stream"
+    );
+
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
+    heartbeat.tick().await; // consume the immediate first tick
+
+    loop {
+        let stream = tokio::select! {
+            res = listener.accept() => {
+                match res {
+                    Ok((s, _)) => s,
+                    Err(e) => {
+                        warn!(error = %e, "registration listener accept error");
+                        continue;
+                    }
+                }
+            }
+            _ = heartbeat.tick() => {
+                info!("waiting for Saxo token registration via POST /tokens");
+                continue;
+            }
+        };
+
+        if let Some(body) = handle_registration_request(stream).await {
+            info!("Saxo tokens received via POST /tokens — proceeding with stream startup");
+            return Ok(body.into());
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
@@ -269,7 +416,6 @@ async fn main() -> anyhow::Result<()> {
         refresh_token_expires_at_unix: AtomicI64::new(0),
         refresh_failures_total: AtomicU64::new(0),
     });
-    tokio::spawn(serve_health(args.health_port, metrics.clone()));
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let shutdown_tx = Arc::new(shutdown_tx);
@@ -310,39 +456,76 @@ async fn main() -> anyhow::Result<()> {
         heartbeat_timeout_secs: 30,
     };
 
-    let pg_token_store = PgTokenStore { pool: pool.clone() };
+    let pg_store = PgTokenStore { pool: pool.clone() };
 
-    let bootstrap_refresh_token = match pg_token_store.load_refresh_token().await {
-        Ok(Some(t)) => {
-            info!("loaded refresh token from oauth_tokens table");
-            t
-        }
-        Ok(None) => {
-            info!("oauth_tokens table empty — using bootstrap SAXO_REFRESH_TOKEN env var");
-            args.saxo_refresh_token.clone()
-        }
+    // Determine startup mode based on whether a refresh token already exists in
+    // the DB.  The health endpoint is deliberately NOT started yet on the fresh
+    // path — its port is occupied by the registration listener until registration
+    // completes.
+    let stored = match pg_store.load_refresh_token().await {
+        Ok(v) => v,
         Err(e) => {
-            warn!(error = %e, "failed to read oauth_tokens — using bootstrap env var");
-            args.saxo_refresh_token.clone()
+            warn!(error = %e, "failed to read oauth_tokens — treating as empty (bootstrap mode)");
+            None
         }
     };
 
-    let token_store: Arc<dyn TokenStore> = Arc::new(pg_token_store);
+    let (initial_token, mut saxo_auth): (SaxoToken, SaxoAuth) = if let Some(refresh_token) = stored
+    {
+        // ── Restart path ────────────────────────────────────────────────────
+        // A refresh token exists from a previous run.  Call refresh() once to
+        // derive a valid access token (Saxo never stores the access token —
+        // only the refresh token is persisted).
+        info!(
+            "loaded refresh token from oauth_tokens — calling refresh() for initial access token"
+        );
+        let token_store: Arc<dyn TokenStore> = Arc::new(PgTokenStore { pool: pool.clone() });
+        let mut auth = SaxoAuth::new(
+            http.clone(),
+            format!("{}/token", args.saxo_auth_base),
+            args.saxo_client_id.clone(),
+            args.saxo_client_secret.clone(),
+            refresh_token,
+            token_store,
+        );
+        let rotated = auth
+            .refresh()
+            .await
+            .context("initial token refresh failed — stored refresh token may have expired")?;
+        // Health endpoint can start immediately on restart.
+        tokio::spawn(serve_health(args.health_port, metrics.clone()));
+        (rotated.access_token, auth)
+    } else {
+        // ── Fresh bootstrap path ─────────────────────────────────────────────
+        // No token in DB.  Block until `nexus saxo auth` POSTs to /tokens.
+        // The registration listener binds the health port during this phase
+        // (it is the only HTTP endpoint active), freeing it on return so that
+        // serve_health can re-bind immediately after.
+        let rotated = await_token_registration(args.health_port).await?;
 
-    let mut saxo_auth = SaxoAuth::new(
-        http.clone(),
-        format!("{}/token", args.saxo_auth_base),
-        args.saxo_client_id.clone(),
-        args.saxo_client_secret.clone(),
-        bootstrap_refresh_token,
-        token_store,
-    );
+        // Persist the new refresh token before touching anything else.
+        pg_store.save(&rotated).await;
 
-    let initial_token = saxo_auth
-        .refresh()
-        .await
-        .context("initial token refresh failed — is SAXO_REFRESH_TOKEN valid?")?
-        .access_token;
+        // Do NOT call refresh() on this path — the supplied access_token is
+        // already valid and calling refresh() would rotate the just-obtained
+        // refresh token for no benefit (Saxo invalidates the old one immediately).
+        let initial = rotated.access_token.clone();
+        let fresh_refresh_token = rotated.refresh_token.clone();
+
+        let token_store: Arc<dyn TokenStore> = Arc::new(PgTokenStore { pool: pool.clone() });
+        let auth = SaxoAuth::new(
+            http.clone(),
+            format!("{}/token", args.saxo_auth_base),
+            args.saxo_client_id.clone(),
+            args.saxo_client_secret.clone(),
+            fresh_refresh_token,
+            token_store,
+        );
+
+        // Registration listener has exited; port is now free for health.
+        tokio::spawn(serve_health(args.health_port, metrics.clone()));
+        (initial, auth)
+    };
 
     let shared_token: SharedToken = Arc::new(Mutex::new(initial_token));
 
