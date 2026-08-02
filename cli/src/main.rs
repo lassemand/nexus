@@ -1,3 +1,5 @@
+mod saxo_auth;
+
 use alpha::CalendarProvider;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
