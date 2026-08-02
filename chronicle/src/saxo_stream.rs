@@ -683,3 +683,340 @@ async fn main() -> anyhow::Result<()> {
     info!("saxo_stream shut down cleanly");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    // ── shared helpers ────────────────────────────────────────────────────
+
+    const VALID_ACCESS_TOKEN: &str = "acc_test_123";
+    const VALID_REFRESH_TOKEN: &str = "ref_test_456";
+
+    fn valid_body() -> String {
+        format!(
+            r#"{{"access_token":"{VALID_ACCESS_TOKEN}","refresh_token":"{VALID_REFRESH_TOKEN}","access_token_expires_at":"2099-01-01T00:00:00Z","refresh_token_expires_at":"2099-01-01T01:00:00Z"}}"#
+        )
+    }
+
+    fn post_request(body: &str) -> Vec<u8> {
+        format!(
+            "POST /tokens HTTP/1.1\r\n\
+             Host: localhost\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {len}\r\n\
+             \r\n\
+             {body}",
+            len = body.len()
+        )
+        .into_bytes()
+    }
+
+    /// Drive `handle_registration_request` with the given raw HTTP bytes and
+    /// return both the parsed result and the raw HTTP response string.
+    async fn roundtrip(request: &[u8]) -> (Option<TokenRegistrationBody>, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let req = request.to_vec();
+
+        tokio::join!(
+            async {
+                let (stream, _) = listener.accept().await.unwrap();
+                handle_registration_request(stream).await
+            },
+            async {
+                let mut client = TcpStream::connect(addr).await.unwrap();
+                client.write_all(&req).await.unwrap();
+                // Read until server closes its write half (after sending the response).
+                let mut buf = Vec::new();
+                client.read_to_end(&mut buf).await.unwrap();
+                String::from_utf8_lossy(&buf).to_string()
+            }
+        )
+    }
+
+    // ── handle_registration_request: valid POST ───────────────────────────
+
+    #[tokio::test]
+    async fn handle_registration_valid_post_returns_body() {
+        let body = valid_body();
+        let (result, response) = roundtrip(&post_request(&body)).await;
+
+        let parsed = result.expect("valid POST should return Some");
+        assert_eq!(parsed.access_token, VALID_ACCESS_TOKEN);
+        assert_eq!(parsed.refresh_token, VALID_REFRESH_TOKEN);
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "expected 200, got: {response}"
+        );
+    }
+
+    // ── handle_registration_request: AC3 malformed JSON ──────────────────
+
+    #[tokio::test]
+    async fn handle_registration_malformed_json_returns_400() {
+        let (result, response) = roundtrip(&post_request("this is not json")).await;
+        assert!(result.is_none(), "malformed JSON must return None");
+        assert!(response.contains("400"), "expected 400, got: {response}");
+    }
+
+    // ── handle_registration_request: AC4 missing / empty fields ──────────
+
+    #[tokio::test]
+    async fn handle_registration_missing_access_token_returns_400() {
+        let body = format!(
+            r#"{{"refresh_token":"{VALID_REFRESH_TOKEN}","access_token_expires_at":"2099-01-01T00:00:00Z","refresh_token_expires_at":"2099-01-01T01:00:00Z"}}"#
+        );
+        let (result, response) = roundtrip(&post_request(&body)).await;
+        assert!(result.is_none());
+        assert!(response.contains("400"), "expected 400, got: {response}");
+    }
+
+    #[tokio::test]
+    async fn handle_registration_empty_access_token_returns_400() {
+        let body = format!(
+            r#"{{"access_token":"","refresh_token":"{VALID_REFRESH_TOKEN}","access_token_expires_at":"2099-01-01T00:00:00Z","refresh_token_expires_at":"2099-01-01T01:00:00Z"}}"#
+        );
+        let (result, response) = roundtrip(&post_request(&body)).await;
+        assert!(result.is_none());
+        assert!(response.contains("400"), "expected 400, got: {response}");
+    }
+
+    #[tokio::test]
+    async fn handle_registration_missing_refresh_token_returns_400() {
+        let body = format!(
+            r#"{{"access_token":"{VALID_ACCESS_TOKEN}","access_token_expires_at":"2099-01-01T00:00:00Z","refresh_token_expires_at":"2099-01-01T01:00:00Z"}}"#
+        );
+        let (result, response) = roundtrip(&post_request(&body)).await;
+        assert!(result.is_none());
+        assert!(response.contains("400"), "expected 400, got: {response}");
+    }
+
+    // ── handle_registration_request: AC5 wrong HTTP method ───────────────
+
+    #[tokio::test]
+    async fn handle_registration_get_returns_405() {
+        let request = b"GET /tokens HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let (result, response) = roundtrip(request).await;
+        assert!(result.is_none(), "GET must return None");
+        assert!(response.contains("405"), "expected 405, got: {response}");
+    }
+
+    // ── await_token_registration: AC1 + AC7 (blocking + correct token) ───
+
+    /// Valid POST unblocks `await_token_registration` and returns a `RotatedToken`
+    /// whose `access_token` / `refresh_token` exactly match the request body.
+    /// This also verifies stream-start gating (AC7): code beyond
+    /// `await_token_registration` — including any WebSocket connect — cannot
+    /// execute until this function returns.
+    #[tokio::test]
+    async fn await_token_registration_blocks_then_returns_correct_token() {
+        let port = 20001u16;
+        let task = tokio::spawn(await_token_registration(port));
+
+        // Give the listener time to bind.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Assert it is still blocking with nothing sent.
+        assert!(
+            !task.is_finished(),
+            "await_token_registration must block until a valid POST arrives"
+        );
+
+        // Send the valid POST.
+        let body = valid_body();
+        let mut conn = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        conn.write_all(&post_request(&body)).await.unwrap();
+        let mut resp_buf = Vec::new();
+        conn.read_to_end(&mut resp_buf).await.unwrap();
+
+        // Should now complete within 2 s.
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("timed out waiting for registration to complete")
+            .unwrap()
+            .expect("await_token_registration should succeed");
+
+        assert_eq!(result.access_token.access_token, VALID_ACCESS_TOKEN);
+        assert_eq!(result.refresh_token, VALID_REFRESH_TOKEN);
+    }
+
+    // ── await_token_registration: AC3/4/5 ignored; only valid POST unblocks
+
+    #[tokio::test]
+    async fn await_token_registration_ignores_invalid_requests_keeps_waiting() {
+        let port = 20002u16;
+        let task = tokio::spawn(await_token_registration(port));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Send malformed JSON — must NOT unblock.
+        let mut conn = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        conn.write_all(&post_request("not json")).await.unwrap();
+        let mut buf = Vec::new();
+        conn.read_to_end(&mut buf).await.unwrap();
+        drop(conn);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !task.is_finished(),
+            "malformed JSON must not unblock the registration listener"
+        );
+
+        // Send GET — must NOT unblock.
+        let mut conn2 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        conn2
+            .write_all(b"GET /tokens HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf2 = Vec::new();
+        conn2.read_to_end(&mut buf2).await.unwrap();
+        drop(conn2);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !task.is_finished(),
+            "wrong-method request must not unblock the registration listener"
+        );
+
+        // Send valid POST — must unblock.
+        let body = valid_body();
+        let mut conn3 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        conn3.write_all(&post_request(&body)).await.unwrap();
+        let mut buf3 = Vec::new();
+        conn3.read_to_end(&mut buf3).await.unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("timed out")
+            .unwrap()
+            .expect("should succeed after valid POST");
+        assert_eq!(result.access_token.access_token, VALID_ACCESS_TOKEN);
+    }
+
+    // ── await_token_registration: AC2 (refresh() NOT called on fresh path) ─
+
+    /// Verifies that `await_token_registration` never contacts Saxo's `/token`
+    /// endpoint. A wiremock spy intercepts any such call; asserting zero received
+    /// requests proves that `SaxoAuth::refresh()` is not invoked on the
+    /// fresh-registration path.
+    #[tokio::test]
+    async fn await_token_registration_does_not_call_saxo_token_endpoint() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Spy: would respond if called, but must receive zero requests.
+        let saxo_spy = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"access_token":"spy_acc","refresh_token":"spy_ref","expires_in":1200}"#,
+            ))
+            .mount(&saxo_spy)
+            .await;
+
+        let port = 20003u16;
+        let task = tokio::spawn(await_token_registration(port));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Send valid registration — provides access_token directly.
+        let body = valid_body();
+        let mut conn = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        conn.write_all(&post_request(&body)).await.unwrap();
+        let mut buf = Vec::new();
+        conn.read_to_end(&mut buf).await.unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("registration should succeed");
+        assert_eq!(result.access_token.access_token, VALID_ACCESS_TOKEN);
+
+        // Core assertion: the Saxo /token endpoint received ZERO requests.
+        let received = saxo_spy.received_requests().await.unwrap();
+        assert_eq!(
+            received.len(),
+            0,
+            "SaxoAuth::refresh() must not be called on the fresh-registration path \
+             (received {received:?})"
+        );
+    }
+
+    // ── restart path: AC6 ─────────────────────────────────────────────────
+    //
+    // The restart path (stored refresh token → call refresh() once) requires a
+    // real Postgres with a pre-seeded `oauth_tokens` row and is therefore
+    // tagged #[ignore].  Run manually with:
+    //   DATABASE_URL=postgres://... cargo test -p chronicle --bin saxo_stream \
+    //     -- --ignored restart_path_calls_refresh_exactly_once
+    //
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with a pre-seeded oauth_tokens row"]
+    async fn restart_path_calls_refresh_exactly_once() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+        let pool = sqlx::PgPool::connect(&database_url)
+            .await
+            .expect("failed to connect to test Postgres");
+
+        // Seed a refresh token row.
+        sqlx::query(
+            "INSERT INTO oauth_tokens (source, refresh_token, refresh_token_expires_at, updated_at)
+             VALUES ($1, $2, NOW() + INTERVAL '1 hour', NOW())
+             ON CONFLICT (source) DO UPDATE SET
+                 refresh_token = EXCLUDED.refresh_token,
+                 refresh_token_expires_at = EXCLUDED.refresh_token_expires_at,
+                 updated_at = NOW()",
+        )
+        .bind(SAXO_TOKEN_SOURCE)
+        .bind("test_refresh_token_for_restart_path")
+        .execute(&pool)
+        .await
+        .expect("failed to seed oauth_tokens");
+
+        // Wiremock for Saxo /token — should receive exactly one request.
+        let saxo_mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"access_token":"new_acc","refresh_token":"new_ref","expires_in":1200,"refresh_token_expires_in":3600}"#,
+            ))
+            .expect(1)
+            .mount(&saxo_mock)
+            .await;
+
+        // Simulate the restart path: load stored token → call refresh().
+        let store = PgTokenStore { pool: pool.clone() };
+        let stored = store
+            .load_refresh_token()
+            .await
+            .expect("load_refresh_token failed");
+        assert!(
+            stored.is_some(),
+            "test setup: expected a row in oauth_tokens"
+        );
+
+        let token_store: Arc<dyn TokenStore> = Arc::new(PgTokenStore { pool });
+        let http = reqwest::Client::new();
+        let token_url = format!("{}/token", saxo_mock.uri());
+        let mut auth = SaxoAuth::new(
+            http,
+            token_url,
+            "client_id",
+            "client_secret",
+            stored.unwrap(),
+            token_store,
+        );
+
+        let rotated = auth.refresh().await.expect("refresh() should succeed");
+        assert_eq!(rotated.access_token.access_token, "new_acc");
+
+        // wiremock asserts `.expect(1)` on drop — verifies refresh() called once.
+    }
+}
