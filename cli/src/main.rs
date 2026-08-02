@@ -90,9 +90,17 @@ enum SaxoAction {
     /// Perform the Saxo OAuth2 authorization-code flow and register the
     /// resulting tokens with a running saxo_stream instance.
     ///
-    /// Generates a CSRF state, opens the /authorize URL in the system browser,
-    /// listens for the callback redirect, exchanges the code for tokens, POSTs
-    /// them to --register-endpoint, then prints all token values to stdout.
+    /// Flow:
+    ///   1. Opens the Saxo /authorize URL in your browser (or prints it for
+    ///      copy-paste if auto-open fails).
+    ///   2. Listens on --callback-port for the browser redirect.
+    ///   3. Exchanges the authorization code for an access + refresh token pair.
+    ///   4. POSTs the tokens to --register-endpoint, which unblocks saxo_stream
+    ///      startup — no manual copy-paste into Vault or .env needed.
+    ///   5. Prints all four token values to stdout as a fallback record.
+    ///
+    /// In the normal case (step 4 succeeds), the stdout output can be ignored —
+    /// saxo_stream will start streaming automatically once the POST is received.
     Auth {
         /// Saxo application OAuth2 client ID (from the Saxo developer portal).
         #[arg(long, env = "SAXO_CLIENT_ID")]
@@ -129,8 +137,11 @@ enum SaxoAction {
         )]
         callback_port: u16,
 
-        /// saxo_stream /tokens endpoint to register the token pair with.
-        /// Typically reached via kubectl port-forward, e.g. http://localhost:8080/tokens
+        /// saxo_stream /tokens endpoint to POST the token pair to.
+        /// Receiving this POST unblocks saxo_stream's startup and starts streaming.
+        /// Reach it via kubectl port-forward:
+        ///   kubectl port-forward deploy/saxo-stream 8080:8080
+        /// then pass: http://localhost:8080/tokens
         #[arg(long, env = "SAXO_REGISTER_ENDPOINT")]
         register_endpoint: String,
     },
