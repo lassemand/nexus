@@ -66,7 +66,7 @@ pub async fn cmd_saxo_auth(
     auth_base: &str,
     redirect_uri: &str,
     callback_port: u16,
-    register_endpoint: &str,
+    register_endpoint: Option<&str>,
 ) -> anyhow::Result<()> {
     // 1. Generate CSRF state and build the /authorize URL.
     let state = generate_state();
@@ -136,14 +136,18 @@ pub async fn cmd_saxo_auth(
         rotated.access_token.expires_at.to_rfc3339()
     );
 
-    // 7. POST to saxo_stream /tokens endpoint (best-effort).
-    let payload = TokenRegistrationPayload {
-        access_token: rotated.access_token.access_token.clone(),
-        refresh_token: rotated.refresh_token.clone(),
-        access_token_expires_at: rotated.access_token.expires_at,
-        refresh_token_expires_at: rotated.refresh_token_expires_at,
-    };
-    send_registration(&http, register_endpoint, &payload).await;
+    // 7. POST to saxo_stream /tokens endpoint (best-effort, optional).
+    if let Some(endpoint) = register_endpoint {
+        let payload = TokenRegistrationPayload {
+            access_token: rotated.access_token.access_token.clone(),
+            refresh_token: rotated.refresh_token.clone(),
+            access_token_expires_at: rotated.access_token.expires_at,
+            refresh_token_expires_at: rotated.refresh_token_expires_at,
+        };
+        send_registration(&http, endpoint, &payload).await;
+    } else {
+        eprintln!("(--register-endpoint not set — skipping registration POST)");
+    }
 
     Ok(())
 }
@@ -536,7 +540,7 @@ mod tests {
                 "https://sim.logonvalidation.net",
                 &redirect_uri,
                 port,
-                "http://127.0.0.1:1/tokens", // unreachable — never called
+                None, // register_endpoint not needed — state check fires first
             )
             .await
         });
