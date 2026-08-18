@@ -284,6 +284,20 @@ async fn handle_registration_request(
         return None;
     }
 
+    // Respond to liveness/readiness probes while waiting for registration.
+    // Without this the probe gets 405 and kills the pod before the user can
+    // complete the browser OAuth flow.
+    if request_line.trim_end().starts_with("GET /health") {
+        const BODY: &[u8] = b"waiting_for_registration";
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
+            BODY.len()
+        );
+        let _ = write_half.write_all(header.as_bytes()).await;
+        let _ = write_half.write_all(BODY).await;
+        return None;
+    }
+
     // Only accept POST /tokens; return 405 for everything else.
     if !request_line.trim_end().starts_with("POST /tokens") {
         let _ = write_half
@@ -798,11 +812,32 @@ mod tests {
     // ── handle_registration_request: AC5 wrong HTTP method ───────────────
 
     #[tokio::test]
-    async fn handle_registration_get_returns_405() {
+    async fn handle_registration_get_tokens_returns_405() {
         let request = b"GET /tokens HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let (result, response) = roundtrip(request).await;
-        assert!(result.is_none(), "GET must return None");
+        assert!(result.is_none(), "GET /tokens must return None");
         assert!(response.contains("405"), "expected 405, got: {response}");
+    }
+
+    /// Liveness/readiness probes send GET /health while the registration listener
+    /// is active. Without a 200 response the pod gets killed before the user can
+    /// complete the browser OAuth flow.
+    #[tokio::test]
+    async fn handle_registration_get_health_returns_200_for_probe() {
+        let request = b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let (result, response) = roundtrip(request).await;
+        assert!(
+            result.is_none(),
+            "GET /health must not unblock registration"
+        );
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "expected 200 for liveness probe, got: {response}"
+        );
+        assert!(
+            response.contains("waiting_for_registration"),
+            "body should signal waiting state, got: {response}"
+        );
     }
 
     // ── await_token_registration: AC1 + AC7 (blocking + correct token) ───
