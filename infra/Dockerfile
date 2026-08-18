@@ -34,6 +34,8 @@ RUN mkdir -p \
         chronicle/src/market.rs \
         chronicle/src/earnings_bin.rs \
         chronicle/src/filings.rs \
+        chronicle/src/pdmr.rs \
+        chronicle/src/saxo_stream.rs \
         signal/src/main.rs \
         signal/src/scanner.rs \
         insight/src/main.rs \
