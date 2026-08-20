@@ -45,7 +45,7 @@ cargo fmt                    # format
 
 ## Infrastructure
 
-The cluster is managed via ArgoCD (GitOps). All manifests live under `infra/`. The cluster runs on minikube (Docker driver) started with `--ports` bindings so all NodePorts are accessible at `localhost` with no tunnel or port-forward.
+The cluster is managed via ArgoCD (GitOps). All manifests live under `infra/`. The cluster runs on OrbStack — use the `orbstack` kubectl context.
 
 ### Layout
 
