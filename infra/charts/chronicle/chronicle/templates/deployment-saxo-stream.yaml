@@ -14,14 +14,6 @@ spec:
       labels:
         app: saxo-stream
     spec:
-      initContainers:
-        - name: migrate-chronicle
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: IfNotPresent
-          command: ["sqlx", "migrate", "run", "--source", "/app/migrations/chronicle"]
-          envFrom:
-            - secretRef:
-                name: chronicle-secret
       containers:
         - name: saxo-stream
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
