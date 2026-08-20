@@ -1,6 +1,6 @@
 image:
   repository: "lmapwns/nexus"
-  tag: "0.0.19"
+  tag: "0.0.20"
 replicaCount: 1
 # Default Kafka broker address (in-cluster service DNS).
 # This value is also written to the ExternalSecret so the K8s Secret
