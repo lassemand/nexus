@@ -77,12 +77,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --no-create-home --shell /usr/sbin/nologin nexus
 
-COPY --from=builder /build/target/release/chronicle /usr/local/bin/chronicle
-COPY --from=builder /build/target/release/market    /usr/local/bin/market
-COPY --from=builder /build/target/release/earnings  /usr/local/bin/earnings
-COPY --from=builder /build/target/release/filings   /usr/local/bin/filings
-COPY --from=builder /build/target/release/signal    /usr/local/bin/signal
-COPY --from=builder /build/target/release/insight   /usr/local/bin/insight
+COPY --from=builder /build/target/release/chronicle    /usr/local/bin/chronicle
+COPY --from=builder /build/target/release/market      /usr/local/bin/market
+COPY --from=builder /build/target/release/earnings    /usr/local/bin/earnings
+COPY --from=builder /build/target/release/filings     /usr/local/bin/filings
+COPY --from=builder /build/target/release/pdmr        /usr/local/bin/pdmr
+COPY --from=builder /build/target/release/saxo_stream /usr/local/bin/saxo_stream
+COPY --from=builder /build/target/release/signal      /usr/local/bin/signal
+COPY --from=builder /build/target/release/insight     /usr/local/bin/insight
 
 # sqlx-cli + raw migration files, for initContainer-driven migrations only —
 # the application binaries above still embed and run their own migrations
