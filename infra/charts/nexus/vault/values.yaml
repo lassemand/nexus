@@ -17,7 +17,7 @@ vault:
       - |
         sleep 5
         if vault status 2>/dev/null | grep -q "Sealed.*true"; then
-          vault operator unseal "$(cat /vault-unseal/key)" || true
+          vault operator unseal "$(cat /vault-unseal/vault-unseal-key/key)" || true
         fi
 
     extraVolumes:
