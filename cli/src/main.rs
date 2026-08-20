@@ -194,12 +194,24 @@ _nexus() {
       local commands
       commands=(
         'register:Register tickers for signal tracking'
+        'calendar:Fetch and store trading holiday data for an exchange'
+        'saxo:Saxo Bank OAuth2 operations'
         'completions:Print shell completion scripts'
       )
       _describe 'command' commands
       ;;
     args)
       case $words[1] in
+        calendar)
+          local actions
+          actions=('sync:Fetch trading holidays and upsert into the DB')
+          _describe 'action' actions
+          ;;
+        saxo)
+          local actions
+          actions=('auth:Perform the Saxo OAuth2 authorization-code flow')
+          _describe 'action' actions
+          ;;
         completions)
           local shells
           shells=('zsh:Generate zsh completions')
