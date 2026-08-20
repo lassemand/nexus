@@ -93,6 +93,7 @@ COPY --from=builder /build/target/release/insight     /usr/local/bin/insight
 # app container starts (see infra/charts/chronicle/chronicle/templates/
 # deployment-saxo-stream.yaml).
 COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
-COPY signal/migrations /app/migrations/signal
+COPY signal/migrations    /app/migrations/signal
+COPY chronicle/migrations /app/migrations/chronicle
 
 USER nexus
