@@ -14,17 +14,11 @@ spec:
       labels:
         app: saxo-stream
     spec:
-      # Applies signal/migrations (owns `oauth_tokens`, read/written by
-      # PgTokenStore) before the app container starts. saxo-stream's own
-      # embedded sqlx::migrate! call only covers chronicle/migrations
-      # (e.g. `companies`, used by load_fnse_tickers) — the two migration
-      # sets are intentionally kept separate; this initContainer is the
-      # one that owns applying signal's set specifically for this Deployment.
       initContainers:
-        - name: migrate-oauth-tokens
+        - name: migrate-chronicle
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: IfNotPresent
-          command: ["sqlx", "migrate", "run", "--source", "/app/migrations/signal"]
+          command: ["sqlx", "migrate", "run", "--source", "/app/migrations/chronicle"]
           envFrom:
             - secretRef:
                 name: chronicle-secret
