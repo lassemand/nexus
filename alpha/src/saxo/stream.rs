@@ -101,13 +101,19 @@ impl SaxoConfig {
 #[derive(Debug, Error)]
 pub enum StreamError {
     #[error("WebSocket error: {0}")]
-    WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
+    WebSocket(Box<tokio_tungstenite::tungstenite::Error>),
     #[error("auth error: {0}")]
     Auth(#[from] AuthError),
     #[error("no instruments to subscribe to")]
     NoInstruments,
     #[error("subscription error: {0}")]
     Subscription(String),
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for StreamError {
+    fn from(e: tokio_tungstenite::tungstenite::Error) -> Self {
+        StreamError::WebSocket(Box::new(e))
+    }
 }
 
 /// Saxo price quote payload (subset of fields we use).
@@ -244,7 +250,7 @@ async fn run_session(
         tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
             ws_url.as_str(),
         )
-        .map_err(StreamError::WebSocket)?,
+        .map_err(|e| StreamError::WebSocket(Box::new(e)))?,
     )
     .await?;
 
@@ -281,9 +287,9 @@ async fn run_session(
                 let is_weekday = wd != chrono::Weekday::Sat && wd != chrono::Weekday::Sun;
                 if is_weekday {
                     warn!("heartbeat timeout during a weekday — connection may be dead");
-                    return Err(StreamError::WebSocket(
+                    return Err(StreamError::WebSocket(Box::new(
                         tokio_tungstenite::tungstenite::Error::ConnectionClosed,
-                    ));
+                    )));
                 } else {
                     debug!("heartbeat timeout on weekend — expected, continuing");
                     continue;
@@ -294,7 +300,7 @@ async fn run_session(
                 break;
             }
             Ok(Some(Err(e))) => {
-                return Err(StreamError::WebSocket(e));
+                return Err(StreamError::WebSocket(Box::new(e)));
             }
             Ok(Some(Ok(msg))) => {
                 if let Message::Binary(data) = msg {
