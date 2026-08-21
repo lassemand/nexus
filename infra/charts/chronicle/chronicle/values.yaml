@@ -1,6 +1,6 @@
 image:
   repository: "lmapwns/nexus"
-  tag: "0.0.20"
+  tag: "0.0.21"
 schedules:
   chronicle: "0 6 * * *"
   market: "0 22 * * 1-5"
