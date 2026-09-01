@@ -123,6 +123,39 @@ data:
               "legendFormat": "failures per 10m"
             }
           ]
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "WS Connected",
+          "description": "Informational only — reflects whether a WebSocket bar stream is currently subscribed. 0 is expected and healthy when no FNSE tickers are registered; does not affect pod readiness/liveness (NEX-106).",
+          "gridPos": { "x": 0, "y": 10, "w": 8, "h": 4 },
+          "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "blue", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              },
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "Disconnected (no tickers?)" } } },
+                { "type": "value", "options": { "1": { "text": "Connected" } } }
+              ]
+            },
+            "overrides": []
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
+              "expr": "saxo_ws_connected",
+              "legendFormat": "ws connected"
+            }
+          ]
         }
       ]
     }
