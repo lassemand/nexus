@@ -35,9 +35,11 @@ use anyhow::Context;
 use chrono::Utc;
 use clap::Parser;
 use kafka::ChronicleProducer;
+use metrics::{counter, describe_counter, describe_gauge, gauge};
+use metrics_exporter_prometheus::PrometheusBuilder;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -157,19 +159,20 @@ async fn load_fnse_tickers(pool: &sqlx::PgPool) -> anyhow::Result<Vec<String>> {
     Ok(rows.into_iter().map(|r| r.get("ticker")).collect())
 }
 
-/// Shared observability state updated by the main loop.
+/// Shared atomic state used by the health check and metric update sites.
+///
+/// Prometheus exposition is handled by [`metrics-exporter-prometheus`] — the
+/// `metrics::gauge!` / `metrics::counter!` macros update the global recorder
+/// and `PrometheusHandle::render()` produces the text-exposition body.
+/// Only values that must be *read back* by logic (not just recorded) live here
+/// as atomics.
 struct Metrics {
     /// Whether the Saxo WebSocket bar stream is currently connected.
-    /// Purely informational (exposed via `/metrics` as `saxo_ws_connected`)
-    /// — does NOT drive `/health`, since a pod with no tickers registered
-    /// never connects a WebSocket but is still perfectly healthy.
+    /// Purely informational — does NOT drive `/health` (NEX-106).
     ws_healthy: AtomicBool,
-    /// Unix timestamp when the current refresh token expires. Drives
-    /// `/health`. 0 = no successful rotation yet — only expected transiently
-    /// at startup, since `serve_health` isn't bound until a token exists.
+    /// Unix timestamp when the current refresh token expires. Drives `/health`.
+    /// 0 = no successful rotation yet (brief startup window).
     refresh_token_expires_at_unix: AtomicI64,
-    /// Total number of token refresh failures since startup.
-    refresh_failures_total: AtomicU64,
 }
 
 /// Whether the refresh-token cycle is healthy right now — the sole input to
@@ -189,39 +192,11 @@ fn refresh_token_healthy(metrics: &Metrics, now_unix: i64) -> bool {
     expires_at == 0 || expires_at > now_unix
 }
 
-/// Renders the Prometheus text-exposition body served at `/metrics`.
-fn metrics_body(metrics: &Metrics, now_unix: i64) -> String {
-    let expires_at = metrics
-        .refresh_token_expires_at_unix
-        .load(Ordering::Relaxed);
-    let seconds_remaining = if expires_at > 0 {
-        (expires_at - now_unix).max(0)
-    } else {
-        -1 // -1 = no rotation yet (bootstrap)
-    };
-    let failures = metrics.refresh_failures_total.load(Ordering::Relaxed);
-    let ws_connected = i32::from(metrics.ws_healthy.load(Ordering::Relaxed));
-
-    format!(
-        "# HELP saxo_refresh_token_seconds_remaining \
-         Seconds until the Saxo refresh token expires. \
-         -1 means no successful rotation has occurred yet.\n\
-         # TYPE saxo_refresh_token_seconds_remaining gauge\n\
-         saxo_refresh_token_seconds_remaining {seconds_remaining}\n\
-         # HELP saxo_refresh_token_failures_total \
-         Total number of Saxo token refresh failures since startup.\n\
-         # TYPE saxo_refresh_token_failures_total counter\n\
-         saxo_refresh_token_failures_total {failures}\n\
-         # HELP saxo_ws_connected \
-         Whether the Saxo WebSocket bar stream is currently connected \
-         (0 also when no FNSE tickers are registered — informational only, \
-         does not affect /health).\n\
-         # TYPE saxo_ws_connected gauge\n\
-         saxo_ws_connected {ws_connected}\n"
-    )
-}
-
-async fn serve_health(port: u16, metrics: Arc<Metrics>) {
+async fn serve_health(
+    port: u16,
+    metrics: Arc<Metrics>,
+    prometheus_handle: metrics_exporter_prometheus::PrometheusHandle,
+) {
     let listener = match TcpListener::bind(format!("0.0.0.0:{port}")).await {
         Ok(l) => l,
         Err(e) => {
@@ -250,7 +225,26 @@ async fn serve_health(port: u16, metrics: Arc<Metrics>) {
                 let is_metrics = req.starts_with("GET /metrics");
 
                 let response = if is_metrics {
-                    let body = metrics_body(&metrics, Utc::now().timestamp());
+                    // Update gauges with current computed values before
+                    // rendering so scrapes always see a fresh countdown.
+                    let now_unix = Utc::now().timestamp();
+                    let expires_at = metrics
+                        .refresh_token_expires_at_unix
+                        .load(Ordering::Relaxed);
+                    let seconds_remaining: f64 = if expires_at > 0 {
+                        (expires_at - now_unix).max(0) as f64
+                    } else {
+                        -1.0 // bootstrap sentinel: no rotation yet
+                    };
+                    gauge!("saxo_refresh_token_seconds_remaining").set(seconds_remaining);
+                    gauge!("saxo_ws_connected").set(
+                        if metrics.ws_healthy.load(Ordering::Relaxed) {
+                            1.0_f64
+                        } else {
+                            0.0_f64
+                        },
+                    );
+                    let body = prometheus_handle.render();
                     format!(
                         "HTTP/1.1 200 OK\r\n\
                          Content-Length: {}\r\n\
@@ -462,10 +456,29 @@ async fn main() -> anyhow::Result<()> {
     let producer =
         ChronicleProducer::new(&args.kafka_brokers).context("failed to create Kafka producer")?;
 
+    let prometheus_handle = PrometheusBuilder::new()
+        .install_recorder()
+        .context("failed to install Prometheus recorder")?;
+
+    describe_gauge!(
+        "saxo_refresh_token_seconds_remaining",
+        "Seconds until the Saxo refresh token expires. \
+         -1 means no successful rotation has occurred yet."
+    );
+    describe_counter!(
+        "saxo_refresh_token_failures_total",
+        "Total number of Saxo token refresh failures since startup."
+    );
+    describe_gauge!(
+        "saxo_ws_connected",
+        "Whether the Saxo WebSocket bar stream is currently connected \
+         (0 also when no FNSE tickers are registered — informational only, \
+         does not affect /health)."
+    );
+
     let metrics = Arc::new(Metrics {
         ws_healthy: AtomicBool::new(false),
         refresh_token_expires_at_unix: AtomicI64::new(0),
-        refresh_failures_total: AtomicU64::new(0),
     });
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -548,7 +561,11 @@ async fn main() -> anyhow::Result<()> {
             Ordering::Relaxed,
         );
         // Health endpoint can start immediately on restart.
-        tokio::spawn(serve_health(args.health_port, metrics.clone()));
+        tokio::spawn(serve_health(
+            args.health_port,
+            metrics.clone(),
+            prometheus_handle.clone(),
+        ));
         (rotated.access_token, auth)
     } else {
         // ── Fresh bootstrap path ─────────────────────────────────────────────
@@ -582,7 +599,11 @@ async fn main() -> anyhow::Result<()> {
         );
 
         // Registration listener has exited; port is now free for health.
-        tokio::spawn(serve_health(args.health_port, metrics.clone()));
+        tokio::spawn(serve_health(
+            args.health_port,
+            metrics.clone(),
+            prometheus_handle.clone(),
+        ));
         (initial, auth)
     };
 
@@ -636,9 +657,7 @@ async fn main() -> anyhow::Result<()> {
                         info!("Saxo access token rotated and WebSocket reauthorized");
                     }
                     Err(e) => {
-                        metrics
-                            .refresh_failures_total
-                            .fetch_add(1, Ordering::Relaxed);
+                        counter!("saxo_refresh_token_failures_total").increment(1);
                         error!(error = %e, "Saxo token refresh failed — will retry next tick");
                     }
                 }
@@ -776,7 +795,6 @@ mod tests {
         Metrics {
             ws_healthy: AtomicBool::new(false),
             refresh_token_expires_at_unix: AtomicI64::new(expires_at_unix),
-            refresh_failures_total: AtomicU64::new(0),
         }
     }
 
@@ -807,41 +825,6 @@ mod tests {
     fn health_is_ok_exactly_at_expiry_boundary_minus_one() {
         let metrics = metrics_with_expiry(1_000_000_000);
         assert!(refresh_token_healthy(&metrics, 999_999_999));
-    }
-
-    // ── metrics_body: NEX-106 ──────────────────────────────────────────────
-
-    #[test]
-    fn metrics_body_reports_real_seconds_remaining_regardless_of_ws_state() {
-        let metrics = metrics_with_expiry(1_000_000_600);
-        let body = metrics_body(&metrics, 1_000_000_000);
-        assert!(
-            body.contains("saxo_refresh_token_seconds_remaining 600"),
-            "expected real countdown, got: {body}"
-        );
-        assert!(
-            body.contains("saxo_ws_connected 0"),
-            "ws_connected should be reported but must not affect the other \
-             metrics, got: {body}"
-        );
-    }
-
-    #[test]
-    fn metrics_body_reports_ws_connected_when_stream_is_up() {
-        let metrics = metrics_with_expiry(1_000_000_600);
-        metrics.ws_healthy.store(true, Ordering::Relaxed);
-        let body = metrics_body(&metrics, 1_000_000_000);
-        assert!(body.contains("saxo_ws_connected 1"), "got: {body}");
-    }
-
-    #[test]
-    fn metrics_body_uses_bootstrap_sentinel_before_first_rotation() {
-        let metrics = metrics_with_expiry(0);
-        let body = metrics_body(&metrics, 1_000_000_000);
-        assert!(
-            body.contains("saxo_refresh_token_seconds_remaining -1"),
-            "got: {body}"
-        );
     }
 
     // ── shared helpers ────────────────────────────────────────────────────
