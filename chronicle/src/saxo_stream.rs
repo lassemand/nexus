@@ -13,6 +13,14 @@
 /// connectivity is exposed separately as the `saxo_ws_connected` gauge on
 /// `/metrics` instead of gating liveness/readiness (NEX-106).
 ///
+/// If the stored refresh token is rejected by Saxo on startup (expired,
+/// revoked, etc.), the process does NOT exit — restarting can never fix an
+/// invalid external credential, so exiting would only crash-loop forever.
+/// Instead it falls back to the same "wait for `nexus saxo auth` to POST a
+/// fresh token" path the first-time bootstrap flow uses, with `/health`
+/// reporting 503 in the meantime so the degraded state is still visible to
+/// monitoring (NEX-107).
+///
 /// # Token rotation
 ///
 /// A periodic task (spawned in `main`, independent of the WebSocket stream)
@@ -244,6 +252,35 @@ async fn serve_health(
     }
 }
 
+/// Why the pod is currently waiting for a fresh token via `POST /tokens`.
+///
+/// Determines what `/health` reports while waiting. A genuine first-time
+/// bootstrap (no token has ever existed) is a benign setup step — 200 is
+/// correct, nothing is broken. A stored token being rejected on restart
+/// (expired, revoked, or otherwise invalid) is a real degraded state: the
+/// stream *was* working and lost its credential, which monitoring should
+/// be able to see and alert on — hence 503 — even though the process must
+/// still not crash-loop over it (NEX-107).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegistrationWaitReason {
+    FreshBootstrap,
+    ExpiredRefreshToken,
+}
+
+impl RegistrationWaitReason {
+    /// The `(status line, body)` `/health` should serve while waiting for
+    /// this reason to be resolved by a `POST /tokens`.
+    fn health_response(self) -> (&'static str, &'static [u8]) {
+        match self {
+            RegistrationWaitReason::FreshBootstrap => ("200 OK", b"waiting_for_registration"),
+            RegistrationWaitReason::ExpiredRefreshToken => (
+                "503 Service Unavailable",
+                b"refresh token expired -- run `nexus saxo auth` to re-register",
+            ),
+        }
+    }
+}
+
 /// Flat JSON body accepted by `POST /tokens`.
 ///
 /// `nexus saxo auth` sends this after completing the OAuth2 authorization-code
@@ -277,6 +314,7 @@ impl From<TokenRegistrationBody> for RotatedToken {
 /// fields) after sending the appropriate 4xx response — the caller keeps listening.
 async fn handle_registration_request(
     stream: tokio::net::TcpStream,
+    reason: RegistrationWaitReason,
 ) -> Option<TokenRegistrationBody> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
@@ -291,15 +329,17 @@ async fn handle_registration_request(
 
     // Respond to liveness/readiness probes while waiting for registration.
     // Without this the probe gets 405 and kills the pod before the user can
-    // complete the browser OAuth flow.
+    // complete the browser OAuth flow. The status/body reflect *why* we're
+    // waiting (see `RegistrationWaitReason`) so monitoring can distinguish
+    // a benign first-time bootstrap from a real credential loss (NEX-107).
     if request_line.trim_end().starts_with("GET /health") {
-        const BODY: &[u8] = b"waiting_for_registration";
+        let (status, body) = reason.health_response();
         let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
-            BODY.len()
+            "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
+            body.len()
         );
         let _ = write_half.write_all(header.as_bytes()).await;
-        let _ = write_half.write_all(BODY).await;
+        let _ = write_half.write_all(body).await;
         return None;
     }
 
@@ -372,14 +412,18 @@ async fn handle_registration_request(
 ///
 /// The listener is dropped (port freed) before this function returns, so the
 /// caller can immediately bind the same port for `serve_health`.
-async fn await_token_registration(port: u16) -> anyhow::Result<RotatedToken> {
+async fn await_token_registration(
+    port: u16,
+    reason: RegistrationWaitReason,
+) -> anyhow::Result<RotatedToken> {
     let listener = TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .with_context(|| format!("failed to bind registration listener on port {port}"))?;
 
     info!(
         port,
-        "no Saxo token in DB — listening for POST /tokens to bootstrap the stream"
+        ?reason,
+        "listening for POST /tokens to (re)start the stream"
     );
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
@@ -397,16 +441,58 @@ async fn await_token_registration(port: u16) -> anyhow::Result<RotatedToken> {
                 }
             }
             _ = heartbeat.tick() => {
-                info!("waiting for Saxo token registration via POST /tokens");
+                info!(?reason, "waiting for Saxo token registration via POST /tokens");
                 continue;
             }
         };
 
-        if let Some(body) = handle_registration_request(stream).await {
+        if let Some(body) = handle_registration_request(stream, reason).await {
             info!("Saxo tokens received via POST /tokens — proceeding with stream startup");
             return Ok(body.into());
         }
     }
+}
+
+/// Waits for a fresh token via `POST /tokens`, persists it, and builds the
+/// `SaxoAuth` + initial access token the same way regardless of *why* we're
+/// waiting (genuine first bootstrap, or a stored token that was rejected on
+/// restart — NEX-107). Shared so both callers in `main` stay in sync: the
+/// refresh token supplied here is already valid, so — unlike the periodic
+/// rotation task — the caller must NOT call `SaxoAuth::refresh()` on it
+/// immediately afterward (Saxo invalidates the old one the instant it's used).
+#[allow(clippy::too_many_arguments)]
+async fn bootstrap_from_registration(
+    port: u16,
+    reason: RegistrationWaitReason,
+    http: reqwest::Client,
+    saxo_auth_base: &str,
+    saxo_client_id: &str,
+    saxo_client_secret: &str,
+    pg_store: &PgTokenStore,
+    pool: sqlx::PgPool,
+    token_expires_at_unix: &Arc<AtomicI64>,
+) -> anyhow::Result<(SaxoToken, SaxoAuth)> {
+    let rotated = await_token_registration(port, reason).await?;
+
+    // Persist the new refresh token before touching anything else.
+    pg_store.save(&rotated).await;
+    token_expires_at_unix.store(
+        rotated.refresh_token_expires_at.timestamp(),
+        Ordering::Relaxed,
+    );
+
+    let initial = rotated.access_token.clone();
+    let token_store: Arc<dyn TokenStore> = Arc::new(PgTokenStore { pool });
+    let auth = SaxoAuth::new(
+        http,
+        format!("{saxo_auth_base}/token"),
+        saxo_client_id,
+        saxo_client_secret,
+        rotated.refresh_token,
+        token_store,
+    );
+
+    Ok((initial, auth))
 }
 
 #[tokio::main]
@@ -526,51 +612,74 @@ async fn main() -> anyhow::Result<()> {
             refresh_token,
             token_store,
         );
-        let rotated = auth
-            .refresh()
-            .await
-            .context("initial token refresh failed — stored refresh token may have expired")?;
-        token_expires_at_unix.store(
-            rotated.refresh_token_expires_at.timestamp(),
-            Ordering::Relaxed,
-        );
-        // Health endpoint can start immediately on restart.
-        tokio::spawn(serve_health(
-            args.health_port,
-            token_expires_at_unix.clone(),
-            prometheus_handle.clone(),
-        ));
-        (rotated.access_token, auth)
+        match auth.refresh().await {
+            Ok(rotated) => {
+                token_expires_at_unix.store(
+                    rotated.refresh_token_expires_at.timestamp(),
+                    Ordering::Relaxed,
+                );
+                // Health endpoint can start immediately on restart.
+                tokio::spawn(serve_health(
+                    args.health_port,
+                    token_expires_at_unix.clone(),
+                    prometheus_handle.clone(),
+                ));
+                (rotated.access_token, auth)
+            }
+            Err(e) => {
+                // The stored refresh token is dead (expired, revoked, or
+                // otherwise rejected by Saxo). Restarting the process cannot
+                // fix an invalid external credential, so propagating this
+                // error out of `main` would only crash-loop forever against
+                // the exact same failure with no health endpoint even bound
+                // to explain why. Instead, fall back to the same "wait for
+                // `nexus saxo auth` to POST a fresh token" path the
+                // fresh-bootstrap flow already uses — `/health` reports 503
+                // in the meantime so this is still visible to monitoring
+                // (NEX-107).
+                error!(
+                    error = %e,
+                    "initial refresh of stored Saxo token failed — waiting for \
+                     re-registration via `nexus saxo auth` instead of exiting"
+                );
+                let (initial, new_auth) = bootstrap_from_registration(
+                    args.health_port,
+                    RegistrationWaitReason::ExpiredRefreshToken,
+                    http.clone(),
+                    &args.saxo_auth_base,
+                    &args.saxo_client_id,
+                    &args.saxo_client_secret,
+                    &pg_store,
+                    pool.clone(),
+                    &token_expires_at_unix,
+                )
+                .await?;
+                tokio::spawn(serve_health(
+                    args.health_port,
+                    token_expires_at_unix.clone(),
+                    prometheus_handle.clone(),
+                ));
+                (initial, new_auth)
+            }
+        }
     } else {
         // ── Fresh bootstrap path ─────────────────────────────────────────────
         // No token in DB.  Block until `nexus saxo auth` POSTs to /tokens.
         // The registration listener binds the health port during this phase
         // (it is the only HTTP endpoint active), freeing it on return so that
         // serve_health can re-bind immediately after.
-        let rotated = await_token_registration(args.health_port).await?;
-
-        // Persist the new refresh token before touching anything else.
-        pg_store.save(&rotated).await;
-        token_expires_at_unix.store(
-            rotated.refresh_token_expires_at.timestamp(),
-            Ordering::Relaxed,
-        );
-
-        // Do NOT call refresh() on this path — the supplied access_token is
-        // already valid and calling refresh() would rotate the just-obtained
-        // refresh token for no benefit (Saxo invalidates the old one immediately).
-        let initial = rotated.access_token.clone();
-        let fresh_refresh_token = rotated.refresh_token.clone();
-
-        let token_store: Arc<dyn TokenStore> = Arc::new(PgTokenStore { pool: pool.clone() });
-        let auth = SaxoAuth::new(
+        let (initial, new_auth) = bootstrap_from_registration(
+            args.health_port,
+            RegistrationWaitReason::FreshBootstrap,
             http.clone(),
-            format!("{}/token", args.saxo_auth_base),
-            args.saxo_client_id.clone(),
-            args.saxo_client_secret.clone(),
-            fresh_refresh_token,
-            token_store,
-        );
+            &args.saxo_auth_base,
+            &args.saxo_client_id,
+            &args.saxo_client_secret,
+            &pg_store,
+            pool.clone(),
+            &token_expires_at_unix,
+        )
+        .await?;
 
         // Registration listener has exited; port is now free for health.
         tokio::spawn(serve_health(
@@ -578,7 +687,7 @@ async fn main() -> anyhow::Result<()> {
             token_expires_at_unix.clone(),
             prometheus_handle.clone(),
         ));
-        (initial, auth)
+        (initial, new_auth)
     };
 
     let shared_token: SharedToken = Arc::new(Mutex::new(initial_token));
@@ -823,7 +932,16 @@ mod tests {
 
     /// Drive `handle_registration_request` with the given raw HTTP bytes and
     /// return both the parsed result and the raw HTTP response string.
+    /// Uses `RegistrationWaitReason::FreshBootstrap` — tests that care about
+    /// the other reason use `roundtrip_with_reason` directly.
     async fn roundtrip(request: &[u8]) -> (Option<TokenRegistrationBody>, String) {
+        roundtrip_with_reason(request, RegistrationWaitReason::FreshBootstrap).await
+    }
+
+    async fn roundtrip_with_reason(
+        request: &[u8],
+        reason: RegistrationWaitReason,
+    ) -> (Option<TokenRegistrationBody>, String) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let req = request.to_vec();
@@ -831,7 +949,7 @@ mod tests {
         tokio::join!(
             async {
                 let (stream, _) = listener.accept().await.unwrap();
-                handle_registration_request(stream).await
+                handle_registration_request(stream, reason).await
             },
             async {
                 let mut client = TcpStream::connect(addr).await.unwrap();
@@ -932,6 +1050,29 @@ mod tests {
         );
     }
 
+    /// NEX-107: when waiting for re-registration because a *stored* refresh
+    /// token was rejected (not a genuine first bootstrap), /health must
+    /// report 503 — this is a real degraded state monitoring should alert
+    /// on, distinct from the benign 200 of a fresh first-time setup.
+    #[tokio::test]
+    async fn handle_registration_get_health_returns_503_after_expired_refresh_token() {
+        let request = b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let (result, response) =
+            roundtrip_with_reason(request, RegistrationWaitReason::ExpiredRefreshToken).await;
+        assert!(
+            result.is_none(),
+            "GET /health must not unblock registration"
+        );
+        assert!(
+            response.starts_with("HTTP/1.1 503"),
+            "expected 503 after an expired/rejected refresh token, got: {response}"
+        );
+        assert!(
+            response.contains("nexus saxo auth"),
+            "body should point operators at the fix, got: {response}"
+        );
+    }
+
     // ── await_token_registration: AC1 + AC7 (blocking + correct token) ───
 
     /// Valid POST unblocks `await_token_registration` and returns a `RotatedToken`
@@ -942,7 +1083,10 @@ mod tests {
     #[tokio::test]
     async fn await_token_registration_blocks_then_returns_correct_token() {
         let port = 20001u16;
-        let task = tokio::spawn(await_token_registration(port));
+        let task = tokio::spawn(await_token_registration(
+            port,
+            RegistrationWaitReason::FreshBootstrap,
+        ));
 
         // Give the listener time to bind.
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -976,7 +1120,10 @@ mod tests {
     #[tokio::test]
     async fn await_token_registration_ignores_invalid_requests_keeps_waiting() {
         let port = 20002u16;
-        let task = tokio::spawn(await_token_registration(port));
+        let task = tokio::spawn(await_token_registration(
+            port,
+            RegistrationWaitReason::FreshBootstrap,
+        ));
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Send malformed JSON — must NOT unblock.
@@ -1045,7 +1192,10 @@ mod tests {
             .await;
 
         let port = 20003u16;
-        let task = tokio::spawn(await_token_registration(port));
+        let task = tokio::spawn(await_token_registration(
+            port,
+            RegistrationWaitReason::FreshBootstrap,
+        ));
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Send valid registration — provides access_token directly.
@@ -1070,6 +1220,42 @@ mod tests {
             "SaxoAuth::refresh() must not be called on the fresh-registration path \
              (received {received:?})"
         );
+    }
+
+    // ── await_token_registration: NEX-107 (expired-token recovery path) ───
+
+    /// The expired-refresh-token recovery path uses the exact same
+    /// `await_token_registration` machinery as first-time bootstrap — this
+    /// pins that a valid POST unblocks it regardless of `reason`, so the
+    /// only behavioral difference between the two reasons is the `/health`
+    /// response while waiting (covered above).
+    #[tokio::test]
+    async fn await_token_registration_unblocks_on_expired_refresh_token_reason_too() {
+        let port = 20004u16;
+        let task = tokio::spawn(await_token_registration(
+            port,
+            RegistrationWaitReason::ExpiredRefreshToken,
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            !task.is_finished(),
+            "must block until a valid POST arrives, same as the fresh-bootstrap reason"
+        );
+
+        let body = valid_body();
+        let mut conn = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        conn.write_all(&post_request(&body)).await.unwrap();
+        let mut buf = Vec::new();
+        conn.read_to_end(&mut buf).await.unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("timed out")
+            .unwrap()
+            .expect("should succeed after valid POST");
+        assert_eq!(result.access_token.access_token, VALID_ACCESS_TOKEN);
+        assert_eq!(result.refresh_token, VALID_REFRESH_TOKEN);
     }
 
     // ── restart path: AC6 ─────────────────────────────────────────────────
@@ -1145,5 +1331,84 @@ mod tests {
         assert_eq!(rotated.access_token.access_token, "new_acc");
 
         // wiremock asserts `.expect(1)` on drop — verifies refresh() called once.
+    }
+
+    // ── NEX-107: expired-token recovery via bootstrap_from_registration ───
+    //
+    // Exercises the exact fallback `main()` now takes when the restart-path
+    // `refresh()` call fails: instead of exiting, it calls
+    // `bootstrap_from_registration`, which waits for `POST /tokens`, persists
+    // the result, and returns a ready-to-use `(SaxoToken, SaxoAuth)` pair —
+    // the same contract the fresh-bootstrap path relies on. Requires a real
+    // Postgres for the persistence assertion, so it's `#[ignore]`d like the
+    // sibling restart-path test above. Run manually with:
+    //   DATABASE_URL=postgres://... cargo test -p chronicle --bin saxo_stream \
+    //     -- --ignored bootstrap_from_registration_recovers_and_persists_new_token
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn bootstrap_from_registration_recovers_and_persists_new_token() {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+        let pool = sqlx::PgPool::connect(&database_url)
+            .await
+            .expect("failed to connect to test Postgres");
+
+        let pg_store = PgTokenStore { pool: pool.clone() };
+        let token_expires_at_unix = Arc::new(AtomicI64::new(0));
+        let port = 20005u16;
+
+        // Run the recovery call and the client that unblocks it concurrently
+        // on the same task (no `tokio::spawn`, so no `'static` bound and no
+        // need to share `pg_store` across threads) — same pattern as the
+        // `roundtrip` test helper above.
+        let (bootstrap_result, _client_response) = tokio::join!(
+            async {
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    bootstrap_from_registration(
+                        port,
+                        RegistrationWaitReason::ExpiredRefreshToken,
+                        reqwest::Client::new(),
+                        "http://unused.invalid",
+                        "client_id",
+                        "client_secret",
+                        &pg_store,
+                        pool.clone(),
+                        &token_expires_at_unix,
+                    ),
+                )
+                .await
+                .expect("timed out")
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let body = valid_body();
+                let mut conn = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+                conn.write_all(&post_request(&body)).await.unwrap();
+                let mut buf = Vec::new();
+                conn.read_to_end(&mut buf).await.unwrap();
+            }
+        );
+
+        let (initial, _auth) = bootstrap_result
+            .expect("bootstrap_from_registration should succeed, not exit the process");
+
+        assert_eq!(initial.access_token, VALID_ACCESS_TOKEN);
+        assert_ne!(
+            token_expires_at_unix.load(Ordering::Relaxed),
+            0,
+            "refresh-token expiry must be recorded so /health reflects the new token"
+        );
+
+        // Persistence assertion: the new refresh token must be in oauth_tokens.
+        let persisted = pg_store
+            .load_refresh_token()
+            .await
+            .expect("load_refresh_token failed");
+        assert_eq!(
+            persisted.as_deref(),
+            Some(VALID_REFRESH_TOKEN),
+            "the recovered token must be persisted, same as the fresh-bootstrap path"
+        );
     }
 }
