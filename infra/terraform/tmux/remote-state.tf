@@ -7,9 +7,7 @@
 #      never brought up.
 #   2. Gives this layer a way to consume orbstack outputs as they are added.
 #
-# The orbstack layer keeps its state locally (see ../orbstack/versions.tf for
-# why), so this reads a file path rather than the pg backend. The path is
-# relative to this module directory.
+# The path is relative to this module directory.
 data "terraform_remote_state" "orbstack" {
   backend = "local"
 
