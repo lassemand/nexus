@@ -1,0 +1,13 @@
+# Local provider/module cache
+.terraform/
+
+# Any state that ends up on disk (e.g. a stray `terraform apply` before init,
+# or `terraform state pull`). Remote state is authoritative; local copies are
+# credential-adjacent and must never be committed.
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Variable files may carry secrets
+*.tfvars
+*.tfvars.json
