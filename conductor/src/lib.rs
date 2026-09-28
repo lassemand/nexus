@@ -11,6 +11,9 @@
 pub mod github;
 pub mod http;
 pub mod linear;
+pub mod registry;
+
+use serde::{Deserialize, Serialize};
 
 use github::{GithubPrComment, PrCommentKind};
 use linear::LinearIssue;
@@ -20,7 +23,7 @@ use linear::LinearIssue;
 /// `delivery_id` carries the provider's delivery header so a future sink can
 /// deduplicate retried deliveries. It is `None` when the header was absent,
 /// which is not treated as an error.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum InboundEvent {
     /// A Linear issue that just transitioned into `Todo`.
     LinearIssueTodo {

@@ -6,7 +6,8 @@ use serde_json::Value;
 use sha2::Sha256;
 
 /// Which GitHub event produced a pull request comment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum PrCommentKind {
     /// `issue_comment` on a pull request — a top-level conversation comment.
     Comment,
@@ -85,7 +86,7 @@ pub struct ReviewCommentBody {
 /// Intentionally minimal — only what a consumer needs in order to act: where the
 /// PR lives, which comment to reply to, what was said, and (for review comments)
 /// which file the comment is on.
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GithubPrComment {
     pub repo: String,
     pub pr_number: u64,
