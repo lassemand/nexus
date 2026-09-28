@@ -14,6 +14,7 @@
 #   postgresql://nexus:<password>@nexus-postgres.nexus.svc.cluster.local:5432/chronicle
 #   postgresql://nexus:<password>@nexus-postgres.nexus.svc.cluster.local:5432/backtest
 #   postgresql://nexus:<password>@nexus-postgres.nexus.svc.cluster.local:5432/terraform
+#   postgresql://nexus:<password>@nexus-postgres.nexus.svc.cluster.local:5432/conductor
 #
 # Credential secret (auto-created by the operator, keys: username, password):
 #   nexus.nexus-postgres.credentials.postgresql.acid.zalan.do
@@ -38,6 +39,7 @@ spec:
     chronicle: nexus            # chronicle crate: published_filings, companies, earnings_dates
     backtest: nexus             # signal crate: trade_results, companies
     terraform: nexus            # Terraform remote state (infra/terraform) — not an application schema
+    conductor: nexus            # conductor session registry (groups, pending events, delivery dedup)
   resources:
     requests:
       cpu: 100m

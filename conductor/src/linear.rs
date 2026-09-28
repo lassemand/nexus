@@ -50,7 +50,7 @@ const DISPATCH_STATE: &str = "Todo";
 const SESSION_LABEL_PREFIX: &str = "session:";
 
 /// A Linear issue reduced to what a consumer needs in order to act on it.
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LinearIssue {
     pub identifier: String,
     pub title: String,
