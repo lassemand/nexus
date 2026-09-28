@@ -1,8 +1,3 @@
 {
-  "mcpServers": {
-    "webhook": {
-      "command": "target/release/mcp",
-      "args": []
-    }
-  }
+  "mcpServers": {}
 }
