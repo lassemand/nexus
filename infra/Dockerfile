@@ -24,10 +24,12 @@ COPY signal/Cargo.toml   signal/Cargo.toml
 COPY insight/Cargo.toml  insight/Cargo.toml
 COPY cli/Cargo.toml      cli/Cargo.toml
 COPY mcp/Cargo.toml      mcp/Cargo.toml
+COPY conductor/Cargo.toml conductor/Cargo.toml
 
 # Create placeholder sources so Cargo can parse the workspace
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src mcp/src \
+      conductor/src \
     && touch model/src/lib.rs alpha/src/lib.rs \
     && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
@@ -40,7 +42,8 @@ RUN mkdir -p \
         signal/src/scanner.rs \
         insight/src/main.rs \
         cli/src/main.rs \
-        mcp/src/main.rs
+        mcp/src/main.rs \
+        conductor/src/main.rs
 
 # Download dependencies as a separate layer — only re-runs when Cargo.lock changes
 RUN cargo fetch --locked
@@ -59,6 +62,7 @@ RUN sed -i "s/version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml \
         insight/src/*.rs \
         cli/src/*.rs \
         mcp/src/*.rs \
+        conductor/src/*.rs \
     && cargo build --frozen --release
 
 # sqlx-cli for initContainer-driven migrations (kept off the runtime image's
