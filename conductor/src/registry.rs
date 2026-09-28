@@ -659,6 +659,163 @@ impl RegistryTxn<'_> {
         Ok(())
     }
 
+    /// Groups ready to run, oldest queued event first.
+    ///
+    /// Runnable means `Idle` with something pending. Ordering by the oldest
+    /// pending event keeps a busy group from starving one that has waited
+    /// longer.
+    pub async fn runnable_groups(&mut self) -> Result<Vec<GroupKey>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT g.key AS key \
+             FROM session_groups g \
+             JOIN (SELECT group_slug, MIN(received_at) AS oldest \
+                     FROM pending_events GROUP BY group_slug) p \
+               ON p.group_slug = g.slug \
+             WHERE g.state->>'state' = 'idle' \
+             ORDER BY p.oldest",
+        )
+        .fetch_all(&mut *self.tx)
+        .await?;
+
+        rows.iter()
+            .map(|r| Ok(r.try_get::<Json<GroupKey>, _>("key")?.0))
+            .collect()
+    }
+
+    /// Claims a group for a run: verifies it is `Idle`, pops its oldest pending
+    /// event and marks it `Running`.
+    ///
+    /// All three happen under the transaction's lock, which is what guarantees
+    /// a group never has two runs — including against the CLI in another
+    /// process. Returns `None` if the group is busy or has nothing queued.
+    ///
+    /// `owner_pid` is the dispatcher's own pid, recorded until the child exists.
+    /// If the dispatcher dies in that window, stale-PID recovery sees its pid is
+    /// gone and marks the run `Lost`, which is the correct outcome.
+    pub async fn claim_next(
+        &mut self,
+        key: &GroupKey,
+        owner_pid: u32,
+        owner_started_at: DateTime<Utc>,
+    ) -> Result<Option<QueuedEvent>, sqlx::Error> {
+        let slug = key.slug();
+
+        let state = sqlx::query_scalar::<_, Json<GroupState>>(
+            "SELECT state FROM session_groups WHERE slug = $1 FOR UPDATE",
+        )
+        .bind(&slug)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+
+        match state {
+            Some(Json(GroupState::Idle)) => {}
+            // Busy or absent: leave the queue untouched.
+            _ => return Ok(None),
+        }
+
+        let popped = sqlx::query(
+            "DELETE FROM pending_events \
+             WHERE id = (SELECT id FROM pending_events WHERE group_slug = $1 \
+                          ORDER BY id LIMIT 1) \
+             RETURNING event, received_at",
+        )
+        .bind(&slug)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+
+        let Some(row) = popped else {
+            return Ok(None);
+        };
+
+        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+            .bind(&slug)
+            .bind(Json(GroupState::Running {
+                pid: owner_pid,
+                started_at: owner_started_at,
+            }))
+            .execute(&mut *self.tx)
+            .await?;
+
+        Ok(Some(QueuedEvent {
+            event: row.try_get::<Json<InboundEvent>, _>("event")?.0,
+            received_at: row.try_get("received_at")?,
+        }))
+    }
+
+    /// Replaces the recorded process once the child has spawned.
+    pub async fn set_running_process(
+        &mut self,
+        key: &GroupKey,
+        pid: u32,
+        started_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+            .bind(key.slug())
+            .bind(Json(GroupState::Running { pid, started_at }))
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Returns a group to `Idle` and records how its run ended.
+    pub async fn finish_run(
+        &mut self,
+        key: &GroupKey,
+        outcome: &RunOutcome,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE session_groups \
+             SET state = $2, last_run = $3, last_active = $4 \
+             WHERE slug = $1",
+        )
+        .bind(key.slug())
+        .bind(Json(GroupState::Idle))
+        .bind(Json(outcome))
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Records the worktree backing a group.
+    pub async fn set_worktree(
+        &mut self,
+        key: &GroupKey,
+        worktree: &std::path::Path,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE session_groups SET worktree = $2 WHERE slug = $1")
+            .bind(key.slug())
+            .bind(worktree.to_string_lossy().to_string())
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Notes a branch seen checked out in the group's worktree.
+    ///
+    /// Every branch is kept, not just the current one: the agent may open a PR
+    /// from a branch it created, and routing that PR's comments back here later
+    /// depends on having seen it.
+    pub async fn record_branch(&mut self, key: &GroupKey, branch: &str) -> Result<(), sqlx::Error> {
+        let slug = key.slug();
+        let mut branches: Vec<String> =
+            sqlx::query_scalar("SELECT branches FROM session_groups WHERE slug = $1")
+                .bind(&slug)
+                .fetch_one(&mut *self.tx)
+                .await?;
+        if branches.iter().any(|b| b == branch) {
+            return Ok(());
+        }
+        branches.push(branch.to_string());
+        branches.sort();
+        sqlx::query("UPDATE session_groups SET branches = $2 WHERE slug = $1")
+            .bind(&slug)
+            .bind(&branches)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
     /// Resets groups whose recorded process is gone, returning how many.
     pub async fn reconcile_stale_processes(&mut self) -> Result<usize, sqlx::Error> {
         let rows = sqlx::query("SELECT slug, state FROM session_groups")
