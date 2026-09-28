@@ -270,7 +270,7 @@ fn parse_starttime_ticks(stat: &str) -> Option<u64> {
 /// Seconds since the epoch at which the system booted, from `/proc/stat`.
 #[cfg(target_os = "linux")]
 fn boot_time_secs() -> Option<i64> {
-    let stat = fs::read_to_string("/proc/stat").ok()?;
+    let stat = std::fs::read_to_string("/proc/stat").ok()?;
     stat.lines()
         .find_map(|l| l.strip_prefix("btime "))?
         .trim()
@@ -281,7 +281,7 @@ fn boot_time_secs() -> Option<i64> {
 /// Wall-clock start time of a running process.
 #[cfg(target_os = "linux")]
 fn process_start_time(pid: u32) -> Option<DateTime<Utc>> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let ticks = parse_starttime_ticks(&stat)?;
     let hz = nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK)
         .ok()
