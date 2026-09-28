@@ -326,6 +326,17 @@ fn process_alive(pid: u32, _recorded_start: DateTime<Utc>) -> bool {
 
 // ── registry ─────────────────────────────────────────────────────────────────
 
+/// Parses `CONDUCTOR_IDLE_DAYS`, falling back to the default.
+///
+/// A value that is absent, unparseable or non-positive falls back rather than
+/// erroring: a malformed setting should not stop the service starting, and a
+/// zero or negative window would expire every session on every dispatch.
+fn parse_idle_days(raw: Option<&str>) -> i64 {
+    raw.and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|d| *d > 0)
+        .unwrap_or(DEFAULT_IDLE_DAYS)
+}
+
 /// Handle to the Postgres-backed registry.
 #[derive(Clone)]
 pub struct Registry {
@@ -350,10 +361,7 @@ impl Registry {
         let url = std::env::var(DATABASE_URL_ENV).map_err(|_| {
             sqlx::Error::Configuration(format!("{DATABASE_URL_ENV} is not set").into())
         })?;
-        let idle_days = std::env::var(IDLE_DAYS_ENV)
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_IDLE_DAYS);
+        let idle_days = parse_idle_days(std::env::var(IDLE_DAYS_ENV).ok().as_deref());
         let pool = PgPool::connect(&url).await?;
         Ok(Registry::new(pool, clock, idle_days))
     }
@@ -629,6 +637,28 @@ impl RegistryTxn<'_> {
         Ok(())
     }
 
+    /// Appends a Linear identifier to the group's history.
+    ///
+    /// Deliberately a read-modify-write rather than `array_append`: this is the
+    /// shape the dispatcher needs, and it is exactly what the advisory lock
+    /// protects. Without the lock two transactions would both read the old
+    /// array and the second would overwrite the first's entry.
+    pub async fn append_issue(&mut self, key: &GroupKey, issue: &str) -> Result<(), sqlx::Error> {
+        let slug = key.slug();
+        let mut issues: Vec<String> =
+            sqlx::query_scalar("SELECT issues FROM session_groups WHERE slug = $1")
+                .bind(&slug)
+                .fetch_one(&mut *self.tx)
+                .await?;
+        issues.push(issue.to_string());
+        sqlx::query("UPDATE session_groups SET issues = $2 WHERE slug = $1")
+            .bind(&slug)
+            .bind(&issues)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
     /// Resets groups whose recorded process is gone, returning how many.
     pub async fn reconcile_stale_processes(&mut self) -> Result<usize, sqlx::Error> {
         let rows = sqlx::query("SELECT slug, state FROM session_groups")
@@ -664,21 +694,21 @@ impl RegistryTxn<'_> {
     }
 }
 
+/// Helpers shared by both test modules.
 #[cfg(test)]
-mod tests {
+mod tests_support {
     use super::*;
-    use crate::github::{GithubPrComment, PrCommentKind};
     use crate::linear::LinearIssue;
     use std::sync::Mutex;
 
     /// Clock the tests advance by hand, so expiry needs no sleeping.
-    struct FakeClock(Mutex<DateTime<Utc>>);
+    pub struct FakeClock(Mutex<DateTime<Utc>>);
 
     impl FakeClock {
-        fn new(at: DateTime<Utc>) -> Arc<Self> {
+        pub fn new(at: DateTime<Utc>) -> Arc<Self> {
             Arc::new(FakeClock(Mutex::new(at)))
         }
-        fn advance(&self, by: chrono::Duration) {
+        pub fn advance(&self, by: chrono::Duration) {
             *self.0.lock().expect("clock") += by;
         }
     }
@@ -689,13 +719,15 @@ mod tests {
         }
     }
 
-    fn epoch() -> DateTime<Utc> {
+    /// Fixed instant the tests measure from.
+    pub fn epoch() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
             .expect("valid")
             .with_timezone(&Utc)
     }
 
-    fn linear_event(identifier: &str, session_labels: &[&str]) -> InboundEvent {
+    /// A Linear event carrying the given session labels.
+    pub fn linear_event(identifier: &str, session_labels: &[&str]) -> InboundEvent {
         InboundEvent::LinearIssueTodo {
             issue: LinearIssue {
                 identifier: identifier.to_string(),
@@ -707,6 +739,39 @@ mod tests {
             delivery_id: None,
         }
     }
+
+    /// Runs a trivial child to completion and returns its now-dead pid.
+    pub fn reaped_pid() -> u32 {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+        child.wait().expect("wait");
+        pid
+    }
+
+    /// This process's real start time.
+    ///
+    /// On Linux it must match `/proc` exactly or liveness checks reject it. On
+    /// macOS there is no start time to compare, so any value serves.
+    pub fn own_start_time() -> DateTime<Utc> {
+        #[cfg(target_os = "linux")]
+        {
+            process_start_time(std::process::id()).expect("own start time from /proc")
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            epoch()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tests_support::*;
+    use super::*;
+    use crate::github::{GithubPrComment, PrCommentKind};
 
     // ── key derivation (no database) ─────────────────────────────────────────
 
@@ -798,17 +863,6 @@ mod tests {
     }
 
     // ── process liveness (no database) ───────────────────────────────────────
-
-    /// Runs a trivial child to completion and returns its now-dead pid.
-    fn reaped_pid() -> u32 {
-        let mut child = std::process::Command::new("/bin/sh")
-            .args(["-c", "exit 0"])
-            .spawn()
-            .expect("spawn");
-        let pid = child.id();
-        child.wait().expect("wait");
-        pid
-    }
 
     #[test]
     fn starttime_is_parsed_past_a_comm_containing_spaces_and_parens() {
@@ -991,5 +1045,227 @@ mod tests {
         let outcome = group.last_run.as_ref().expect("an outcome was recorded");
         assert_eq!(outcome.result, RunResult::Lost);
         assert_eq!(outcome.duration, Duration::from_secs(30));
+    }
+}
+
+/// Additional coverage required by NEX-127.
+///
+/// Kept in a second module so the tests NEX-126 needed while developing stay
+/// distinguishable from the verification matrix added afterwards.
+#[cfg(test)]
+mod verification {
+    use super::tests_support::*;
+    use super::*;
+    use tracing_test::traced_test;
+
+    // ── key derivation ───────────────────────────────────────────────────────
+
+    #[test]
+    #[traced_test]
+    fn two_session_labels_warn_before_falling_back() {
+        let key = group_key_for(&linear_event("NEX-42", &["alpha", "beta"]));
+        assert_eq!(key, GroupKey::Issue("NEX-42".into()));
+        assert!(
+            logs_contain("several session labels"),
+            "the ambiguity should be reported, not silently resolved"
+        );
+    }
+
+    #[test]
+    #[traced_test]
+    fn invalid_label_warns_before_falling_back() {
+        let key = group_key_for(&linear_event("NEX-42", &["a/b"]));
+        assert_eq!(key, GroupKey::Issue("NEX-42".into()));
+        assert!(logs_contain("not a valid group key"));
+    }
+
+    #[test]
+    fn case_variants_resolve_to_one_key() {
+        let upper = group_key_for(&linear_event("NEX-1", &["Foo"]));
+        let lower = group_key_for(&linear_event("NEX-2", &["foo"]));
+        assert_eq!(upper, lower, "case must not create a second group");
+        assert_eq!(upper.slug(), lower.slug());
+    }
+
+    // ── expiry ───────────────────────────────────────────────────────────────
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn just_inside_the_window_resumes(pool: PgPool) {
+        let clock = FakeClock::new(epoch());
+        let reg = Registry::new(pool, clock.clone(), DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("grp".into());
+
+        let mut txn = reg.begin().await.expect("begin");
+        let (first, _) = txn.session_for_dispatch(&key).await.expect("dispatch");
+        txn.mark_session_started(&key).await.expect("started");
+        txn.commit().await.expect("commit");
+
+        // 6d23h — one hour short of expiry.
+        clock.advance(chrono::Duration::days(6) + chrono::Duration::hours(23));
+        let (second, resume) = reg.session_for_dispatch(&key).await.expect("dispatch");
+        assert!(resume, "6d23h idle is still inside a 7 day window");
+        assert_eq!(first, second);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn exactly_at_the_window_expires(pool: PgPool) {
+        let clock = FakeClock::new(epoch());
+        let reg = Registry::new(pool, clock.clone(), DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("grp".into());
+
+        let mut txn = reg.begin().await.expect("begin");
+        let (first, _) = txn.session_for_dispatch(&key).await.expect("dispatch");
+        txn.mark_session_started(&key).await.expect("started");
+        txn.commit().await.expect("commit");
+
+        // Exactly 7d: the comparison is strict, so this is expired.
+        clock.advance(chrono::Duration::days(DEFAULT_IDLE_DAYS));
+        let (second, resume) = reg.session_for_dispatch(&key).await.expect("dispatch");
+        assert!(!resume);
+        assert_ne!(first, second);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_shorter_idle_window_moves_the_boundary(pool: PgPool) {
+        let clock = FakeClock::new(epoch());
+        // What CONDUCTOR_IDLE_DAYS=1 configures.
+        let reg = Registry::new(pool, clock.clone(), 1);
+        let key = GroupKey::Named("grp".into());
+
+        let mut txn = reg.begin().await.expect("begin");
+        txn.session_for_dispatch(&key).await.expect("dispatch");
+        txn.mark_session_started(&key).await.expect("started");
+        txn.commit().await.expect("commit");
+
+        clock.advance(chrono::Duration::hours(23));
+        let (_, resume) = reg.session_for_dispatch(&key).await.expect("dispatch");
+        assert!(resume, "23h is inside a 1 day window");
+
+        clock.advance(chrono::Duration::days(1));
+        let (_, resume) = reg.session_for_dispatch(&key).await.expect("dispatch");
+        assert!(!resume, "past 1 day the session expires");
+    }
+
+    #[test]
+    fn idle_days_parsing_falls_back_rather_than_failing() {
+        assert_eq!(parse_idle_days(Some("1")), 1);
+        assert_eq!(parse_idle_days(Some(" 3 ")), 3);
+        assert_eq!(parse_idle_days(None), DEFAULT_IDLE_DAYS);
+        assert_eq!(parse_idle_days(Some("")), DEFAULT_IDLE_DAYS);
+        assert_eq!(parse_idle_days(Some("not-a-number")), DEFAULT_IDLE_DAYS);
+        // Zero or negative would expire every session on every dispatch.
+        assert_eq!(parse_idle_days(Some("0")), DEFAULT_IDLE_DAYS);
+        assert_eq!(parse_idle_days(Some("-5")), DEFAULT_IDLE_DAYS);
+    }
+
+    // ── locking ──────────────────────────────────────────────────────────────
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn concurrent_writers_do_not_lose_updates(pool: PgPool) {
+        let clock = FakeClock::new(epoch());
+        let reg = Registry::new(pool, clock, DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("grp".into());
+        reg.session_for_dispatch(&key).await.expect("create group");
+
+        // Two writers on separate connections. append_issue is a
+        // read-modify-write, so without the advisory lock the two would
+        // interleave and lose entries.
+        const PER_WRITER: usize = 200;
+        let mut writers = Vec::new();
+        for writer in 0..2 {
+            let reg = reg.clone();
+            let key = key.clone();
+            writers.push(tokio::spawn(async move {
+                for i in 0..PER_WRITER {
+                    let mut txn = reg.begin().await.expect("begin");
+                    txn.append_issue(&key, &format!("W{writer}-{i}"))
+                        .await
+                        .expect("append");
+                    txn.commit().await.expect("commit");
+                }
+            }));
+        }
+        for w in writers {
+            w.await.expect("writer finished");
+        }
+
+        let groups = reg.snapshot().await.expect("snapshot");
+        let issues = &groups.first().expect("group").issues;
+        assert_eq!(
+            issues.len(),
+            PER_WRITER * 2,
+            "every append must survive; a short count means updates were lost"
+        );
+        // And no entry was duplicated or corrupted.
+        let unique: std::collections::BTreeSet<_> = issues.iter().collect();
+        assert_eq!(unique.len(), PER_WRITER * 2);
+    }
+
+    // ── unreadable stored data ───────────────────────────────────────────────
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unparseable_stored_json_errors_rather_than_panicking(pool: PgPool) {
+        let reg = Registry::new(pool.clone(), FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("grp".into());
+        reg.session_for_dispatch(&key).await.expect("create group");
+
+        // A state object that is valid JSON but not a GroupState — the closest
+        // analogue to the corrupt-file case now that there is no file.
+        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+            .bind(key.slug())
+            .bind(serde_json::json!({"state": "nonsense"}))
+            .execute(&pool)
+            .await
+            .expect("seed bad state");
+
+        // Must surface as an error, not unwind.
+        assert!(
+            reg.snapshot().await.is_err(),
+            "unreadable stored data should be reported, not panic or be silently dropped"
+        );
+    }
+
+    // ── stale PID recovery ───────────────────────────────────────────────────
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_live_process_with_matching_start_time_keeps_running(pool: PgPool) {
+        let clock = FakeClock::new(epoch());
+        let reg = Registry::new(pool.clone(), clock, DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("grp".into());
+        reg.session_for_dispatch(&key).await.expect("create group");
+
+        let running = GroupState::Running {
+            pid: std::process::id(),
+            started_at: own_start_time(),
+        };
+        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+            .bind(key.slug())
+            .bind(Json(&running))
+            .execute(&pool)
+            .await
+            .expect("seed state");
+
+        assert_eq!(
+            reg.reconcile_stale_processes().await.expect("reconcile"),
+            0,
+            "this process is alive, so its run must not be reaped"
+        );
+        let groups = reg.snapshot().await.expect("snapshot");
+        assert_eq!(groups.first().expect("group").state, running);
+    }
+
+    /// PID reuse is only detectable where `/proc` exposes a start time.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_reused_pid_is_treated_as_dead() {
+        let pid = std::process::id();
+        let actual = process_start_time(pid).expect("own start time");
+
+        assert!(process_alive(pid, actual), "the real start time matches");
+        // Same live PID, start time from before a restart: a different process.
+        assert!(
+            !process_alive(pid, actual - chrono::Duration::seconds(60)),
+            "a mismatched start time means the PID was recycled"
+        );
     }
 }
