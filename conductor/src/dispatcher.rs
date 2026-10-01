@@ -21,6 +21,7 @@ use tokio::sync::{mpsc, Mutex, Notify, Semaphore};
 
 use crate::github::PrCommentKind;
 use crate::registry::{GroupKey, QueuedEvent, Registry, RunOutcome, RunResult};
+use crate::resolve::{fallback_key, GroupResolver};
 use crate::{EventSink, InboundEvent};
 
 /// How long the scheduler waits before re-scanning when nothing wakes it.
@@ -78,6 +79,21 @@ pub struct DispatchArgs {
     /// How long shutdown waits for runs to finish, in seconds.
     #[arg(long, env = "CONDUCTOR_SHUTDOWN_GRACE_SECS", default_value_t = 600)]
     pub shutdown_grace_secs: u64,
+
+    /// GitHub API base URL. Overridable so tests can point at a mock.
+    #[arg(
+        long,
+        env = "CONDUCTOR_GITHUB_API_URL",
+        default_value = "https://api.github.com"
+    )]
+    pub github_api_url: String,
+
+    /// Token used to look up a pull request's head branch.
+    ///
+    /// Absent in local development, where the lookup is skipped and comments go
+    /// to a per-pull-request group instead.
+    #[arg(long, env = "GITHUB_TOKEN")]
+    pub github_token: Option<String>,
 }
 
 impl DispatchArgs {
@@ -135,35 +151,21 @@ pub struct DispatchConfig {
     pub shutdown_grace: Duration,
 }
 
-/// Resolves a group for events that do not carry one.
+/// Stub resolver giving every pull request its own group.
 ///
-/// GitHub comments arrive without a session label; working out which group
-/// opened the pull request needs a branch lookup, which is a separate task.
-pub trait GroupResolver: Send + Sync + 'static {
-    fn resolve(&self, event: &InboundEvent) -> GroupKey;
-}
-
-/// Placeholder resolver: gives each pull request its own group.
-///
-/// Uses the same `gh-<repo>-pr-<n>` shape the real resolver falls back to when
-/// it cannot find an owner, so groups created now stay valid afterwards.
+/// Kept for tests and local use: it needs no GitHub token and makes no network
+/// call. The real resolver lives in [`crate::resolve::BranchResolver`].
 pub struct PerPullRequestResolver;
 
+#[async_trait::async_trait]
 impl GroupResolver for PerPullRequestResolver {
-    fn resolve(&self, event: &InboundEvent) -> GroupKey {
+    async fn resolve(&self, event: &InboundEvent) -> Option<GroupKey> {
         match event {
             InboundEvent::GithubPrComment { comment, .. } => {
-                let repo = comment
-                    .repo
-                    .replace('/', "-")
-                    .to_lowercase()
-                    .chars()
-                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-                    .collect::<String>();
-                GroupKey::Named(format!("gh-{repo}-pr-{}", comment.pr_number))
+                Some(fallback_key(&comment.repo, comment.pr_number))
             }
             // Linear events already carry their own key.
-            other => crate::registry::group_key_for(other),
+            other => Some(crate::registry::group_key_for(other)),
         }
     }
 }
@@ -230,10 +232,24 @@ impl Dispatcher {
     /// Resolution happens before the lock is taken, so a slow lookup never
     /// holds up other writers.
     async fn ingest(&self, event: InboundEvent) {
-        let key = match crate::registry::group_key_for(&event) {
-            GroupKey::Unresolved => self.resolver.resolve(&event),
-            resolved => resolved,
+        // Routing may need a network call, so it happens before any lock.
+        let Some(key) = self.resolver.resolve(&event).await else {
+            tracing::info!("routing declined this event; nothing queued");
+            return;
         };
+
+        // Also resolved up front: a group created for someone else's pull
+        // request must start on that pull request's branch, and finding that out
+        // can cost a request. Served from the resolver's cache in practice.
+        let base_ref = match &event {
+            InboundEvent::GithubPrComment { comment, .. }
+                if key == fallback_key(&comment.repo, comment.pr_number) =>
+            {
+                self.resolver.worktree_ref(&event).await
+            }
+            _ => None,
+        };
+
         let delivery = delivery_id(&event).map(str::to_string);
 
         let mut txn = match self.registry.begin().await {
@@ -251,6 +267,9 @@ impl Dispatcher {
             }
             // Creates the group if absent.
             txn.session_for_dispatch(&key).await?;
+            if let Some(base) = &base_ref {
+                txn.set_worktree_ref_if_absent(&key, base).await?;
+            }
             txn.enqueue(&key, &event).await?;
             Ok::<_, sqlx::Error>(true)
         }
@@ -383,7 +402,8 @@ impl Dispatcher {
         queued: &QueuedEvent,
     ) -> Result<RunResult, Box<dyn std::error::Error + Send + Sync>> {
         let slug = key.slug();
-        let worktree = self.ensure_worktree(&slug).await?;
+        let base_ref = self.registry.worktree_ref(key).await?;
+        let worktree = self.ensure_worktree(&slug, base_ref.as_deref()).await?;
 
         let mut txn = self.registry.begin().await?;
         txn.set_worktree(key, &worktree).await?;
@@ -492,6 +512,7 @@ impl Dispatcher {
     async fn ensure_worktree(
         &self,
         slug: &str,
+        base_ref: Option<&str>,
     ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
         // The slug is validated on the way in, so it cannot escape this root.
         let path = self.config.worktree_root.join(slug);
@@ -509,6 +530,22 @@ impl Dispatcher {
         }
 
         std::fs::create_dir_all(&self.config.worktree_root)?;
+
+        // A group answering comments on an existing pull request works on that
+        // pull request's branch; starting a fresh branch from main would have the
+        // session editing code the review was not about.
+        if let Some(base) = base_ref {
+            run_git(&self.config.repo_root, &["fetch", "origin", base]).await?;
+            let path_str = path.to_string_lossy().to_string();
+            run_git(
+                &self.config.repo_root,
+                &["worktree", "add", &path_str, base],
+            )
+            .await?;
+            tracing::info!(worktree = %path.display(), branch = %base, "worktree ready on pull request branch");
+            return Ok(path);
+        }
+
         run_git(&self.config.repo_root, &["fetch", "origin", "main"]).await?;
 
         let branch = format!("agent/{slug}");
@@ -713,6 +750,9 @@ mod tests {
                 comment_id: 9,
                 body: "b".into(),
                 file_path: None,
+                head_ref: None,
+                head_repo: None,
+                base_repo: None,
             },
             kind,
             delivery_id: None,
@@ -765,11 +805,7 @@ mod tests {
 
     #[test]
     fn pull_request_groups_are_named_predictably() {
-        let key = PerPullRequestResolver.resolve(&comment(
-            "lassemand/nexus",
-            153,
-            PrCommentKind::Comment,
-        ));
+        let key = fallback_key("lassemand/nexus", 153);
         assert_eq!(key, GroupKey::Named("gh-lassemand-nexus-pr-153".into()));
         // And the name is a legal group key, so it can become a path.
         assert_eq!(key.slug(), "gh-lassemand-nexus-pr-153");
@@ -777,11 +813,7 @@ mod tests {
 
     #[test]
     fn repo_names_are_reduced_to_safe_characters() {
-        let key = PerPullRequestResolver.resolve(&comment(
-            "Weird.Org/Repo_Name",
-            7,
-            PrCommentKind::Comment,
-        ));
+        let key = fallback_key("Weird.Org/Repo_Name", 7);
         let GroupKey::Named(name) = key else {
             panic!("expected a named group");
         };
@@ -792,11 +824,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn linear_events_keep_their_own_key() {
-        // The resolver only invents a key for events that lack one.
-        let key = PerPullRequestResolver.resolve(&linear("NEX-42"));
-        assert_eq!(key, GroupKey::Issue("NEX-42".into()));
+    #[tokio::test]
+    async fn linear_events_keep_their_own_key() {
+        // The stub only invents a key for events that lack one.
+        let key = PerPullRequestResolver.resolve(&linear("NEX-42")).await;
+        assert_eq!(key, Some(GroupKey::Issue("NEX-42".into())));
     }
 
     #[test]
@@ -862,6 +894,8 @@ mod config_tests {
             run_timeout_min: 120,
             run_timeout_secs: None,
             shutdown_grace_secs: 600,
+            github_api_url: "https://api.github.com".into(),
+            github_token: None,
         }
     }
 

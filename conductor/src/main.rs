@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use conductor::{
-    dispatcher::{DispatchArgs, Dispatcher, PerPullRequestResolver},
+    dispatcher::{DispatchArgs, Dispatcher},
     github::watched_users_from_env,
     http::{serve_with_shutdown, AppState, DEFAULT_BIND},
     registry::{Registry, SystemClock},
+    resolve::BranchResolver,
 };
 
 #[derive(Parser)]
@@ -55,6 +56,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let registry = Registry::from_env(Arc::new(SystemClock)).await?;
             registry.migrate().await?;
 
+            // Read before `into_config` consumes the args; these configure the
+            // resolver rather than the dispatcher.
+            let github_api_url = dispatch.github_api_url.clone();
+            let github_token = dispatch.github_token.clone();
+            if github_token.is_none() {
+                tracing::warn!(
+                    "GITHUB_TOKEN not set — pull request branches cannot be looked up, \
+                     so issue comments will route to a per-pull-request group"
+                );
+            }
             let config = dispatch.into_config();
             tracing::info!(
                 max_sessions = config.max_sessions,
@@ -65,11 +76,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "dispatcher configured"
             );
 
+            // Cloned before the move below: the resolver reads branch ownership
+            // from the same registry the dispatcher writes to.
+            let resolver_registry = registry.clone();
             let shutting_down = Arc::new(AtomicBool::new(false));
             let (dispatcher, sink, rx) = Dispatcher::new(
                 registry,
                 config,
-                Arc::new(PerPullRequestResolver),
+                Arc::new(BranchResolver::new(
+                    resolver_registry,
+                    github_api_url,
+                    github_token,
+                )),
                 Arc::clone(&shutting_down),
             );
 

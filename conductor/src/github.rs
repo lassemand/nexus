@@ -71,6 +71,26 @@ pub struct ReviewCommentPayload {
 #[derive(Debug, Deserialize)]
 pub struct ReviewCommentPr {
     pub number: u64,
+    pub head: Option<PrBranch>,
+    pub base: Option<PrBranch>,
+}
+
+/// One side of a pull request.
+///
+/// `repo` is absent when the fork it pointed at has been deleted, so both
+/// fields are optional rather than assumed present.
+#[derive(Debug, Deserialize)]
+pub struct PrBranch {
+    #[serde(rename = "ref")]
+    pub ref_name: Option<String>,
+    pub repo: Option<GithubRepository>,
+}
+
+impl PrBranch {
+    /// The repository this side lives in, if known.
+    fn full_name(&self) -> Option<String> {
+        self.repo.as_ref().map(|r| r.full_name.clone())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +114,19 @@ pub struct GithubPrComment {
     pub body: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
+    /// Head branch of the pull request, when the payload carried it.
+    ///
+    /// Only `pull_request_review_comment` includes it; for `issue_comment` the
+    /// branch has to be fetched. Defaulted so events queued before this field
+    /// existed still deserialise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_ref: Option<String>,
+    /// Repository the head branch lives in, used to detect forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_repo: Option<String>,
+    /// Repository the pull request targets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_repo: Option<String>,
 }
 
 /// Default watched GitHub login when `GITHUB_WEBHOOK_USERS` is unset.
@@ -159,6 +192,10 @@ pub fn dispatchable_issue_comment(
         comment_id: comment.id,
         body: comment.body,
         file_path: None,
+        // `issue_comment` does not carry the branch; it is fetched when routing.
+        head_ref: None,
+        head_repo: None,
+        base_repo: None,
     })
 }
 
@@ -182,6 +219,9 @@ pub fn dispatchable_review_comment(
         comment_id: comment.id,
         body: comment.body,
         file_path: comment.path,
+        head_ref: pr.head.as_ref().and_then(|h| h.ref_name.clone()),
+        head_repo: pr.head.as_ref().and_then(PrBranch::full_name),
+        base_repo: pr.base.as_ref().and_then(PrBranch::full_name),
     })
 }
 
