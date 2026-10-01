@@ -32,7 +32,87 @@ const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 /// Grace between `SIGTERM` and `SIGKILL` for a run being stopped.
 const TERM_TO_KILL: Duration = Duration::from_secs(30);
 
-/// Configuration read from the environment.
+/// Dispatcher configuration, parsed by `clap` from flags or environment.
+///
+/// Flattened into `conductor serve`, so every setting is both a documented flag
+/// and an environment variable, and a malformed value is reported at startup
+/// rather than silently replaced by a default.
+#[derive(Debug, Clone, clap::Args)]
+pub struct DispatchArgs {
+    /// Maximum concurrent runs across all groups.
+    #[arg(long, env = "CONDUCTOR_MAX_SESSIONS", default_value_t = 5, value_parser = clap::value_parser!(u16).range(1..))]
+    pub max_sessions: u16,
+
+    /// Repository the worktrees are added from. Defaults to the current directory.
+    #[arg(long, env = "CONDUCTOR_REPO_ROOT")]
+    pub repo_root: Option<PathBuf>,
+
+    /// Directory holding one worktree per group. Defaults to `<state-dir>/worktrees`.
+    #[arg(long, env = "CONDUCTOR_WORKTREE_ROOT")]
+    pub worktree_root: Option<PathBuf>,
+
+    /// Directory holding per-run logs. Defaults to `~/.local/state/conductor`.
+    #[arg(long, env = "CONDUCTOR_STATE_DIR")]
+    pub state_dir: Option<PathBuf>,
+
+    /// Binary to execute; overridable so tests need no real Claude.
+    #[arg(long, env = "CONDUCTOR_CLAUDE_BIN", default_value = "claude")]
+    pub claude_bin: String,
+
+    /// Agent passed through to Claude.
+    #[arg(long, env = "CONDUCTOR_AGENT", default_value = "backend")]
+    pub agent: String,
+
+    /// Pass `--dangerously-skip-permissions` to Claude.
+    #[arg(long, env = "CONDUCTOR_SKIP_PERMISSIONS", default_value_t = true, action = clap::ArgAction::Set)]
+    pub skip_permissions: bool,
+
+    /// How long a run may take, in minutes.
+    #[arg(long, env = "CONDUCTOR_RUN_TIMEOUT_MIN", default_value_t = 120)]
+    pub run_timeout_min: u64,
+
+    /// Run timeout in seconds. Takes precedence, so tests need not wait minutes.
+    #[arg(long, env = "CONDUCTOR_RUN_TIMEOUT_SECS")]
+    pub run_timeout_secs: Option<u64>,
+
+    /// How long shutdown waits for runs to finish, in seconds.
+    #[arg(long, env = "CONDUCTOR_SHUTDOWN_GRACE_SECS", default_value_t = 600)]
+    pub shutdown_grace_secs: u64,
+}
+
+impl DispatchArgs {
+    /// Resolves the settings whose defaults depend on other settings.
+    pub fn into_config(self) -> DispatchConfig {
+        let state_dir = self.state_dir.unwrap_or_else(default_state_dir);
+        DispatchConfig {
+            max_sessions: usize::from(self.max_sessions),
+            repo_root: self
+                .repo_root
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into())),
+            worktree_root: self
+                .worktree_root
+                .unwrap_or_else(|| state_dir.join("worktrees")),
+            state_dir,
+            claude_bin: self.claude_bin,
+            agent: self.agent,
+            skip_permissions: self.skip_permissions,
+            // Seconds win when given, so a test can use a timeout far under a minute.
+            run_timeout: Duration::from_secs(
+                self.run_timeout_secs
+                    .unwrap_or_else(|| self.run_timeout_min.saturating_mul(60)),
+            ),
+            shutdown_grace: Duration::from_secs(self.shutdown_grace_secs),
+        }
+    }
+}
+
+/// Where logs and worktrees live when nothing says otherwise.
+fn default_state_dir() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+        .join(".local/state/conductor")
+}
+
+/// Resolved dispatcher configuration.
 #[derive(Debug, Clone)]
 pub struct DispatchConfig {
     /// Maximum concurrent runs across all groups.
@@ -43,7 +123,7 @@ pub struct DispatchConfig {
     pub worktree_root: PathBuf,
     /// Directory holding per-run logs.
     pub state_dir: PathBuf,
-    /// Binary to execute; overridable so tests need no real Claude.
+    /// Binary to execute.
     pub claude_bin: String,
     /// Agent passed through to Claude.
     pub agent: String,
@@ -53,49 +133,6 @@ pub struct DispatchConfig {
     pub run_timeout: Duration,
     /// How long shutdown waits for runs to finish.
     pub shutdown_grace: Duration,
-}
-
-impl DispatchConfig {
-    /// Reads configuration, falling back to defaults for anything unset or
-    /// unparseable — a malformed value should not stop the service starting.
-    pub fn from_env() -> Self {
-        let state_dir = match std::env::var("CONDUCTOR_STATE_DIR") {
-            Ok(d) if !d.trim().is_empty() => PathBuf::from(d),
-            _ => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
-                .join(".local/state/conductor"),
-        };
-
-        // Seconds take precedence, so tests can use a timeout far below a minute.
-        let run_timeout = env_parse("CONDUCTOR_RUN_TIMEOUT_SECS")
-            .map(Duration::from_secs)
-            .unwrap_or_else(|| {
-                Duration::from_secs(env_parse("CONDUCTOR_RUN_TIMEOUT_MIN").unwrap_or(120) * 60)
-            });
-
-        DispatchConfig {
-            max_sessions: env_parse("CONDUCTOR_MAX_SESSIONS").unwrap_or(5).max(1) as usize,
-            repo_root: std::env::var("CONDUCTOR_REPO_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into())),
-            worktree_root: std::env::var("CONDUCTOR_WORKTREE_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| state_dir.join("worktrees")),
-            state_dir,
-            claude_bin: std::env::var("CONDUCTOR_CLAUDE_BIN").unwrap_or_else(|_| "claude".into()),
-            agent: std::env::var("CONDUCTOR_AGENT").unwrap_or_else(|_| "backend".into()),
-            skip_permissions: std::env::var("CONDUCTOR_SKIP_PERMISSIONS")
-                .map(|v| v.trim().eq_ignore_ascii_case("true"))
-                .unwrap_or(true),
-            run_timeout,
-            shutdown_grace: Duration::from_secs(
-                env_parse("CONDUCTOR_SHUTDOWN_GRACE_SECS").unwrap_or(600),
-            ),
-        }
-    }
-}
-
-fn env_parse(name: &str) -> Option<u64> {
-    std::env::var(name).ok()?.trim().parse().ok()
 }
 
 /// Resolves a group for events that do not carry one.
@@ -805,5 +842,63 @@ mod tests {
         // pid 0 addresses the caller's process group; it must never be signalled.
         signal(0, nix::sys::signal::Signal::SIGTERM);
         signal(u32::MAX, nix::sys::signal::Signal::SIGTERM);
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    /// Args with every optional field unset, as clap would produce from defaults.
+    fn args() -> DispatchArgs {
+        DispatchArgs {
+            max_sessions: 5,
+            repo_root: Some(PathBuf::from("/repo")),
+            worktree_root: None,
+            state_dir: Some(PathBuf::from("/state")),
+            claude_bin: "claude".into(),
+            agent: "backend".into(),
+            skip_permissions: true,
+            run_timeout_min: 120,
+            run_timeout_secs: None,
+            shutdown_grace_secs: 600,
+        }
+    }
+
+    #[test]
+    fn worktree_root_defaults_under_the_state_dir() {
+        let config = args().into_config();
+        assert_eq!(config.worktree_root, PathBuf::from("/state/worktrees"));
+    }
+
+    #[test]
+    fn an_explicit_worktree_root_wins() {
+        let mut a = args();
+        a.worktree_root = Some(PathBuf::from("/data/worktrees"));
+        assert_eq!(
+            a.into_config().worktree_root,
+            PathBuf::from("/data/worktrees")
+        );
+    }
+
+    #[test]
+    fn minutes_are_used_unless_seconds_are_given() {
+        assert_eq!(
+            args().into_config().run_timeout,
+            Duration::from_secs(120 * 60)
+        );
+
+        // Seconds win, which is what lets a test avoid waiting minutes.
+        let mut a = args();
+        a.run_timeout_secs = Some(2);
+        assert_eq!(a.into_config().run_timeout, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn an_absurd_timeout_saturates_rather_than_overflowing() {
+        let mut a = args();
+        a.run_timeout_min = u64::MAX;
+        // Would panic in debug on a plain multiply.
+        let _ = a.into_config().run_timeout;
     }
 }

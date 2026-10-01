@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use conductor::{
-    dispatcher::{DispatchConfig, Dispatcher, PerPullRequestResolver},
+    dispatcher::{DispatchArgs, Dispatcher, PerPullRequestResolver},
     github::watched_users_from_env,
     http::{serve_with_shutdown, AppState, DEFAULT_BIND},
     registry::{Registry, SystemClock},
@@ -29,6 +29,9 @@ enum Command {
         /// Address to bind.
         #[arg(long, env = "CONDUCTOR_BIND", default_value = DEFAULT_BIND)]
         bind: String,
+
+        #[command(flatten)]
+        dispatch: DispatchArgs,
     },
 }
 
@@ -40,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Serve { bind } => {
+        Command::Serve { bind, dispatch } => {
             let github_webhook_secret = std::env::var("GITHUB_WEBHOOK_SECRET").ok();
             if github_webhook_secret.is_none() {
                 tracing::warn!(
@@ -52,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let registry = Registry::from_env(Arc::new(SystemClock)).await?;
             registry.migrate().await?;
 
-            let config = DispatchConfig::from_env();
+            let config = dispatch.into_config();
             tracing::info!(
                 max_sessions = config.max_sessions,
                 repo_root = %config.repo_root.display(),
