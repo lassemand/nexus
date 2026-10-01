@@ -8,6 +8,7 @@
 //!
 //! Dispatch is not implemented yet: [`LogSink`] is the only sink, and it logs.
 
+pub mod dispatcher;
 pub mod github;
 pub mod http;
 pub mod linear;

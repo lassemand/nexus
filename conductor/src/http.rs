@@ -1,5 +1,6 @@
 //! HTTP surface: routes, shared state and the webhook handlers.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::{
@@ -41,6 +42,15 @@ pub struct AppState {
     pub github_webhook_secret: Option<String>,
     /// Only comments from these logins are accepted (case-insensitive).
     pub watched_github_users: Vec<String>,
+    /// Set once shutdown begins, after which webhooks are refused.
+    pub shutting_down: Arc<AtomicBool>,
+}
+
+impl AppState {
+    /// Whether webhooks should be refused because shutdown has begun.
+    fn draining(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
+    }
 }
 
 /// Builds the router: both webhook routes plus the health probe.
@@ -54,9 +64,24 @@ pub fn router(state: AppState) -> Router {
 
 /// Binds `addr` and serves until the process is stopped.
 pub async fn serve(addr: &str, state: AppState) -> std::io::Result<()> {
+    serve_with_shutdown(addr, state, std::future::pending()).await
+}
+
+/// Binds `addr` and serves until `shutdown` resolves.
+///
+/// Health stays `200` throughout: the pod is still alive while draining, and
+/// failing liveness would have Kubernetes kill it mid-run. Readiness is handled
+/// by the webhook routes answering `503`.
+pub async fn serve_with_shutdown(
+    addr: &str,
+    state: AppState,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(addr, "conductor listening");
-    axum::serve(listener, router(state)).await
+    axum::serve(listener, router(state))
+        .with_graceful_shutdown(shutdown)
+        .await
 }
 
 /// Kubernetes liveness/readiness probe.
@@ -88,6 +113,11 @@ async fn handle_linear(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> StatusCode {
+    // Accepting now would mean answering 200 for work that will not run.
+    if state.draining() {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
+
     let payload: LinearWebhook = match serde_json::from_slice(&body) {
         Ok(p) => p,
         Err(e) => {
@@ -115,6 +145,10 @@ async fn handle_github(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> StatusCode {
+    if state.draining() {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
+
     // Signature must be checked against the raw bytes, before any parsing.
     if let Some(secret) = &state.github_webhook_secret {
         let signature = headers
