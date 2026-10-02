@@ -249,6 +249,10 @@ async fn branches_created_by_the_agent_are_recorded(pool: PgPool) {
         branches.contains("feature/x"),
         "the agent's own branch must be recorded for later PR routing; saw {branches:?}"
     );
+    assert!(
+        branches.iter().any(|b| b.starts_with("agent/")),
+        "the branch the worktree started on must be kept too; saw {branches:?}"
+    );
 }
 
 // ── failure and timeout ──────────────────────────────────────────────────────
@@ -320,7 +324,10 @@ async fn an_attached_group_waits_until_it_is_idle_again(pool: PgPool) {
         .bind(key.slug())
         .bind(sqlx::types::Json(GroupState::Attached {
             pid: std::process::id(),
-            started_at: chrono::Utc::now(),
+            // Must be this process's real start time: on Linux the registry
+            // verifies it against /proc, and a fabricated value would be read as
+            // a recycled pid, resetting the group and defeating the test.
+            started_at: live_process_start(std::process::id()),
         }))
         .execute(&h.pool)
         .await

@@ -418,6 +418,12 @@ impl Dispatcher {
 
         let mut txn = self.registry.begin().await?;
         txn.set_worktree(key, &worktree).await?;
+        // Recorded now as well as on completion: routing a pull request comment
+        // back to this group needs every branch it has worked on, and the branch
+        // it started from would otherwise be lost the moment the agent switches.
+        if let Some(branch) = self.current_branch(&slug).await {
+            txn.record_branch(key, &branch).await?;
+        }
         let (session_id, resume) = txn.session_for_dispatch(key).await?;
         txn.commit().await?;
 
