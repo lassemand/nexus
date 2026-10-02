@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Stands in for the real `claude` binary so dispatcher behaviour can be checked
+# deterministically. Records what it was invoked with, how long it ran, and how
+# it ended, so tests can measure overlap and ordering from the log rather than
+# from dispatcher internals.
+#
+#   FAKE_CLAUDE_LOG          file to append JSON lines to (required)
+#   FAKE_CLAUDE_SLEEP_MS     how long to run, default 50
+#   FAKE_CLAUDE_CMD          shell command to run in the worktree, optional
+#   FAKE_CLAUDE_EXIT         exit code, default 0
+#   FAKE_CLAUDE_IGNORE_TERM  1 to ignore SIGTERM, so the SIGKILL path is reached
+set -u
+
+if [ "${FAKE_CLAUDE_IGNORE_TERM:-0}" = "1" ]; then
+    trap '' TERM
+fi
+
+# python3 rather than `date +%s%3N`, which BSD date does not support, and so the
+# argv array is JSON-encoded correctly whatever it contains.
+record() {
+    local event=$1
+    shift
+    FAKE_EVENT="$event" python3 -c '
+import json, os, sys, time
+record = {
+    "event": os.environ["FAKE_EVENT"],
+    "pid": int(sys.argv[1]),
+    "ts": time.time(),
+    "cwd": os.getcwd(),
+    "argv": sys.argv[2:],
+    "env_cargo_target_dir": os.environ.get("CARGO_TARGET_DIR"),
+}
+with open(os.environ["FAKE_CLAUDE_LOG"], "a") as f:
+    f.write(json.dumps(record) + "\n")
+' "$$" "$@"
+}
+
+record start "$@"
+
+sleep "$(python3 -c "print(${FAKE_CLAUDE_SLEEP_MS:-50} / 1000)")"
+
+if [ -n "${FAKE_CLAUDE_CMD:-}" ]; then
+    # Deliberately unquoted: tests pass a full command line, e.g.
+    # `git checkout -b feature/x`.
+    eval "${FAKE_CLAUDE_CMD}" >/dev/null 2>&1 || true
+fi
+
+record end "$@"
+exit "${FAKE_CLAUDE_EXIT:-0}"
