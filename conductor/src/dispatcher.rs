@@ -28,10 +28,10 @@ use crate::{EventSink, InboundEvent};
 ///
 /// The CLI mutates the registry from another process, so polling is how those
 /// changes take effect without inventing an IPC channel.
-const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Grace between `SIGTERM` and `SIGKILL` for a run being stopped.
-const TERM_TO_KILL: Duration = Duration::from_secs(30);
+const DEFAULT_TERM_TO_KILL: Duration = Duration::from_secs(30);
 
 /// Dispatcher configuration, parsed by `clap` from flags or environment.
 ///
@@ -118,6 +118,8 @@ impl DispatchArgs {
                     .unwrap_or_else(|| self.run_timeout_min.saturating_mul(60)),
             ),
             shutdown_grace: Duration::from_secs(self.shutdown_grace_secs),
+            rescan_interval: DEFAULT_RESCAN_INTERVAL,
+            term_to_kill: DEFAULT_TERM_TO_KILL,
         }
     }
 }
@@ -149,6 +151,15 @@ pub struct DispatchConfig {
     pub run_timeout: Duration,
     /// How long shutdown waits for runs to finish.
     pub shutdown_grace: Duration,
+    /// How often to re-scan when nothing wakes the scheduler.
+    ///
+    /// Not exposed as a flag: it exists so tests need not wait the production
+    /// five seconds to observe a change made from outside the process.
+    pub rescan_interval: Duration,
+    /// Grace between `SIGTERM` and `SIGKILL` when stopping a run.
+    ///
+    /// Likewise test-only, so the kill path can be exercised without a 30s wait.
+    pub term_to_kill: Duration,
 }
 
 /// Stub resolver giving every pull request its own group.
@@ -319,7 +330,7 @@ impl Dispatcher {
 
             tokio::select! {
                 _ = self.wake.notified() => {}
-                _ = tokio::time::sleep(RESCAN_INTERVAL) => {}
+                _ = tokio::time::sleep(self.config.rescan_interval) => {}
             }
         }
     }
@@ -473,7 +484,7 @@ impl Dispatcher {
                     timeout_secs = self.config.run_timeout.as_secs(),
                     "run exceeded its timeout; stopping it"
                 );
-                terminate(pid, child).await;
+                terminate(pid, child, self.config.term_to_kill).await;
                 RunResult::TimedOut
             }
         }
@@ -614,7 +625,7 @@ impl Dispatcher {
         }
         drop(running);
 
-        tokio::time::sleep(TERM_TO_KILL).await;
+        tokio::time::sleep(self.config.term_to_kill).await;
         for (slug, handle) in self.running.lock().await.iter() {
             tracing::warn!(group = %slug, pid = handle.pid, "run did not stop; killing it");
             signal(handle.pid, nix::sys::signal::Signal::SIGKILL);
@@ -631,12 +642,9 @@ fn signal(pid: u32, sig: nix::sys::signal::Signal) {
 }
 
 /// `SIGTERM`, then `SIGKILL` if the child is still there.
-async fn terminate(pid: u32, child: &mut Child) {
+async fn terminate(pid: u32, child: &mut Child, grace: Duration) {
     signal(pid, nix::sys::signal::Signal::SIGTERM);
-    if tokio::time::timeout(TERM_TO_KILL, child.wait())
-        .await
-        .is_err()
-    {
+    if tokio::time::timeout(grace, child.wait()).await.is_err() {
         signal(pid, nix::sys::signal::Signal::SIGKILL);
         let _ = child.wait().await;
     }

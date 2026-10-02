@@ -28,3 +28,5 @@ async-trait = "0.1"
 [dev-dependencies]
 tracing-test = "0.2"
 wiremock = "0.6"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
