@@ -223,8 +223,14 @@ pub struct Group {
     /// would fail, since the session does not exist yet.
     pub session_started: bool,
     pub state: GroupState,
-    /// Empty until the dispatcher (NEX-128) creates the worktree.
+    /// Empty until the dispatcher creates the worktree.
     pub worktree: PathBuf,
+    /// Base ref the worktree should be created on.
+    ///
+    /// `None` means the usual behaviour: a fresh `agent/<slug>` branch from
+    /// main. Set when the group exists to answer comments on an existing pull
+    /// request, whose head branch the session must work on instead.
+    pub worktree_ref: Option<String>,
     pub branches: BTreeSet<String>,
     pub issues: Vec<String>,
     pub pending: VecDeque<QueuedEvent>,
@@ -430,6 +436,45 @@ impl Registry {
         Ok(groups)
     }
 
+    /// The base ref a group's worktree should be created on, if one was recorded.
+    ///
+    /// Read without the advisory lock: the dispatcher needs it before it starts
+    /// preparing the worktree, and it never changes once set.
+    pub async fn worktree_ref(&self, key: &GroupKey) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT worktree_ref FROM session_groups WHERE slug = $1")
+            .bind(key.slug())
+            .fetch_optional(&self.pool)
+            .await
+            .map(Option::flatten)
+    }
+
+    /// Groups that have seen `branch` checked out, most recently active first.
+    ///
+    /// Takes no advisory lock: this runs while routing an event, before the
+    /// write lock is taken, so it must not block writers or be held across the
+    /// network call that may precede it.
+    pub async fn groups_with_branch(
+        &self,
+        branch: &str,
+    ) -> Result<Vec<(GroupKey, DateTime<Utc>)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT key, last_active FROM session_groups \
+             WHERE $1 = ANY(branches) ORDER BY last_active DESC",
+        )
+        .bind(branch)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    r.try_get::<Json<GroupKey>, _>("key")?.0,
+                    r.try_get("last_active")?,
+                ))
+            })
+            .collect()
+    }
+
     /// Resets groups whose recorded process is gone, returning how many.
     ///
     /// After a restart this is the normal path, not an edge case: every PID from
@@ -462,6 +507,7 @@ fn group_from_row(row: &PgRow, pending: VecDeque<QueuedEvent>) -> Result<Group, 
         session_started: row.try_get("session_started")?,
         state: row.try_get::<Json<GroupState>, _>("state")?.0,
         worktree: PathBuf::from(row.try_get::<String, _>("worktree")?),
+        worktree_ref: row.try_get("worktree_ref")?,
         branches: row
             .try_get::<Vec<String>, _>("branches")?
             .into_iter()
@@ -791,6 +837,26 @@ impl RegistryTxn<'_> {
         Ok(())
     }
 
+    /// Records the base ref the group's worktree should be created on.
+    ///
+    /// Only set if absent, so a later comment on the same pull request cannot
+    /// repoint a worktree that already exists.
+    pub async fn set_worktree_ref_if_absent(
+        &mut self,
+        key: &GroupKey,
+        worktree_ref: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE session_groups SET worktree_ref = $2 \
+             WHERE slug = $1 AND worktree_ref IS NULL",
+        )
+        .bind(key.slug())
+        .bind(worktree_ref)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
     /// Notes a branch seen checked out in the group's worktree.
     ///
     /// Every branch is kept, not just the current one: the agent may open a PR
@@ -851,9 +917,9 @@ impl RegistryTxn<'_> {
     }
 }
 
-/// Helpers shared by both test modules.
+/// Helpers shared by the test modules, including other modules' tests.
 #[cfg(test)]
-mod tests_support {
+pub(crate) mod tests_support {
     use super::*;
     use crate::linear::LinearIssue;
     use std::sync::Mutex;
@@ -990,6 +1056,9 @@ mod tests {
                 comment_id: 2,
                 body: "b".into(),
                 file_path: None,
+                head_ref: None,
+                head_repo: None,
+                base_repo: None,
             },
             kind: PrCommentKind::Comment,
             delivery_id: None,

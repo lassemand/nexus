@@ -13,6 +13,7 @@ pub mod github;
 pub mod http;
 pub mod linear;
 pub mod registry;
+pub mod resolve;
 
 use serde::{Deserialize, Serialize};
 
