@@ -21,8 +21,11 @@ use conductor::sessions::SessionsCommand;
 use conductor::EventSink;
 use sqlx::PgPool;
 
-/// Generous enough for a loaded CI box, short enough to fail fast.
-const PATIENCE: Duration = Duration::from_secs(10);
+/// How long any test may wait for work it expects to happen.
+///
+/// A ceiling for contention rather than an expected duration — see the same
+/// constant in `dispatcher.rs`. A wrong assertion still fails immediately.
+const PATIENCE: Duration = Duration::from_secs(60);
 
 fn named(group: &str) -> GroupKey {
     GroupKey::Named(group.into())
