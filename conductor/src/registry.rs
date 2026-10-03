@@ -330,6 +330,29 @@ fn process_alive(pid: u32, _recorded_start: DateTime<Utc>) -> bool {
     pid_exists(pid)
 }
 
+/// Whether the process recorded for a group is still that same process.
+///
+/// The public form of the check the registry uses on load, for callers that
+/// have to wait on a process they did not spawn and so cannot `wait()` for.
+pub fn process_is_alive(pid: u32, recorded_start: DateTime<Utc>) -> bool {
+    process_alive(pid, recorded_start)
+}
+
+/// The start time to record for a process this program is about to own.
+///
+/// Must come from the same source the liveness check reads, or the record is
+/// indistinguishable from a recycled PID and the next reconcile pass resets the
+/// group out from under a live process. On macOS there is nothing to compare
+/// against, so the wall clock serves.
+pub fn recorded_start_time(pid: u32) -> DateTime<Utc> {
+    #[cfg(target_os = "linux")]
+    if let Some(start) = process_start_time(pid) {
+        return start;
+    }
+    let _ = pid;
+    Utc::now()
+}
+
 // ── registry ─────────────────────────────────────────────────────────────────
 
 /// Parses `CONDUCTOR_IDLE_DAYS`, falling back to the default.
@@ -484,6 +507,32 @@ impl Registry {
         let n = txn.reconcile_stale_processes().await?;
         txn.commit().await?;
         Ok(n)
+    }
+
+    /// One group by its slug, with its queue.
+    ///
+    /// Unlocked: the CLI uses it to poll for a state change, where blocking
+    /// writers for the duration of a wait would be the opposite of the point.
+    pub async fn group_by_slug(&self, slug: &str) -> Result<Option<Group>, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query("SELECT * FROM session_groups WHERE slug = $1")
+            .bind(slug)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let pending = sqlx::query(
+            "SELECT event, received_at FROM pending_events \
+             WHERE group_slug = $1 ORDER BY id",
+        )
+        .bind(slug)
+        .fetch_all(&mut *tx)
+        .await?;
+        let group = group_from_row(&row, pending_from_rows(&pending)?)?;
+        tx.commit().await?;
+        Ok(Some(group))
     }
 }
 
@@ -914,6 +963,123 @@ impl RegistryTxn<'_> {
             reset += 1;
         }
         Ok(reset)
+    }
+
+    // ── operator controls (`conductor sessions`) ─────────────────────────────
+
+    /// One group by slug, read inside this transaction.
+    ///
+    /// Use this rather than [`Registry::group_by_slug`] when the read is part of
+    /// a decision that then writes: the row is locked for the rest of the
+    /// transaction, so the state it reports cannot change underneath.
+    pub async fn group_by_slug(&mut self, slug: &str) -> Result<Option<Group>, sqlx::Error> {
+        let row = sqlx::query("SELECT * FROM session_groups WHERE slug = $1 FOR UPDATE")
+            .bind(slug)
+            .fetch_optional(&mut *self.tx)
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let pending = sqlx::query(
+            "SELECT event, received_at FROM pending_events \
+             WHERE group_slug = $1 ORDER BY id",
+        )
+        .bind(slug)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        group_from_row(&row, pending_from_rows(&pending)?).map(Some)
+    }
+
+    /// Takes a group over for an interactive session.
+    ///
+    /// Returns `false` when the group is absent or busy, having changed nothing:
+    /// the read and the write share this transaction's row lock, so a run cannot
+    /// start between them.
+    pub async fn attach(
+        &mut self,
+        key: &GroupKey,
+        pid: u32,
+        started_at: DateTime<Utc>,
+    ) -> Result<bool, sqlx::Error> {
+        let slug = key.slug();
+        let state = sqlx::query_scalar::<_, Json<GroupState>>(
+            "SELECT state FROM session_groups WHERE slug = $1 FOR UPDATE",
+        )
+        .bind(&slug)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+
+        match state {
+            Some(Json(GroupState::Idle)) => {}
+            _ => return Ok(false),
+        }
+
+        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+            .bind(&slug)
+            .bind(Json(GroupState::Attached { pid, started_at }))
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(true)
+    }
+
+    /// Returns a group to `Idle` without recording a run.
+    ///
+    /// Used when an interactive attach ends: the operator's session is not a
+    /// dispatched run, so overwriting `last_run` would discard the real history.
+    pub async fn release(&mut self, key: &GroupKey) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE session_groups SET state = $2, last_active = $3 WHERE slug = $1")
+            .bind(key.slug())
+            .bind(Json(GroupState::Idle))
+            .bind(self.now)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Mints a fresh session for a group, keeping its worktree and history.
+    ///
+    /// Returns the new session id. The next dispatch starts a new Claude
+    /// conversation with `--session-id` rather than resuming the old one.
+    pub async fn reset_session(&mut self, key: &GroupKey) -> Result<Uuid, sqlx::Error> {
+        let session_id = Uuid::new_v4();
+        sqlx::query(
+            "UPDATE session_groups \
+             SET session_id = $2, session_started = FALSE, last_active = $3 \
+             WHERE slug = $1",
+        )
+        .bind(key.slug())
+        .bind(session_id)
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(session_id)
+    }
+
+    /// Discards a group's queue, returning what was dropped.
+    ///
+    /// The events are returned rather than merely counted so the caller can show
+    /// the operator which work is being thrown away.
+    pub async fn drain_pending(&mut self, key: &GroupKey) -> Result<Vec<QueuedEvent>, sqlx::Error> {
+        let rows = sqlx::query(
+            "DELETE FROM pending_events WHERE group_slug = $1 \
+             RETURNING event, received_at",
+        )
+        .bind(key.slug())
+        .fetch_all(&mut *self.tx)
+        .await?;
+        Ok(pending_from_rows(&rows)?.into())
+    }
+
+    /// Forgets a group entirely. Its queue goes with it, by cascade.
+    ///
+    /// Returns whether a row was removed. A later event for the same key builds
+    /// the group again from scratch.
+    pub async fn delete_group(&mut self, key: &GroupKey) -> Result<bool, sqlx::Error> {
+        let done = sqlx::query("DELETE FROM session_groups WHERE slug = $1")
+            .bind(key.slug())
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(done.rows_affected() > 0)
     }
 }
 

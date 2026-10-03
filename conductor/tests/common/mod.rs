@@ -11,9 +11,12 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conductor::dispatcher::{DispatchConfig, DispatchSink, Dispatcher, PerPullRequestResolver};
+use conductor::dispatcher::{
+    DispatchConfig, DispatchSink, Dispatcher, PerPullRequestResolver, SessionEnv,
+};
 use conductor::linear::LinearIssue;
-use conductor::registry::{Group, GroupKey, Registry, SystemClock};
+use conductor::registry::{Group, GroupKey, GroupState, Registry, SystemClock};
+use conductor::sessions::{self, SessionsCommand};
 use conductor::InboundEvent;
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -256,6 +259,143 @@ impl Harness {
             h.runs().iter().filter(|r| r.event == "end").count() >= n
         })
         .await
+    }
+
+    /// Waits until the stored group satisfies `predicate`.
+    ///
+    /// Async throughout, because `#[sqlx::test]` runs each test on a
+    /// current-thread runtime where blocking on a registry read inside a
+    /// synchronous closure would panic.
+    pub async fn wait_for_group(
+        &self,
+        key: &GroupKey,
+        within: Duration,
+        mut predicate: impl FnMut(&Group) -> bool,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            if let Some(group) = self.group(key).await {
+                if predicate(&group) {
+                    return true;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Waits until the group reaches a state matching `predicate`.
+    pub async fn wait_for_state(
+        &self,
+        key: &GroupKey,
+        within: Duration,
+        mut predicate: impl FnMut(&GroupState) -> bool,
+    ) -> bool {
+        self.wait_for_group(key, within, |g| predicate(&g.state))
+            .await
+    }
+
+    // ── `conductor sessions` ────────────────────────────────────────────────
+
+    /// The CLI's view of this harness's paths and binary.
+    ///
+    /// The two durations are cut right down: production waits thirty seconds
+    /// between `SIGTERM` and `SIGKILL` and polls every two seconds, neither of
+    /// which a test should sit through.
+    pub fn session_env(&self) -> SessionEnv {
+        SessionEnv {
+            repo_root: self.repo.clone(),
+            worktree_root: self.worktrees.clone(),
+            state_dir: self.state.clone(),
+            claude_bin: self.config.claude_bin.clone(),
+            agent: self.config.agent.clone(),
+            kill_grace: Duration::from_millis(500),
+            poll_interval: Duration::from_millis(50),
+        }
+    }
+
+    /// Runs a subcommand, returning its exit code and everything it printed.
+    pub async fn sessions(&self, command: SessionsCommand) -> (i32, String) {
+        let env = self.session_env();
+        let mut out: Vec<u8> = Vec::new();
+        let code = sessions::run(command, &env, &self.registry, &mut out)
+            .await
+            .expect("sessions command");
+        (code, String::from_utf8(out).expect("utf8 output"))
+    }
+
+    /// Queues an event without dispatching it.
+    pub async fn enqueue(&self, key: &GroupKey, event: &InboundEvent) {
+        let mut txn = self.registry.begin().await.expect("begin");
+        txn.session_for_dispatch(key).await.expect("create group");
+        txn.enqueue(key, event).await.expect("enqueue");
+        txn.commit().await.expect("commit");
+    }
+
+    /// Forces a group's recorded state, standing in for an outside change.
+    pub async fn set_state(&self, key: &GroupKey, state: &GroupState) {
+        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+            .bind(key.slug())
+            .bind(sqlx::types::Json(state))
+            .execute(&self.pool)
+            .await
+            .expect("set state");
+    }
+
+    /// The group's current state, or `None` when the group is gone.
+    pub async fn state_of(&self, key: &GroupKey) -> Option<GroupState> {
+        self.group(key).await.map(|g| g.state)
+    }
+
+    /// `DATABASE_URL` for this test's own database, for a child process.
+    ///
+    /// `#[sqlx::test]` hands each test a freshly created database and only a
+    /// pool onto it, so the URL has to be rebuilt: the base URL's credentials
+    /// with this test's database name swapped in. Without this a spawned
+    /// `conductor` would connect to the base database and see none of the
+    /// fixtures.
+    pub fn database_url(&self) -> String {
+        let base = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for these tests");
+        let database = self
+            .pool
+            .connect_options()
+            .get_database()
+            .expect("test database name")
+            .to_string();
+
+        // Keep scheme, credentials, host and any query string; replace the path.
+        let (scheme, rest) = base
+            .split_once("://")
+            .unwrap_or_else(|| panic!("DATABASE_URL has no scheme: {base}"));
+        let (authority, query) = match rest.find('?') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, ""),
+        };
+        let authority = authority.split('/').next().unwrap_or(authority);
+        format!("{scheme}://{authority}/{database}{query}")
+    }
+
+    /// Spawns the real `conductor` binary against this test's fixtures.
+    ///
+    /// Used where the behaviour under test belongs to a process rather than a
+    /// function — signal handling, which cannot be observed in-process without
+    /// the test runner itself catching the signal.
+    pub fn spawn_cli(&self, args: &[&str]) -> std::process::Child {
+        let env = self.session_env();
+        std::process::Command::new(env!("CARGO_BIN_EXE_conductor"))
+            .args(args)
+            .env("DATABASE_URL", self.database_url())
+            .env("CONDUCTOR_REPO_ROOT", &self.repo)
+            .env("CONDUCTOR_WORKTREE_ROOT", &self.worktrees)
+            .env("CONDUCTOR_STATE_DIR", &self.state)
+            .env("CONDUCTOR_CLAUDE_BIN", &env.claude_bin)
+            .env("CONDUCTOR_AGENT", &env.agent)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn conductor")
     }
 }
 

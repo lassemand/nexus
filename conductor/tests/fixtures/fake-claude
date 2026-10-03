@@ -37,7 +37,11 @@ with open(os.environ["FAKE_CLAUDE_LOG"], "a") as f:
 
 record start "$@"
 
-sleep "$(python3 -c "print(${FAKE_CLAUDE_SLEEP_MS:-50} / 1000)")"
+# Converted in the shell rather than by python3: an interpreter start per run
+# is a real cost when the whole suite runs sixteen tests at once on two cores,
+# and `sleep` takes fractional seconds on both GNU and BSD.
+fake_sleep_ms=${FAKE_CLAUDE_SLEEP_MS:-50}
+sleep "$((fake_sleep_ms / 1000)).$(printf '%03d' "$((fake_sleep_ms % 1000))")"
 
 if [ -n "${FAKE_CLAUDE_CMD:-}" ]; then
     # Deliberately unquoted: tests pass a full command line, e.g.
