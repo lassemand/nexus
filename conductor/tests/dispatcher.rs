@@ -86,7 +86,7 @@ async fn concurrency_is_capped_across_groups(pool: PgPool) {
     }
 
     assert!(
-        h.wait_for_runs(8, Duration::from_secs(30)).await,
+        h.wait_for_runs(8, Duration::from_secs(60)).await,
         "all 8 groups should finish"
     );
     assert!(
@@ -111,7 +111,13 @@ async fn a_lower_cap_is_respected(pool: PgPool) {
         ));
     }
 
-    assert!(h.wait_for_runs(5, Duration::from_secs(30)).await);
+    // Sixty seconds is not how long this should take — five runs at a cap of
+    // two is under a second of sleeping. It is a contention budget: the suite
+    // runs sixteen database-backed tests at once on a two-core runner, each
+    // spawning git and a bash fake, and this test cannot measure overlap until
+    // every one of its five runs has finished. A tighter deadline fails on load
+    // rather than on behaviour.
+    assert!(h.wait_for_runs(5, Duration::from_secs(60)).await);
     assert!(
         max_overlap(&h.runs()) <= 2,
         "observed {}",
