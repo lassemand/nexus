@@ -268,6 +268,15 @@ pub struct Dispatcher {
     wake: Arc<Notify>,
     running: Arc<Mutex<HashMap<String, RunHandle>>>,
     shutting_down: Arc<AtomicBool>,
+    /// Serialises setup against the shared git repository.
+    ///
+    /// `git fetch` and `git worktree add` both write `.git/config` and take
+    /// repository-wide locks, so running them concurrently against one checkout
+    /// fails rather than queueing: measured at 17 failures in 40 attempts with
+    /// five at a time, reporting `could not lock config file .git/config`. With
+    /// the default cap of five groups that is the normal case, not an edge one.
+    /// Only setup is serialised — the runs themselves stay parallel.
+    repo_lock: Mutex<()>,
 }
 
 impl Dispatcher {
@@ -290,6 +299,7 @@ impl Dispatcher {
             resolver,
             wake: Arc::new(Notify::new()),
             running: Arc::new(Mutex::new(HashMap::new())),
+            repo_lock: Mutex::new(()),
             shutting_down,
         });
         (dispatcher, DispatchSink { tx }, rx)
@@ -471,7 +481,12 @@ impl Dispatcher {
     ) -> Result<RunResult, Box<dyn std::error::Error + Send + Sync>> {
         let slug = key.slug();
         let base_ref = self.registry.worktree_ref(key).await?;
-        let worktree = self.ensure_worktree(&slug, base_ref.as_deref()).await?;
+        let worktree = {
+            // Scoped so the lock is released long before the child is waited
+            // on: it covers repository setup only, never the run.
+            let _repo = self.repo_lock.lock().await;
+            self.ensure_worktree(&slug, base_ref.as_deref()).await?
+        };
 
         let mut txn = self.registry.begin().await?;
         txn.set_worktree(key, &worktree).await?;

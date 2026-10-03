@@ -408,6 +408,13 @@ async fn run_interactive(
 
     // A group can exist with queued events and no checkout yet, if it was
     // created while the dispatcher was at its concurrency cap.
+    //
+    // The server serialises its own worktree creation with an in-process lock,
+    // which does not reach across to this process. The window is one operator
+    // command against a server that happens to be preparing another worktree
+    // at that instant, and it surfaces as a clear git error and an unchanged
+    // group rather than as damage; a cross-process lock would be the fix if it
+    // ever actually bites.
     let base_ref = registry.worktree_ref(&group.key).await?;
     let worktree = ensure_worktree(
         &env.repo_root,
