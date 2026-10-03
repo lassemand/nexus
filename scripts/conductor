@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Run `conductor` inside the cluster from a laptop terminal.
+#
+#   scripts/conductor sessions list
+#   scripts/conductor sessions attach irr
+#   scripts/conductor sessions list --json | jq '.[].key'
+#
+# `conductor sessions` talks to the registry in Postgres, so it has to run in
+# the pod: that is where DATABASE_URL, the worktrees and the session processes
+# are. There is no network API by design — control is local to the pod.
+set -euo pipefail
+
+CONTEXT="${CONDUCTOR_KUBE_CONTEXT:-orbstack}"
+NAMESPACE="${CONDUCTOR_NAMESPACE:-conductor}"
+DEPLOYMENT="${CONDUCTOR_DEPLOYMENT:-deploy/conductor}"
+
+# -t allocates a TTY, which kubectl would otherwise use to mangle the stream
+# with CRLFs and progress output. Only ask for one when stdout is really a
+# terminal, so `list --json | jq` and `>file` both stay clean.
+tty_flag=()
+if [[ -t 1 ]]; then
+    tty_flag=(-t)
+fi
+
+exec kubectl --context "$CONTEXT" -n "$NAMESPACE" \
+    exec -i "${tty_flag[@]}" "$DEPLOYMENT" -c conductor -- conductor "$@"

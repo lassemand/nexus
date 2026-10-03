@@ -6,7 +6,9 @@
 //! any Claude Code session, so its lifetime is independent of any consumer and it
 //! can eventually serve several sessions at once.
 //!
-//! Dispatch is not implemented yet: [`LogSink`] is the only sink, and it logs.
+//! Events are dispatched by [`dispatcher::Dispatcher`], one Claude Code session
+//! per group, each in its own git worktree. [`sessions`] is the operator's view
+//! of those sessions.
 
 pub mod dispatcher;
 pub mod github;
@@ -14,6 +16,7 @@ pub mod http;
 pub mod linear;
 pub mod registry;
 pub mod resolve;
+pub mod sessions;
 
 use serde::{Deserialize, Serialize};
 
