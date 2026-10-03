@@ -781,7 +781,16 @@ async fn a_closed_group_is_rebuilt_by_the_next_event_for_its_key(pool: PgPool) {
     assert!(harness.group(&key).await.is_none());
 
     sink.submit(linear_event("NEX-2", "irr", Some("fresh-delivery")));
-    assert!(harness.wait_for_runs(2, PATIENCE).await, "second run");
+
+    // Waiting on the registry, not on the fake's log: the child exits before
+    // the dispatcher records the completion, so the issue history is written
+    // strictly after the run the log reports as finished.
+    assert!(
+        harness
+            .wait_for_group(&key, PATIENCE, |g| !g.issues.is_empty())
+            .await,
+        "the rebuilt group never recorded its issue"
+    );
 
     let rebuilt = harness.group(&key).await.expect("group rebuilt");
     assert_ne!(
@@ -791,6 +800,6 @@ async fn a_closed_group_is_rebuilt_by_the_next_event_for_its_key(pool: PgPool) {
     assert_eq!(
         rebuilt.issues,
         vec!["NEX-2".to_string()],
-        "and it starts with no history"
+        "and it starts with no history from before the close"
     );
 }

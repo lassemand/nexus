@@ -289,6 +289,10 @@ async fn attach(
     };
     let key = group.key.clone();
 
+    // Before anything is claimed, so there is no moment where a hangup can
+    // kill this process while the registry says the group is attached.
+    let mut signals = StopSignals::install()?;
+
     // ── 1. get the group to ourselves ───────────────────────────────────────
     //
     // Looped rather than checked once: between a run ending and this process
@@ -328,7 +332,10 @@ async fn attach(
                 )?;
                 out.flush()?;
                 // Ctrl-C here leaves the registry exactly as it was.
-                if wait_or_interrupt(env.poll_interval).await.is_err() {
+                if wait_or_interrupt(env.poll_interval, &mut signals)
+                    .await
+                    .is_err()
+                {
                     writeln!(out, "interrupted; nothing was changed")?;
                     return Ok(EXIT_INTERRUPTED);
                 }
@@ -347,7 +354,10 @@ async fn attach(
             // pause: without one, a group that keeps being claimed would turn
             // this into a tight loop against the database.
             txn.commit().await?;
-            if wait_or_interrupt(env.poll_interval).await.is_err() {
+            if wait_or_interrupt(env.poll_interval, &mut signals)
+                .await
+                .is_err()
+            {
                 writeln!(out, "interrupted; nothing was changed")?;
                 return Ok(EXIT_INTERRUPTED);
             }
@@ -368,7 +378,7 @@ async fn attach(
     //
     // Past this point the group is marked attached, so every exit path has to
     // release it or the dispatcher will never touch the group again.
-    let outcome = run_interactive(&group, env, registry, out).await;
+    let outcome = run_interactive(&group, env, registry, out, &mut signals).await;
 
     let mut txn = registry.begin().await?;
     txn.release(&key).await?;
@@ -392,6 +402,7 @@ async fn run_interactive(
     env: &SessionEnv,
     registry: &Registry,
     out: &mut (dyn Write + Send),
+    signals: &mut StopSignals,
 ) -> Result<i32, SessionsError> {
     let slug = group.key.slug();
 
@@ -444,60 +455,76 @@ async fn run_interactive(
         .map_err(|e| SessionsError::Failed(format!("starting {}: {e}", env.claude_bin)))?;
     let child_pid = child.id().unwrap_or_default();
 
-    let status = wait_forwarding_signals(&mut child, child_pid).await?;
-    Ok(status)
+    wait_forwarding_signals(&mut child, child_pid, signals).await
 }
 
-/// Waits for the child, passing on the signals that mean "stop".
+/// The signals that mean "stop", installed once and shared by both phases.
+///
+/// Installed *before* the group is claimed, which closes a window that was
+/// otherwise real: the handlers used to go up only once Claude had been
+/// spawned, so a hangup arriving while the worktree was still being prepared
+/// killed this process at its default action and left the group stuck in
+/// `attached` with nothing running. A dropped `kubectl exec` during a slow
+/// `git fetch` is exactly when that would happen.
+struct StopSignals {
+    hangup: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+    interrupt: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    fn install() -> Result<Self, SessionsError> {
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok(StopSignals {
+            hangup: signal(SignalKind::hangup())?,
+            terminate: signal(SignalKind::terminate())?,
+            interrupt: signal(SignalKind::interrupt())?,
+        })
+    }
+
+    /// Resolves with the first stop signal to arrive.
+    async fn recv(&mut self) -> Signal {
+        tokio::select! {
+            _ = self.hangup.recv() => Signal::SIGHUP,
+            _ = self.terminate.recv() => Signal::SIGTERM,
+            _ = self.interrupt.recv() => Signal::SIGINT,
+        }
+    }
+}
+
+/// Waits for the child, passing on any signal that means "stop".
 ///
 /// SIGHUP is the one that matters in practice: a dropped `kubectl exec`
 /// connection sends it, and without forwarding, Claude would be left running
-/// with nobody attached. In every case the wait continues afterwards, so the
-/// caller still gets to release the group once the child is actually gone.
+/// with nobody attached. The wait continues afterwards in every case, so the
+/// caller still reaches the release once the child is actually gone.
 async fn wait_forwarding_signals(
     child: &mut tokio::process::Child,
     child_pid: u32,
+    signals: &mut StopSignals,
 ) -> Result<i32, SessionsError> {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-
-        let mut hangup = signal(SignalKind::hangup())?;
-        let mut terminate = signal(SignalKind::terminate())?;
-        let mut interrupt = signal(SignalKind::interrupt())?;
-
-        loop {
-            tokio::select! {
-                status = child.wait() => {
-                    return Ok(status?.code().unwrap_or(EXIT_REFUSED));
-                }
-                _ = hangup.recv() => {
-                    tracing::info!(pid = child_pid, "forwarding SIGHUP to the attached session");
-                    signal_process(child_pid, Signal::SIGHUP);
-                }
-                _ = terminate.recv() => {
-                    tracing::info!(pid = child_pid, "forwarding SIGTERM to the attached session");
-                    signal_process(child_pid, Signal::SIGTERM);
-                }
-                _ = interrupt.recv() => {
-                    tracing::info!(pid = child_pid, "forwarding SIGINT to the attached session");
-                    signal_process(child_pid, Signal::SIGINT);
-                }
+    loop {
+        tokio::select! {
+            status = child.wait() => {
+                return Ok(status?.code().unwrap_or(EXIT_REFUSED));
+            }
+            sig = signals.recv() => {
+                tracing::info!(pid = child_pid, ?sig, "forwarding a stop signal to the attached session");
+                signal_process(child_pid, sig);
             }
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = child_pid;
-        Ok(child.wait().await?.code().unwrap_or(EXIT_REFUSED))
-    }
 }
 
-/// Sleeps, unless interrupted first. `Err(())` means the operator pressed Ctrl-C.
-async fn wait_or_interrupt(period: Duration) -> Result<(), ()> {
+/// Sleeps, unless a stop signal arrives first.
+///
+/// `Err(())` means the operator gave up — Ctrl-C, or the connection dropping.
+/// Nothing has been claimed at this point, so returning leaves the registry
+/// exactly as it was.
+async fn wait_or_interrupt(period: Duration, signals: &mut StopSignals) -> Result<(), ()> {
     tokio::select! {
         _ = tokio::time::sleep(period) => Ok(()),
-        _ = tokio::signal::ctrl_c() => Err(()),
+        _ = signals.recv() => Err(()),
     }
 }
 
