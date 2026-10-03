@@ -343,8 +343,14 @@ async fn attach(
         let mut txn = registry.begin().await?;
         let claimed = txn.attach(&key, my_pid, started_at).await?;
         if !claimed {
-            // Something took it between the read and here; look again.
+            // Something took it between the read and here. Look again, after a
+            // pause: without one, a group that keeps being claimed would turn
+            // this into a tight loop against the database.
             txn.commit().await?;
+            if wait_or_interrupt(env.poll_interval).await.is_err() {
+                writeln!(out, "interrupted; nothing was changed")?;
+                return Ok(EXIT_INTERRUPTED);
+            }
             continue;
         }
         let group = txn

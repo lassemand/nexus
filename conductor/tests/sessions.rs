@@ -430,7 +430,13 @@ async fn a_hangup_ends_the_session_and_still_releases_the_group(pool: PgPool) {
     // Long enough that only a forwarded signal can end it inside PATIENCE.
     let harness = Harness::new(pool).with_fake(60_000, 0, None, false);
     let key = named("irr");
-    let (_dispatcher, _sink) = seeded(&harness, &key, "NEX-1", "irr").await;
+    // Deliberately not a dispatched run: this fake sleeps for a minute, so a
+    // seeding run would blow PATIENCE before the test began. The group is
+    // created directly instead, and `attach` builds the worktree itself —
+    // which also covers attaching to a group that has never run.
+    harness
+        .enqueue(&key, &linear_event("NEX-1", "irr", None))
+        .await;
 
     // A real process, because the behaviour under test is signal handling, and
     // an in-process attach would have the test runner catching the signal.
