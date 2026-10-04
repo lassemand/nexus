@@ -14,7 +14,15 @@ use conductor::EventSink;
 use sqlx::PgPool;
 
 /// Generous enough for slow CI, short enough to fail fast.
-const PATIENCE: Duration = Duration::from_secs(10);
+/// How long any test may wait for work it expects to happen.
+///
+/// A ceiling for contention, not an expected duration: these suites run ~19
+/// database-backed tests at once on a two-core runner, each spawning git and a
+/// bash fake, and observed wall-clock time for this suite has ranged from 4s to
+/// 31s on identical code. A wrong assertion still fails immediately — only
+/// "the work never happened" waits this out — so a high ceiling costs nothing
+/// when things work and stops a loaded runner being reported as a bug.
+const PATIENCE: Duration = Duration::from_secs(60);
 
 fn group(name: &str) -> GroupKey {
     GroupKey::Named(name.into())
@@ -86,7 +94,7 @@ async fn concurrency_is_capped_across_groups(pool: PgPool) {
     }
 
     assert!(
-        h.wait_for_runs(8, Duration::from_secs(30)).await,
+        h.wait_for_runs(8, PATIENCE).await,
         "all 8 groups should finish"
     );
     assert!(
@@ -111,7 +119,9 @@ async fn a_lower_cap_is_respected(pool: PgPool) {
         ));
     }
 
-    assert!(h.wait_for_runs(5, Duration::from_secs(30)).await);
+    // Every run must finish before overlap can be measured at all, so this is
+    // the test most exposed to a loaded runner. See PATIENCE.
+    assert!(h.wait_for_runs(5, PATIENCE).await);
     assert!(
         max_overlap(&h.runs()) <= 2,
         "observed {}",
@@ -405,7 +415,7 @@ async fn a_new_dispatcher_picks_up_events_left_by_a_crashed_one(pool: PgPool) {
 
     let (_d, _sink) = h.start();
     assert!(
-        h.wait_for_runs(3, Duration::from_secs(20)).await,
+        h.wait_for_runs(3, PATIENCE).await,
         "a restart must not lose accepted events"
     );
 }

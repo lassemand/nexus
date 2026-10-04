@@ -20,9 +20,12 @@ use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex, Notify, Semaphore};
 
 use crate::github::PrCommentKind;
+
 use crate::registry::{GroupKey, QueuedEvent, Registry, RunOutcome, RunResult};
 use crate::resolve::{fallback_key, GroupResolver};
 use crate::{EventSink, InboundEvent};
+/// Re-exported so callers can name a signal without depending on `nix`.
+pub use nix::sys::signal::Signal;
 
 /// How long the scheduler waits before re-scanning when nothing wakes it.
 ///
@@ -33,17 +36,16 @@ const DEFAULT_RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 /// Grace between `SIGTERM` and `SIGKILL` for a run being stopped.
 const DEFAULT_TERM_TO_KILL: Duration = Duration::from_secs(30);
 
-/// Dispatcher configuration, parsed by `clap` from flags or environment.
-///
-/// Flattened into `conductor serve`, so every setting is both a documented flag
-/// and an environment variable, and a malformed value is reported at startup
-/// rather than silently replaced by a default.
-#[derive(Debug, Clone, clap::Args)]
-pub struct DispatchArgs {
-    /// Maximum concurrent runs across all groups.
-    #[arg(long, env = "CONDUCTOR_MAX_SESSIONS", default_value_t = 5, value_parser = clap::value_parser!(u16).range(1..))]
-    pub max_sessions: u16,
+/// How often `sessions attach` polls a group that is still running.
+pub const DEFAULT_ATTACH_POLL: Duration = Duration::from_secs(2);
 
+/// Settings shared by `conductor serve` and `conductor sessions`.
+///
+/// Both surfaces need to know where the repository, the worktrees and the state
+/// live, and which binary to run. Defining them once means the two cannot
+/// disagree about a default and then operate on different directories.
+#[derive(Debug, Clone, clap::Args)]
+pub struct SessionEnvArgs {
     /// Repository the worktrees are added from. Defaults to the current directory.
     #[arg(long, env = "CONDUCTOR_REPO_ROOT")]
     pub repo_root: Option<PathBuf>,
@@ -63,6 +65,65 @@ pub struct DispatchArgs {
     /// Agent passed through to Claude.
     #[arg(long, env = "CONDUCTOR_AGENT", default_value = "backend")]
     pub agent: String,
+}
+
+impl SessionEnvArgs {
+    /// Fills in the defaults that depend on other settings.
+    pub fn resolve(self) -> SessionEnv {
+        let state_dir = self.state_dir.unwrap_or_else(default_state_dir);
+        SessionEnv {
+            repo_root: self
+                .repo_root
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into())),
+            worktree_root: self
+                .worktree_root
+                .unwrap_or_else(|| state_dir.join("worktrees")),
+            state_dir,
+            claude_bin: self.claude_bin,
+            agent: self.agent,
+            kill_grace: DEFAULT_TERM_TO_KILL,
+            poll_interval: DEFAULT_ATTACH_POLL,
+        }
+    }
+}
+
+/// Resolved form of [`SessionEnvArgs`].
+#[derive(Debug, Clone)]
+pub struct SessionEnv {
+    /// Repository the worktrees are added from.
+    pub repo_root: PathBuf,
+    /// Directory holding one worktree per group.
+    pub worktree_root: PathBuf,
+    /// Directory holding run logs.
+    pub state_dir: PathBuf,
+    /// Claude binary to execute.
+    pub claude_bin: String,
+    /// Agent passed through to Claude.
+    pub agent: String,
+    /// Grace between `SIGTERM` and `SIGKILL` when the CLI stops a process.
+    ///
+    /// Not exposed as a flag: it exists so tests need not wait the production
+    /// thirty seconds to watch the kill path through.
+    pub kill_grace: Duration,
+    /// How often `sessions attach` re-checks a group it is waiting for.
+    ///
+    /// Likewise test-only.
+    pub poll_interval: Duration,
+}
+
+/// Dispatcher configuration, parsed by `clap` from flags or environment.
+///
+/// Flattened into `conductor serve`, so every setting is both a documented flag
+/// and an environment variable, and a malformed value is reported at startup
+/// rather than silently replaced by a default.
+#[derive(Debug, Clone, clap::Args)]
+pub struct DispatchArgs {
+    /// Maximum concurrent runs across all groups.
+    #[arg(long, env = "CONDUCTOR_MAX_SESSIONS", default_value_t = 5, value_parser = clap::value_parser!(u16).range(1..))]
+    pub max_sessions: u16,
+
+    #[command(flatten)]
+    pub env: SessionEnvArgs,
 
     /// Pass `--dangerously-skip-permissions` to Claude.
     #[arg(long, env = "CONDUCTOR_SKIP_PERMISSIONS", default_value_t = true, action = clap::ArgAction::Set)]
@@ -99,18 +160,14 @@ pub struct DispatchArgs {
 impl DispatchArgs {
     /// Resolves the settings whose defaults depend on other settings.
     pub fn into_config(self) -> DispatchConfig {
-        let state_dir = self.state_dir.unwrap_or_else(default_state_dir);
+        let env = self.env.resolve();
         DispatchConfig {
             max_sessions: usize::from(self.max_sessions),
-            repo_root: self
-                .repo_root
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into())),
-            worktree_root: self
-                .worktree_root
-                .unwrap_or_else(|| state_dir.join("worktrees")),
-            state_dir,
-            claude_bin: self.claude_bin,
-            agent: self.agent,
+            repo_root: env.repo_root,
+            worktree_root: env.worktree_root,
+            state_dir: env.state_dir,
+            claude_bin: env.claude_bin,
+            agent: env.agent,
             skip_permissions: self.skip_permissions,
             // Seconds win when given, so a test can use a timeout far under a minute.
             run_timeout: Duration::from_secs(
@@ -211,6 +268,15 @@ pub struct Dispatcher {
     wake: Arc<Notify>,
     running: Arc<Mutex<HashMap<String, RunHandle>>>,
     shutting_down: Arc<AtomicBool>,
+    /// Serialises setup against the shared git repository.
+    ///
+    /// `git fetch` and `git worktree add` both write `.git/config` and take
+    /// repository-wide locks, so running them concurrently against one checkout
+    /// fails rather than queueing: measured at 17 failures in 40 attempts with
+    /// five at a time, reporting `could not lock config file .git/config`. With
+    /// the default cap of five groups that is the normal case, not an edge one.
+    /// Only setup is serialised — the runs themselves stay parallel.
+    repo_lock: Mutex<()>,
 }
 
 impl Dispatcher {
@@ -233,6 +299,7 @@ impl Dispatcher {
             resolver,
             wake: Arc::new(Notify::new()),
             running: Arc::new(Mutex::new(HashMap::new())),
+            repo_lock: Mutex::new(()),
             shutting_down,
         });
         (dispatcher, DispatchSink { tx }, rx)
@@ -414,7 +481,12 @@ impl Dispatcher {
     ) -> Result<RunResult, Box<dyn std::error::Error + Send + Sync>> {
         let slug = key.slug();
         let base_ref = self.registry.worktree_ref(key).await?;
-        let worktree = self.ensure_worktree(&slug, base_ref.as_deref()).await?;
+        let worktree = {
+            // Scoped so the lock is released long before the child is waited
+            // on: it covers repository setup only, never the run.
+            let _repo = self.repo_lock.lock().await;
+            self.ensure_worktree(&slug, base_ref.as_deref()).await?
+        };
 
         let mut txn = self.registry.begin().await?;
         txn.set_worktree(key, &worktree).await?;
@@ -531,58 +603,13 @@ impl Dispatcher {
         slug: &str,
         base_ref: Option<&str>,
     ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
-        // The slug is validated on the way in, so it cannot escape this root.
-        let path = self.config.worktree_root.join(slug);
-
-        if path.exists() {
-            if path.join(".git").exists() {
-                return Ok(path);
-            }
-            // Deleting whatever this is would risk destroying real work.
-            return Err(format!(
-                "{} exists but is not a git worktree; refusing to touch it",
-                path.display()
-            )
-            .into());
-        }
-
-        std::fs::create_dir_all(&self.config.worktree_root)?;
-
-        // A group answering comments on an existing pull request works on that
-        // pull request's branch; starting a fresh branch from main would have the
-        // session editing code the review was not about.
-        if let Some(base) = base_ref {
-            run_git(&self.config.repo_root, &["fetch", "origin", base]).await?;
-            let path_str = path.to_string_lossy().to_string();
-            run_git(
-                &self.config.repo_root,
-                &["worktree", "add", &path_str, base],
-            )
-            .await?;
-            tracing::info!(worktree = %path.display(), branch = %base, "worktree ready on pull request branch");
-            return Ok(path);
-        }
-
-        run_git(&self.config.repo_root, &["fetch", "origin", "main"]).await?;
-
-        let branch = format!("agent/{slug}");
-        let branch_exists = run_git(
+        ensure_worktree(
             &self.config.repo_root,
-            &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
+            &self.config.worktree_root,
+            slug,
+            base_ref,
         )
         .await
-        .is_ok();
-
-        let path_str = path.to_string_lossy().to_string();
-        let args: Vec<&str> = if branch_exists {
-            // Reattaching an existing branch; -b would fail.
-            vec!["worktree", "add", &path_str, &branch]
-        } else {
-            vec!["worktree", "add", &path_str, "-b", &branch, "origin/main"]
-        };
-        run_git(&self.config.repo_root, &args).await?;
-        tracing::info!(worktree = %path.display(), branch = %branch, "worktree ready");
-        Ok(path)
     }
 
     /// The branch currently checked out in the group's worktree.
@@ -627,20 +654,85 @@ impl Dispatcher {
         let running = self.running.lock().await;
         for (slug, handle) in running.iter() {
             tracing::warn!(group = %slug, pid = handle.pid, "run interrupted by shutdown");
-            signal(handle.pid, nix::sys::signal::Signal::SIGTERM);
+            signal_process(handle.pid, nix::sys::signal::Signal::SIGTERM);
         }
         drop(running);
 
         tokio::time::sleep(self.config.term_to_kill).await;
         for (slug, handle) in self.running.lock().await.iter() {
             tracing::warn!(group = %slug, pid = handle.pid, "run did not stop; killing it");
-            signal(handle.pid, nix::sys::signal::Signal::SIGKILL);
+            signal_process(handle.pid, nix::sys::signal::Signal::SIGKILL);
         }
     }
 }
 
+/// Prepares the git worktree a group works in, creating it on first use.
+///
+/// Shared with `conductor sessions attach`, which has to be able to take over a
+/// group that has never run and therefore has no checkout yet.
+///
+/// Never deletes anything: a path that exists but is not a worktree is reported
+/// rather than cleared, since whatever is there may be real work.
+pub async fn ensure_worktree(
+    repo_root: &Path,
+    worktree_root: &Path,
+    slug: &str,
+    base_ref: Option<&str>,
+) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    // The slug is validated on the way in, so it cannot escape this root.
+    let path = worktree_root.join(slug);
+
+    if path.exists() {
+        if path.join(".git").exists() {
+            return Ok(path);
+        }
+        // Deleting whatever this is would risk destroying real work.
+        return Err(format!(
+            "{} exists but is not a git worktree; refusing to touch it",
+            path.display()
+        )
+        .into());
+    }
+
+    std::fs::create_dir_all(worktree_root)?;
+
+    // A group answering comments on an existing pull request works on that
+    // pull request's branch; starting a fresh branch from main would have the
+    // session editing code the review was not about.
+    if let Some(base) = base_ref {
+        run_git(repo_root, &["fetch", "origin", base]).await?;
+        let path_str = path.to_string_lossy().to_string();
+        run_git(repo_root, &["worktree", "add", &path_str, base]).await?;
+        tracing::info!(worktree = %path.display(), branch = %base, "worktree ready on pull request branch");
+        return Ok(path);
+    }
+
+    run_git(repo_root, &["fetch", "origin", "main"]).await?;
+
+    let branch = format!("agent/{slug}");
+    let branch_exists = run_git(
+        repo_root,
+        &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
+    )
+    .await
+    .is_ok();
+
+    let path_str = path.to_string_lossy().to_string();
+    let args: Vec<&str> = if branch_exists {
+        // Reattaching an existing branch; -b would fail.
+        vec!["worktree", "add", &path_str, &branch]
+    } else {
+        vec!["worktree", "add", &path_str, "-b", &branch, "origin/main"]
+    };
+    run_git(repo_root, &args).await?;
+    tracing::info!(worktree = %path.display(), branch = %branch, "worktree ready");
+    Ok(path)
+}
+
 /// Sends a signal, ignoring a process that has already gone.
-fn signal(pid: u32, sig: nix::sys::signal::Signal) {
+pub fn signal_process(pid: u32, sig: nix::sys::signal::Signal) {
+    // `kill` reads 0 and negative pids as "a process group", not "a process",
+    // so they must never reach it.
     if pid == 0 || pid > i32::MAX as u32 {
         return;
     }
@@ -649,15 +741,15 @@ fn signal(pid: u32, sig: nix::sys::signal::Signal) {
 
 /// `SIGTERM`, then `SIGKILL` if the child is still there.
 async fn terminate(pid: u32, child: &mut Child, grace: Duration) {
-    signal(pid, nix::sys::signal::Signal::SIGTERM);
+    signal_process(pid, nix::sys::signal::Signal::SIGTERM);
     if tokio::time::timeout(grace, child.wait()).await.is_err() {
-        signal(pid, nix::sys::signal::Signal::SIGKILL);
+        signal_process(pid, nix::sys::signal::Signal::SIGKILL);
         let _ = child.wait().await;
     }
 }
 
 /// Runs git, returning stdout or the captured error.
-async fn run_git(
+pub(crate) async fn run_git(
     cwd: &Path,
     args: &[&str],
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -886,8 +978,8 @@ mod tests {
     #[test]
     fn signalling_an_invalid_pid_is_a_no_op() {
         // pid 0 addresses the caller's process group; it must never be signalled.
-        signal(0, nix::sys::signal::Signal::SIGTERM);
-        signal(u32::MAX, nix::sys::signal::Signal::SIGTERM);
+        signal_process(0, nix::sys::signal::Signal::SIGTERM);
+        signal_process(u32::MAX, nix::sys::signal::Signal::SIGTERM);
     }
 }
 
@@ -899,11 +991,13 @@ mod config_tests {
     fn args() -> DispatchArgs {
         DispatchArgs {
             max_sessions: 5,
-            repo_root: Some(PathBuf::from("/repo")),
-            worktree_root: None,
-            state_dir: Some(PathBuf::from("/state")),
-            claude_bin: "claude".into(),
-            agent: "backend".into(),
+            env: SessionEnvArgs {
+                repo_root: Some(PathBuf::from("/repo")),
+                worktree_root: None,
+                state_dir: Some(PathBuf::from("/state")),
+                claude_bin: "claude".into(),
+                agent: "backend".into(),
+            },
             skip_permissions: true,
             run_timeout_min: 120,
             run_timeout_secs: None,
@@ -922,7 +1016,7 @@ mod config_tests {
     #[test]
     fn an_explicit_worktree_root_wins() {
         let mut a = args();
-        a.worktree_root = Some(PathBuf::from("/data/worktrees"));
+        a.env.worktree_root = Some(PathBuf::from("/data/worktrees"));
         assert_eq!(
             a.into_config().worktree_root,
             PathBuf::from("/data/worktrees")

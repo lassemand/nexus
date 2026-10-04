@@ -1,5 +1,6 @@
 //! Entry point for the conductor webhook receiver and dispatcher.
 
+use std::io::Write;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -10,6 +11,7 @@ use conductor::{
     http::{serve_with_shutdown, AppState, DEFAULT_BIND},
     registry::{Registry, SystemClock},
     resolve::BranchResolver,
+    sessions::{self, SessionsArgs},
 };
 
 #[derive(Parser)]
@@ -34,6 +36,12 @@ enum Command {
         #[command(flatten)]
         dispatch: DispatchArgs,
     },
+
+    /// Inspect and control the sessions `serve` is running.
+    ///
+    /// Operates on the same registry as a running server, through Postgres, so
+    /// it is safe to use while `serve` is working.
+    Sessions(SessionsArgs),
 }
 
 #[tokio::main]
@@ -44,6 +52,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Sessions(args) => {
+            let registry = Registry::from_env(Arc::new(SystemClock)).await?;
+            // No `migrate` here: the CLI inspects a database the server owns,
+            // and a read-only operator command should not alter its schema.
+            let env = args.env.resolve();
+
+            // The unlocked handle: a held `StdoutLock` is not `Send`, and the
+            // attach path awaits across writes. Each write locks internally.
+            let mut out = std::io::stdout();
+            let code = sessions::run(args.command, &env, &registry, &mut out).await?;
+            out.flush()?;
+            std::process::exit(code);
+        }
+
         Command::Serve { bind, dispatch } => {
             let github_webhook_secret = std::env::var("GITHUB_WEBHOOK_SECRET").ok();
             if github_webhook_secret.is_none() {
