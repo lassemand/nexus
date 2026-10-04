@@ -161,6 +161,21 @@ RUN groupadd --gid 1000 agent \
 # registry in this image is actually used.
 RUN chown -R 1000:1000 "$CARGO_HOME" "$RUSTUP_HOME"
 
+# Keep the toolchain on PATH in a *login* shell as well.
+#
+# The rust image puts cargo on PATH with ENV, which `docker run ... cargo`
+# honours — but Debian's /etc/profile rebuilds PATH from scratch, so any login
+# shell (`bash -l`, and the shells an interactive `sessions attach` ends up in)
+# loses /usr/local/cargo/bin and every cargo invocation fails with "command not
+# found". Found by the workspace-build check, which runs under `bash -lc`
+# precisely because that is the harsher and more realistic case.
+RUN printf '%s\n' \
+      'export CARGO_HOME=/usr/local/cargo' \
+      'export RUSTUP_HOME=/usr/local/rustup' \
+      'export PATH="/usr/local/cargo/bin:$PATH"' \
+      > /etc/profile.d/rust.sh \
+    && chmod 0644 /etc/profile.d/rust.sh
+
 COPY --from=claude   /tmp/claude                         /usr/local/bin/claude
 COPY --from=builder  /build/target/release/conductor     /usr/local/bin/conductor
 

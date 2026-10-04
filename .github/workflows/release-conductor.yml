@@ -96,6 +96,9 @@ jobs:
 
           echo "--- the toolchain the agents need ---"
           run cargo --version
+          # Also under a login shell: Debian's /etc/profile rebuilds PATH, so
+          # ENV alone is not enough for the shells an agent actually gets.
+          run bash -lc 'cargo --version && rustc --version'
           run cargo clippy --version
           run cargo fmt --version
           run gh --version | head -1
