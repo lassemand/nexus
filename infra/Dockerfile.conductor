@@ -146,8 +146,19 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends gh; \
     rm -rf /var/lib/apt/lists/*
 
-# The agents run both of these; a missing component would fail every run.
-RUN rustup component add clippy rustfmt
+# The agents run `cargo clippy -- -D warnings` and `cargo fmt` on every task,
+# so a missing component fails the task rather than degrading it.
+#
+# They must be installed for the toolchain the *repository* selects, not the
+# image's default. rust-toolchain.toml pins `channel = "stable"`, so inside a
+# clone rustup switches to `stable` — and components added to the image's
+# default toolchain are invisible there. That failure looks like
+# "'cargo-clippy' is not installed for the toolchain 'stable-...'" and only
+# appears inside a checkout, which is why `cargo clippy --version` at the image
+# level reported success while an agent would have been unable to lint.
+RUN rustup toolchain install stable --component clippy --component rustfmt \
+    && rustup default stable \
+    && rustup component add clippy rustfmt
 
 # uid/gid 1000. Claude Code refuses --dangerously-skip-permissions as root,
 # and the dispatcher passes it by default.

@@ -101,6 +101,18 @@ jobs:
           run bash -lc 'cargo --version && rustc --version'
           run cargo clippy --version
           run cargo fmt --version
+          # Against the channel rust-toolchain.toml pins, which is what rustup
+          # switches to inside a clone. Components on the image's default
+          # toolchain are invisible there, and `cargo clippy --version` above
+          # cannot see the difference.
+          run bash -lc '
+            set -e
+            for c in clippy rustfmt; do
+              rustup component list --toolchain stable | grep -qE "^${c}.*\(installed\)" \
+                || { echo "${c} missing for the stable toolchain"; exit 1; }
+            done
+            echo "clippy and rustfmt present for the stable toolchain"
+          '
           run gh --version | head -1
           run protoc --version
           run git --version
