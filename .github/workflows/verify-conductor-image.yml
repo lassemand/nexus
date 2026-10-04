@@ -1,0 +1,84 @@
+name: Verify conductor image
+
+# The expensive check, kept out of the release path.
+#
+# NEX-133 asks for `cargo build --workspace` inside the container, once, to
+# prove the toolchain and native build dependencies are complete — rdkafka
+# needs cmake and libsasl2, model needs protoc. It is far too slow to run on
+# every release, but "run it once by hand" only works for someone with a Docker
+# daemon, and it is worth being able to repeat whenever the Dockerfile changes.
+#
+# So it lives here: triggered by a `conductor-check-*` tag or by hand, and it
+# **publishes nothing**. `push: false`, no Docker Hub login, no registry
+# credentials needed.
+#
+# Tag globs cannot collide: `v*` is anchored at the start, so neither
+# `conductor-v*` nor `conductor-check-*` matches it, and the two conductor
+# globs differ from their fifth character.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'conductor-check-*'
+
+jobs:
+  verify:
+    name: Build the workspace inside the image
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read pinned Claude Code version
+        id: claude
+        run: |
+          version="$(sed -n 's/^ARG CLAUDE_CODE_VERSION=\(.*\)$/\1/p' infra/Dockerfile.conductor | head -1)"
+          test -n "$version" || { echo "could not read CLAUDE_CODE_VERSION" >&2; exit 1; }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Build image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/Dockerfile.conductor
+          platforms: linux/arm64
+          build-args: |
+            VERSION=0.0.0-verify
+            CLAUDE_CODE_VERSION=${{ steps.claude.outputs.version }}
+          load: true
+          push: false
+          tags: nexus-conductor:verify
+          cache-from: type=gha,scope=conductor
+          cache-to: type=gha,mode=max,scope=conductor
+
+      - name: Report image size
+        run: docker image ls nexus-conductor:verify --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+
+      # The real test. An agent's first act in a fresh worktree is to build the
+      # workspace, so if this fails the image is useless however well it was
+      # assembled. Run as uid 1000 against a clone, exactly as an agent would,
+      # with CARGO_TARGET_DIR inside the clone like the dispatcher sets.
+      - name: cargo build --workspace as uid 1000
+        run: |
+          set -euo pipefail
+          docker run --rm --user 1000:1000 nexus-conductor:verify bash -lc '
+            set -euo pipefail
+            git clone --depth 1 https://github.com/lassemand/nexus /tmp/nexus
+            cd /tmp/nexus
+            export CARGO_TARGET_DIR=/tmp/nexus/target
+            cargo build --workspace --locked
+            echo
+            echo "--- the agents also run these two ---"
+            cargo clippy --workspace --all-targets -- -D warnings
+            cargo fmt --all -- --check
+            echo
+            echo "workspace builds, lints and formats cleanly inside the image"
+          '
