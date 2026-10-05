@@ -171,7 +171,8 @@ install_agents() {
 guard_json() {
   local path="$1"
   if [[ -f "$path" ]] && ! jq empty "$path" >/dev/null 2>&1; then
-    local backup="${path}.corrupt-$(date +%s)"
+    local backup
+    backup="${path}.corrupt-$(date +%s)"
     mv "$path" "$backup"
     log "WARNING: ${path} was not valid JSON; moved to ${backup} and reseeding"
   fi
