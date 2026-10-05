@@ -1,0 +1,147 @@
+name: Release conductor image
+
+# Separate from `release.yml` on purpose. That workflow triggers on `v*` and
+# the app ApplicationSet auto-deploys every nexus release; each deploy restarts
+# the pod and interrupts whatever agent session is running. Conductor should
+# restart only when conductor changes, so it gets its own tag stream.
+#
+# `conductor-v*` and `v*` cannot both match a tag: `v*` is anchored at the
+# start, and `conductor-v1.2.3` begins with "c".
+
+on:
+  push:
+    tags:
+      - 'conductor-v*'
+
+jobs:
+  docker:
+    name: Build and push conductor image
+    runs-on: ubuntu-24.04-arm
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Derive version
+        id: version
+        run: |
+          # conductor-v1.2.3 -> 1.2.3
+          echo "version=${GITHUB_REF_NAME#conductor-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Read pinned Claude Code version
+        id: claude
+        run: |
+          # Single source of truth is the Dockerfile's default, so a local
+          # build and a released build pin the same CLI.
+          version="$(sed -n 's/^ARG CLAUDE_CODE_VERSION=\(.*\)$/\1/p' infra/Dockerfile.conductor | head -1)"
+          if [[ -z "$version" ]]; then
+            echo "could not read CLAUDE_CODE_VERSION from infra/Dockerfile.conductor" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Pinning Claude Code ${version}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          platforms: linux/arm64
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Built and loaded locally first, so the smoke checks below decide
+      # whether it is fit to publish. Publishing and then checking would leave
+      # a broken :latest in place for whoever pulled in between.
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: infra/Dockerfile.conductor
+          platforms: linux/arm64
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            CLAUDE_CODE_VERSION=${{ steps.claude.outputs.version }}
+          load: true
+          push: false
+          tags: nexus-conductor:candidate
+          cache-from: type=gha,scope=conductor
+          cache-to: type=gha,mode=max,scope=conductor
+
+      # The image assembling proves the layers built; it does not prove the
+      # binaries run. These do, as uid 1000, which is how the pod runs it —
+      # Claude Code also refuses --dangerously-skip-permissions as root, so
+      # running these as root would not be testing the real thing.
+      #
+      # The workspace build (`cargo build --workspace` against a clone) is
+      # deliberately not here: it is slow, and NEX-133 keeps it as a one-off
+      # manual check.
+      - name: Smoke-check the image
+        env:
+          EXPECTED_CLAUDE: ${{ steps.claude.outputs.version }}
+        run: |
+          set -euo pipefail
+          run() { docker run --rm --user 1000:1000 nexus-conductor:candidate "$@"; }
+
+          echo "--- claude (must be the pinned version, not whatever is latest) ---"
+          claude_out="$(run claude --version)"
+          echo "$claude_out"
+          if ! grep -qF "$EXPECTED_CLAUDE" <<<"$claude_out"; then
+            echo "::error::expected Claude Code $EXPECTED_CLAUDE, got: $claude_out"
+            exit 1
+          fi
+
+          echo "--- the toolchain the agents need ---"
+          run cargo --version
+          # Also under a login shell: Debian's /etc/profile rebuilds PATH, so
+          # ENV alone is not enough for the shells an agent actually gets.
+          run bash -lc 'cargo --version && rustc --version'
+          run cargo clippy --version
+          run cargo fmt --version
+          # Against the channel rust-toolchain.toml pins, which is what rustup
+          # switches to inside a clone. Components on the image's default
+          # toolchain are invisible there, and `cargo clippy --version` above
+          # cannot see the difference.
+          run bash -lc '
+            set -e
+            for c in clippy rustfmt; do
+              rustup component list --toolchain stable | grep -qE "^${c}.*\(installed\)" \
+                || { echo "${c} missing for the stable toolchain"; exit 1; }
+            done
+            echo "clippy and rustfmt present for the stable toolchain"
+          '
+          run gh --version | head -1
+          run protoc --version
+          run git --version
+
+          echo "--- conductor itself ---"
+          run conductor --help | head -5
+          run conductor sessions --help | head -5
+
+          echo "--- cargo registry must be writable by uid 1000, or every agent build fails ---"
+          run bash -lc 'test -w "$CARGO_HOME" || { echo "CARGO_HOME not writable"; exit 1; }'
+          run bash -lc 'touch "$CARGO_HOME/.write-probe" && rm "$CARGO_HOME/.write-probe"'
+
+          echo "--- tini is PID 1 and reaps orphans ---"
+          run bash -lc 'test -x /usr/bin/tini'
+
+          echo "All smoke checks passed."
+
+      - name: Push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: infra/Dockerfile.conductor
+          platforms: linux/arm64
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            CLAUDE_CODE_VERSION=${{ steps.claude.outputs.version }}
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/nexus-conductor:${{ steps.version.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/nexus-conductor:latest
+          cache-from: type=gha,scope=conductor
+          cache-to: type=gha,mode=max,scope=conductor

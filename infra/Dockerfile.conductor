@@ -1,0 +1,204 @@
+# Agent runtime for `conductor`.
+#
+# Deliberately not a slim service image like infra/Dockerfile. `conductor`
+# spawns `claude` as a child process, and those Claude sessions are coding
+# agents: they clone this repository, build and test the Rust workspace, run
+# clippy and fmt, commit and open pull requests. So the runtime keeps the whole
+# Rust toolchain and the workspace's native build dependencies. Expect 2–3 GB.
+#
+# Built and released independently of the nexus image (tags `conductor-v*`), so
+# that a nexus release does not restart this pod and interrupt a running agent.
+
+ARG VERSION=0.0.0
+# Pinned, never floating: the image is the version record, and DISABLE_AUTOUPDATER
+# below stops the CLI changing underneath it at runtime.
+ARG CLAUDE_CODE_VERSION=2.1.285
+
+# ── builder ──────────────────────────────────────────────────────────────────
+
+FROM rust:bookworm AS builder
+
+ARG VERSION
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    libssl-dev \
+    pkg-config \
+    libsasl2-dev \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Manifests first, so the dependency layer survives source changes. Every
+# workspace member has to be present even though only `conductor` is built:
+# Cargo refuses to parse a workspace whose members are missing.
+COPY Cargo.toml Cargo.lock ./
+COPY model/Cargo.toml     model/Cargo.toml
+COPY model/build.rs       model/build.rs
+COPY model/proto/         model/proto/
+COPY alpha/Cargo.toml     alpha/Cargo.toml
+COPY chronicle/Cargo.toml chronicle/Cargo.toml
+COPY signal/Cargo.toml    signal/Cargo.toml
+COPY insight/Cargo.toml   insight/Cargo.toml
+COPY cli/Cargo.toml       cli/Cargo.toml
+COPY mcp/Cargo.toml       mcp/Cargo.toml
+COPY conductor/Cargo.toml conductor/Cargo.toml
+
+# Placeholder sources so Cargo can parse the workspace.
+RUN mkdir -p \
+      model/src alpha/src chronicle/src signal/src insight/src cli/src mcp/src \
+      conductor/src \
+    && touch model/src/lib.rs alpha/src/lib.rs conductor/src/lib.rs \
+    && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
+        chronicle/src/main.rs \
+        chronicle/src/market.rs \
+        chronicle/src/earnings_bin.rs \
+        chronicle/src/filings.rs \
+        chronicle/src/pdmr.rs \
+        chronicle/src/saxo_stream.rs \
+        signal/src/main.rs \
+        signal/src/scanner.rs \
+        insight/src/main.rs \
+        cli/src/main.rs \
+        mcp/src/main.rs \
+        conductor/src/main.rs
+
+RUN cargo fetch --locked
+
+# Dependencies only — cached as long as the manifests are unchanged.
+RUN cargo build --frozen --release -p conductor
+
+COPY . .
+RUN sed -i "s/version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml \
+    && cargo update --workspace \
+    && touch conductor/src/*.rs \
+    && cargo build --frozen --release -p conductor
+
+# ── claude ───────────────────────────────────────────────────────────────────
+#
+# Separate stage so the download and its checksum check are cached on the
+# version alone, and so curl/jq are not needed in the final image for this.
+#
+# The official install.sh is deliberately not used. It always fetches the
+# *latest* build first and then delegates pinning to `claude install <version>`,
+# which leaves a launcher under $HOME/.local — and at runtime HOME is a mounted
+# volume, so anything written there at build time is hidden. Fetching the
+# versioned binary directly is both reproducible and a single file.
+
+FROM debian:bookworm-slim AS claude
+
+ARG CLAUDE_CODE_VERSION
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl jq \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    case "${TARGETARCH:-arm64}" in \
+      arm64) platform='linux-arm64' ;; \
+      amd64) platform='linux-x64' ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    base='https://downloads.claude.ai/claude-code-releases'; \
+    curl -fsSL "${base}/${CLAUDE_CODE_VERSION}/manifest.json" -o /tmp/manifest.json; \
+    checksum="$(jq -r --arg p "$platform" '.platforms[$p].checksum // empty' /tmp/manifest.json)"; \
+    test -n "$checksum" || { echo "no checksum for $platform in ${CLAUDE_CODE_VERSION}" >&2; exit 1; }; \
+    curl -fsSL "${base}/${CLAUDE_CODE_VERSION}/${platform}/claude" -o /tmp/claude; \
+    echo "${checksum}  /tmp/claude" | sha256sum -c -; \
+    chmod 0755 /tmp/claude
+
+# ── runtime ──────────────────────────────────────────────────────────────────
+
+FROM rust:bookworm AS runtime
+
+ARG CLAUDE_CODE_VERSION
+
+# The workspace's native build dependencies, matching infra/Dockerfile's
+# builder: rdkafka needs cmake and libsasl2, model needs protoc. The agents
+# build the workspace in here, so these belong in the runtime image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    libssl-dev \
+    pkg-config \
+    libsasl2-dev \
+    protobuf-compiler \
+    git \
+    jq \
+    curl \
+    ca-certificates \
+    procps \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# gh from GitHub's own apt repository. Used by the agents to open pull
+# requests, and by the entrypoint for `gh auth setup-git`, which keeps the
+# token out of remote URLs and .git/config.
+RUN set -eux; \
+    mkdir -p -m 755 /etc/apt/keyrings; \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gh; \
+    rm -rf /var/lib/apt/lists/*
+
+# The agents run `cargo clippy -- -D warnings` and `cargo fmt` on every task,
+# so a missing component fails the task rather than degrading it.
+#
+# They must be installed for the toolchain the *repository* selects, not the
+# image's default. rust-toolchain.toml pins `channel = "stable"`, so inside a
+# clone rustup switches to `stable` — and components added to the image's
+# default toolchain are invisible there. That failure looks like
+# "'cargo-clippy' is not installed for the toolchain 'stable-...'" and only
+# appears inside a checkout, which is why `cargo clippy --version` at the image
+# level reported success while an agent would have been unable to lint.
+RUN rustup toolchain install stable --component clippy --component rustfmt \
+    && rustup default stable \
+    && rustup component add clippy rustfmt
+
+# uid/gid 1000. Claude Code refuses --dangerously-skip-permissions as root,
+# and the dispatcher passes it by default.
+RUN groupadd --gid 1000 agent \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash agent
+
+# The rust image keeps its toolchain and registry under /usr/local, root-owned.
+# `cargo build` as uid 1000 writes to CARGO_HOME, so this has to be writable by
+# the agent — otherwise every agent build fails on a read-only registry. Done
+# here rather than by moving CARGO_HOME onto the volume, so the prewarmed
+# registry in this image is actually used.
+RUN chown -R 1000:1000 "$CARGO_HOME" "$RUSTUP_HOME"
+
+# Keep the toolchain on PATH in a *login* shell as well.
+#
+# The rust image puts cargo on PATH with ENV, which `docker run ... cargo`
+# honours — but Debian's /etc/profile rebuilds PATH from scratch, so any login
+# shell (`bash -l`, and the shells an interactive `sessions attach` ends up in)
+# loses /usr/local/cargo/bin and every cargo invocation fails with "command not
+# found". Found by the workspace-build check, which runs under `bash -lc`
+# precisely because that is the harsher and more realistic case.
+RUN printf '%s\n' \
+      'export CARGO_HOME=/usr/local/cargo' \
+      'export RUSTUP_HOME=/usr/local/rustup' \
+      'export PATH="/usr/local/cargo/bin:$PATH"' \
+      > /etc/profile.d/rust.sh \
+    && chmod 0644 /etc/profile.d/rust.sh
+
+COPY --from=claude   /tmp/claude                         /usr/local/bin/claude
+COPY --from=builder  /build/target/release/conductor     /usr/local/bin/conductor
+
+# The version is fixed by the image, so the CLI must not replace itself.
+ENV DISABLE_AUTOUPDATER=1
+ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
+
+USER agent
+
+# tini as PID 1: conductor spawns claude, which spawns its own subprocesses,
+# and orphaned grandchildren need reaping. The real command is the entrypoint
+# script set by the chart (NEX-134); this default keeps the image runnable on
+# its own for the verification steps.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["conductor", "serve"]
