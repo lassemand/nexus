@@ -190,6 +190,13 @@ RUN printf '%s\n' \
 COPY --from=claude   /tmp/claude                         /usr/local/bin/claude
 COPY --from=builder  /build/target/release/conductor     /usr/local/bin/conductor
 
+# Builds the agents' environment on /data at every start, then execs
+# `conductor serve`. The chart sets this as the container command; the image's
+# own CMD stays `conductor serve` so it remains runnable without a volume for
+# the verification checks.
+COPY conductor/deploy/entrypoint.sh /usr/local/bin/conductor-entrypoint
+RUN chmod 0755 /usr/local/bin/conductor-entrypoint
+
 # The version is fixed by the image, so the CLI must not replace itself.
 ENV DISABLE_AUTOUPDATER=1
 ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}

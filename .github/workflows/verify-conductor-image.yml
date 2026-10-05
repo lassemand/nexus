@@ -62,6 +62,61 @@ jobs:
       - name: Report image size
         run: docker image ls nexus-conductor:verify --format '{{.Repository}}:{{.Tag}} {{.Size}}'
 
+      # Static analysis first: the entrypoint handles secrets, and a quoting
+      # mistake there is the kind that leaks or silently skips a step.
+      - name: shellcheck the entrypoint
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning conductor/deploy/entrypoint.sh conductor/deploy/entrypoint-test.sh
+
+      # The credential-free half, run inside the image so it exercises the
+      # same bash, jq and git the pod will use rather than a runner's.
+      - name: Entrypoint unit tests, in the image as uid 1000
+        run: |
+          docker run --rm --user 1000:1000 \
+            -v "$PWD/conductor/deploy:/test:ro" \
+            nexus-conductor:verify bash /test/entrypoint-test.sh
+
+      # End to end as far as it can go without secrets. With none set it must
+      # refuse immediately and name every missing variable; with fakes it must
+      # get past validation, build the layout, and then stop at gh auth with a
+      # diagnosis rather than a stack trace.
+      - name: Entrypoint fails correctly without credentials
+        run: |
+          set -euo pipefail
+
+          echo "--- no credentials: must refuse and list all three ---"
+          out="$(docker run --rm --user 1000:1000 \
+            -e CONDUCTOR_DATA_DIR=/tmp/data \
+            nexus-conductor:verify conductor-entrypoint 2>&1 || true)"
+          echo "$out"
+          for want in GITHUB_TOKEN LINEAR_API_KEY ANTHROPIC_API_KEY; do
+            grep -q "$want" <<<"$out" || { echo "::error::did not name $want"; exit 1; }
+          done
+          grep -q "environment is incomplete" <<<"$out" \
+            || { echo "::error::missing the summary line"; exit 1; }
+
+          echo "--- fake credentials: must pass validation and stop at gh ---"
+          out="$(docker run --rm --user 1000:1000 \
+            -e CONDUCTOR_DATA_DIR=/tmp/data \
+            -e GITHUB_TOKEN=not-a-real-token \
+            -e LINEAR_API_KEY=not-a-real-key \
+            -e ANTHROPIC_API_KEY=not-a-real-key \
+            nexus-conductor:verify conductor-entrypoint 2>&1 || true)"
+          echo "$out"
+          grep -q "environment complete" <<<"$out" \
+            || { echo "::error::validation should have passed"; exit 1; }
+          grep -q "layout ready" <<<"$out" \
+            || { echo "::error::layout should have been created"; exit 1; }
+          grep -q "git identity" <<<"$out" \
+            || { echo "::error::git identity should have been set"; exit 1; }
+          grep -q "gh auth status failed" <<<"$out" \
+            || { echo "::error::should have stopped at gh with a clear reason"; exit 1; }
+          # A bad token must never be echoed back.
+          grep -q "not-a-real-token" <<<"$out" \
+            && { echo "::error::the token appeared in the output"; exit 1; }
+          echo "stopped at gh auth, as expected, without leaking the token"
+
       # The real test. An agent's first act in a fresh worktree is to build the
       # workspace, so if this fails the image is useless however well it was
       # assembled. Run as uid 1000 against a clone, exactly as an agent would,
