@@ -1,0 +1,17 @@
+# Agent definitions, copied into $HOME/.claude/agents/ by the entrypoint on
+# every start — so this ConfigMap is the source of truth and an edit here takes
+# effect on the next restart.
+#
+# backend.md is a verbatim copy of the definition that was on the Mac. Later
+# changes have to be made here, not there; the two are no longer linked.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conductor-agents
+  labels:
+    app: conductor
+data:
+{{- range $path, $_ := .Files.Glob "files/agents/*.md" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
