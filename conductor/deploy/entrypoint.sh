@@ -55,24 +55,54 @@ check_env() {
   # Accumulated as newline-delimited text rather than arrays, because an empty
   # array expanded under `set -u` is an error in bash 3.2 and that would make
   # this function impossible to exercise outside the container.
-  local missing="" problems="" creds=0
+  local missing="" problems=""
 
   [[ -n "${GITHUB_TOKEN:-}" ]]   || missing="${missing} GITHUB_TOKEN"
   [[ -n "${LINEAR_API_KEY:-}" ]] || missing="${missing} LINEAR_API_KEY"
-
-  # Exactly one, never both: which is used is a billing choice made when the
-  # secret is written, and two would leave it ambiguous which applies.
-  [[ -n "${ANTHROPIC_API_KEY:-}" ]]       && creds=$((creds + 1))
-  [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && creds=$((creds + 1))
-
   [[ -n "$missing" ]] && problems="${problems}
 missing:${missing}"
-  case "$creds" in
-    0) problems="${problems}
-missing: exactly one of ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN" ;;
-    1) ;;
-    *) problems="${problems}
-both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are set; set exactly one" ;;
+
+  # ── which model credential to use ──
+  #
+  # Both are supported, but never at the same time. Claude Code resolves
+  # ANTHROPIC_API_KEY ahead of subscription credentials, so leaving both in the
+  # environment would silently bill per-token while the operator believed the
+  # subscription was in use — an expensive failure that looks like success. The
+  # unused one is therefore unset rather than merely ignored.
+  local has_sub="" has_key=""
+  [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" || -n "${CLAUDE_CODE_CREDENTIALS_JSON:-}" \
+     || -f "${HOME}/.claude/.credentials.json" ]] && has_sub=1
+  [[ -n "${ANTHROPIC_API_KEY:-}" ]] && has_key=1
+
+  AUTH_MODE="${CONDUCTOR_AUTH_MODE:-}"
+  if [[ -z "$AUTH_MODE" ]]; then
+    if [[ -n "$has_sub" && -n "$has_key" ]]; then
+      problems="${problems}
+both a subscription credential and ANTHROPIC_API_KEY are present; set CONDUCTOR_AUTH_MODE to 'subscription' or 'api_key' so the billing choice is explicit"
+    elif [[ -n "$has_sub" ]]; then
+      AUTH_MODE=subscription
+    elif [[ -n "$has_key" ]]; then
+      AUTH_MODE=api_key
+    else
+      problems="${problems}
+missing a model credential: set CLAUDE_CODE_CREDENTIALS_JSON (subscription, renews itself), CLAUDE_CODE_OAUTH_TOKEN, or ANTHROPIC_API_KEY"
+    fi
+  fi
+
+  case "$AUTH_MODE" in
+    subscription)
+      [[ -n "$has_sub" ]] || problems="${problems}
+CONDUCTOR_AUTH_MODE=subscription but no subscription credential is present"
+      ;;
+    api_key)
+      [[ -n "$has_key" ]] || problems="${problems}
+CONDUCTOR_AUTH_MODE=api_key but ANTHROPIC_API_KEY is not set"
+      ;;
+    "") ;;
+    *)
+      problems="${problems}
+CONDUCTOR_AUTH_MODE must be 'subscription' or 'api_key', got '${AUTH_MODE}'"
+      ;;
   esac
 
   if [[ -n "$problems" ]]; then
@@ -83,7 +113,15 @@ both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are set; set exactly one" ;;
     printf '[entrypoint] these come from the conductor-secret ExternalSecret (Vault: nexus/conductor)\n' >&2
     return 1
   fi
-  log "environment complete"
+
+  # Enforce the choice, so the other credential cannot take effect by accident.
+  if [[ "$AUTH_MODE" == "subscription" ]]; then
+    unset ANTHROPIC_API_KEY
+  else
+    unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_CREDENTIALS_JSON
+  fi
+  export AUTH_MODE
+  log "environment complete (auth mode: ${AUTH_MODE})"
 }
 
 # ── git identity ─────────────────────────────────────────────────────────────
@@ -212,6 +250,89 @@ seed_claude_config() {
   log "claude configuration seeded"
 }
 
+# ── subscription credentials ─────────────────────────────────────────────────
+#
+# Claude Code renews its own subscription credential. ~/.claude/.credentials.json
+# holds an accessToken (lifetime measured in hours), a refreshToken (weeks), and
+# both expiry timestamps; Claude Code exchanges the refresh token when the access
+# token expires and writes the new pair back.
+#
+# That is why CLAUDE_CODE_OAUTH_TOKEN is the wrong mechanism for a long-running
+# pod: it is a static snapshot of a credential that expires in a couple of
+# hours, and nothing updates the environment variable afterwards. Persisting the
+# file instead — HOME is on the volume — means renewal happens by itself, and
+# the only standing deadline is the refresh token's own expiry, which rolls
+# forward every time it is used.
+#
+# Seeded write-if-absent, never overwritten: an existing file has been refreshed
+# since it was seeded, and replacing it with the Vault copy would roll the
+# credential back to a stale snapshot and undo the renewal.
+
+seed_claude_credentials() {
+  local creds="$HOME/.claude/.credentials.json"
+  mkdir -p "$(dirname "$creds")"
+
+  if [[ -f "$creds" ]]; then
+    if jq empty "$creds" >/dev/null 2>&1; then
+      log "subscription credentials already present; leaving them to renew themselves"
+    else
+      # Several Claude processes share this file, so a torn write is possible.
+      # Unlike .claude.json this cannot simply be reseeded from nothing, so the
+      # Vault copy is the recovery path.
+      local backup
+      backup="${creds}.corrupt-$(date +%s)"
+      mv "$creds" "$backup"
+      log "WARNING: ${creds} was not valid JSON; moved to ${backup}"
+    fi
+  fi
+
+  if [[ ! -f "$creds" ]]; then
+    if [[ -n "${CLAUDE_CODE_CREDENTIALS_JSON:-}" ]]; then
+      # Written via a temp file and moved, so a reader never sees a partial file.
+      local tmp
+      tmp="$(mktemp)"
+      printf '%s' "$CLAUDE_CODE_CREDENTIALS_JSON" > "$tmp"
+      if ! jq empty "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        die "CLAUDE_CODE_CREDENTIALS_JSON is not valid JSON"
+      fi
+      chmod 0600 "$tmp"
+      mv "$tmp" "$creds"
+      log "seeded subscription credentials from CLAUDE_CODE_CREDENTIALS_JSON"
+    elif [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+      # Supported, but it cannot renew: when this token expires every dispatch
+      # fails until the secret is rewritten by hand.
+      log "WARNING: using CLAUDE_CODE_OAUTH_TOKEN, which does not renew itself — prefer CLAUDE_CODE_CREDENTIALS_JSON"
+      return 0
+    else
+      die "auth mode is subscription but neither CLAUDE_CODE_CREDENTIALS_JSON nor CLAUDE_CODE_OAUTH_TOKEN is set"
+    fi
+  fi
+
+  # The refresh token is the real deadline. Reported at every start, and warned
+  # about before it bites, because an expired one fails every dispatch while the
+  # pod still looks healthy — indistinguishable from a dispatcher fault.
+  local expires_ms now_ms days warn
+  expires_ms="$(jq -r '.claudeAiOauth.refreshTokenExpiresAt // empty' "$creds" 2>/dev/null || true)"
+  if [[ -n "$expires_ms" && "$expires_ms" != "null" ]]; then
+    now_ms=$(( $(date +%s) * 1000 ))
+    # Expiry is decided in milliseconds, not days. Integer day division
+    # truncates toward zero, so a token that expired up to 24 hours ago came
+    # out as "expires in 0 days" and merely warned — exactly the window in
+    # which every dispatch would already be failing.
+    days=$(( (expires_ms - now_ms) / 86400000 ))
+    warn="${CONDUCTOR_CREDENTIAL_WARN_DAYS:-5}"
+    if (( expires_ms <= now_ms )); then
+      local ago_h=$(( (now_ms - expires_ms) / 3600000 ))
+      die "the subscription refresh token expired ${ago_h}h ago; re-run 'claude setup-token' and update Vault"
+    elif (( days <= warn )); then
+      log "WARNING: subscription refresh token expires in ${days} day(s) — renew it before then"
+    else
+      log "subscription refresh token valid for ${days} more day(s)"
+    fi
+  fi
+}
+
 # ── MCP servers ──────────────────────────────────────────────────────────────
 
 add_mcp() {
@@ -275,6 +396,11 @@ main() {
   sync_repo
   install_agents
   seed_claude_config
+  # An `if` rather than `[[ ]] &&`: at statement level a false test returns 1,
+  # which `set -e` turns into an exit — so api_key mode would never have started.
+  if [[ "${AUTH_MODE:-}" == "subscription" ]]; then
+    seed_claude_credentials
+  fi
   configure_mcp
   smoke_check
   log "starting conductor serve"

@@ -56,7 +56,7 @@ printf '== environment validation ==\n'
   # One message naming everything, not one variable per restart.
   grep -q "GITHUB_TOKEN" <<<"$out"   && ok "names GITHUB_TOKEN"   || bad "names GITHUB_TOKEN" "$out"
   grep -q "LINEAR_API_KEY" <<<"$out" && ok "names LINEAR_API_KEY" || bad "names LINEAR_API_KEY" "$out"
-  grep -q "ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN" <<<"$out" \
+  grep -q "ANTHROPIC_API_KEY" <<<"$out" \
     && ok "names the model credential" || bad "names the model credential" "$out"
   rm -rf "$SANDBOX"
 )
@@ -65,8 +65,151 @@ printf '== environment validation ==\n'
   new_sandbox; init_layout >/dev/null
   export GITHUB_TOKEN=x LINEAR_API_KEY=y ANTHROPIC_API_KEY=a CLAUDE_CODE_OAUTH_TOKEN=b
   out="$(check_env 2>&1)"; rc=$?
-  [[ $rc -ne 0 ]] && ok "both model credentials is rejected" || bad "both model credentials is rejected" "rc=$rc"
-  grep -q "set exactly one" <<<"$out" && ok "explains the conflict" || bad "explains the conflict" "$out"
+  # Ambiguous on purpose: guessing wrong silently bills per-token.
+  [[ $rc -ne 0 ]] && ok "both credentials without a mode is rejected" \
+    || bad "both credentials without a mode is rejected" "rc=$rc"
+  grep -q "CONDUCTOR_AUTH_MODE" <<<"$out" && ok "points at CONDUCTOR_AUTH_MODE" \
+    || bad "points at CONDUCTOR_AUTH_MODE" "$out"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  out="$(check_env 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "no model credential at all is rejected" || bad "no model credential at all is rejected"
+  grep -q "CLAUDE_CODE_CREDENTIALS_JSON" <<<"$out" && ok "recommends the renewing option first" \
+    || bad "recommends the renewing option first" "$out"
+  rm -rf "$SANDBOX"
+)
+
+printf '== auth mode ==\n'
+
+(
+  new_sandbox; init_layout >/dev/null
+  export GITHUB_TOKEN=x LINEAR_API_KEY=y ANTHROPIC_API_KEY=a CLAUDE_CODE_OAUTH_TOKEN=b
+  export CONDUCTOR_AUTH_MODE=subscription
+  check_env >/dev/null 2>&1 && ok "explicit subscription mode is accepted" || bad "explicit subscription mode is accepted"
+  # The whole point: the API key must not be left where Claude Code can find it.
+  check "ANTHROPIC_API_KEY is removed" "${ANTHROPIC_API_KEY:-unset}" "unset"
+  check "mode is reported" "${AUTH_MODE:-}" "subscription"
+  unset CONDUCTOR_AUTH_MODE
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export GITHUB_TOKEN=x LINEAR_API_KEY=y ANTHROPIC_API_KEY=a CLAUDE_CODE_OAUTH_TOKEN=b
+  export CONDUCTOR_AUTH_MODE=api_key
+  check_env >/dev/null 2>&1 && ok "explicit api_key mode is accepted" || bad "explicit api_key mode is accepted"
+  check "the subscription token is removed" "${CLAUDE_CODE_OAUTH_TOKEN:-unset}" "unset"
+  unset CONDUCTOR_AUTH_MODE
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export GITHUB_TOKEN=x LINEAR_API_KEY=y ANTHROPIC_API_KEY=a
+  export CONDUCTOR_AUTH_MODE=nonsense
+  out="$(check_env 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "an unknown mode is rejected" || bad "an unknown mode is rejected"
+  grep -q "nonsense" <<<"$out" && ok "echoes the bad value" || bad "echoes the bad value" "$out"
+  unset CONDUCTOR_AUTH_MODE
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export GITHUB_TOKEN=x LINEAR_API_KEY=y CLAUDE_CODE_CREDENTIALS_JSON='{"claudeAiOauth":{}}'
+  check_env >/dev/null 2>&1 && ok "a credentials blob alone infers subscription" || bad "a credentials blob alone infers subscription"
+  check "inferred mode" "${AUTH_MODE:-}" "subscription"
+  rm -rf "$SANDBOX"
+)
+
+printf '== subscription credentials ==\n'
+
+# Helper: a credentials file whose refresh token expires in N days.
+creds_json() {
+  python3 -c "
+import json, time
+ms = int((time.time() + $1 * 86400) * 1000)
+print(json.dumps({'claudeAiOauth': {'accessToken': 'a', 'refreshToken': 'r',
+                                    'expiresAt': ms, 'refreshTokenExpiresAt': ms}}))"
+}
+
+(
+  new_sandbox; init_layout >/dev/null
+  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  seed_claude_credentials >/dev/null 2>&1
+  f="$HOME/.claude/.credentials.json"
+  [[ -f "$f" ]] && ok "seeds the credentials file" || bad "seeds the credentials file"
+  check "written 0600, not world-readable" "$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")" "600"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  f="$HOME/.claude/.credentials.json"
+  mkdir -p "$(dirname "$f")"
+  # Stands in for a credential Claude Code has already refreshed.
+  printf '%s' "$(creds_json 20)" | python3 -c "
+import json,sys
+d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(json.dumps(d))" > "$f"
+  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  seed_claude_credentials >/dev/null 2>&1
+  # Overwriting would roll the credential back to the seed and undo renewal.
+  check "an existing file is never overwritten" \
+    "$(jq -r '.claudeAiOauth.accessToken' "$f")" "REFRESHED"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json -1)"
+  out="$(seed_claude_credentials 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "an expired refresh token is fatal" || bad "an expired refresh token is fatal" "$out"
+  grep -q "setup-token" <<<"$out" && ok "and says how to fix it" || bad "and says how to fix it" "$out"
+  grep -qE "expired [0-9]+h ago" <<<"$out" && ok "and how long ago, in hours not days" \
+    || bad "and how long ago, in hours not days" "$out"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 2)"
+  out="$(seed_claude_credentials 2>&1)"
+  grep -q "WARNING.*expires in" <<<"$out" && ok "warns before the refresh token expires" \
+    || bad "warns before the refresh token expires" "$out"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export CLAUDE_CODE_CREDENTIALS_JSON='not json at all'
+  out="$(seed_claude_credentials 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "a malformed credentials blob is rejected" || bad "a malformed credentials blob is rejected"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  f="$HOME/.claude/.credentials.json"
+  mkdir -p "$(dirname "$f")"
+  printf '{"claudeAiOauth": {tr' > "$f"
+  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  seed_claude_credentials >/dev/null 2>&1
+  jq empty "$f" >/dev/null 2>&1 && ok "a torn credentials file is recovered from the seed" \
+    || bad "a torn credentials file is recovered from the seed"
+  n=$(find "$HOME/.claude" -maxdepth 1 -name '.credentials.json.corrupt-*' | wc -l | tr -d ' ')
+  check "and the broken one is kept" "$n" "1"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export CLAUDE_CODE_OAUTH_TOKEN=static-token
+  out="$(seed_claude_credentials 2>&1)"
+  grep -q "does not renew itself" <<<"$out" && ok "the static token path warns that it cannot renew" \
+    || bad "the static token path warns that it cannot renew" "$out"
   rm -rf "$SANDBOX"
 )
 
