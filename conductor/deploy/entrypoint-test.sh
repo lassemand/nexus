@@ -212,7 +212,8 @@ print(json.dumps({'claudeAiOauth': {'accessToken': 'a', 'refreshToken': 'r',
 
 (
   new_sandbox; init_layout >/dev/null
-  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
   seed_claude_credentials >/dev/null 2>&1
   f="$HOME/.claude/.credentials.json"
   [[ -f "$f" ]] && ok "seeds the credentials file" || bad "seeds the credentials file"
@@ -228,7 +229,8 @@ print(json.dumps({'claudeAiOauth': {'accessToken': 'a', 'refreshToken': 'r',
   printf '%s' "$(creds_json 20)" | python3 -c "
 import json,sys
 d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(json.dumps(d))" > "$f"
-  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
   seed_claude_credentials >/dev/null 2>&1
   # Overwriting would roll the credential back to the seed and undo renewal.
   check "an existing file is never overwritten" \
@@ -238,7 +240,8 @@ d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(jso
 
 (
   new_sandbox; init_layout >/dev/null
-  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json -1)"
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json -1)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
   out="$(seed_claude_credentials 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "an expired refresh token is fatal" || bad "an expired refresh token is fatal" "$out"
   grep -q "setup-token" <<<"$out" && ok "and says how to fix it" || bad "and says how to fix it" "$out"
@@ -249,7 +252,8 @@ d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(jso
 
 (
   new_sandbox; init_layout >/dev/null
-  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 2)"
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 2)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
   out="$(seed_claude_credentials 2>&1)"
   grep -q "WARNING.*expires in" <<<"$out" && ok "warns before the refresh token expires" \
     || bad "warns before the refresh token expires" "$out"
@@ -269,7 +273,8 @@ d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(jso
   f="$HOME/.claude/.credentials.json"
   mkdir -p "$(dirname "$f")"
   printf '{"claudeAiOauth": {tr' > "$f"
-  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
   seed_claude_credentials >/dev/null 2>&1
   jq empty "$f" >/dev/null 2>&1 && ok "a torn credentials file is recovered from the seed" \
     || bad "a torn credentials file is recovered from the seed"
