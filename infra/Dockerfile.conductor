@@ -13,6 +13,9 @@ ARG VERSION=0.0.0
 # Pinned, never floating: the image is the version record, and DISABLE_AUTOUPDATER
 # below stops the CLI changing underneath it at runtime.
 ARG CLAUDE_CODE_VERSION=2.1.285
+# Matches the version running on the developer's Mac, so the pod and the laptop
+# expose the same GitHub tools rather than drifting apart silently.
+ARG GITHUB_MCP_VERSION=1.12.2
 
 # ── builder ──────────────────────────────────────────────────────────────────
 
@@ -89,6 +92,7 @@ RUN sed -i "s/version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml \
 FROM debian:bookworm-slim AS claude
 
 ARG CLAUDE_CODE_VERSION
+ARG GITHUB_MCP_VERSION
 ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -108,6 +112,27 @@ RUN set -eux; \
     curl -fsSL "${base}/${CLAUDE_CODE_VERSION}/${platform}/claude" -o /tmp/claude; \
     echo "${checksum}  /tmp/claude" | sha256sum -c -; \
     chmod 0755 /tmp/claude
+
+# github-mcp-server, so the agent reaches GitHub through the same App the
+# developer's Mac uses rather than a bearer token against the hosted endpoint.
+# An App needs no long-lived secret: the server mints short installation
+# tokens itself from the private key.
+#
+# Verified against the release's own checksums file, not merely downloaded.
+RUN set -eux; \
+    case "${TARGETARCH:-arm64}" in \
+      arm64) asset='Linux_arm64' ;; \
+      amd64) asset='Linux_x86_64' ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    base="https://github.com/github/github-mcp-server/releases/download/v${GITHUB_MCP_VERSION}"; \
+    curl -fsSL "${base}/github-mcp-server_${GITHUB_MCP_VERSION}_checksums.txt" -o /tmp/ghmcp-sums.txt; \
+    curl -fsSL "${base}/github-mcp-server_${asset}.tar.gz" -o /tmp/ghmcp.tgz; \
+    want="$(awk -v a="github-mcp-server_${asset}.tar.gz" '$2 == a { print $1 }' /tmp/ghmcp-sums.txt)"; \
+    test -n "$want" || { echo "no checksum for ${asset}" >&2; exit 1; }; \
+    echo "${want}  /tmp/ghmcp.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/ghmcp.tgz -C /tmp github-mcp-server; \
+    chmod 0755 /tmp/github-mcp-server
 
 # ── runtime ──────────────────────────────────────────────────────────────────
 
@@ -188,6 +213,7 @@ RUN printf '%s\n' \
     && chmod 0644 /etc/profile.d/rust.sh
 
 COPY --from=claude   /tmp/claude                         /usr/local/bin/claude
+COPY --from=claude   /tmp/github-mcp-server              /usr/local/bin/github-mcp-server
 COPY --from=builder  /build/target/release/conductor     /usr/local/bin/conductor
 
 # Builds the agents' environment on /data at every start, then execs
@@ -195,7 +221,10 @@ COPY --from=builder  /build/target/release/conductor     /usr/local/bin/conducto
 # own CMD stays `conductor serve` so it remains runnable without a volume for
 # the verification checks.
 COPY conductor/deploy/entrypoint.sh /usr/local/bin/conductor-entrypoint
-RUN chmod 0755 /usr/local/bin/conductor-entrypoint
+# Git invokes this per authenticated operation to mint a short-lived GitHub App
+# installation token, which is what makes the one-hour lifetime a non-issue.
+COPY conductor/deploy/github-app-credential-helper.sh /usr/local/bin/github-app-credential-helper
+RUN chmod 0755 /usr/local/bin/conductor-entrypoint /usr/local/bin/github-app-credential-helper
 
 # The version is fixed by the image, so the CLI must not replace itself.
 ENV DISABLE_AUTOUPDATER=1

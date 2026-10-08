@@ -125,6 +125,80 @@ printf '== auth mode ==\n'
   rm -rf "$SANDBOX"
 )
 
+printf '== github mode ==\n'
+
+(
+  new_sandbox; init_layout >/dev/null
+  export GITHUB_TOKEN=x LINEAR_API_KEY=y ANTHROPIC_API_KEY=a
+  check_env >/dev/null 2>&1
+  check "a token alone infers token mode" "${GITHUB_MODE:-}" "token"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export LINEAR_API_KEY=y ANTHROPIC_API_KEY=a
+  export GITHUB_APP_ID=1 GITHUB_APP_INSTALLATION_ID=2 GITHUB_APP_PRIVATE_KEY=pem
+  check_env >/dev/null 2>&1 && ok "app credentials alone are accepted" || bad "app credentials alone are accepted"
+  check "and infer app mode" "${GITHUB_MODE:-}" "app"
+  unset GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export LINEAR_API_KEY=y ANTHROPIC_API_KEY=a
+  export GITHUB_TOKEN=x GITHUB_APP_ID=1 GITHUB_APP_INSTALLATION_ID=2 GITHUB_APP_PRIVATE_KEY=pem
+  check_env >/dev/null 2>&1
+  # Unlike the model credential, there is no cost difference here — the App is
+  # simply better, so preferring it silently is safe rather than presumptuous.
+  check "the app wins when both are present" "${GITHUB_MODE:-}" "app"
+  unset GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export LINEAR_API_KEY=y ANTHROPIC_API_KEY=a
+  out="$(check_env 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "no github credentials at all is rejected" || bad "no github credentials at all is rejected"
+  grep -q "GITHUB_APP_ID" <<<"$out" && ok "names the app option first" || bad "names the app option first" "$out"
+  grep -q "GITHUB_TOKEN" <<<"$out" && ok "and the token option" || bad "and the token option" "$out"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export LINEAR_API_KEY=y ANTHROPIC_API_KEY=a GITHUB_TOKEN=x
+  export CONDUCTOR_GITHUB_MODE=app
+  out="$(check_env 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "app mode without app credentials is rejected" || bad "app mode without app credentials is rejected"
+  unset CONDUCTOR_GITHUB_MODE
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export LINEAR_API_KEY=y ANTHROPIC_API_KEY=a GITHUB_TOKEN=x
+  export CONDUCTOR_GITHUB_MODE=sideways
+  out="$(check_env 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "an unknown github mode is rejected" || bad "an unknown github mode is rejected"
+  grep -q "sideways" <<<"$out" && ok "echoing the bad value" || bad "echoing the bad value" "$out"
+  unset CONDUCTOR_GITHUB_MODE
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  GITHUB_MODE=app
+  export GITHUB_APP_ID=1 GITHUB_APP_INSTALLATION_ID=2
+  export GITHUB_APP_PRIVATE_KEY="not a private key at all"
+  out="$(configure_gh 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "a malformed private key is rejected" || bad "a malformed private key is rejected" "$out"
+  unset GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY
+  rm -rf "$SANDBOX"
+)
+
 printf '== subscription credentials ==\n'
 
 # Helper: a credentials file whose refresh token expires in N days.
@@ -296,6 +370,87 @@ printf '== corruption recovery ==\n'
   # Never discarded silently — it may be the only copy of the session map.
   count=$(find "$HOME" -maxdepth 1 -name '.claude.json.corrupt-*' | wc -l | tr -d ' ')
   check "the broken file is kept as a backup" "$count" "1"
+  rm -rf "$SANDBOX"
+)
+
+printf '== github app credential helper ==\n'
+
+# Exercises the helper end to end against a stand-in for GitHub's API: a
+# throwaway RSA key signs the JWT, and the stub verifies that signature with
+# the matching public key before returning a token. That covers the part most
+# likely to be silently wrong — RS256 signing — without any real credential.
+(
+  new_sandbox
+  HELPER="${HERE}/github-app-credential-helper.sh"
+  port=$(( 20000 + RANDOM % 20000 ))
+  openssl genrsa -out "$SANDBOX/k.pem" 2048 >/dev/null 2>&1
+  openssl rsa -in "$SANDBOX/k.pem" -pubout -out "$SANDBOX/k.pub" >/dev/null 2>&1
+
+  cat > "$SANDBOX/stub.py" <<'STUB'
+import base64, http.server, json, os, subprocess, sys, tempfile
+PUB = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        auth = self.headers.get("Authorization", "")
+        ok = False
+        if auth.startswith("Bearer "):
+            try:
+                h, p, sg = auth[7:].split(".")
+                pad = lambda x: x + "=" * (-len(x) % 4)
+                sig = base64.urlsafe_b64decode(pad(sg))
+                sf = tempfile.NamedTemporaryFile(delete=False); sf.write(sig); sf.close()
+                df = tempfile.NamedTemporaryFile(delete=False, mode="w"); df.write(f"{h}.{p}"); df.close()
+                ok = subprocess.run(["openssl","dgst","-sha256","-verify",PUB,
+                                     "-signature",sf.name,df.name],
+                                    capture_output=True).returncode == 0
+                os.unlink(sf.name); os.unlink(df.name)
+            except Exception:
+                ok = False
+        body = b'{"token":"ghs_STUB_TOKEN"}' if ok else b'{"message":"bad jwt"}'
+        self.send_response(201 if ok else 401)
+        self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
+STUB
+
+  python3 "$SANDBOX/stub.py" "$SANDBOX/k.pub" "$port" >/dev/null 2>&1 &
+  stub_pid=$!
+  # Wait for the port rather than sleeping blind.
+  for _ in $(seq 1 50); do
+    (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null && break
+    sleep 0.1
+  done
+
+  out="$(printf 'protocol=https\nhost=github.com\n\n' | \
+    GITHUB_APP_ID=12345 \
+    GITHUB_APP_INSTALLATION_ID=67890 \
+    GITHUB_APP_PRIVATE_KEY_PATH="$SANDBOX/k.pem" \
+    GITHUB_API_URL="http://127.0.0.1:${port}" \
+    bash "$HELPER" get 2>&1)"
+
+  grep -q "^username=x-access-token$" <<<"$out" \
+    && ok "returns the installation-token username" || bad "returns the installation-token username" "$out"
+  grep -q "^password=ghs_STUB_TOKEN$" <<<"$out" \
+    && ok "mints a token with a correctly signed RS256 JWT" \
+    || bad "mints a token with a correctly signed RS256 JWT" "$out"
+
+  # Must never answer for a host other than github.com, or a changed remote
+  # would be handed a GitHub credential.
+  other="$(printf 'protocol=https\nhost=gitlab.example.com\n\n' | \
+    GITHUB_APP_ID=12345 GITHUB_APP_INSTALLATION_ID=67890 \
+    GITHUB_APP_PRIVATE_KEY_PATH="$SANDBOX/k.pem" \
+    GITHUB_API_URL="http://127.0.0.1:${port}" bash "$HELPER" get 2>&1)"
+  [[ -z "$other" ]] && ok "declines any host but github.com" || bad "declines any host but github.com" "$other"
+
+  for verb in store erase; do
+    o="$(printf 'protocol=https\nhost=github.com\n\n' | bash "$HELPER" "$verb" 2>&1)"
+    [[ -z "$o" ]] && ok "$verb is a silent no-op" || bad "$verb is a silent no-op" "$o"
+  done
+
+  # Reaped as well as killed, so bash's job-control notice does not land in
+  # the middle of the test output.
+  { kill "$stub_pid" && wait "$stub_pid"; } 2>/dev/null || true
   rm -rf "$SANDBOX"
 )
 

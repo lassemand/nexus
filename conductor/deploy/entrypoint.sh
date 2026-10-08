@@ -41,6 +41,9 @@ init_layout() {
   CLAUDE_JSON="$HOME/.claude.json"
   SETTINGS_JSON="$HOME/.claude/settings.json"
 
+  GITHUB_APP_CREDENTIAL_HELPER="${CONDUCTOR_GITHUB_HELPER:-/usr/local/bin/github-app-credential-helper}"
+  export GITHUB_APP_CREDENTIAL_HELPER
+
   mkdir -p "$HOME" "$REPO_DIR" "$WORKTREE_DIR" "$STATE_DIR" "$HOME/.claude/agents"
   log "layout ready under ${DATA_DIR} (HOME=${HOME})"
 }
@@ -57,8 +60,48 @@ check_env() {
   # this function impossible to exercise outside the container.
   local missing="" problems=""
 
-  [[ -n "${GITHUB_TOKEN:-}" ]]   || missing="${missing} GITHUB_TOKEN"
   [[ -n "${LINEAR_API_KEY:-}" ]] || missing="${missing} LINEAR_API_KEY"
+
+  # ── how to authenticate to GitHub ──
+  #
+  # App credentials are preferred and are what the developer's Mac already
+  # uses. The App needs no long-lived secret: tokens are minted from the
+  # private key, one hour at a time, by the credential helper for git and by
+  # github-mcp-server for the MCP tools.
+  #
+  # A PAT still works, because the branch lookup in `conductor serve` takes a
+  # plain token and because it is one less moving part when debugging.
+  local has_app=""
+  [[ -n "${GITHUB_APP_ID:-}" && -n "${GITHUB_APP_INSTALLATION_ID:-}" \
+     && -n "${GITHUB_APP_PRIVATE_KEY:-}" ]] && has_app=1
+
+  GITHUB_MODE="${CONDUCTOR_GITHUB_MODE:-}"
+  if [[ -z "$GITHUB_MODE" ]]; then
+    if [[ -n "$has_app" ]]; then
+      GITHUB_MODE=app
+    elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+      GITHUB_MODE=token
+    else
+      problems="${problems}
+missing GitHub credentials: set GITHUB_APP_ID + GITHUB_APP_INSTALLATION_ID + GITHUB_APP_PRIVATE_KEY (preferred), or GITHUB_TOKEN"
+    fi
+  fi
+
+  case "$GITHUB_MODE" in
+    app)
+      [[ -n "$has_app" ]] || problems="${problems}
+CONDUCTOR_GITHUB_MODE=app but GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID and GITHUB_APP_PRIVATE_KEY are not all set"
+      ;;
+    token)
+      [[ -n "${GITHUB_TOKEN:-}" ]] || problems="${problems}
+CONDUCTOR_GITHUB_MODE=token but GITHUB_TOKEN is not set"
+      ;;
+    "") ;;
+    *)
+      problems="${problems}
+CONDUCTOR_GITHUB_MODE must be 'app' or 'token', got '${GITHUB_MODE}'"
+      ;;
+  esac
   [[ -n "$missing" ]] && problems="${problems}
 missing:${missing}"
 
@@ -120,8 +163,8 @@ CONDUCTOR_AUTH_MODE must be 'subscription' or 'api_key', got '${AUTH_MODE}'"
   else
     unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_CREDENTIALS_JSON
   fi
-  export AUTH_MODE
-  log "environment complete (auth mode: ${AUTH_MODE})"
+  export AUTH_MODE GITHUB_MODE
+  log "environment complete (auth mode: ${AUTH_MODE}, github mode: ${GITHUB_MODE})"
 }
 
 # ── git identity ─────────────────────────────────────────────────────────────
@@ -141,18 +184,51 @@ configure_git() {
 # ── gh auth ──────────────────────────────────────────────────────────────────
 
 configure_gh() {
-  # gh reads GITHUB_TOKEN from the environment. `setup-git` installs gh as
-  # git's credential helper, so pushes authenticate without the token ever
-  # appearing in a remote URL or in .git/config — which agents commit, and
-  # which would leak it into the repository.
-  gh auth setup-git
-  if ! gh auth status >/dev/null 2>&1; then
-    # Re-run visibly so the reason reaches the pod log, via gh itself, which
-    # redacts the token.
-    gh auth status >&2 || true
-    die "gh auth status failed; check GITHUB_TOKEN's scopes (contents, pull requests, issues on ${CONDUCTOR_REPO:-lassemand/nexus})"
+  if [[ "$GITHUB_MODE" == "app" ]]; then
+    # The private key arrives as a secret property, so it has to be written
+    # before anything can sign a JWT with it.
+    local key_dir="$HOME/.config/github-app"
+    mkdir -p "$key_dir"
+    GITHUB_APP_PRIVATE_KEY_PATH="${key_dir}/private-key.pem"
+    local tmp
+    tmp="$(mktemp)"
+    printf '%s' "$GITHUB_APP_PRIVATE_KEY" > "$tmp"
+    if ! openssl rsa -in "$tmp" -noout -check >/dev/null 2>&1 \
+       && ! openssl pkey -in "$tmp" -noout >/dev/null 2>&1; then
+      rm -f "$tmp"
+      die "GITHUB_APP_PRIVATE_KEY is not a usable private key"
+    fi
+    chmod 0600 "$tmp"
+    mv "$tmp" "$GITHUB_APP_PRIVATE_KEY_PATH"
+    export GITHUB_APP_PRIVATE_KEY_PATH
+
+    # Git calls the helper per operation, so the one-hour token lifetime stops
+    # mattering. A token in the environment would instead work for the first
+    # agent run and fail every push afterwards.
+    git config --global --replace-all \
+      "credential.https://github.com.helper" "$GITHUB_APP_CREDENTIAL_HELPER"
+    git config --global credential.https://github.com.useHttpPath false
+    log "git authenticates through the GitHub App (installation ${GITHUB_APP_INSTALLATION_ID})"
+
+    # Proves the key signs, the installation exists and the token mints — all
+    # before an agent discovers otherwise mid-task.
+    if ! printf 'protocol=https\nhost=github.com\n\n' \
+         | "$GITHUB_APP_CREDENTIAL_HELPER" get >/dev/null 2>&1; then
+      die "could not mint a GitHub App installation token; check GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID and the private key"
+    fi
+    log "GitHub App token minting verified"
+  else
+    # gh reads GITHUB_TOKEN from the environment. `setup-git` installs gh as
+    # git's credential helper, so pushes authenticate without the token ever
+    # appearing in a remote URL or in .git/config — which agents commit, and
+    # which would leak it into the repository.
+    gh auth setup-git
+    if ! gh auth status >/dev/null 2>&1; then
+      gh auth status >&2 || true
+      die "gh auth status failed; check GITHUB_TOKEN's scopes (contents, pull requests, issues on ${CONDUCTOR_REPO:-lassemand/nexus})"
+    fi
+    log "git authenticates through GITHUB_TOKEN via gh"
   fi
-  log "gh authenticated"
 }
 
 # ── repository ───────────────────────────────────────────────────────────────
@@ -351,8 +427,22 @@ add_mcp() {
 configure_mcp() {
   # User scope, so every Claude process the dispatcher spawns inherits them.
   # The backend agent needs linear to move issues and github to work with PRs.
-  add_mcp linear "https://mcp.linear.app/mcp"         "$LINEAR_API_KEY"
-  add_mcp github "https://api.githubcopilot.com/mcp/" "$GITHUB_TOKEN"
+  add_mcp linear "https://mcp.linear.app/mcp" "$LINEAR_API_KEY"
+
+  claude mcp remove --scope user github >/dev/null 2>&1 || true
+  if [[ "$GITHUB_MODE" == "app" ]]; then
+    # The same shape the developer's Mac runs: a local stdio server holding the
+    # App credentials, minting its own short-lived tokens. No bearer token to
+    # store, so nothing long-lived lands in ~/.claude.json on the volume.
+    claude mcp add --scope user github -- \
+      github-mcp-server stdio \
+        --app-id "$GITHUB_APP_ID" \
+        --app-installation-id "$GITHUB_APP_INSTALLATION_ID" \
+        --app-private-key-path "$GITHUB_APP_PRIVATE_KEY_PATH" \
+        --toolsets all >/dev/null
+  else
+    add_mcp github "https://api.githubcopilot.com/mcp/" "$GITHUB_TOKEN"
+  fi
 
   # Connectivity, not merely configuration. A wrong token, or an endpoint that
   # rejects this kind of credential, shows up here instead of as every agent
