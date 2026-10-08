@@ -217,7 +217,11 @@ print(json.dumps({'claudeAiOauth': {'accessToken': 'a', 'refreshToken': 'r',
   seed_claude_credentials >/dev/null 2>&1
   f="$HOME/.claude/.credentials.json"
   [[ -f "$f" ]] && ok "seeds the credentials file" || bad "seeds the credentials file"
-  check "written 0600, not world-readable" "$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")" "600"
+  # GNU form first: on Linux `stat -f` is --file-system and exits 0 with an
+  # unrelated value, so the BSD-first order silently compared garbage and only
+  # failed inside the container.
+  perms="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f")"
+  check "written 0600, not world-readable" "$perms" "600"
   rm -rf "$SANDBOX"
 )
 
