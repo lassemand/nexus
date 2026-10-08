@@ -1,0 +1,10 @@
+apiVersion: v2
+name: conductor
+description: >
+  Helm chart for nexus conductor — the webhook router that runs Claude Code
+  agent sessions, one per session group, each in its own git worktree on the
+  pod's volume. Deployed with webhook intake switched off; intake is enabled
+  at cutover (NEX-132).
+type: application
+version: 0.1.0
+appVersion: "0.1.3"

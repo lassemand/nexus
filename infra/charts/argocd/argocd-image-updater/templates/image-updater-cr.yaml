@@ -52,6 +52,21 @@ spec:
           branch: main
           writeBackTarget: helmvalues:./values.yaml
           credentials: secret:argocd/git-creds#githubAppID,githubAppInstallationID,githubAppPrivateKey
+    - namePattern: "conductor-conductor"
+      images:
+        - alias: conductor
+          imageName: lmapwns/nexus-conductor
+          manifestTargets:
+            helm:
+              name: image.repository
+              tag: image.tag
+      writeBackConfig:
+        method: git
+        gitConfig:
+          repository: https://github.com/lassemand/nexus.git
+          branch: main
+          writeBackTarget: helmvalues:./values.yaml
+          credentials: secret:argocd/git-creds#githubAppID,githubAppInstallationID,githubAppPrivateKey
     - namePattern: "insight-insight"
       images:
         - alias: nexus

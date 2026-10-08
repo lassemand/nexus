@@ -1,0 +1,20 @@
+# Everything that must outlive the container.
+#
+# `helm.sh/resource-policy: keep` is load-bearing: without it an ArgoCD prune
+# or a chart deletion would take the Claude transcripts, the agents' worktrees
+# (which may hold uncommitted work) and the subscription credentials with it.
+# Deleting this volume is a deliberate act, never a side effect.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: conductor-data
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app: conductor
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
