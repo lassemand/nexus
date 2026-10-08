@@ -1,11 +1,12 @@
 image:
   repository: "lmapwns/nexus-conductor"
-  # 0.1.3 is the first tag that can actually run agent work. 0.1.0 and 0.1.1
-  # are published but carry two defects found by the in-container workspace
-  # build (NEX-133): a login shell lost the Rust toolchain from PATH, and
-  # clippy/rustfmt were installed for the wrong toolchain. Do not pin below
-  # 0.1.2.
-  tag: "0.1.3"
+  # 0.1.4 is the first tag that contains the entrypoint this chart's `command`
+  # points at. 0.1.3 and earlier were built before NEX-134 merged, so they have
+  # no /usr/local/bin/conductor-entrypoint and the pod would crash-loop on a
+  # missing file. (0.1.0 and 0.1.1 additionally carry two defects the
+  # in-container workspace build found: a login shell lost the Rust toolchain
+  # from PATH, and clippy/rustfmt were on the wrong toolchain.)
+  tag: "0.1.4"
 
 # Maximum concurrent Claude sessions. See the memory note on resources below
 # before raising this.
