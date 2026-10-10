@@ -202,10 +202,29 @@ configure_gh() {
     mv "$tmp" "$GITHUB_APP_PRIVATE_KEY_PATH"
     export GITHUB_APP_PRIVATE_KEY_PATH
 
-    # Git calls the helper per operation, so the one-hour token lifetime stops
-    # mattering. A token in the environment would instead work for the first
-    # agent run and fail every push afterwards.
+    # Git calls a credential helper per operation, so the one-hour token
+    # lifetime stops mattering. A token in the environment would instead work
+    # for the first agent run and fail every push afterwards.
+    #
+    # Two helpers, in order. git's own credential-cache answers first and
+    # holds the token in a daemon's *memory*; on a miss it falls through to the
+    # App helper below, and git stores the result back into the cache. That
+    # keeps a live credential off the PersistentVolume, which a disk cache in
+    # the helper would not.
+    #
+    # The timeout is deliberately under the token's hour: close enough to save
+    # the repeated mints, far enough from expiry that a cached token cannot go
+    # stale while an operation is using it.
+    local cache_dir="$HOME/.cache/git"
+    mkdir -p "$cache_dir"
+    # credential-cache refuses to start if this directory is group- or
+    # world-readable, since anyone who could read it could read the socket.
+    chmod 0700 "$cache_dir"
+
     git config --global --replace-all \
+      "credential.https://github.com.helper" \
+      "cache --timeout=${CONDUCTOR_GIT_CREDENTIAL_TTL:-3300} --socket ${cache_dir}/credential-socket"
+    git config --global --add \
       "credential.https://github.com.helper" "$GITHUB_APP_CREDENTIAL_HELPER"
     git config --global credential.https://github.com.useHttpPath false
     log "git authenticates through the GitHub App (installation ${GITHUB_APP_INSTALLATION_ID})"

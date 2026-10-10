@@ -462,61 +462,72 @@ STUB
     [[ -z "$o" ]] && ok "$verb prints nothing" || bad "$verb prints nothing" "$o"
   done
 
-  # ── caching ──
+  # ── the helper is stateless ──
   #
-  # The stub counts requests, so this proves the second call does not reach
-  # the API rather than merely returning the same string.
+  # Caching moved to git's own credential-cache daemon, which keeps the token
+  # in memory. The helper must therefore mint every time it is asked, so no
+  # live credential is written to the volume.
   helper_get() {
     printf 'protocol=https\nhost=github.com\n\n' | \
       GITHUB_APP_ID=12345 \
       GITHUB_APP_INSTALLATION_ID=67890 \
       GITHUB_APP_PRIVATE_KEY_PATH="$SANDBOX/k.pem" \
       GITHUB_API_URL="http://127.0.0.1:${port}" \
-      GITHUB_APP_TOKEN_CACHE_DIR="$SANDBOX/cache" \
       bash "$HELPER" get 2>&1
   }
+  : > "$SANDBOX/mints"
+  helper_get >/dev/null; helper_get >/dev/null
+  mints="$(wc -l < "$SANDBOX/mints" | tr -d ' ')"
+  check "two calls mint twice (no state of its own)" "$mints" "2"
+  n="$(find "$SANDBOX" -name '*token*' -o -name '*.cache*' 2>/dev/null | wc -l | tr -d ' ')"
+  check "and it writes no token to disk" "$n" "0"
 
-  rm -rf "$SANDBOX/cache"
-  first="$(helper_get)"
-  mints_after_first="$(cat "$SANDBOX/mints" 2>/dev/null | wc -l | tr -d ' ')"
-  second="$(helper_get)"
-  mints_after_second="$(cat "$SANDBOX/mints" 2>/dev/null | wc -l | tr -d ' ')"
+  # ── chained behind git's credential-cache ──
+  #
+  # This is the arrangement the entrypoint configures, exercised through
+  # `git credential fill` so the helper chain itself is under test rather than
+  # the helper alone. The stub's token carries a nonce, so a cached answer is
+  # distinguishable from a fresh mint.
+  if command -v git >/dev/null 2>&1; then
+    chain_home="$SANDBOX/chainhome"
+    mkdir -p "$chain_home/.cache/git"
+    chmod 0700 "$chain_home/.cache/git"
+    sock="$chain_home/.cache/git/credential-socket"
 
-  # Asserted first: without this, the equality below also holds when nothing
-  # ever minted — the comparison would pass for the wrong reason.
-  [[ "$mints_after_first" -ge 1 ]] && ok "the first call reaches the API" \
-    || bad "the first call reaches the API" "mints=$mints_after_first"
-  check "the second call is served from cache" "$mints_after_second" "$mints_after_first"
-  check "and returns the same token" "$second" "$first"
-  [[ -f "$SANDBOX/cache/installation-token.json" ]] && ok "cache file written" || bad "cache file written"
-  perms="$(stat -c '%a' "$SANDBOX/cache/installation-token.json" 2>/dev/null \
-    || stat -f '%Lp' "$SANDBOX/cache/installation-token.json")"
-  check "cache is not world-readable" "$perms" "600"
+    cat > "$SANDBOX/chain-helper.sh" <<CHAIN
+#!/usr/bin/env bash
+export GITHUB_APP_ID=12345 GITHUB_APP_INSTALLATION_ID=67890
+export GITHUB_APP_PRIVATE_KEY_PATH="$SANDBOX/k.pem"
+export GITHUB_API_URL="http://127.0.0.1:${port}"
+exec bash "$HELPER" "\$@"
+CHAIN
+    chmod +x "$SANDBOX/chain-helper.sh"
 
-  # Inside the refresh buffer the token must be replaced, not handed out as it
-  # nears expiry — otherwise a long push could outlive it mid-operation.
-  jq -n --arg t "stale" --argjson e "$(( $(date +%s) + 60 ))" \
-    '{token: $t, expires_at_epoch: $e}' > "$SANDBOX/cache/installation-token.json"
-  before="$(cat "$SANDBOX/mints" | wc -l | tr -d ' ')"
-  near="$(helper_get)"
-  after="$(cat "$SANDBOX/mints" | wc -l | tr -d ' ')"
-  [[ "$after" -gt "$before" ]] && ok "a token inside the refresh buffer is re-minted" \
-    || bad "a token inside the refresh buffer is re-minted"
-  grep -q "stale" <<<"$near" && bad "the stale token was served" || ok "and the stale one is not served"
+    : > "$SANDBOX/mints"
+    env HOME="$chain_home" GIT_CONFIG_NOSYSTEM=1 git config --global --replace-all \
+      "credential.https://github.com.helper" "cache --timeout=3300 --socket $sock"
+    env HOME="$chain_home" GIT_CONFIG_NOSYSTEM=1 git config --global --add \
+      "credential.https://github.com.helper" "$SANDBOX/chain-helper.sh"
 
-  # Git sends `erase` when the credential was rejected; keeping it cached would
-  # turn a transient failure into a permanent one.
-  printf 'protocol=https\nhost=github.com\n\n' | \
-    GITHUB_APP_TOKEN_CACHE_DIR="$SANDBOX/cache" bash "$HELPER" erase >/dev/null 2>&1
-  [[ ! -f "$SANDBOX/cache/installation-token.json" ]] && ok "erase drops the cache" \
-    || bad "erase drops the cache"
-
-  # A corrupt cache must fall through to minting, not fail the push.
-  mkdir -p "$SANDBOX/cache"
-  printf '{"token": tr' > "$SANDBOX/cache/installation-token.json"
-  recovered="$(helper_get)"
-  grep -q "^password=ghs_STUB_TOKEN$" <<<"$recovered" \
-    && ok "a corrupt cache falls through to minting" || bad "a corrupt cache falls through to minting" "$recovered"
+    first=""
+    for i in 1 2 3; do
+      pw="$(printf 'protocol=https\nhost=github.com\n\n' \
+        | env HOME="$chain_home" GIT_CONFIG_NOSYSTEM=1 git credential fill 2>/dev/null \
+        | grep '^password=' | cut -d= -f2)"
+      [[ -z "$first" ]] && first="$pw"
+      if [[ "$i" == 1 ]]; then
+        printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=%s\n\n' "$pw" \
+          | env HOME="$chain_home" GIT_CONFIG_NOSYSTEM=1 git credential approve >/dev/null 2>&1 || true
+      fi
+    done
+    chain_mints="$(wc -l < "$SANDBOX/mints" | tr -d ' ')"
+    check "three git credential fills cost one mint" "$chain_mints" "1"
+    [[ -n "$first" ]] && ok "and the chain returns a token" || bad "and the chain returns a token"
+    [[ ! -f "$chain_home/.cache/git/credential-socket" ]] || ok "the cache is a socket, not a token file"
+    env HOME="$chain_home" git credential-cache exit --socket "$sock" 2>/dev/null || true
+  else
+    bad "git is required to test the credential chain"
+  fi
 
   # Reaped as well as killed, so bash's job-control notice does not land in
   # the middle of the test output.
