@@ -396,7 +396,7 @@ printf '== github app credential helper ==\n'
   openssl rsa -in "$SANDBOX/k.pem" -pubout -out "$SANDBOX/k.pub" >/dev/null 2>&1
 
   cat > "$SANDBOX/stub.py" <<'STUB'
-import base64, http.server, json, os, subprocess, sys, tempfile
+import base64, http.server, json, os, subprocess, sys, tempfile, time
 PUB = sys.argv[1]
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -416,14 +416,18 @@ class H(http.server.BaseHTTPRequestHandler):
                 os.unlink(sf.name); os.unlink(df.name)
             except Exception:
                 ok = False
-        body = b'{"token":"ghs_STUB_TOKEN"}' if ok else b'{"message":"bad jwt"}'
+        if ok:
+            open(os.environ["MINT_LOG"], "a").write("mint\n")
+        exp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))
+        body = json.dumps({"token": "ghs_STUB_TOKEN", "expires_at": exp}).encode() if ok else b'{"message":"bad jwt"}'
         self.send_response(201 if ok else 401)
         self.send_header("Content-Length", str(len(body))); self.end_headers()
         self.wfile.write(body)
 http.server.HTTPServer(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
 STUB
 
-  python3 "$SANDBOX/stub.py" "$SANDBOX/k.pub" "$port" >/dev/null 2>&1 &
+  : > "$SANDBOX/mints"
+  MINT_LOG="$SANDBOX/mints" python3 "$SANDBOX/stub.py" "$SANDBOX/k.pub" "$port" >/dev/null 2>&1 &
   stub_pid=$!
   # Wait for the port rather than sleeping blind.
   for _ in $(seq 1 50); do
@@ -453,9 +457,66 @@ STUB
   [[ -z "$other" ]] && ok "declines any host but github.com" || bad "declines any host but github.com" "$other"
 
   for verb in store erase; do
-    o="$(printf 'protocol=https\nhost=github.com\n\n' | bash "$HELPER" "$verb" 2>&1)"
-    [[ -z "$o" ]] && ok "$verb is a silent no-op" || bad "$verb is a silent no-op" "$o"
+    o="$(printf 'protocol=https\nhost=github.com\n\n' | \
+      GITHUB_APP_TOKEN_CACHE_DIR="$SANDBOX/cache" bash "$HELPER" "$verb" 2>&1)"
+    [[ -z "$o" ]] && ok "$verb prints nothing" || bad "$verb prints nothing" "$o"
   done
+
+  # ── caching ──
+  #
+  # The stub counts requests, so this proves the second call does not reach
+  # the API rather than merely returning the same string.
+  helper_get() {
+    printf 'protocol=https\nhost=github.com\n\n' | \
+      GITHUB_APP_ID=12345 \
+      GITHUB_APP_INSTALLATION_ID=67890 \
+      GITHUB_APP_PRIVATE_KEY_PATH="$SANDBOX/k.pem" \
+      GITHUB_API_URL="http://127.0.0.1:${port}" \
+      GITHUB_APP_TOKEN_CACHE_DIR="$SANDBOX/cache" \
+      bash "$HELPER" get 2>&1
+  }
+
+  rm -rf "$SANDBOX/cache"
+  first="$(helper_get)"
+  mints_after_first="$(cat "$SANDBOX/mints" 2>/dev/null | wc -l | tr -d ' ')"
+  second="$(helper_get)"
+  mints_after_second="$(cat "$SANDBOX/mints" 2>/dev/null | wc -l | tr -d ' ')"
+
+  # Asserted first: without this, the equality below also holds when nothing
+  # ever minted — the comparison would pass for the wrong reason.
+  [[ "$mints_after_first" -ge 1 ]] && ok "the first call reaches the API" \
+    || bad "the first call reaches the API" "mints=$mints_after_first"
+  check "the second call is served from cache" "$mints_after_second" "$mints_after_first"
+  check "and returns the same token" "$second" "$first"
+  [[ -f "$SANDBOX/cache/installation-token.json" ]] && ok "cache file written" || bad "cache file written"
+  perms="$(stat -c '%a' "$SANDBOX/cache/installation-token.json" 2>/dev/null \
+    || stat -f '%Lp' "$SANDBOX/cache/installation-token.json")"
+  check "cache is not world-readable" "$perms" "600"
+
+  # Inside the refresh buffer the token must be replaced, not handed out as it
+  # nears expiry — otherwise a long push could outlive it mid-operation.
+  jq -n --arg t "stale" --argjson e "$(( $(date +%s) + 60 ))" \
+    '{token: $t, expires_at_epoch: $e}' > "$SANDBOX/cache/installation-token.json"
+  before="$(cat "$SANDBOX/mints" | wc -l | tr -d ' ')"
+  near="$(helper_get)"
+  after="$(cat "$SANDBOX/mints" | wc -l | tr -d ' ')"
+  [[ "$after" -gt "$before" ]] && ok "a token inside the refresh buffer is re-minted" \
+    || bad "a token inside the refresh buffer is re-minted"
+  grep -q "stale" <<<"$near" && bad "the stale token was served" || ok "and the stale one is not served"
+
+  # Git sends `erase` when the credential was rejected; keeping it cached would
+  # turn a transient failure into a permanent one.
+  printf 'protocol=https\nhost=github.com\n\n' | \
+    GITHUB_APP_TOKEN_CACHE_DIR="$SANDBOX/cache" bash "$HELPER" erase >/dev/null 2>&1
+  [[ ! -f "$SANDBOX/cache/installation-token.json" ]] && ok "erase drops the cache" \
+    || bad "erase drops the cache"
+
+  # A corrupt cache must fall through to minting, not fail the push.
+  mkdir -p "$SANDBOX/cache"
+  printf '{"token": tr' > "$SANDBOX/cache/installation-token.json"
+  recovered="$(helper_get)"
+  grep -q "^password=ghs_STUB_TOKEN$" <<<"$recovered" \
+    && ok "a corrupt cache falls through to minting" || bad "a corrupt cache falls through to minting" "$recovered"
 
   # Reaped as well as killed, so bash's job-control notice does not land in
   # the middle of the test output.
