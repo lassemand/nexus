@@ -1,0 +1,168 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conductor
+  labels:
+    app: conductor
+spec:
+  # Exactly one pod, including during an update.
+  #
+  # Required for correctness, not sizing. The dispatcher verifies each group's
+  # recorded PID against its own /proc to decide whether a run is still alive
+  # (NEX-126). A second pod reads the first pod's live runs as dead, records
+  # them Lost, resets those groups to Idle, and then starts duplicate runs in
+  # them — two concurrent resumes of one Claude conversation, which is the
+  # exact failure conductor replaced mcp-watchdog.sh to eliminate.
+  #
+  # `Recreate` is part of the requirement, not tidiness: the default
+  # RollingUpdate briefly runs two pods, and that window is long enough for the
+  # new pod's startup reconcile to do precisely the above to the old pod's work.
+  #
+  # (The registry itself is safe for concurrent writers — it moved to Postgres
+  # with advisory locks. An earlier version of this note cited file locks on an
+  # RWO volume, which no longer applies. The PID-namespace problem does.)
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: conductor
+  template:
+    metadata:
+      labels:
+        app: conductor
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        # fsGroup so the mounted volume is writable by uid 1000 — the entrypoint
+        # creates /data/{home,repo,worktrees,state} and the agents build there.
+        fsGroup: 1000
+        runAsNonRoot: true
+
+      # conductor's own shutdown grace is 600s: on SIGTERM it stops accepting
+      # webhooks and waits for running agents before stopping them. 660 leaves
+      # a minute of margin so Kubernetes does not SIGKILL mid-drain and lose
+      # the record of what was interrupted.
+      terminationGracePeriodSeconds: 660
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: conductor-data
+        - name: agents
+          configMap:
+            name: conductor-agents
+
+      containers:
+        - name: conductor
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          # tini as PID 1 reaps the grandchildren claude leaves behind; the
+          # entrypoint builds the environment on /data and then execs
+          # `conductor serve`.
+          command: ["/usr/bin/tini", "--", "/usr/local/bin/conductor-entrypoint"]
+
+          ports:
+            - name: http
+              containerPort: 8788
+              protocol: TCP
+
+          envFrom:
+            - secretRef:
+                name: conductor-secret
+
+          env:
+            - name: CONDUCTOR_STATE_DIR
+              value: "/data/state"
+            - name: CONDUCTOR_REPO_ROOT
+              value: "/data/repo"
+            - name: CONDUCTOR_WORKTREE_ROOT
+              value: "/data/worktrees"
+            - name: CONDUCTOR_MAX_SESSIONS
+              value: {{ .Values.maxSessions | quote }}
+            - name: CONDUCTOR_IDLE_DAYS
+              value: "7"
+            - name: CONDUCTOR_RUN_TIMEOUT_MIN
+              value: "120"
+            - name: CONDUCTOR_AGENT
+              value: "backend"
+            - name: GITHUB_WEBHOOK_USERS
+              value: {{ .Values.githubWebhookUsers | quote }}
+            - name: CONDUCTOR_BIND
+              value: "0.0.0.0:8788"
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: agents
+              mountPath: /etc/conductor/agents
+              readOnly: true
+
+          # The first boot clones the repository and runs the entrypoint's
+          # smoke check against the model, so it can take many minutes. The
+          # startup probe holds the other two off until that finishes — without
+          # it, the liveness probe would kill the pod mid-bootstrap and it would
+          # never come up.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 90   # 15 minutes
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          # Deliberately slack. Five parallel cargo builds can starve the CPU
+          # long enough for a tight probe to time out, and a restart kills every
+          # running agent session — a far worse outcome than a slow /health.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+              memory: {{ .Values.resources.requests.memory | quote }}
+            limits:
+              memory: {{ .Values.resources.limits.memory | quote }}
+
+{{- if .Values.hookdeck.enabled }}
+        # Webhook intake. Off until cutover (NEX-132) — see values.yaml.
+        #
+        # The second argument to `hookdeck listen` is the Hookdeck **source**
+        # name (`linear`, `github`), not the destination name (`cli-linear`,
+        # `cli-github`). Getting that wrong makes the CLI prompt interactively,
+        # which in a container means it hangs forever with no useful log.
+        {{- range $source, $path := dict "linear" "/webhook" "github" "/webhook/github" }}
+        - name: hookdeck-{{ $source }}
+          image: {{ $.Values.hookdeck.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              hookdeck ci --api-key "$HOOKDECK_API_KEY"
+              exec hookdeck listen 8788 {{ $source }} --path {{ $path }}
+          env:
+            - name: HOOKDECK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: conductor-secret
+                  key: HOOKDECK_API_KEY
+          resources:
+            requests:
+              memory: {{ $.Values.hookdeck.resources.requests.memory | quote }}
+            limits:
+              memory: {{ $.Values.hookdeck.resources.limits.memory | quote }}
+        {{- end }}
+{{- end }}

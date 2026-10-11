@@ -35,6 +35,11 @@ spec:
           - path: infra/charts/nexus/*
           - path: infra/charts/argocd/*
           - path: infra/charts/scanner/*
+          # conductor belongs here, not in nexus-app-charts: that set annotates
+          # every app to track lmapwns/nexus, which would write the nexus tag
+          # into conductor's values. Its own image is tracked by the
+          # ImageUpdater CR instead.
+          - path: infra/charts/conductor/*
 
   template:
     metadata:

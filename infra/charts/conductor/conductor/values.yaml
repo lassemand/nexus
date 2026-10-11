@@ -1,0 +1,49 @@
+image:
+  repository: "lmapwns/nexus-conductor"
+  # 0.1.4 is the first tag that contains the entrypoint this chart's `command`
+  # points at. 0.1.3 and earlier were built before NEX-134 merged, so they have
+  # no /usr/local/bin/conductor-entrypoint and the pod would crash-loop on a
+  # missing file. (0.1.0 and 0.1.1 additionally carry two defects the
+  # in-container workspace build found: a login shell lost the Rust toolchain
+  # from PATH, and clippy/rustfmt were on the wrong toolchain.)
+  tag: "0.1.4"
+
+# Maximum concurrent Claude sessions. See the memory note on resources below
+# before raising this.
+maxSessions: 5
+
+# Users whose pull request comments are routed to a session.
+githubWebhookUsers: "lassemand"
+
+persistence:
+  # Holds /data/home (Claude transcripts — `claude --resume` depends on them
+  # surviving a restart), /data/repo, /data/worktrees (each with its own cargo
+  # target/) and /data/state.
+  size: 100Gi
+
+resources:
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  limits:
+    # Each concurrent session may run a workspace `cargo build`, which peaks
+    # around 2–3 GiB. So maxSessions × 3Gi has to fit inside this limit *and*
+    # inside the OrbStack VM's memory setting. If they do not both hold, lower
+    # maxSessions — raising this past what the VM actually has just moves the
+    # failure from a cargo OOM to the pod being OOMKilled, which takes every
+    # running agent with it.
+    memory: "16Gi"
+    # No CPU limit on purpose: parallel cargo builds are bursty, and throttling
+    # them lengthens every run without bounding anything that matters.
+
+# Webhook intake. Stays false until the cutover (NEX-132) — with the local
+# `mcp` setup still running, enabling this would have both receiving the same
+# Linear events and dispatching the same work twice.
+hookdeck:
+  enabled: false
+  image: "hookdeck/hookdeck-cli:0.14.1"
+  resources:
+    requests:
+      memory: "32Mi"
+    limits:
+      memory: "128Mi"
