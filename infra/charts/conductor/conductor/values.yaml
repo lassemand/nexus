@@ -6,21 +6,17 @@ image:
   # missing file. (0.1.0 and 0.1.1 additionally carry two defects the
   # in-container workspace build found: a login shell lost the Rust toolchain
   # from PATH, and clippy/rustfmt were on the wrong toolchain.)
-  tag: "0.1.4"
-
+  tag: "0.1.5"
 # Maximum concurrent Claude sessions. See the memory note on resources below
 # before raising this.
 maxSessions: 5
-
 # Users whose pull request comments are routed to a session.
 githubWebhookUsers: "lassemand"
-
 persistence:
   # Holds /data/home (Claude transcripts — `claude --resume` depends on them
   # surviving a restart), /data/repo, /data/worktrees (each with its own cargo
   # target/) and /data/state.
   size: 100Gi
-
 resources:
   requests:
     cpu: "1"
@@ -35,7 +31,6 @@ resources:
     memory: "16Gi"
     # No CPU limit on purpose: parallel cargo builds are bursty, and throttling
     # them lengthens every run without bounding anything that matters.
-
 # Webhook intake. Stays false until the cutover (NEX-132) — with the local
 # `mcp` setup still running, enabling this would have both receiving the same
 # Linear events and dispatching the same work twice.
