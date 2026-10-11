@@ -125,6 +125,80 @@ printf '== auth mode ==\n'
   rm -rf "$SANDBOX"
 )
 
+printf '== github mode ==\n'
+
+(
+  new_sandbox; init_layout >/dev/null
+  export GITHUB_TOKEN=x LINEAR_API_KEY=y ANTHROPIC_API_KEY=a
+  check_env >/dev/null 2>&1
+  check "a token alone infers token mode" "${GITHUB_MODE:-}" "token"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export LINEAR_API_KEY=y ANTHROPIC_API_KEY=a
+  export GITHUB_APP_ID=1 GITHUB_APP_INSTALLATION_ID=2 GITHUB_APP_PRIVATE_KEY=pem
+  check_env >/dev/null 2>&1 && ok "app credentials alone are accepted" || bad "app credentials alone are accepted"
+  check "and infer app mode" "${GITHUB_MODE:-}" "app"
+  unset GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export LINEAR_API_KEY=y ANTHROPIC_API_KEY=a
+  export GITHUB_TOKEN=x GITHUB_APP_ID=1 GITHUB_APP_INSTALLATION_ID=2 GITHUB_APP_PRIVATE_KEY=pem
+  check_env >/dev/null 2>&1
+  # Unlike the model credential, there is no cost difference here — the App is
+  # simply better, so preferring it silently is safe rather than presumptuous.
+  check "the app wins when both are present" "${GITHUB_MODE:-}" "app"
+  unset GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export LINEAR_API_KEY=y ANTHROPIC_API_KEY=a
+  out="$(check_env 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "no github credentials at all is rejected" || bad "no github credentials at all is rejected"
+  grep -q "GITHUB_APP_ID" <<<"$out" && ok "names the app option first" || bad "names the app option first" "$out"
+  grep -q "GITHUB_TOKEN" <<<"$out" && ok "and the token option" || bad "and the token option" "$out"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export LINEAR_API_KEY=y ANTHROPIC_API_KEY=a GITHUB_TOKEN=x
+  export CONDUCTOR_GITHUB_MODE=app
+  out="$(check_env 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "app mode without app credentials is rejected" || bad "app mode without app credentials is rejected"
+  unset CONDUCTOR_GITHUB_MODE
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export LINEAR_API_KEY=y ANTHROPIC_API_KEY=a GITHUB_TOKEN=x
+  export CONDUCTOR_GITHUB_MODE=sideways
+  out="$(check_env 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "an unknown github mode is rejected" || bad "an unknown github mode is rejected"
+  grep -q "sideways" <<<"$out" && ok "echoing the bad value" || bad "echoing the bad value" "$out"
+  unset CONDUCTOR_GITHUB_MODE
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  GITHUB_MODE=app
+  export GITHUB_APP_ID=1 GITHUB_APP_INSTALLATION_ID=2
+  export GITHUB_APP_PRIVATE_KEY="not a private key at all"
+  out="$(configure_gh 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "a malformed private key is rejected" || bad "a malformed private key is rejected" "$out"
+  unset GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY
+  rm -rf "$SANDBOX"
+)
+
 printf '== subscription credentials ==\n'
 
 # Helper: a credentials file whose refresh token expires in N days.
@@ -138,11 +212,16 @@ print(json.dumps({'claudeAiOauth': {'accessToken': 'a', 'refreshToken': 'r',
 
 (
   new_sandbox; init_layout >/dev/null
-  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
   seed_claude_credentials >/dev/null 2>&1
   f="$HOME/.claude/.credentials.json"
   [[ -f "$f" ]] && ok "seeds the credentials file" || bad "seeds the credentials file"
-  check "written 0600, not world-readable" "$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")" "600"
+  # GNU form first: on Linux `stat -f` is --file-system and exits 0 with an
+  # unrelated value, so the BSD-first order silently compared garbage and only
+  # failed inside the container.
+  perms="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f")"
+  check "written 0600, not world-readable" "$perms" "600"
   rm -rf "$SANDBOX"
 )
 
@@ -154,7 +233,8 @@ print(json.dumps({'claudeAiOauth': {'accessToken': 'a', 'refreshToken': 'r',
   printf '%s' "$(creds_json 20)" | python3 -c "
 import json,sys
 d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(json.dumps(d))" > "$f"
-  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
   seed_claude_credentials >/dev/null 2>&1
   # Overwriting would roll the credential back to the seed and undo renewal.
   check "an existing file is never overwritten" \
@@ -164,7 +244,8 @@ d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(jso
 
 (
   new_sandbox; init_layout >/dev/null
-  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json -1)"
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json -1)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
   out="$(seed_claude_credentials 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "an expired refresh token is fatal" || bad "an expired refresh token is fatal" "$out"
   grep -q "setup-token" <<<"$out" && ok "and says how to fix it" || bad "and says how to fix it" "$out"
@@ -175,7 +256,8 @@ d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(jso
 
 (
   new_sandbox; init_layout >/dev/null
-  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 2)"
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 2)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
   out="$(seed_claude_credentials 2>&1)"
   grep -q "WARNING.*expires in" <<<"$out" && ok "warns before the refresh token expires" \
     || bad "warns before the refresh token expires" "$out"
@@ -195,7 +277,8 @@ d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(jso
   f="$HOME/.claude/.credentials.json"
   mkdir -p "$(dirname "$f")"
   printf '{"claudeAiOauth": {tr' > "$f"
-  export CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 21)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
   seed_claude_credentials >/dev/null 2>&1
   jq empty "$f" >/dev/null 2>&1 && ok "a torn credentials file is recovered from the seed" \
     || bad "a torn credentials file is recovered from the seed"
@@ -296,6 +379,159 @@ printf '== corruption recovery ==\n'
   # Never discarded silently — it may be the only copy of the session map.
   count=$(find "$HOME" -maxdepth 1 -name '.claude.json.corrupt-*' | wc -l | tr -d ' ')
   check "the broken file is kept as a backup" "$count" "1"
+  rm -rf "$SANDBOX"
+)
+
+printf '== github app credential helper ==\n'
+
+# Exercises the helper end to end against a stand-in for GitHub's API: a
+# throwaway RSA key signs the JWT, and the stub verifies that signature with
+# the matching public key before returning a token. That covers the part most
+# likely to be silently wrong — RS256 signing — without any real credential.
+(
+  new_sandbox
+  HELPER="${HERE}/github-app-credential-helper.sh"
+  port=$(( 20000 + RANDOM % 20000 ))
+  openssl genrsa -out "$SANDBOX/k.pem" 2048 >/dev/null 2>&1
+  openssl rsa -in "$SANDBOX/k.pem" -pubout -out "$SANDBOX/k.pub" >/dev/null 2>&1
+
+  cat > "$SANDBOX/stub.py" <<'STUB'
+import base64, http.server, json, os, subprocess, sys, tempfile, time
+PUB = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        auth = self.headers.get("Authorization", "")
+        ok = False
+        if auth.startswith("Bearer "):
+            try:
+                h, p, sg = auth[7:].split(".")
+                pad = lambda x: x + "=" * (-len(x) % 4)
+                sig = base64.urlsafe_b64decode(pad(sg))
+                sf = tempfile.NamedTemporaryFile(delete=False); sf.write(sig); sf.close()
+                df = tempfile.NamedTemporaryFile(delete=False, mode="w"); df.write(f"{h}.{p}"); df.close()
+                ok = subprocess.run(["openssl","dgst","-sha256","-verify",PUB,
+                                     "-signature",sf.name,df.name],
+                                    capture_output=True).returncode == 0
+                os.unlink(sf.name); os.unlink(df.name)
+            except Exception:
+                ok = False
+        if ok:
+            open(os.environ["MINT_LOG"], "a").write("mint\n")
+        exp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))
+        body = json.dumps({"token": "ghs_STUB_TOKEN", "expires_at": exp}).encode() if ok else b'{"message":"bad jwt"}'
+        self.send_response(201 if ok else 401)
+        self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
+STUB
+
+  : > "$SANDBOX/mints"
+  MINT_LOG="$SANDBOX/mints" python3 "$SANDBOX/stub.py" "$SANDBOX/k.pub" "$port" >/dev/null 2>&1 &
+  stub_pid=$!
+  # Wait for the port rather than sleeping blind.
+  for _ in $(seq 1 50); do
+    (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null && break
+    sleep 0.1
+  done
+
+  out="$(printf 'protocol=https\nhost=github.com\n\n' | \
+    GITHUB_APP_ID=12345 \
+    GITHUB_APP_INSTALLATION_ID=67890 \
+    GITHUB_APP_PRIVATE_KEY_PATH="$SANDBOX/k.pem" \
+    GITHUB_API_URL="http://127.0.0.1:${port}" \
+    bash "$HELPER" get 2>&1)"
+
+  grep -q "^username=x-access-token$" <<<"$out" \
+    && ok "returns the installation-token username" || bad "returns the installation-token username" "$out"
+  grep -q "^password=ghs_STUB_TOKEN$" <<<"$out" \
+    && ok "mints a token with a correctly signed RS256 JWT" \
+    || bad "mints a token with a correctly signed RS256 JWT" "$out"
+
+  # Must never answer for a host other than github.com, or a changed remote
+  # would be handed a GitHub credential.
+  other="$(printf 'protocol=https\nhost=gitlab.example.com\n\n' | \
+    GITHUB_APP_ID=12345 GITHUB_APP_INSTALLATION_ID=67890 \
+    GITHUB_APP_PRIVATE_KEY_PATH="$SANDBOX/k.pem" \
+    GITHUB_API_URL="http://127.0.0.1:${port}" bash "$HELPER" get 2>&1)"
+  [[ -z "$other" ]] && ok "declines any host but github.com" || bad "declines any host but github.com" "$other"
+
+  for verb in store erase; do
+    o="$(printf 'protocol=https\nhost=github.com\n\n' | \
+      GITHUB_APP_TOKEN_CACHE_DIR="$SANDBOX/cache" bash "$HELPER" "$verb" 2>&1)"
+    [[ -z "$o" ]] && ok "$verb prints nothing" || bad "$verb prints nothing" "$o"
+  done
+
+  # ── the helper is stateless ──
+  #
+  # Caching moved to git's own credential-cache daemon, which keeps the token
+  # in memory. The helper must therefore mint every time it is asked, so no
+  # live credential is written to the volume.
+  helper_get() {
+    printf 'protocol=https\nhost=github.com\n\n' | \
+      GITHUB_APP_ID=12345 \
+      GITHUB_APP_INSTALLATION_ID=67890 \
+      GITHUB_APP_PRIVATE_KEY_PATH="$SANDBOX/k.pem" \
+      GITHUB_API_URL="http://127.0.0.1:${port}" \
+      bash "$HELPER" get 2>&1
+  }
+  : > "$SANDBOX/mints"
+  helper_get >/dev/null; helper_get >/dev/null
+  mints="$(wc -l < "$SANDBOX/mints" | tr -d ' ')"
+  check "two calls mint twice (no state of its own)" "$mints" "2"
+  n="$(find "$SANDBOX" -name '*token*' -o -name '*.cache*' 2>/dev/null | wc -l | tr -d ' ')"
+  check "and it writes no token to disk" "$n" "0"
+
+  # ── chained behind git's credential-cache ──
+  #
+  # This is the arrangement the entrypoint configures, exercised through
+  # `git credential fill` so the helper chain itself is under test rather than
+  # the helper alone. The stub's token carries a nonce, so a cached answer is
+  # distinguishable from a fresh mint.
+  if command -v git >/dev/null 2>&1; then
+    chain_home="$SANDBOX/chainhome"
+    mkdir -p "$chain_home/.cache/git"
+    chmod 0700 "$chain_home/.cache/git"
+    sock="$chain_home/.cache/git/credential-socket"
+
+    cat > "$SANDBOX/chain-helper.sh" <<CHAIN
+#!/usr/bin/env bash
+export GITHUB_APP_ID=12345 GITHUB_APP_INSTALLATION_ID=67890
+export GITHUB_APP_PRIVATE_KEY_PATH="$SANDBOX/k.pem"
+export GITHUB_API_URL="http://127.0.0.1:${port}"
+exec bash "$HELPER" "\$@"
+CHAIN
+    chmod +x "$SANDBOX/chain-helper.sh"
+
+    : > "$SANDBOX/mints"
+    env HOME="$chain_home" GIT_CONFIG_NOSYSTEM=1 git config --global --replace-all \
+      "credential.https://github.com.helper" "cache --timeout=3300 --socket $sock"
+    env HOME="$chain_home" GIT_CONFIG_NOSYSTEM=1 git config --global --add \
+      "credential.https://github.com.helper" "$SANDBOX/chain-helper.sh"
+
+    first=""
+    for i in 1 2 3; do
+      pw="$(printf 'protocol=https\nhost=github.com\n\n' \
+        | env HOME="$chain_home" GIT_CONFIG_NOSYSTEM=1 git credential fill 2>/dev/null \
+        | grep '^password=' | cut -d= -f2)"
+      [[ -z "$first" ]] && first="$pw"
+      if [[ "$i" == 1 ]]; then
+        printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=%s\n\n' "$pw" \
+          | env HOME="$chain_home" GIT_CONFIG_NOSYSTEM=1 git credential approve >/dev/null 2>&1 || true
+      fi
+    done
+    chain_mints="$(wc -l < "$SANDBOX/mints" | tr -d ' ')"
+    check "three git credential fills cost one mint" "$chain_mints" "1"
+    [[ -n "$first" ]] && ok "and the chain returns a token" || bad "and the chain returns a token"
+    [[ ! -f "$chain_home/.cache/git/credential-socket" ]] || ok "the cache is a socket, not a token file"
+    env HOME="$chain_home" git credential-cache exit --socket "$sock" 2>/dev/null || true
+  else
+    bad "git is required to test the credential chain"
+  fi
+
+  # Reaped as well as killed, so bash's job-control notice does not land in
+  # the middle of the test output.
+  { kill "$stub_pid" && wait "$stub_pid"; } 2>/dev/null || true
   rm -rf "$SANDBOX"
 )
 

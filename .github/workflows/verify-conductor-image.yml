@@ -67,7 +67,7 @@ jobs:
       - name: shellcheck the entrypoint
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S warning conductor/deploy/entrypoint.sh conductor/deploy/entrypoint-test.sh
+          shellcheck -S warning conductor/deploy/*.sh
 
       # The credential-free half, run inside the image so it exercises the
       # same bash, jq and git the pod will use rather than a runner's.
