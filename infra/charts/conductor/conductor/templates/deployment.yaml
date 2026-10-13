@@ -83,6 +83,8 @@ spec:
               value: {{ .Values.maxSessions | quote }}
             - name: CONDUCTOR_IDLE_DAYS
               value: "7"
+            - name: CONDUCTOR_CLOSE_SWEEP_MINS
+              value: {{ .Values.closeSweepMins | quote }}
             - name: CONDUCTOR_RUN_TIMEOUT_MIN
               value: "120"
             - name: CONDUCTOR_AGENT

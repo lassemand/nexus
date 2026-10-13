@@ -22,7 +22,8 @@ use chrono::{DateTime, Utc};
 use clap::Subcommand;
 use nix::sys::signal::Signal;
 
-use crate::dispatcher::{ensure_worktree, run_git, signal_process, SessionEnv};
+use crate::closing::{close_group, CloseMode, CloseOutcome};
+use crate::dispatcher::{ensure_worktree, signal_process, SessionEnv};
 use crate::registry::{
     process_is_alive, recorded_start_time, Group, GroupKey, GroupState, QueuedEvent, Registry,
     RunOutcome, RunResult,
@@ -68,6 +69,12 @@ pub enum SessionsCommand {
         /// Print the groups as JSON instead of a table.
         #[arg(long)]
         json: bool,
+        /// Show recently closed groups instead of live ones.
+        #[arg(long)]
+        closed: bool,
+        /// With --closed, how many rows to show.
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
     },
 
     /// Take over a session interactively.
@@ -130,7 +137,17 @@ pub async fn run(
     out: &mut (dyn Write + Send),
 ) -> Result<i32, SessionsError> {
     match command {
-        SessionsCommand::List { json } => list(registry, out, json).await,
+        SessionsCommand::List {
+            json,
+            closed,
+            limit,
+        } => {
+            if closed {
+                list_closed(registry, out, json, limit).await
+            } else {
+                list(registry, out, json).await
+            }
+        }
         SessionsCommand::Attach { group, force } => attach(&group, force, env, registry, out).await,
         SessionsCommand::Kill { group, drain } => kill(&group, drain, env, registry, out).await,
         SessionsCommand::Reset { group, force } => reset(&group, force, env, registry, out).await,
@@ -183,7 +200,7 @@ async fn list(
     for g in &groups {
         rows.push(vec![
             g.key.slug(),
-            describe_state(&g.state, now),
+            describe_group_state(g, now),
             g.pending.len().to_string(),
             g.issues.last().cloned().unwrap_or_else(|| "-".into()),
             format!("{} ago", human_duration(now - g.last_active)),
@@ -205,6 +222,59 @@ fn state_rank(state: &GroupState) -> u8 {
         GroupState::Attached { .. } => 1,
         GroupState::Idle => 2,
     }
+}
+
+/// The STATE column: the process state, then whether a close is pending or refused.
+fn describe_group_state(g: &Group, now: DateTime<Utc>) -> String {
+    let state = describe_state(&g.state, now);
+    if let Some(reason) = &g.close_blocked {
+        let reason: String = reason.chars().take(60).collect();
+        format!("{state}, close blocked: {reason}")
+    } else if g.close_requested_at.is_some() {
+        format!("{state}, closing")
+    } else {
+        state
+    }
+}
+
+/// `sessions list --closed`: the audit trail, newest first.
+async fn list_closed(
+    registry: &Registry,
+    out: &mut (dyn Write + Send),
+    json: bool,
+    limit: i64,
+) -> Result<i32, SessionsError> {
+    let closed = registry.recent_closed(limit.max(0)).await?;
+    if json {
+        let body = serde_json::to_string_pretty(&closed)
+            .map_err(|e| SessionsError::Failed(format!("serialising groups: {e}")))?;
+        writeln!(out, "{body}")?;
+        return Ok(0);
+    }
+    if closed.is_empty() {
+        writeln!(out, "no closed groups")?;
+        return Ok(0);
+    }
+    let now = Utc::now();
+    let mut rows: Vec<Vec<String>> = vec![["GROUP", "CLOSED", "MODE", "ISSUES", "SESSION"]
+        .iter()
+        .map(|h| h.to_string())
+        .collect()];
+    for c in &closed {
+        rows.push(vec![
+            c.slug.clone(),
+            format!("{} ago", human_duration(now - c.closed_at)),
+            c.mode.clone(),
+            if c.issues.is_empty() {
+                "-".into()
+            } else {
+                c.issues.join(",")
+            },
+            c.session_id.to_string()[..8].to_string(),
+        ]);
+    }
+    write_table(out, &rows)?;
+    Ok(0)
 }
 
 fn describe_state(state: &GroupState, now: DateTime<Utc>) -> String {
@@ -696,16 +766,15 @@ async fn close(
         return Ok(EXIT_REFUSED);
     }
 
-    // Git first: a failure here must leave the group intact, or the registry
-    // would forget a worktree that is still on disk.
-    if !group.worktree.as_os_str().is_empty() && group.worktree.exists() {
-        let path = group.worktree.to_string_lossy().to_string();
-        let args: Vec<&str> = if force {
-            vec!["worktree", "remove", "--force", &path]
-        } else {
-            vec!["worktree", "remove", &path]
-        };
-        if let Err(e) = run_git(&env.repo_root, &args).await {
+    let mode = CloseMode::Manual { force };
+    let (branches, _issues) = match close_group(registry, &env.repo_root, &group.key, mode).await? {
+        CloseOutcome::Closed { branches, issues } => (branches, issues),
+        CloseOutcome::Gone => {
+            writeln!(out, "{slug} was already gone")?;
+            return Ok(0);
+        }
+        CloseOutcome::WorktreeDirty(e) => {
+            let path = group.worktree.to_string_lossy();
             writeln!(
                 out,
                 "could not remove the worktree at {path}, so {slug} was left alone: {e}"
@@ -718,25 +787,33 @@ async fn close(
             }
             return Ok(EXIT_REFUSED);
         }
-        writeln!(out, "removed worktree {path}")?;
+        // Only reachable without --force, when state changed after the lookup.
+        CloseOutcome::Busy => {
+            writeln!(
+                out,
+                "{slug} became busy; use --force to stop it and close anyway"
+            )?;
+            return Ok(EXIT_REFUSED);
+        }
+        CloseOutcome::HasPending => {
+            writeln!(
+                out,
+                "{slug} has queued event(s); use --force to discard them and close"
+            )?;
+            return Ok(EXIT_REFUSED);
+        }
+    };
+
+    if !group.worktree.as_os_str().is_empty() {
+        writeln!(out, "removed worktree {}", group.worktree.display())?;
     }
-
-    let mut txn = registry.begin().await?;
-    let removed = txn.delete_group(&group.key).await?;
-    txn.commit().await?;
-
-    if !removed {
-        writeln!(out, "{slug} was already gone")?;
-        return Ok(0);
-    }
-
     writeln!(out, "closed {slug}")?;
-    if group.branches.is_empty() {
+    if branches.is_empty() {
         writeln!(out, "no branches were recorded for it")?;
     } else {
         // Left behind deliberately: the work on them may not be merged yet.
         writeln!(out, "these branches are left in place:")?;
-        for branch in &group.branches {
+        for branch in &branches {
             writeln!(out, "  {branch}")?;
         }
     }
