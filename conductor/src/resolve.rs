@@ -241,7 +241,9 @@ impl GroupResolver for BranchResolver {
     async fn resolve(&self, event: &InboundEvent) -> Option<GroupKey> {
         let comment = match event {
             // Linear events already carry their own key.
-            InboundEvent::LinearIssueTodo { .. } => return Some(group_key_for(event)),
+            InboundEvent::LinearIssueTodo { .. } | InboundEvent::LinearIssueClosed { .. } => {
+                return Some(group_key_for(event))
+            }
             InboundEvent::GithubPrComment { comment, .. } => comment,
         };
 

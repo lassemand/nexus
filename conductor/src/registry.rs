@@ -112,36 +112,46 @@ fn is_valid_named_key(key: &str) -> bool {
 pub fn group_key_for(event: &InboundEvent) -> GroupKey {
     match event {
         InboundEvent::LinearIssueTodo { issue, .. } => {
-            let fallback = || GroupKey::Issue(issue.identifier.clone());
-            match issue.session_labels.as_slice() {
-                [] => fallback(),
-                [only] => {
-                    let lowered = only.to_lowercase();
-                    if is_valid_named_key(&lowered) {
-                        GroupKey::Named(lowered)
-                    } else {
-                        tracing::warn!(
-                            issue = %issue.identifier,
-                            label = %only,
-                            "session label is not a valid group key \
-                             (expected ^[a-z0-9][a-z0-9-]{{0,62}}$); \
-                             falling back to a per-issue session"
-                        );
-                        fallback()
-                    }
-                }
-                many => {
-                    tracing::warn!(
-                        issue = %issue.identifier,
-                        labels = ?many,
-                        "issue carries several session labels; \
-                         falling back to a per-issue session"
-                    );
-                    fallback()
-                }
-            }
+            linear_group_key(&issue.identifier, &issue.session_labels)
+        }
+        // Must map to the group its Todo event did, so it shares the rules.
+        InboundEvent::LinearIssueClosed { issue, .. } => {
+            linear_group_key(&issue.identifier, &issue.session_labels)
         }
         InboundEvent::GithubPrComment { .. } => GroupKey::Unresolved,
+    }
+}
+
+/// Group key for a Linear issue: one valid session label names the group,
+/// anything else falls back to a per-issue group.
+fn linear_group_key(identifier: &str, session_labels: &[String]) -> GroupKey {
+    let fallback = || GroupKey::Issue(identifier.to_string());
+    match session_labels {
+        [] => fallback(),
+        [only] => {
+            let lowered = only.to_lowercase();
+            if is_valid_named_key(&lowered) {
+                GroupKey::Named(lowered)
+            } else {
+                tracing::warn!(
+                    issue = %identifier,
+                    label = %only,
+                    "session label is not a valid group key \
+                     (expected ^[a-z0-9][a-z0-9-]{{0,62}}$); \
+                     falling back to a per-issue session"
+                );
+                fallback()
+            }
+        }
+        many => {
+            tracing::warn!(
+                issue = %identifier,
+                labels = ?many,
+                "issue carries several session labels; \
+                 falling back to a per-issue session"
+            );
+            fallback()
+        }
     }
 }
 
@@ -1158,6 +1168,23 @@ pub(crate) mod tests_support {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn closed_event_maps_to_same_group_as_todo() {
+        use crate::linear::{ClosedIssue, ClosedKind};
+        for labels in [&[][..], &["Grp"][..], &["a", "b"][..], &["Bad_Key"][..]] {
+            let todo = tests_support::linear_event("NEX-1", labels);
+            let closed = InboundEvent::LinearIssueClosed {
+                issue: ClosedIssue {
+                    identifier: "NEX-1".into(),
+                    session_labels: labels.iter().map(|s| s.to_string()).collect(),
+                    kind: ClosedKind::Completed,
+                },
+                delivery_id: None,
+            };
+            assert_eq!(group_key_for(&todo), group_key_for(&closed));
+        }
+    }
+
     use super::tests_support::*;
     use super::*;
     use crate::github::{GithubPrComment, PrCommentKind};

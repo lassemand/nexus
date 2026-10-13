@@ -14,6 +14,7 @@ pub mod dispatcher;
 pub mod github;
 pub mod http;
 pub mod linear;
+pub mod linear_api;
 pub mod registry;
 pub mod resolve;
 pub mod sessions;
@@ -21,7 +22,7 @@ pub mod sessions;
 use serde::{Deserialize, Serialize};
 
 use github::{GithubPrComment, PrCommentKind};
-use linear::LinearIssue;
+use linear::{ClosedIssue, LinearIssue};
 
 /// A webhook that was accepted and parsed, ready to be acted on.
 ///
@@ -33,6 +34,11 @@ pub enum InboundEvent {
     /// A Linear issue that just transitioned into `Todo`.
     LinearIssueTodo {
         issue: LinearIssue,
+        delivery_id: Option<String>,
+    },
+    /// A Linear issue that became completed, canceled or was removed.
+    LinearIssueClosed {
+        issue: ClosedIssue,
         delivery_id: Option<String>,
     },
     /// A comment from a watched user on a pull request.
@@ -70,6 +76,15 @@ impl EventSink for LogSink {
                     session_labels = ?issue.session_labels,
                     delivery_id = ?delivery_id,
                     "linear issue entered Todo"
+                );
+            }
+            InboundEvent::LinearIssueClosed { issue, delivery_id } => {
+                tracing::info!(
+                    identifier = %issue.identifier,
+                    kind = ?issue.kind,
+                    session_labels = ?issue.session_labels,
+                    delivery_id = ?delivery_id,
+                    "linear issue closed"
                 );
             }
             InboundEvent::GithubPrComment {

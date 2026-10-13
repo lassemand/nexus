@@ -605,6 +605,12 @@ fn summarise(queued: &QueuedEvent) -> String {
         InboundEvent::LinearIssueTodo { issue, .. } => {
             format!("{received}  linear {} — {}", issue.identifier, issue.title)
         }
+        InboundEvent::LinearIssueClosed { issue, .. } => {
+            format!(
+                "{received}  linear {} — closed ({:?})",
+                issue.identifier, issue.kind
+            )
+        }
         InboundEvent::GithubPrComment { comment, kind, .. } => format!(
             "{received}  github {} {}#{} comment {}",
             kind.as_str(),
