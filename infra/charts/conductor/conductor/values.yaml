@@ -6,7 +6,7 @@ image:
   # missing file. (0.1.0 and 0.1.1 additionally carry two defects the
   # in-container workspace build found: a login shell lost the Rust toolchain
   # from PATH, and clippy/rustfmt were on the wrong toolchain.)
-  tag: "0.1.5"
+  tag: "0.1.6"
 # Maximum concurrent Claude sessions. See the memory note on resources below
 # before raising this.
 maxSessions: 5
