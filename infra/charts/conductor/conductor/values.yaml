@@ -31,11 +31,20 @@ resources:
     memory: "16Gi"
     # No CPU limit on purpose: parallel cargo builds are bursty, and throttling
     # them lengthens every run without bounding anything that matters.
-# Webhook intake. Stays false until the cutover (NEX-132) — with the local
-# `mcp` setup still running, enabling this would have both receiving the same
-# Linear events and dispatching the same work twice.
+# Webhook intake. Enabled at the NEX-132 cutover.
+#
+# The sidecars dial *out* to Hookdeck and forward into localhost:8788, so this
+# needs no Service, no ingress and no change to the Hookdeck sources — the pod
+# simply becomes the CLI client that was previously running on a laptop.
+#
+# Exactly one CLI client may be connected per source. While the laptop's
+# `hookdeck listen` was also connected, an event could be handled twice, and
+# there is no delivery dedup: one ticket would become two agents on two
+# branches opening two pull requests. The laptop listeners were stopped before
+# this was flipped, and Hookdeck reported CLI_UNAVAILABLE in the gap between
+# the two — those events are retained and can be retried once the pod attaches.
 hookdeck:
-  enabled: false
+  enabled: true
   image: "hookdeck/hookdeck-cli:0.14.1"
   resources:
     requests:
