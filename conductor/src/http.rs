@@ -15,7 +15,7 @@ use crate::{
         dispatchable_issue_comment, dispatchable_review_comment, verify_github_signature,
         IssueCommentPayload, PrCommentKind, ReviewCommentPayload,
     },
-    linear::{dispatchable_issue, LinearWebhook},
+    linear::{closed_issue, dispatchable_issue, LinearWebhook},
     EventSink, InboundEvent,
 };
 
@@ -126,14 +126,21 @@ async fn handle_linear(
         }
     };
 
-    if let Some(issue) = dispatchable_issue(payload) {
-        submit(
-            &state.sink,
-            InboundEvent::LinearIssueTodo {
-                issue,
-                delivery_id: delivery_id(&headers, LINEAR_DELIVERY_HEADER),
-            },
-        );
+    let delivery = delivery_id(&headers, LINEAR_DELIVERY_HEADER);
+    // A payload cannot be both a transition into Todo and into a closed state,
+    // so at most one of these produces an event.
+    let closed = closed_issue(payload.clone()).map(|issue| InboundEvent::LinearIssueClosed {
+        issue,
+        delivery_id: delivery.clone(),
+    });
+    let event = closed.or_else(|| {
+        dispatchable_issue(payload).map(|issue| InboundEvent::LinearIssueTodo {
+            issue,
+            delivery_id: delivery,
+        })
+    });
+    if let Some(event) = event {
+        submit(&state.sink, event);
     }
 
     StatusCode::OK

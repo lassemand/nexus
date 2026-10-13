@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// `updated_from` is only sent on `update` actions and holds the *previous*
 /// values of the fields that changed. It is what distinguishes a real state
 /// transition from an edit to an issue that was already in Todo.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LinearWebhook {
     /// `create`, `update` or `remove`.
     pub action: Option<String>,
@@ -21,7 +21,7 @@ pub struct LinearWebhook {
 }
 
 /// The `data` object of an Issue webhook.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LinearData {
     pub id: Option<String>,
     pub identifier: Option<String>,
@@ -32,13 +32,17 @@ pub struct LinearData {
 }
 
 /// Workflow state of an issue.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LinearState {
     pub name: Option<String>,
+    /// Workflow state type: `triage`, `backlog`, `unstarted`, `started`,
+    /// `completed` or `canceled`. Unlike the name, it cannot be renamed per team.
+    #[serde(rename = "type")]
+    pub state_type: Option<String>,
 }
 
 /// A label attached to an issue.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LinearLabel {
     pub name: String,
 }
@@ -128,6 +132,77 @@ pub fn dispatchable_issue(payload: LinearWebhook) -> Option<LinearIssue> {
         description: description.unwrap_or_default(),
         session_labels: session_labels(&labels),
         labels,
+    })
+}
+
+/// Why an issue is considered finished.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ClosedKind {
+    /// Moved to a state of type `completed`.
+    Completed,
+    /// Moved to a state of type `canceled`.
+    Canceled,
+    /// Deleted or trashed.
+    Removed,
+}
+
+/// An issue that left the active workflow, reduced to what a set check needs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClosedIssue {
+    pub identifier: String,
+    /// `session:<group>` label names with the prefix stripped, in payload order.
+    pub session_labels: Vec<String>,
+    pub kind: ClosedKind,
+}
+
+/// Returns the issue if this webhook represents a task becoming complete.
+///
+/// An `update` counts only when it is a real state transition
+/// (`updatedFrom.stateId` present) into a `completed` or `canceled` state type;
+/// a `remove` always counts, since deleting a task can also finish its set.
+pub fn closed_issue(payload: LinearWebhook) -> Option<ClosedIssue> {
+    let LinearWebhook {
+        action,
+        event_type,
+        data,
+        updated_from,
+    } = payload;
+
+    if event_type.as_deref() != Some("Issue") {
+        return None;
+    }
+    let data = data?;
+
+    let kind = match action.as_deref() {
+        Some("update") => {
+            let transitioned = updated_from
+                .as_ref()
+                .and_then(|v| v.get("stateId"))
+                .is_some();
+            if !transitioned {
+                return None;
+            }
+            match data.state.and_then(|s| s.state_type).as_deref() {
+                Some("completed") => ClosedKind::Completed,
+                Some("canceled") => ClosedKind::Canceled,
+                _ => return None,
+            }
+        }
+        Some("remove") => ClosedKind::Removed,
+        _ => return None,
+    };
+
+    let labels: Vec<String> = data
+        .labels
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| l.name)
+        .collect();
+
+    Some(ClosedIssue {
+        identifier: data.identifier.or(data.id).unwrap_or_default(),
+        session_labels: session_labels(&labels),
+        kind,
     })
 }
 
@@ -248,5 +323,79 @@ mod tests {
             "only an exact `session:` prefix counts, got {:?}",
             issue.session_labels
         );
+    }
+
+    fn closed_payload(
+        action: &str,
+        ty: &str,
+        state_type: &str,
+        state_changed: bool,
+    ) -> LinearWebhook {
+        let mut v = json!({
+            "action": action,
+            "type": ty,
+            "data": {
+                "identifier": "NEX-1",
+                "state": { "name": "Whatever", "type": state_type },
+                "labels": [{ "name": "session:a" }, { "name": "Feature" }]
+            }
+        });
+        if state_changed {
+            v["updatedFrom"] = json!({ "stateId": "prev" });
+        }
+        serde_json::from_value(v).expect("valid payload")
+    }
+
+    #[test]
+    fn update_to_completed_is_completed() {
+        let c = closed_issue(closed_payload("update", "Issue", "completed", true)).unwrap();
+        assert_eq!(c.kind, ClosedKind::Completed);
+        assert_eq!(c.identifier, "NEX-1");
+        assert_eq!(c.session_labels, vec!["a"]);
+    }
+
+    #[test]
+    fn update_to_canceled_is_canceled() {
+        let c = closed_issue(closed_payload("update", "Issue", "canceled", true)).unwrap();
+        assert_eq!(c.kind, ClosedKind::Canceled);
+    }
+
+    #[test]
+    fn completed_without_state_change_is_ignored() {
+        assert!(closed_issue(closed_payload("update", "Issue", "completed", false)).is_none());
+    }
+
+    #[test]
+    fn update_to_open_states_is_ignored() {
+        for t in ["started", "unstarted", "backlog", "triage"] {
+            assert!(closed_issue(closed_payload("update", "Issue", t, true)).is_none());
+        }
+    }
+
+    #[test]
+    fn remove_is_removed() {
+        let c = closed_issue(closed_payload("remove", "Issue", "started", false)).unwrap();
+        assert_eq!(c.kind, ClosedKind::Removed);
+    }
+
+    #[test]
+    fn non_issue_is_ignored_for_closed() {
+        assert!(closed_issue(closed_payload("update", "Comment", "completed", true)).is_none());
+        assert!(closed_issue(closed_payload("remove", "Comment", "completed", false)).is_none());
+    }
+
+    #[test]
+    fn todo_transition_yields_only_the_todo_event() {
+        let mk = || {
+            serde_json::from_value::<LinearWebhook>(json!({
+                "action": "update",
+                "type": "Issue",
+                "data": { "identifier": "NEX-1", "state": { "name": "Todo", "type": "unstarted" } },
+                "updatedFrom": { "stateId": "prev" }
+            }))
+            .unwrap()
+        };
+        assert!(dispatchable_issue(mk()).is_some());
+        assert!(closed_issue(mk()).is_none());
     }
 }

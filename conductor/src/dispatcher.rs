@@ -318,6 +318,17 @@ impl Dispatcher {
     /// Resolution happens before the lock is taken, so a slow lookup never
     /// holds up other writers.
     async fn ingest(&self, event: InboundEvent) {
+        // Completion handling arrives later; until then it is observed only,
+        // and must never be queued or cause a session to start.
+        if let InboundEvent::LinearIssueClosed { issue, .. } = &event {
+            tracing::info!(
+                identifier = %issue.identifier,
+                kind = ?issue.kind,
+                "linear issue closed; no close handling yet, dropping"
+            );
+            return;
+        }
+
         // Routing may need a network call, so it happens before any lock.
         let Some(key) = self.resolver.resolve(&event).await else {
             tracing::info!("routing declined this event; nothing queued");
@@ -796,6 +807,7 @@ fn exit_to_result(status: std::process::ExitStatus) -> RunResult {
 fn event_name(event: &InboundEvent) -> &'static str {
     match event {
         InboundEvent::LinearIssueTodo { .. } => "issue_todo",
+        InboundEvent::LinearIssueClosed { .. } => "issue_closed",
         InboundEvent::GithubPrComment { kind, .. } => match kind {
             PrCommentKind::Comment => "pr_comment",
             PrCommentKind::ReviewComment => "pr_review_comment",
@@ -810,6 +822,7 @@ fn event_name(event: &InboundEvent) -> &'static str {
 fn prompt_for(event: &InboundEvent) -> String {
     let body = match event {
         InboundEvent::LinearIssueTodo { issue, .. } => serde_json::to_string(issue),
+        InboundEvent::LinearIssueClosed { issue, .. } => serde_json::to_string(issue),
         InboundEvent::GithubPrComment { comment, .. } => serde_json::to_string(comment),
     }
     .unwrap_or_else(|_| "{}".to_string());
@@ -825,6 +838,7 @@ fn prompt_for(event: &InboundEvent) -> String {
 fn issue_identifier(event: &InboundEvent) -> Option<String> {
     match event {
         InboundEvent::LinearIssueTodo { issue, .. } => Some(issue.identifier.clone()),
+        InboundEvent::LinearIssueClosed { issue, .. } => Some(issue.identifier.clone()),
         InboundEvent::GithubPrComment { .. } => None,
     }
 }
@@ -833,6 +847,7 @@ fn issue_identifier(event: &InboundEvent) -> Option<String> {
 fn delivery_id(event: &InboundEvent) -> Option<&str> {
     match event {
         InboundEvent::LinearIssueTodo { delivery_id, .. }
+        | InboundEvent::LinearIssueClosed { delivery_id, .. }
         | InboundEvent::GithubPrComment { delivery_id, .. } => delivery_id.as_deref(),
     }
 }
