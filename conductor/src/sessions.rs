@@ -443,9 +443,19 @@ async fn run_interactive(
     // The agent the session was dispatched under. Resuming without it would
     // drop the instructions the conversation has been following.
     command.arg(format!("--agent={}", env.agent));
-    // Deliberately no `--print` and no `--dangerously-skip-permissions`: this
-    // is an interactive session with a human at the keyboard, who can answer
-    // permission prompts themselves.
+    // `--dangerously-skip-permissions` is passed here too, governed by the same
+    // setting as dispatched runs.
+    //
+    // The original reasoning was that an attached operator is present to answer
+    // permission prompts. That does not survive contact with `kubectl exec`:
+    // answering them through an exec'd TTY is impractical, so the prompts just
+    // block the session. Dispatched runs in this pod already skip them, and an
+    // operator who can exec into the pod can run anything in it regardless, so
+    // the interactive path gains no protection by differing.
+    if env.skip_permissions {
+        command.arg("--dangerously-skip-permissions");
+    }
+    // Still no `--print`: this is an interactive session, not a one-shot.
     command.env("CARGO_TARGET_DIR", worktree.join("target"));
     // stdio is inherited by default, which is what makes the session usable.
 

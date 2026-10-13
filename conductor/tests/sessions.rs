@@ -268,9 +268,49 @@ async fn attach_holds_a_group_for_the_session_then_gives_it_back(pool: PgPool) {
         !argv.iter().any(|a| a == "--print"),
         "an interactive session must not be given --print: {argv:?}"
     );
+    // Present, and deliberately so. The original expectation was that an
+    // attached operator would answer permission prompts themselves; over
+    // `kubectl exec` those prompts just block the session, so the interactive
+    // path now follows the same setting as dispatched runs.
+    assert!(
+        argv.iter().any(|a| a == "--dangerously-skip-permissions"),
+        "attach should skip permission prompts when configured to: {argv:?}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn attach_honours_skip_permissions_being_turned_off(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(100, 0, None, false);
+    let key = named("irr");
+    let (_dispatcher, _sink) = seeded(&harness, &key, "NEX-1", "irr").await;
+    let before = harness.starts().len();
+
+    // Not hardcoded: an operator who does want the prompts can have them.
+    let mut env = harness.session_env();
+    env.skip_permissions = false;
+    let registry = harness.registry.clone();
+    let attaching = tokio::spawn(async move {
+        let mut out: Vec<u8> = Vec::new();
+        conductor::sessions::run(
+            SessionsCommand::Attach {
+                group: "irr".into(),
+                force: false,
+            },
+            &env,
+            &registry,
+            &mut out,
+        )
+        .await
+        .expect("attach")
+    });
+    attaching.await.expect("join");
+
+    let starts = harness.starts();
+    assert_eq!(starts.len(), before + 1, "expected one attach");
+    let argv = &starts.last().expect("an attach run").argv;
     assert!(
         !argv.iter().any(|a| a == "--dangerously-skip-permissions"),
-        "a human is present to answer prompts: {argv:?}"
+        "the flag should be absent when skip_permissions is false: {argv:?}"
     );
 }
 
