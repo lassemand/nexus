@@ -45,7 +45,18 @@ resources:
 # the two — those events are retained and can be retried once the pod attaches.
 hookdeck:
   enabled: true
-  image: "hookdeck/hookdeck-cli:0.14.1"
+  # Tags in this repository are v-prefixed; "0.14.1" was pinned here while the
+  # sidecars were disabled and never existed at all, which nothing caught
+  # because a disabled container is never pulled.
+  #
+  # v2.1.1 is the version that forwarded these same sources with these same
+  # arguments from a laptop for weeks. The CLI derives the destination name
+  # from the source ("{source}-cli"), so a version that changed that derivation
+  # would attach to a destination the existing connections do not route to —
+  # intake would look healthy and deliver nothing. v3.1.0 is available and
+  # keeps the same `ci` and `listen [port] [source] --path` surface, so moving
+  # is a one-line change once there is a reason to.
+  image: "hookdeck/hookdeck-cli:v2.1.1"
   resources:
     requests:
       memory: "32Mi"
