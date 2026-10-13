@@ -227,3 +227,184 @@ impl EarningsProvider for PolygonEarningsProvider {
         Ok(all)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const PATH: &str = "/vx/reference/financials";
+
+    fn result(period: &str, end: &str, filed: &str) -> Value {
+        json!({
+            "fiscal_period": period,
+            "fiscal_year": 2023,
+            "end_date": end,
+            "filing_date": filed,
+            "financials": {"income_statement": {
+                "basic_earnings_per_share": {"value": 1.5},
+                "revenues": {"value": 1000.0}
+            }}
+        })
+    }
+
+    fn from() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2020, 1, 1).unwrap()
+    }
+
+    async fn run(server: &MockServer) -> Result<Vec<QuarterlyEarnings>, PolygonEarningsError> {
+        PolygonEarningsProvider::with_base_url("key", server.uri())
+            .quarterly_earnings(&Asset::new("AAPL"), from())
+            .await
+    }
+
+    async fn mount_ok(server: &MockServer, body: Value) {
+        Mock::given(method("GET"))
+            .and(path(PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn happy_path_sorted_ascending() {
+        let server = MockServer::start().await;
+        mount_ok(
+            &server,
+            json!({"results": [
+                result("Q3", "2023-09-30", "2023-11-01"),
+                result("Q1", "2023-03-31", "2023-05-01"),
+                result("Q2", "2023-06-30", "2023-08-01"),
+            ]}),
+        )
+        .await;
+        let out = run(&server).await.unwrap();
+        assert_eq!(out.len(), 3);
+        assert!(out.windows(2).all(|w| w[0].period_end < w[1].period_end));
+        assert_eq!(out[0].fiscal_quarter, 1);
+        assert_eq!(out[0].eps_actual, Some(1.5));
+        assert_eq!(out[0].revenue_actual, Some(1000.0));
+    }
+
+    #[tokio::test]
+    async fn pagination_combines_pages() {
+        let server = MockServer::start().await;
+        let next = format!("{}/page2?cursor=abc", server.uri());
+        Mock::given(method("GET"))
+            .and(path(PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": [
+                    result("Q3", "2023-09-30", "2023-11-01"),
+                    result("Q2", "2023-06-30", "2023-08-01"),
+                ],
+                "next_url": next,
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/page2"))
+            .and(query_param("cursor", "abc"))
+            .and(query_param("apiKey", "key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": [result("Q1", "2023-03-31", "2023-05-01")]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let out = run(&server).await.unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].fiscal_quarter, 1);
+        assert_eq!(out[2].fiscal_quarter, 3);
+    }
+
+    #[tokio::test]
+    async fn filters_non_quarterly_periods() {
+        let server = MockServer::start().await;
+        mount_ok(
+            &server,
+            json!({"results": [
+                result("Q1", "2023-03-31", "2023-05-01"),
+                result("FY", "2023-12-31", "2024-02-01"),
+                result("H1", "2023-06-30", "2023-08-01"),
+                result("TTM", "2023-09-30", "2023-11-01"),
+            ]}),
+        )
+        .await;
+        let out = run(&server).await.unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].fiscal_quarter, 1);
+    }
+
+    #[tokio::test]
+    async fn missing_eps_is_none() {
+        let server = MockServer::start().await;
+        let mut r = result("Q1", "2023-03-31", "2023-05-01");
+        r["financials"]["income_statement"]
+            .as_object_mut()
+            .unwrap()
+            .remove("basic_earnings_per_share");
+        mount_ok(&server, json!({"results": [r]})).await;
+        let out = run(&server).await.unwrap();
+        assert_eq!(out[0].eps_actual, None);
+        assert_eq!(out[0].revenue_actual, Some(1000.0));
+    }
+
+    #[tokio::test]
+    async fn missing_revenue_is_none() {
+        let server = MockServer::start().await;
+        let mut r = result("Q1", "2023-03-31", "2023-05-01");
+        r["financials"]["income_statement"]
+            .as_object_mut()
+            .unwrap()
+            .remove("revenues");
+        mount_ok(&server, json!({"results": [r]})).await;
+        let out = run(&server).await.unwrap();
+        assert_eq!(out[0].revenue_actual, None);
+        assert_eq!(out[0].eps_actual, Some(1.5));
+    }
+
+    #[tokio::test]
+    async fn http_429_is_rate_limited() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            run(&server).await,
+            Err(PolygonEarningsError::RateLimited)
+        ));
+    }
+
+    #[tokio::test]
+    async fn http_500_is_api_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+        match run(&server).await {
+            Err(PolygonEarningsError::Api { status, message }) => {
+                assert_eq!(status, 500);
+                assert_eq!(message, "boom");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sends_filing_date_gte_param() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(PATH))
+            .and(query_param("filing_date.gte", "2020-01-01"))
+            .and(query_param("ticker", "AAPL"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"results": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert!(run(&server).await.unwrap().is_empty());
+    }
+}
