@@ -259,8 +259,13 @@ d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(jso
   CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 2)"
   export CLAUDE_CODE_CREDENTIALS_JSON
   out="$(seed_claude_credentials 2>&1)"
-  grep -q "WARNING.*expires in" <<<"$out" && ok "warns before the refresh token expires" \
-    || bad "warns before the refresh token expires" "$out"
+  # The old assertion wanted a confident "expires in N days". That wording was
+  # the bug: a revoked credential prints it happily. The message must now be
+  # framed as a claim.
+  grep -qE "claims .* day\(s\)" <<<"$out" && ok "reports the expiry as a claim" \
+    || bad "reports the expiry as a claim" "$out"
+  grep -q "not a check" <<<"$out" && ok "and says it is not a check" \
+    || bad "and says it is not a check" "$out"
   rm -rf "$SANDBOX"
 )
 
@@ -291,8 +296,8 @@ d=json.load(sys.stdin); d['claudeAiOauth']['accessToken']='REFRESHED'; print(jso
   new_sandbox; init_layout >/dev/null
   export CLAUDE_CODE_OAUTH_TOKEN=static-token
   out="$(seed_claude_credentials 2>&1)"
-  grep -q "does not renew itself" <<<"$out" && ok "the static token path warns that it cannot renew" \
-    || bad "the static token path warns that it cannot renew" "$out"
+  grep -q "cannot renew itself" <<<"$out" && ok "the static token path says it cannot renew" \
+    || bad "the static token path says it cannot renew" "$out"
   rm -rf "$SANDBOX"
 )
 
@@ -363,6 +368,66 @@ printf '== claude configuration ==\n'
   seed_claude_config >/dev/null
   check "firstStartTime is not rewritten" "$(jq -r '.firstStartTime' "$CLAUDE_JSON")" "$first"
   check "second run changes nothing" "$(jq -S -c . "$CLAUDE_JSON")" "$before"
+  rm -rf "$SANDBOX"
+)
+
+printf '== static token precedence ==\n'
+
+(
+  new_sandbox; init_layout >/dev/null
+  f="$HOME/.claude/.credentials.json"
+  mkdir -p "$(dirname "$f")"
+  # The exact situation on the volume today: a stale file the pod wrote from a
+  # revoked Vault copy, which must not be allowed to shadow a working token.
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 14)"
+  printf '%s' "$CLAUDE_CODE_CREDENTIALS_JSON" > "$f"
+  unset CLAUDE_CODE_CREDENTIALS_JSON
+  export CLAUDE_CODE_OAUTH_TOKEN=a-static-token
+
+  out="$(seed_claude_credentials 2>&1)"
+  [[ ! -f "$f" ]] && ok "an existing credentials file is moved aside" \
+    || bad "an existing credentials file is moved aside" "$out"
+  n=$(find "$HOME/.claude" -maxdepth 1 -name '.credentials.json.superseded-*' | wc -l | tr -d ' ')
+  # Renamed rather than deleted: it is the only copy of that session.
+  check "and kept, not deleted" "$n" "1"
+  grep -q "takes precedence" <<<"$out" && ok "and says why" || bad "and says why" "$out"
+  unset CLAUDE_CODE_OAUTH_TOKEN
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  export CLAUDE_CODE_OAUTH_TOKEN=a-static-token
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 14)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
+  out="$(seed_claude_credentials 2>&1)"
+  # With both supplied, the static one wins and no file is written at all.
+  [[ ! -f "$HOME/.claude/.credentials.json" ]] && ok "the static token beats a supplied credentials blob" \
+    || bad "the static token beats a supplied credentials blob" "$out"
+  unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_CREDENTIALS_JSON
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  # Using a rotating file at all now carries a warning, because nothing else
+  # may hold a copy of it.
+  CLAUDE_CODE_CREDENTIALS_JSON="$(creds_json 14)"
+  export CLAUDE_CODE_CREDENTIALS_JSON
+  out="$(seed_claude_credentials 2>&1)"
+  grep -q "revoked" <<<"$out" && ok "the file path warns that copies get revoked" \
+    || bad "the file path warns that copies get revoked" "$out"
+  unset CLAUDE_CODE_CREDENTIALS_JSON
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  # Nothing at all must fail loudly, naming the preferred fix.
+  out="$(seed_claude_credentials 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "no credential at all is fatal" || bad "no credential at all is fatal" "$out"
+  grep -q "CLAUDE_CODE_OAUTH_TOKEN" <<<"$out" && ok "and names the preferred option" \
+    || bad "and names the preferred option" "$out"
   rm -rf "$SANDBOX"
 )
 
