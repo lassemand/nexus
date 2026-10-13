@@ -367,13 +367,38 @@ seed_claude_credentials() {
   local creds="$HOME/.claude/.credentials.json"
   mkdir -p "$(dirname "$creds")"
 
+  # A static token wins over the file, which is the reverse of what this
+  # script originally did.
+  #
+  # The file-based credential rotates its refresh token on every refresh and
+  # revokes the previous one, so two clients holding copies invalidate each
+  # other. That is not hypothetical: seeding this pod from a snapshot of a
+  # developer's live credential produced 383 crash-loops, because the laptop
+  # kept refreshing and the pod's copy was dead on arrival — while its own
+  # expiry timestamp still claimed two weeks of validity.
+  #
+  # A token supplied through the environment cannot rotate: there is nowhere
+  # to write a replacement. That makes it safe to share, and safe across the
+  # concurrent sessions in this pod, at the cost of no self-renewal.
+  if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    # Any file here would be an older credential and might shadow the token,
+    # so it is moved aside rather than left to compete. Renamed, not deleted:
+    # it is the only copy of whatever session it belonged to.
+    if [[ -f "$creds" ]]; then
+      local superseded="${creds}.superseded-$(date +%s)"
+      mv "$creds" "$superseded"
+      log "moved an existing credentials file to ${superseded}; CLAUDE_CODE_OAUTH_TOKEN takes precedence"
+    fi
+    log "using CLAUDE_CODE_OAUTH_TOKEN (static; it cannot renew itself, so the smoke check below is what proves it still works)"
+    return 0
+  fi
+
   if [[ -f "$creds" ]]; then
     if jq empty "$creds" >/dev/null 2>&1; then
-      log "subscription credentials already present; leaving them to renew themselves"
+      log "using the existing credentials file on the volume"
+      log "WARNING: a file credential rotates on refresh and revokes the previous one. Nothing else may hold a copy of it — not a laptop, not another deployment — or both will be invalidated. CLAUDE_CODE_OAUTH_TOKEN from 'claude setup-token' avoids this."
     else
       # Several Claude processes share this file, so a torn write is possible.
-      # Unlike .claude.json this cannot simply be reseeded from nothing, so the
-      # Vault copy is the recovery path.
       local backup
       backup="${creds}.corrupt-$(date +%s)"
       mv "$creds" "$backup"
@@ -383,7 +408,6 @@ seed_claude_credentials() {
 
   if [[ ! -f "$creds" ]]; then
     if [[ -n "${CLAUDE_CODE_CREDENTIALS_JSON:-}" ]]; then
-      # Written via a temp file and moved, so a reader never sees a partial file.
       local tmp
       tmp="$(mktemp)"
       printf '%s' "$CLAUDE_CODE_CREDENTIALS_JSON" > "$tmp"
@@ -394,37 +418,26 @@ seed_claude_credentials() {
       chmod 0600 "$tmp"
       mv "$tmp" "$creds"
       log "seeded subscription credentials from CLAUDE_CODE_CREDENTIALS_JSON"
-    elif [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
-      # Supported, but it cannot renew: when this token expires every dispatch
-      # fails until the secret is rewritten by hand.
-      log "WARNING: using CLAUDE_CODE_OAUTH_TOKEN, which does not renew itself — prefer CLAUDE_CODE_CREDENTIALS_JSON"
-      return 0
+      log "WARNING: this is a copy of a credential that rotates. If its origin refreshes, this copy is revoked. Prefer CLAUDE_CODE_OAUTH_TOKEN."
     else
-      die "auth mode is subscription but neither CLAUDE_CODE_CREDENTIALS_JSON nor CLAUDE_CODE_OAUTH_TOKEN is set"
+      die "auth mode is subscription but neither CLAUDE_CODE_OAUTH_TOKEN nor CLAUDE_CODE_CREDENTIALS_JSON is set, and no credentials file exists on the volume"
     fi
   fi
 
-  # The refresh token is the real deadline. Reported at every start, and warned
-  # about before it bites, because an expired one fails every dispatch while the
-  # pod still looks healthy — indistinguishable from a dispatcher fault.
-  local expires_ms now_ms days warn
+  # Reported, never trusted. This is a timestamp inside the file: it says
+  # nothing about whether the token has been revoked, and a revoked credential
+  # happily claims weeks of remaining life. The smoke check is the only thing
+  # that establishes the credential actually works.
+  local expires_ms now_ms days
   expires_ms="$(jq -r '.claudeAiOauth.refreshTokenExpiresAt // empty' "$creds" 2>/dev/null || true)"
   if [[ -n "$expires_ms" && "$expires_ms" != "null" ]]; then
     now_ms=$(( $(date +%s) * 1000 ))
-    # Expiry is decided in milliseconds, not days. Integer day division
-    # truncates toward zero, so a token that expired up to 24 hours ago came
-    # out as "expires in 0 days" and merely warned — exactly the window in
-    # which every dispatch would already be failing.
     days=$(( (expires_ms - now_ms) / 86400000 ))
-    warn="${CONDUCTOR_CREDENTIAL_WARN_DAYS:-5}"
     if (( expires_ms <= now_ms )); then
       local ago_h=$(( (now_ms - expires_ms) / 3600000 ))
-      die "the subscription refresh token expired ${ago_h}h ago; re-run 'claude setup-token' and update Vault"
-    elif (( days <= warn )); then
-      log "WARNING: subscription refresh token expires in ${days} day(s) — renew it before then"
-    else
-      log "subscription refresh token valid for ${days} more day(s)"
+      die "the credentials file claims its refresh token expired ${ago_h}h ago; re-run 'claude setup-token' and set CLAUDE_CODE_OAUTH_TOKEN"
     fi
+    log "credentials file claims ${days} day(s) of refresh-token life (a claim, not a check — revocation is invisible here)"
   fi
 }
 
