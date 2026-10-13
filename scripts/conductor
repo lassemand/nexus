@@ -17,10 +17,15 @@ DEPLOYMENT="${CONDUCTOR_DEPLOYMENT:-deploy/conductor}"
 # -t allocates a TTY, which kubectl would otherwise use to mangle the stream
 # with CRLFs and progress output. Only ask for one when stdout is really a
 # terminal, so `list --json | jq` and `>file` both stay clean.
-tty_flag=()
+#
+# Two explicit branches rather than an array of flags: expanding an *empty*
+# array under `set -u` is an error in bash 3.2, which is what macOS ships as
+# /bin/bash — so the array form failed on exactly the machine this script
+# exists for, with "tty_flag[@]: unbound variable".
 if [[ -t 1 ]]; then
-    tty_flag=(-t)
+    exec kubectl --context "$CONTEXT" -n "$NAMESPACE" \
+        exec -i -t "$DEPLOYMENT" -c conductor -- conductor "$@"
+else
+    exec kubectl --context "$CONTEXT" -n "$NAMESPACE" \
+        exec -i "$DEPLOYMENT" -c conductor -- conductor "$@"
 fi
-
-exec kubectl --context "$CONTEXT" -n "$NAMESPACE" \
-    exec -i "${tty_flag[@]}" "$DEPLOYMENT" -c conductor -- conductor "$@"
