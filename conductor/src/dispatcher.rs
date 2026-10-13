@@ -65,6 +65,15 @@ pub struct SessionEnvArgs {
     /// Agent passed through to Claude.
     #[arg(long, env = "CONDUCTOR_AGENT", default_value = "backend")]
     pub agent: String,
+
+    /// Pass `--dangerously-skip-permissions` to Claude.
+    ///
+    /// Governs dispatched runs and `sessions attach` alike. The interactive
+    /// path originally omitted it on the reasoning that an attached operator
+    /// could answer permission prompts — which does not hold over
+    /// `kubectl exec`, where the prompts simply block the session.
+    #[arg(long, env = "CONDUCTOR_SKIP_PERMISSIONS", default_value_t = true, action = clap::ArgAction::Set)]
+    pub skip_permissions: bool,
 }
 
 impl SessionEnvArgs {
@@ -81,6 +90,7 @@ impl SessionEnvArgs {
             state_dir,
             claude_bin: self.claude_bin,
             agent: self.agent,
+            skip_permissions: self.skip_permissions,
             kill_grace: DEFAULT_TERM_TO_KILL,
             poll_interval: DEFAULT_ATTACH_POLL,
         }
@@ -100,6 +110,8 @@ pub struct SessionEnv {
     pub claude_bin: String,
     /// Agent passed through to Claude.
     pub agent: String,
+    /// Whether to pass `--dangerously-skip-permissions`.
+    pub skip_permissions: bool,
     /// Grace between `SIGTERM` and `SIGKILL` when the CLI stops a process.
     ///
     /// Not exposed as a flag: it exists so tests need not wait the production
@@ -124,10 +136,6 @@ pub struct DispatchArgs {
 
     #[command(flatten)]
     pub env: SessionEnvArgs,
-
-    /// Pass `--dangerously-skip-permissions` to Claude.
-    #[arg(long, env = "CONDUCTOR_SKIP_PERMISSIONS", default_value_t = true, action = clap::ArgAction::Set)]
-    pub skip_permissions: bool,
 
     /// How long a run may take, in minutes.
     #[arg(long, env = "CONDUCTOR_RUN_TIMEOUT_MIN", default_value_t = 120)]
@@ -168,7 +176,7 @@ impl DispatchArgs {
             state_dir: env.state_dir,
             claude_bin: env.claude_bin,
             agent: env.agent,
-            skip_permissions: self.skip_permissions,
+            skip_permissions: env.skip_permissions,
             // Seconds win when given, so a test can use a timeout far under a minute.
             run_timeout: Duration::from_secs(
                 self.run_timeout_secs
@@ -997,8 +1005,8 @@ mod config_tests {
                 state_dir: Some(PathBuf::from("/state")),
                 claude_bin: "claude".into(),
                 agent: "backend".into(),
+                skip_permissions: true,
             },
-            skip_permissions: true,
             run_timeout_min: 120,
             run_timeout_secs: None,
             shutdown_grace_secs: 600,

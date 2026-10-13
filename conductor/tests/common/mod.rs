@@ -311,6 +311,7 @@ impl Harness {
             state_dir: self.state.clone(),
             claude_bin: self.config.claude_bin.clone(),
             agent: self.config.agent.clone(),
+            skip_permissions: self.config.skip_permissions,
             kill_grace: Duration::from_millis(500),
             poll_interval: Duration::from_millis(50),
         }
