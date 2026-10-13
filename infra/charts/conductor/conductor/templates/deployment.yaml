@@ -152,7 +152,15 @@ spec:
             - |
               set -eu
               hookdeck ci --api-key "$HOOKDECK_API_KEY"
-              exec hookdeck listen 8788 {{ $source }} --path {{ $path }}
+              # --output compact because the default is a Bubble Tea TUI that
+              # opens /dev/tty, which a container does not have:
+              #   could not open a new TTY: open /dev/tty: no such device
+              # Set explicitly rather than relying on the CLI noticing it has
+              # no terminal — v2.1.1 does not, and even in versions that do,
+              # intake should not depend on TTY detection. `compact` keeps a
+              # log line per event, which is what makes deliveries visible
+              # here; `quiet` would log only errors.
+              exec hookdeck listen 8788 {{ $source }} --path {{ $path }} --output compact
           env:
             # The image has no passwd entry for uid 1000, so HOME resolves to
             # "/" and the CLI dies on startup trying to create its config:
