@@ -154,6 +154,14 @@ spec:
               hookdeck ci --api-key "$HOOKDECK_API_KEY"
               exec hookdeck listen 8788 {{ $source }} --path {{ $path }}
           env:
+            # The image has no passwd entry for uid 1000, so HOME resolves to
+            # "/" and the CLI dies on startup trying to create its config:
+            #   mkdir /.config: permission denied
+            # Each container has its own /tmp, so this is private to the
+            # sidecar, and `hookdeck ci` re-authenticates on every start — the
+            # config file never needs to outlive the container.
+            - name: HOME
+              value: /tmp
             - name: HOOKDECK_API_KEY
               valueFrom:
                 secretKeyRef:
