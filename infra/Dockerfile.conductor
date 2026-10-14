@@ -155,6 +155,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     procps \
     tini \
+    tmux \
+    ncurses-term \
     && rm -rf /var/lib/apt/lists/*
 
 # gh from GitHub's own apt repository. Used by the agents to open pull

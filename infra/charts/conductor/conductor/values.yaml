@@ -10,6 +10,18 @@ image:
 # Maximum concurrent Claude sessions. See the memory note on resources below
 # before raising this.
 maxSessions: 5
+# Interactive Claude sessions (one tmux session per set) kept resident at once,
+# idle ones included. Separate from maxSessions, which bounds concurrent turns.
+maxLiveSessions: 10
+# Seconds to wait for a new session's SessionStart hook / for a pasted prompt's
+# UserPromptSubmit hook before giving up.
+startTimeoutSecs: 60
+deliverTimeoutSecs: 30
+tmux:
+  # Shared by conductor and `kubectl exec … tmux -L conductor attach`.
+  socket: conductor
+  # Loopback listener for `conductor hook`; never exposed outside the pod.
+  hookPort: 8789
 # Minutes between sweeps that close idle groups whose Linear set is complete.
 # 0 disables the sweep; webhook-triggered checks still run.
 closeSweepMins: 30
@@ -25,6 +37,10 @@ resources:
     cpu: "1"
     memory: "2Gi"
   limits:
+    # Besides the builds below, up to maxLiveSessions idle interactive Claude
+    # processes stay resident. TODO(NEX-144): measure one idle process's RSS in
+    # the deployed pod and record it here; the limit is unchanged until then.
+    #
     # Each concurrent session may run a workspace `cargo build`, which peaks
     # around 2–3 GiB. So maxSessions × 3Gi has to fit inside this limit *and*
     # inside the OrbStack VM's memory setting. If they do not both hold, lower

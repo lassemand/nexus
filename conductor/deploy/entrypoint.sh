@@ -342,7 +342,69 @@ seed_claude_config() {
     | .skipDangerousModePermissionPrompt = true
     ' "$SETTINGS_JSON" > "$tmp"
   mv "$tmp" "$SETTINGS_JSON"
+  merge_conductor_hooks
   log "claude configuration seeded"
+}
+
+# ── turn hooks ───────────────────────────────────────────────────────────────
+#
+# Interactive sessions never exit, so conductor learns busy/idle from Claude's
+# own hooks. `conductor hook` forwards each payload to the loopback listener and
+# always exits 0 with empty stdout (NEX-141).
+#
+# Exactly these four events, deliberately: no PreToolUse, and nothing that can
+# block a Stop. The entry is merged rather than assigned so every other key and
+# every other hook the user has stays; any earlier conductor entry is dropped
+# first, which is what makes re-running a no-op instead of a duplicate.
+CONDUCTOR_HOOK_COMMAND="/usr/local/bin/conductor hook"
+
+merge_conductor_hooks() {
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg cmd "$CONDUCTOR_HOOK_COMMAND" '
+    def is_conductor: any(.hooks[]?; .command == $cmd);
+    reduce ("UserPromptSubmit", "Stop", "SessionStart", "SessionEnd") as $e (.;
+      .hooks[$e] = (
+        ((.hooks[$e] // []) | map(select(is_conductor | not)))
+        + [{hooks: [{type: "command", command: $cmd, timeout: 5}]}]))
+    ' "$SETTINGS_JSON" > "$tmp"
+  mv "$tmp" "$SETTINGS_JSON"
+}
+
+# ── tmux configuration ───────────────────────────────────────────────────────
+#
+# For humans attaching with `kubectl exec … tmux -L conductor attach`. Rewritten
+# on every start: it is conductor's file, not the user's. HOME is shared with
+# exec shells, so they read it too.
+write_tmux_conf() {
+  cat > "$HOME/.tmux.conf" <<'TMUXCONF'
+# Managed by conductor-entrypoint; overwritten on every container start.
+
+# C-a rather than C-b, so it does not collide with a local tmux's prefix when
+# attaching from inside one.
+unbind C-b
+set -g prefix C-a
+bind C-a send-prefix
+
+# Claude Code interrupts on Escape; the 500ms default makes that feel broken.
+set -sg escape-time 10
+
+set -g history-limit 100000
+set -g mouse on
+set -g default-terminal tmux-256color
+set -g focus-events on
+
+set -g status-left "#S "
+set -g status-right "#{session_attached} client(s)"
+
+# A pane closes when Claude exits, so conductor sees the session vanish.
+set -g remain-on-exit off
+
+# Size to the most recently active client, so a small read-only viewer does not
+# shrink the session for everyone.
+set -g window-size latest
+TMUXCONF
+  log "tmux configuration written"
 }
 
 # ── subscription credentials ─────────────────────────────────────────────────
@@ -518,6 +580,7 @@ main() {
   sync_repo
   install_agents
   seed_claude_config
+  write_tmux_conf
   # An `if` rather than `[[ ]] &&`: at statement level a false test returns 1,
   # which `set -e` turns into an exit — so api_key mode would never have started.
   if [[ "${AUTH_MODE:-}" == "subscription" ]]; then
