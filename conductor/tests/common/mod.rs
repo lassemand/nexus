@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use conductor::dispatcher::{
@@ -90,7 +90,11 @@ struct FakeSession {
 /// are logged in the fake-claude JSON format, so tests measure order and overlap
 /// from observed behaviour.
 pub struct FakeTmux {
-    hook: OnceLock<HookState>,
+    /// The hook state holds this runtime, so this is a reference cycle until
+    /// [`FakeTmux::detach_hooks`] is called. The cycle would keep the test's
+    /// database pool alive after the test, and sqlx only gives a test pool's
+    /// connection permits back to its parent once the pool is dropped.
+    hook: Mutex<Option<HookState>>,
     log: PathBuf,
     turn_ms: AtomicU64,
     cmd: Mutex<Option<String>>,
@@ -116,7 +120,7 @@ pub struct FakeTmux {
 impl FakeTmux {
     pub fn new(log: PathBuf) -> Arc<Self> {
         Arc::new(FakeTmux {
-            hook: OnceLock::new(),
+            hook: Mutex::new(None),
             log,
             turn_ms: AtomicU64::new(50),
             cmd: Mutex::new(None),
@@ -133,7 +137,12 @@ impl FakeTmux {
     }
 
     pub fn attach_hooks(&self, state: HookState) {
-        let _ = self.hook.set(state);
+        *self.hook.lock().unwrap() = Some(state);
+    }
+
+    /// Breaks the cycle between this runtime and its hook state.
+    pub fn detach_hooks(&self) {
+        *self.hook.lock().unwrap() = None;
     }
 
     pub fn set_turn(&self, ms: u64, cmd: Option<&str>) {
@@ -171,13 +180,15 @@ impl FakeTmux {
     }
 
     async fn hook_for(&self, session_id: &str, name: &str) {
-        let Some(state) = self.hook.get() else { return };
+        let Some(state) = self.hook.lock().unwrap().clone() else {
+            return;
+        };
         let payload = HookPayload {
             hook_event_name: name.into(),
             session_id: session_id.into(),
             ..Default::default()
         };
-        hooks::process(state, &payload).await;
+        hooks::process(&state, &payload).await;
     }
 }
 
@@ -243,7 +254,7 @@ impl SessionRuntime for FakeTmux {
         }
         self.started.lock().unwrap().push(slug.to_string());
         if self.send_session_start.load(Ordering::SeqCst) {
-            let me = self.hook.get().cloned();
+            let me = self.hook.lock().unwrap().clone();
             if let Some(state) = me {
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -305,7 +316,7 @@ impl SessionRuntime for FakeTmux {
         if !self.send_prompt_submit.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let Some(state) = self.hook.get().cloned() else {
+        let Some(state) = self.hook.lock().unwrap().clone() else {
             return Ok(());
         };
 
@@ -368,6 +379,12 @@ impl SessionRuntime for FakeTmux {
         self.killed.lock().unwrap().push(slug.to_string());
         self.sessions.lock().unwrap().remove(slug);
         Ok(())
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        self.fake.detach_hooks();
     }
 }
 

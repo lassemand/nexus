@@ -416,7 +416,13 @@ async fn completion_during_a_run_closes_after_it_ends(pool: PgPool) {
     assert!(h.wait_for(PATIENCE, |h| !h.starts().is_empty()).await);
     sink.submit(closed("NEX-1", &["busy"], ClosedKind::Completed, "c1"));
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // The paste is logged before the hook confirms it, so wait for the turn to
+    // be Busy rather than assuming a fixed delay is enough under load.
+    assert!(
+        h.wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::Busy { .. }))
+            .await
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(matches!(
         h.state_of(&key).await,
         Some(GroupState::Busy { .. })
