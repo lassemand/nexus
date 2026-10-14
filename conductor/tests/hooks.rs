@@ -78,6 +78,8 @@ async fn hooks_drive_the_group_state(pool: PgPool) {
     let app = router(HookState {
         registry: registry.clone(),
         runtime: Arc::new(NoTmux),
+        wake: Arc::new(tokio::sync::Notify::new()),
+        events: Arc::new(tokio::sync::Notify::new()),
     });
     let hook = |name: &str, id: &str| {
         format!(r#"{{"hook_event_name":"{name}","session_id":"{id}","cwd":"/x","extra":1}}"#)

@@ -288,6 +288,10 @@ pub enum RunResult {
         signal: i32,
     },
     TimedOut,
+    /// The interactive session never reported `SessionStart`.
+    StartFailed,
+    /// The turn finished normally (`Stop` hook).
+    Completed,
     Killed {
         by: String,
     },
@@ -315,6 +319,9 @@ pub struct RunOutcome {
 /// survives a pod restart.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueuedEvent {
+    /// Row id in `pending_events`; doubles as the event id in `Delivering`/`Busy`.
+    #[serde(default)]
+    pub id: i64,
     pub event: InboundEvent,
     pub received_at: DateTime<Utc>,
 }
@@ -350,6 +357,9 @@ pub struct Group {
     /// Why the last automatic close was refused; blocks further automatic checks.
     #[serde(default)]
     pub close_blocked: Option<String>,
+    /// Why delivery to this group is halted; cleared by an operator.
+    #[serde(default)]
+    pub delivery_blocked: Option<String>,
 }
 
 /// An audit row for a group that has been closed.
@@ -497,6 +507,8 @@ pub struct Registry {
     pool: PgPool,
     clock: Arc<dyn Clock>,
     idle_days: i64,
+    /// Model recorded on turn outcomes; see `with_model`.
+    model: Option<String>,
 }
 
 impl Registry {
@@ -506,7 +518,25 @@ impl Registry {
             pool,
             clock,
             idle_days,
+            model: None,
         }
+    }
+
+    /// Sets the model recorded on each turn's outcome.
+    ///
+    /// A builder rather than a `new` parameter because the model is the
+    /// dispatcher's concern and every other caller — the CLI, the tests — has
+    /// no opinion on it.
+    ///
+    /// This is the *currently configured* model, not one stored per session. A
+    /// session started before the configuration changed would have its later
+    /// turns recorded under the new value; every start and resume passes the
+    /// current `--model`, so that only misreports a turn a human typed into a
+    /// session older than the change.
+    #[must_use]
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
     }
 
     /// Connects using `DATABASE_URL`, with the idle window from
@@ -539,6 +569,7 @@ impl Registry {
             tx,
             now: self.clock.now(),
             idle_days: self.idle_days,
+            model: self.model.clone(),
         })
     }
 
@@ -570,7 +601,7 @@ impl Registry {
     ) -> Result<Vec<GroupKey>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT g.key AS key FROM session_groups g \
-             WHERE g.state->>'state' = 'idle' \
+             WHERE g.state->>'state' IN ('idle', 'no_session', 'ready') \
                AND g.close_blocked IS NULL \
                AND g.slug NOT LIKE 'gh-%' \
                AND ($1 = FALSE OR g.close_requested_at IS NOT NULL) \
@@ -632,17 +663,38 @@ impl Registry {
             .fetch_all(&mut *tx)
             .await?;
 
+        // One query for every queue rather than one per group: the scheduler
+        // snapshots on every pass, and a query per group multiplies that.
+        let pending_rows = sqlx::query(
+            "SELECT id, group_slug, event, received_at FROM pending_events ORDER BY id",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut queues: std::collections::HashMap<String, Vec<&PgRow>> =
+            std::collections::HashMap::new();
+        for r in &pending_rows {
+            queues
+                .entry(r.try_get::<String, _>("group_slug")?)
+                .or_default()
+                .push(r);
+        }
+
         let mut groups = Vec::with_capacity(rows.len());
         for row in &rows {
             let slug: String = row.try_get("slug")?;
-            let pending = sqlx::query(
-                "SELECT event, received_at FROM pending_events \
-                 WHERE group_slug = $1 ORDER BY id",
-            )
-            .bind(&slug)
-            .fetch_all(&mut *tx)
-            .await?;
-            groups.push(group_from_row(row, pending_from_rows(&pending)?)?);
+            let pending = queues
+                .remove(&slug)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| {
+                    Ok(QueuedEvent {
+                        id: r.try_get("id")?,
+                        event: r.try_get::<Json<InboundEvent>, _>("event")?.0,
+                        received_at: r.try_get("received_at")?,
+                    })
+                })
+                .collect::<Result<VecDeque<_>, sqlx::Error>>()?;
+            groups.push(group_from_row(row, pending)?);
         }
         tx.commit().await?;
         Ok(groups)
@@ -764,11 +816,10 @@ impl Registry {
         };
         // Groups are re-read after the sessions: a group created in between
         // must not have its brand-new session mistaken for an orphan.
-        let known: BTreeSet<String> = self
-            .snapshot()
+        let known: BTreeSet<String> = sqlx::query_scalar("SELECT slug FROM session_groups")
+            .fetch_all(&self.pool)
             .await?
-            .iter()
-            .map(|g| g.key.slug())
+            .into_iter()
             .collect();
         let mut killed = 0;
         for name in sessions.into_iter().filter(|n| !known.contains(n)) {
@@ -798,7 +849,7 @@ impl Registry {
             return Ok(None);
         };
         let pending = sqlx::query(
-            "SELECT event, received_at FROM pending_events \
+            "SELECT id, event, received_at FROM pending_events \
              WHERE group_slug = $1 ORDER BY id",
         )
         .bind(slug)
@@ -815,6 +866,7 @@ fn pending_from_rows(rows: &[PgRow]) -> Result<VecDeque<QueuedEvent>, sqlx::Erro
     rows.iter()
         .map(|r| {
             Ok(QueuedEvent {
+                id: r.try_get("id")?,
                 event: r.try_get::<Json<InboundEvent>, _>("event")?.0,
                 received_at: r.try_get("received_at")?,
             })
@@ -844,6 +896,7 @@ fn group_from_row(row: &PgRow, pending: VecDeque<QueuedEvent>) -> Result<Group, 
         created_at: row.try_get("created_at")?,
         close_requested_at: row.try_get("close_requested_at")?,
         close_blocked: row.try_get("close_blocked")?,
+        delivery_blocked: row.try_get("delivery_blocked")?,
     })
 }
 
@@ -856,6 +909,7 @@ pub struct RegistryTxn<'a> {
     tx: Transaction<'a, Postgres>,
     now: DateTime<Utc>,
     idle_days: i64,
+    model: Option<String>,
 }
 
 impl RegistryTxn<'_> {
@@ -1015,7 +1069,11 @@ impl RegistryTxn<'_> {
     /// protects. Without the lock two transactions would both read the old
     /// array and the second would overwrite the first's entry.
     pub async fn append_issue(&mut self, key: &GroupKey, issue: &str) -> Result<(), sqlx::Error> {
-        let slug = key.slug();
+        self.append_issue_to(&key.slug(), issue).await
+    }
+
+    async fn append_issue_to(&mut self, slug: &str, issue: &str) -> Result<(), sqlx::Error> {
+        let slug = slug.to_string();
         let mut issues: Vec<String> =
             sqlx::query_scalar("SELECT issues FROM session_groups WHERE slug = $1")
                 .bind(&slug)
@@ -1028,89 +1086,6 @@ impl RegistryTxn<'_> {
             .execute(&mut *self.tx)
             .await?;
         Ok(())
-    }
-
-    /// Groups ready to run, oldest queued event first.
-    ///
-    /// Runnable means `Idle` with something pending. Ordering by the oldest
-    /// pending event keeps a busy group from starving one that has waited
-    /// longer.
-    pub async fn runnable_groups(&mut self) -> Result<Vec<GroupKey>, sqlx::Error> {
-        let rows = sqlx::query(
-            "SELECT g.key AS key \
-             FROM session_groups g \
-             JOIN (SELECT group_slug, MIN(received_at) AS oldest \
-                     FROM pending_events GROUP BY group_slug) p \
-               ON p.group_slug = g.slug \
-             WHERE g.state->>'state' = 'idle' \
-             ORDER BY p.oldest",
-        )
-        .fetch_all(&mut *self.tx)
-        .await?;
-
-        rows.iter()
-            .map(|r| Ok(r.try_get::<Json<GroupKey>, _>("key")?.0))
-            .collect()
-    }
-
-    /// Claims a group for a run: verifies it is `Idle`, pops its oldest pending
-    /// event and marks it `Running`.
-    ///
-    /// All three happen under the transaction's lock, which is what guarantees
-    /// a group never has two runs — including against the CLI in another
-    /// process. Returns `None` if the group is busy or has nothing queued.
-    ///
-    /// `owner_pid` is the dispatcher's own pid, recorded until the child exists.
-    /// If the dispatcher dies in that window, stale-PID recovery sees its pid is
-    /// gone and marks the run `Lost`, which is the correct outcome.
-    pub async fn claim_next(
-        &mut self,
-        key: &GroupKey,
-        owner_pid: u32,
-        owner_started_at: DateTime<Utc>,
-    ) -> Result<Option<QueuedEvent>, sqlx::Error> {
-        let slug = key.slug();
-
-        let state = sqlx::query_scalar::<_, Json<GroupState>>(
-            "SELECT state FROM session_groups WHERE slug = $1 FOR UPDATE",
-        )
-        .bind(&slug)
-        .fetch_optional(&mut *self.tx)
-        .await?;
-
-        match state {
-            Some(Json(GroupState::Idle)) => {}
-            // Busy or absent: leave the queue untouched.
-            _ => return Ok(None),
-        }
-
-        let popped = sqlx::query(
-            "DELETE FROM pending_events \
-             WHERE id = (SELECT id FROM pending_events WHERE group_slug = $1 \
-                          ORDER BY id LIMIT 1) \
-             RETURNING event, received_at",
-        )
-        .bind(&slug)
-        .fetch_optional(&mut *self.tx)
-        .await?;
-
-        let Some(row) = popped else {
-            return Ok(None);
-        };
-
-        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
-            .bind(&slug)
-            .bind(Json(GroupState::Running {
-                pid: owner_pid,
-                started_at: owner_started_at,
-            }))
-            .execute(&mut *self.tx)
-            .await?;
-
-        Ok(Some(QueuedEvent {
-            event: row.try_get::<Json<InboundEvent>, _>("event")?.0,
-            received_at: row.try_get("received_at")?,
-        }))
     }
 
     /// Replaces the recorded process once the child has spawned.
@@ -1246,108 +1221,325 @@ impl RegistryTxn<'_> {
     ///
     /// Returns the `(slug, from, to)` of the transition, or `None` when the
     /// session is unknown or the hook is out of order for the current state.
+    ///
+    /// Turn bookkeeping rides along in the same transaction, so a state change
+    /// and its outcome can never be seen apart:
+    /// * `UserPromptSubmit` marks the session as started (a conversation now
+    ///   exists to resume), consumes nothing yet, and clears `delivery_blocked`
+    ///   because the paste was evidently received after all;
+    /// * `Stop` and `SessionEnd` finish the turn, see [`Self::finish_turn`].
     pub async fn apply_hook(
         &mut self,
         session_id: Uuid,
         event: HookEvent,
         pane_pid: u32,
     ) -> Result<Option<(String, GroupState, GroupState)>, sqlx::Error> {
-        let row = sqlx::query(
-            "SELECT slug, state, last_run FROM session_groups WHERE session_id = $1 FOR UPDATE",
-        )
-        .bind(session_id)
-        .fetch_optional(&mut *self.tx)
-        .await?;
-        let Some(row) = row else {
+        let slug: Option<String> =
+            sqlx::query_scalar("SELECT slug FROM session_groups WHERE session_id = $1 FOR UPDATE")
+                .bind(session_id)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+        let Some(slug) = slug else {
             return Ok(None);
         };
-        let slug: String = row.try_get("slug")?;
-        let from = row.try_get::<Json<GroupState>, _>("state")?.0;
+        let from = self.state_locked(&slug).await?;
         let Some(to) = state_after_hook(&from, event, pane_pid, self.now) else {
             return Ok(None);
         };
 
-        // The session ended under a turn: that turn's outcome is unknown.
-        let lost = match (&event, &from) {
-            (
-                HookEvent::SessionEnd,
-                GroupState::Busy { since, .. } | GroupState::Delivering { since, .. },
-            ) => Some(self.lost_outcome(*since)),
-            _ => None,
-        };
-        let last_run = match lost {
-            Some(o) => Some(Json(o)),
-            None => row.try_get::<Option<Json<RunOutcome>>, _>("last_run")?,
-        };
-        sqlx::query(
-            "UPDATE session_groups SET state = $2, last_run = $3, last_active = $4 WHERE slug = $1",
-        )
-        .bind(&slug)
-        .bind(Json(&to))
-        .bind(last_run)
-        .bind(self.now)
-        .execute(&mut *self.tx)
-        .await?;
+        match event {
+            HookEvent::UserPromptSubmit => {
+                sqlx::query(
+                    "UPDATE session_groups \
+                     SET session_started = TRUE, delivery_blocked = NULL WHERE slug = $1",
+                )
+                .bind(&slug)
+                .execute(&mut *self.tx)
+                .await?;
+            }
+            HookEvent::Stop => {
+                self.finish_turn(&slug, &from, RunResult::Completed).await?;
+            }
+            HookEvent::SessionEnd => {
+                self.finish_turn(&slug, &from, RunResult::Lost).await?;
+            }
+            HookEvent::SessionStart => {}
+        }
+        sqlx::query("UPDATE session_groups SET state = $2, last_active = $3 WHERE slug = $1")
+            .bind(&slug)
+            .bind(Json(&to))
+            .bind(self.now)
+            .execute(&mut *self.tx)
+            .await?;
         Ok(Some((slug, from, to)))
     }
 
-    fn lost_outcome(&self, since: DateTime<Utc>) -> RunOutcome {
-        RunOutcome {
-            result: RunResult::Lost,
+    async fn state_locked(&mut self, slug: &str) -> Result<GroupState, sqlx::Error> {
+        Ok(sqlx::query_scalar::<_, Json<GroupState>>(
+            "SELECT state FROM session_groups WHERE slug = $1",
+        )
+        .bind(slug)
+        .fetch_one(&mut *self.tx)
+        .await?
+        .0)
+    }
+
+    /// Ends the turn a group is in, if it is in one: records `result`, drops
+    /// the delivered event from the queue and appends its issue to the history.
+    ///
+    /// A turn that already has an outcome recorded (a timeout records `TimedOut`
+    /// before interrupting) keeps it: any `last_run` finished at or after the
+    /// turn's start means the turn is already accounted for. The queue row is
+    /// removed rather than re-queued — re-running half-finished work can open a
+    /// duplicate pull request.
+    async fn finish_turn(
+        &mut self,
+        slug: &str,
+        state: &GroupState,
+        result: RunResult,
+    ) -> Result<(), sqlx::Error> {
+        let (since, event_id) = match state {
+            GroupState::Busy {
+                since,
+                delivered_event,
+            } => (*since, *delivered_event),
+            GroupState::Delivering { since, event_id } => (*since, Some(*event_id)),
+            _ => return Ok(()),
+        };
+
+        if let Some(id) = event_id {
+            let row = sqlx::query(
+                "DELETE FROM pending_events WHERE id = $1 AND group_slug = $2 RETURNING event",
+            )
+            .bind(id)
+            .bind(slug)
+            .fetch_optional(&mut *self.tx)
+            .await?;
+            if let Some(row) = row {
+                let event = row.try_get::<Json<InboundEvent>, _>("event")?.0;
+                let issue = match &event {
+                    InboundEvent::LinearIssueTodo { issue, .. } => Some(issue.identifier.clone()),
+                    InboundEvent::LinearIssueClosed { issue, .. } => Some(issue.identifier.clone()),
+                    InboundEvent::GithubPrComment { .. } => None,
+                };
+                if let Some(issue) = issue {
+                    self.append_issue_to(slug, &issue).await?;
+                }
+            }
+        }
+
+        let last: Option<Json<RunOutcome>> =
+            sqlx::query_scalar("SELECT last_run FROM session_groups WHERE slug = $1")
+                .bind(slug)
+                .fetch_one(&mut *self.tx)
+                .await?;
+        if last.is_some_and(|l| l.0.finished_at >= since) {
+            return Ok(());
+        }
+        let outcome = RunOutcome {
+            result,
             finished_at: self.now,
             duration: (self.now - since).to_std().unwrap_or_default(),
-            model: None,
+            // Recorded per turn so `sessions list` can show what a set ran
+            // with. Taken from the dispatcher's configuration, which is also
+            // what every start and resume passes as `--model`.
+            model: self.model.clone(),
+        };
+        sqlx::query("UPDATE session_groups SET last_run = $2 WHERE slug = $1")
+            .bind(slug)
+            .bind(Json(outcome))
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Records a turn's outcome without ending the session or the turn's state.
+    ///
+    /// Used by the turn timeout, which records `TimedOut` first and only then
+    /// interrupts, so the result is the same whether or not `Stop` follows.
+    /// Returns whether the group is still in the `Busy` turn that began at `since`.
+    pub async fn time_out_turn(
+        &mut self,
+        key: &GroupKey,
+        since: DateTime<Utc>,
+    ) -> Result<bool, sqlx::Error> {
+        let slug = key.slug();
+        let Some(state) = self.state_for_update(&slug).await? else {
+            return Ok(false);
+        };
+        match &state {
+            GroupState::Busy { since: s, .. } if *s == since => {
+                self.finish_turn(&slug, &state, RunResult::TimedOut).await?;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
+    }
+
+    async fn state_for_update(&mut self, slug: &str) -> Result<Option<GroupState>, sqlx::Error> {
+        Ok(sqlx::query_scalar::<_, Json<GroupState>>(
+            "SELECT state FROM session_groups WHERE slug = $1 FOR UPDATE",
+        )
+        .bind(slug)
+        .fetch_optional(&mut *self.tx)
+        .await?
+        .map(|j| j.0))
+    }
+
+    /// Moves a group whose tmux session is going or gone to `NoSession`.
+    ///
+    /// A turn in progress is finished with `turn_result` and not re-queued.
+    /// `only_if` narrows the change to one state (compared as-is), so a
+    /// concurrent transition is never overwritten; `None` accepts any tmux
+    /// state. A `Starting` group younger than `starting_grace` is left alone,
+    /// since tmux may simply not be up yet. Returns whether anything changed.
+    pub async fn end_session(
+        &mut self,
+        key: &GroupKey,
+        turn_result: RunResult,
+        only_if: Option<&GroupState>,
+        starting_grace: chrono::Duration,
+    ) -> Result<bool, sqlx::Error> {
+        let slug = key.slug();
+        let Some(state) = self.state_for_update(&slug).await? else {
+            return Ok(false);
+        };
+        if !state.is_tmux() || state == GroupState::NoSession {
+            return Ok(false);
+        }
+        if only_if.is_some_and(|expected| *expected != state) {
+            return Ok(false);
+        }
+        if let GroupState::Starting { since } = &state {
+            if self.now - *since < starting_grace {
+                return Ok(false);
+            }
+        }
+        self.finish_turn(&slug, &state, turn_result).await?;
+        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+            .bind(&slug)
+            .bind(Json(GroupState::NoSession))
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(true)
     }
 
     /// Moves a group whose tmux session has vanished to `NoSession`.
     ///
     /// Re-checks the state under the row lock, since it may have changed since
-    /// the caller looked. A `Busy` or `Delivering` group has its turn recorded
-    /// as [`RunResult::Lost`]. Returns whether anything changed.
+    /// the caller looked. Returns whether anything changed.
     pub async fn mark_session_gone(
         &mut self,
         key: &GroupKey,
         starting_grace: chrono::Duration,
     ) -> Result<bool, sqlx::Error> {
+        self.end_session(key, RunResult::Lost, None, starting_grace)
+            .await
+    }
+
+    /// Records that a freshly started session never came up, and resets the
+    /// group to `NoSession`. Only acts on a group still `Starting`.
+    pub async fn fail_start(&mut self, key: &GroupKey) -> Result<bool, sqlx::Error> {
         let slug = key.slug();
-        let state = sqlx::query_scalar::<_, Json<GroupState>>(
-            "SELECT state FROM session_groups WHERE slug = $1 FOR UPDATE",
+        let Some(GroupState::Starting { since }) = self.state_for_update(&slug).await? else {
+            return Ok(false);
+        };
+        let outcome = RunOutcome {
+            result: RunResult::StartFailed,
+            finished_at: self.now,
+            duration: (self.now - since).to_std().unwrap_or_default(),
+            // Worth recording precisely here: a start that never came up is
+            // when the requested model matters most.
+            model: self.model.clone(),
+        };
+        sqlx::query("UPDATE session_groups SET state = $2, last_run = $3 WHERE slug = $1")
+            .bind(&slug)
+            .bind(Json(GroupState::NoSession))
+            .bind(Json(outcome))
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(true)
+    }
+
+    /// `NoSession` (or legacy `Idle`) → `Starting`. Returns whether it changed.
+    pub async fn begin_start(&mut self, key: &GroupKey) -> Result<bool, sqlx::Error> {
+        let slug = key.slug();
+        match self.state_for_update(&slug).await? {
+            Some(GroupState::NoSession | GroupState::Idle) => {}
+            _ => return Ok(false),
+        }
+        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+            .bind(&slug)
+            .bind(Json(GroupState::Starting { since: self.now }))
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(true)
+    }
+
+    /// `Ready` → `Delivering` for the oldest pending event, which stays queued
+    /// until the turn ends. `None` when the group is not `Ready`, delivery is
+    /// blocked, or nothing is queued.
+    pub async fn begin_delivery(
+        &mut self,
+        key: &GroupKey,
+    ) -> Result<Option<QueuedEvent>, sqlx::Error> {
+        let slug = key.slug();
+        let blocked: Option<Option<String>> =
+            sqlx::query_scalar("SELECT delivery_blocked FROM session_groups WHERE slug = $1")
+                .bind(&slug)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+        if blocked.flatten().is_some() {
+            return Ok(None);
+        }
+        match self.state_for_update(&slug).await? {
+            Some(GroupState::Ready { .. }) => {}
+            _ => return Ok(None),
+        }
+        let row = sqlx::query(
+            "SELECT id, event, received_at FROM pending_events \
+             WHERE group_slug = $1 ORDER BY id LIMIT 1",
         )
         .bind(&slug)
         .fetch_optional(&mut *self.tx)
         .await?;
-        let Some(Json(state)) = state else {
-            return Ok(false);
+        let Some(row) = row else {
+            return Ok(None);
         };
-        let lost = match &state {
-            GroupState::Busy { since, .. } | GroupState::Delivering { since, .. } => {
-                Some(self.lost_outcome(*since))
-            }
-            // tmux may simply not have been started yet.
-            GroupState::Starting { since } if self.now - *since < starting_grace => {
-                return Ok(false)
-            }
-            GroupState::Starting { .. } | GroupState::Ready { .. } => None,
+        let queued = QueuedEvent {
+            id: row.try_get("id")?,
+            event: row.try_get::<Json<InboundEvent>, _>("event")?.0,
+            received_at: row.try_get("received_at")?,
+        };
+        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+            .bind(&slug)
+            .bind(Json(GroupState::Delivering {
+                since: self.now,
+                event_id: queued.id,
+            }))
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(Some(queued))
+    }
+
+    /// Halts delivery to a group whose paste was not confirmed, if it is still
+    /// waiting on that paste. The event stays queued.
+    pub async fn block_delivery(
+        &mut self,
+        key: &GroupKey,
+        event_id: i64,
+        reason: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let slug = key.slug();
+        match self.state_for_update(&slug).await? {
+            Some(GroupState::Delivering { event_id: id, .. }) if id == event_id => {}
             _ => return Ok(false),
-        };
-        match lost {
-            Some(o) => {
-                sqlx::query("UPDATE session_groups SET state = $2, last_run = $3 WHERE slug = $1")
-                    .bind(&slug)
-                    .bind(Json(GroupState::NoSession))
-                    .bind(Json(o))
-                    .execute(&mut *self.tx)
-                    .await?;
-            }
-            None => {
-                sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
-                    .bind(&slug)
-                    .bind(Json(GroupState::NoSession))
-                    .execute(&mut *self.tx)
-                    .await?;
-            }
         }
+        sqlx::query("UPDATE session_groups SET delivery_blocked = $2 WHERE slug = $1")
+            .bind(&slug)
+            .bind(reason)
+            .execute(&mut *self.tx)
+            .await?;
         Ok(true)
     }
 
@@ -1367,7 +1559,7 @@ impl RegistryTxn<'_> {
             return Ok(None);
         };
         let pending = sqlx::query(
-            "SELECT event, received_at FROM pending_events \
+            "SELECT id, event, received_at FROM pending_events \
              WHERE group_slug = $1 ORDER BY id",
         )
         .bind(slug)
@@ -1396,7 +1588,7 @@ impl RegistryTxn<'_> {
         .await?;
 
         match state {
-            Some(Json(GroupState::Idle)) => {}
+            Some(Json(GroupState::Idle | GroupState::NoSession)) => {}
             _ => return Ok(false),
         }
 
@@ -1448,7 +1640,7 @@ impl RegistryTxn<'_> {
     pub async fn drain_pending(&mut self, key: &GroupKey) -> Result<Vec<QueuedEvent>, sqlx::Error> {
         let rows = sqlx::query(
             "DELETE FROM pending_events WHERE group_slug = $1 \
-             RETURNING event, received_at",
+             RETURNING id, event, received_at",
         )
         .bind(key.slug())
         .fetch_all(&mut *self.tx)

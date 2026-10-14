@@ -5,18 +5,21 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use conductor::dispatcher::{
     DispatchConfig, DispatchSink, Dispatcher, PerPullRequestResolver, SessionEnv,
 };
+use conductor::hooks::{self, HookPayload, HookState};
 use conductor::linear::LinearIssue;
 use conductor::registry::{Group, GroupKey, GroupState, Registry, SystemClock};
 use conductor::sessions::{self, SessionsCommand};
+use conductor::tmux::{SessionRuntime, TmuxError};
 use conductor::InboundEvent;
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -68,6 +71,323 @@ pub fn git(cwd: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
+// ── fake tmux + Claude ───────────────────────────────────────────────────────
+
+struct FakeSession {
+    session_id: String,
+    cwd: PathBuf,
+    argv: Vec<String>,
+    env: Vec<(String, String)>,
+    clients: Vec<String>,
+    interrupt: Arc<tokio::sync::Notify>,
+}
+
+/// A `SessionRuntime` that plays both tmux and the Claude inside it.
+///
+/// `start` answers with a `SessionStart` hook, `deliver` with a
+/// `UserPromptSubmit`, a pause and then a `Stop`, all through the real hook
+/// handler, so the registry sees exactly what it would from a live pod. Turns
+/// are logged in the fake-claude JSON format, so tests measure order and overlap
+/// from observed behaviour.
+pub struct FakeTmux {
+    /// The hook state holds this runtime, so this is a reference cycle until
+    /// [`FakeTmux::detach_hooks`] is called. The cycle would keep the test's
+    /// database pool alive after the test, and sqlx only gives a test pool's
+    /// connection permits back to its parent once the pool is dropped.
+    hook: Mutex<Option<HookState>>,
+    log: PathBuf,
+    turn_ms: AtomicU64,
+    cmd: Mutex<Option<String>>,
+    /// Ignore `interrupt`, standing in for a Claude that never reacts to Escape.
+    pub ignore_interrupt: AtomicBool,
+    /// When false, `start` never produces `SessionStart`.
+    pub send_session_start: AtomicBool,
+    /// When false, `deliver` never produces `UserPromptSubmit`.
+    pub send_prompt_submit: AtomicBool,
+    /// When false, a finished turn produces no `Stop`.
+    pub send_stop: AtomicBool,
+    sessions: Mutex<HashMap<String, FakeSession>>,
+    /// Everything pasted, as `(slug, text)`.
+    pub delivered: Mutex<Vec<(String, String)>>,
+    /// Slugs killed, in order.
+    pub killed: Mutex<Vec<String>>,
+    /// Slugs interrupted, in order.
+    pub interrupted: Mutex<Vec<String>>,
+    /// Slugs started, in order.
+    pub started: Mutex<Vec<String>>,
+}
+
+impl FakeTmux {
+    pub fn new(log: PathBuf) -> Arc<Self> {
+        Arc::new(FakeTmux {
+            hook: Mutex::new(None),
+            log,
+            turn_ms: AtomicU64::new(50),
+            cmd: Mutex::new(None),
+            ignore_interrupt: AtomicBool::new(false),
+            send_session_start: AtomicBool::new(true),
+            send_prompt_submit: AtomicBool::new(true),
+            send_stop: AtomicBool::new(true),
+            sessions: Mutex::new(HashMap::new()),
+            delivered: Mutex::new(Vec::new()),
+            killed: Mutex::new(Vec::new()),
+            interrupted: Mutex::new(Vec::new()),
+            started: Mutex::new(Vec::new()),
+        })
+    }
+
+    pub fn attach_hooks(&self, state: HookState) {
+        *self.hook.lock().unwrap() = Some(state);
+    }
+
+    /// Breaks the cycle between this runtime and its hook state.
+    pub fn detach_hooks(&self) {
+        *self.hook.lock().unwrap() = None;
+    }
+
+    pub fn set_turn(&self, ms: u64, cmd: Option<&str>) {
+        self.turn_ms.store(ms, Ordering::SeqCst);
+        *self.cmd.lock().unwrap() = cmd.map(str::to_string);
+    }
+
+    /// Pretends `clients` are attached to the session.
+    pub fn set_clients(&self, slug: &str, clients: &[&str]) {
+        if let Some(s) = self.sessions.lock().unwrap().get_mut(slug) {
+            s.clients = clients.iter().map(|c| c.to_string()).collect();
+        }
+    }
+
+    /// Whether the fake still holds this session.
+    pub fn has(&self, slug: &str) -> bool {
+        self.sessions.lock().unwrap().contains_key(slug)
+    }
+
+    /// Drops the session without telling anyone, as a crash would.
+    pub fn crash(&self, slug: &str) {
+        self.sessions.lock().unwrap().remove(slug);
+    }
+
+    /// Sends a hook for this session, as the real `conductor hook` would.
+    pub async fn hook(&self, slug: &str, name: &str) {
+        let session_id = {
+            let sessions = self.sessions.lock().unwrap();
+            match sessions.get(slug) {
+                Some(s) => s.session_id.clone(),
+                None => return,
+            }
+        };
+        self.hook_for(&session_id, name).await;
+    }
+
+    async fn hook_for(&self, session_id: &str, name: &str) {
+        let Some(state) = self.hook.lock().unwrap().clone() else {
+            return;
+        };
+        let payload = HookPayload {
+            hook_event_name: name.into(),
+            session_id: session_id.into(),
+            ..Default::default()
+        };
+        hooks::process(&state, &payload).await;
+    }
+}
+
+/// Appends one record in the fake-claude log format.
+fn record_turn(log: &Path, event: &str, cwd: &Path, argv: &[String], env: &[(String, String)]) {
+    use std::io::Write;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    let line = serde_json::json!({
+        "event": event,
+        "pid": 0,
+        "ts": ts,
+        "cwd": cwd,
+        "argv": argv.iter().skip(1).collect::<Vec<_>>(),
+        "env_cargo_target_dir": env.iter()
+            .find(|(k, _)| k == "CARGO_TARGET_DIR").map(|(_, v)| v),
+    });
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .expect("open fake log");
+    writeln!(f, "{line}").expect("write fake log");
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for FakeTmux {
+    async fn start(
+        &self,
+        slug: &str,
+        worktree: &Path,
+        argv: &[String],
+        env: &[(String, String)],
+    ) -> Result<(), TmuxError> {
+        let session_id = argv
+            .iter()
+            .position(|a| a == "--session-id" || a == "--resume")
+            .and_then(|i| argv.get(i + 1))
+            .cloned()
+            .unwrap_or_default();
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            if sessions.contains_key(slug) {
+                return Err(TmuxError::Failed {
+                    command: "new-session".into(),
+                    status: "1".into(),
+                    stderr: "duplicate session".into(),
+                });
+            }
+            sessions.insert(
+                slug.to_string(),
+                FakeSession {
+                    session_id: session_id.clone(),
+                    cwd: worktree.to_path_buf(),
+                    argv: argv.to_vec(),
+                    env: env.to_vec(),
+                    clients: vec![],
+                    interrupt: Arc::new(tokio::sync::Notify::new()),
+                },
+            );
+        }
+        self.started.lock().unwrap().push(slug.to_string());
+        if self.send_session_start.load(Ordering::SeqCst) {
+            let me = self.hook.lock().unwrap().clone();
+            if let Some(state) = me {
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                    let payload = HookPayload {
+                        hook_event_name: "SessionStart".into(),
+                        session_id,
+                        ..Default::default()
+                    };
+                    hooks::process(&state, &payload).await;
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn exists(&self, slug: &str) -> bool {
+        self.has(slug)
+    }
+
+    async fn pane_pid(&self, slug: &str) -> Option<u32> {
+        self.has(slug).then_some(1)
+    }
+
+    async fn clients(&self, slug: &str) -> Vec<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(slug)
+            .map(|s| s.clients.clone())
+            .unwrap_or_default()
+    }
+
+    async fn list_sessions(&self) -> Result<Vec<String>, TmuxError> {
+        Ok(self.sessions.lock().unwrap().keys().cloned().collect())
+    }
+
+    async fn deliver(&self, slug: &str, text: &str) -> Result<(), TmuxError> {
+        let (session_id, interrupt, cwd, argv, env) = {
+            let sessions = self.sessions.lock().unwrap();
+            let Some(s) = sessions.get(slug) else {
+                return Err(TmuxError::Failed {
+                    command: "load-buffer".into(),
+                    status: "1".into(),
+                    stderr: "no such session".into(),
+                });
+            };
+            (
+                s.session_id.clone(),
+                Arc::clone(&s.interrupt),
+                s.cwd.clone(),
+                s.argv.clone(),
+                s.env.clone(),
+            )
+        };
+        self.delivered
+            .lock()
+            .unwrap()
+            .push((slug.to_string(), text.to_string()));
+        if !self.send_prompt_submit.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let Some(state) = self.hook.lock().unwrap().clone() else {
+            return Ok(());
+        };
+
+        let turn = Duration::from_millis(self.turn_ms.load(Ordering::SeqCst));
+        let cmd = self.cmd.lock().unwrap().clone();
+        let ignore = self.ignore_interrupt.load(Ordering::SeqCst);
+        let send_stop = self.send_stop.load(Ordering::SeqCst);
+        let log = self.log.clone();
+
+        // The pasted prompt is logged as the last argument, where the old
+        // `--print` run carried it, so tests read it from the same place.
+        let mut argv = argv;
+        argv.push(text.to_string());
+        // Logged before the hook so a test waiting on the state sees the start.
+        record_turn(&log, "start", &cwd, &argv, &env);
+
+        tokio::spawn(async move {
+            let payload = |name: &str| HookPayload {
+                hook_event_name: name.into(),
+                session_id: session_id.clone(),
+                ..Default::default()
+            };
+            hooks::process(&state, &payload("UserPromptSubmit")).await;
+            if ignore {
+                tokio::time::sleep(turn).await;
+            } else {
+                tokio::select! {
+                    _ = tokio::time::sleep(turn) => {}
+                    _ = interrupt.notified() => {}
+                }
+            }
+            if let Some(cmd) = cmd {
+                let _ = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(cmd)
+                    .current_dir(&cwd)
+                    .output()
+                    .await;
+            }
+            record_turn(&log, "end", &cwd, &argv, &env);
+            if send_stop {
+                hooks::process(&state, &payload("Stop")).await;
+            }
+        });
+        Ok(())
+    }
+
+    async fn interrupt(&self, slug: &str) -> Result<(), TmuxError> {
+        self.interrupted.lock().unwrap().push(slug.to_string());
+        if self.ignore_interrupt.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        if let Some(s) = self.sessions.lock().unwrap().get(slug) {
+            s.interrupt.notify_one();
+        }
+        Ok(())
+    }
+
+    async fn kill(&self, slug: &str) -> Result<(), TmuxError> {
+        self.killed.lock().unwrap().push(slug.to_string());
+        self.sessions.lock().unwrap().remove(slug);
+        Ok(())
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        self.fake.detach_hooks();
+    }
+}
+
 /// A dispatcher wired to throwaway paths.
 pub struct Harness {
     _tmp: TempDir,
@@ -81,6 +401,8 @@ pub struct Harness {
     pub config: DispatchConfig,
     pub registry: Registry,
     pub shutting_down: Arc<AtomicBool>,
+    /// The fake tmux/Claude the dispatcher drives.
+    pub fake: Arc<FakeTmux>,
 }
 
 impl Harness {
@@ -113,6 +435,7 @@ impl Harness {
         git(&repo, &["push", "-u", "origin", "main"]);
 
         let log = state.join("fake-claude.jsonl");
+        let state_log = log.clone();
         let config = DispatchConfig {
             max_sessions: 5,
             repo_root: repo.clone(),
@@ -127,7 +450,11 @@ impl Harness {
             // Short so tests observe outside changes quickly.
             rescan_interval: Duration::from_millis(100),
             close_sweep: None,
-            term_to_kill: Duration::from_millis(200),
+            max_live_sessions: 10,
+            start_timeout: Duration::from_secs(10),
+            deliver_timeout: Duration::from_secs(10),
+            interrupt_grace: Duration::from_millis(300),
+            start_backoff: Duration::from_millis(500),
         };
 
         Harness {
@@ -141,6 +468,7 @@ impl Harness {
             pool,
             config,
             shutting_down: Arc::new(AtomicBool::new(false)),
+            fake: FakeTmux::new(state_log),
         }
     }
 
@@ -183,6 +511,12 @@ impl Harness {
                 .expect("chmod wrapper");
         }
         self.config.claude_bin = wrapper.to_string_lossy().to_string();
+        // Dispatched turns run on the fake tmux; the wrapper above only serves
+        // `sessions attach`, which still launches claude itself.
+        self.fake.set_turn(sleep_ms, cmd);
+        self.fake
+            .ignore_interrupt
+            .store(ignore_term, Ordering::SeqCst);
         self
     }
 
@@ -212,7 +546,9 @@ impl Harness {
             Arc::new(PerPullRequestResolver),
             Arc::clone(&self.shutting_down),
             None,
+            self.fake.clone(),
         );
+        self.fake.attach_hooks(dispatcher.hook_state());
         tokio::spawn(Arc::clone(&dispatcher).run_ingest(rx));
         tokio::spawn(Arc::clone(&dispatcher).run_scheduler());
         (dispatcher, sink)
@@ -229,7 +565,9 @@ impl Harness {
             Arc::new(PerPullRequestResolver),
             Arc::clone(&self.shutting_down),
             Some(source),
+            self.fake.clone(),
         );
+        self.fake.attach_hooks(dispatcher.hook_state());
         tokio::spawn(Arc::clone(&dispatcher).run_ingest(rx));
         tokio::spawn(Arc::clone(&dispatcher).run_scheduler());
         (dispatcher, sink)

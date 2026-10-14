@@ -302,6 +302,8 @@ fn describe_outcome(outcome: Option<&RunOutcome>) -> String {
         return "-".into();
     };
     match &o.result {
+        RunResult::Completed => "completed".into(),
+        RunResult::StartFailed => "start failed".into(),
         RunResult::Exited { code } => format!("exited {code}"),
         RunResult::Signaled { signal } => format!("signaled {signal}"),
         RunResult::TimedOut => "timed out".into(),
@@ -386,10 +388,9 @@ async fn attach(
         };
 
         match current.state {
-            GroupState::Idle => {}
-            // Attaching to tmux-backed groups arrives with the dispatcher switch.
-            GroupState::NoSession
-            | GroupState::Starting { .. }
+            GroupState::Idle | GroupState::NoSession => {}
+            // Attaching to tmux-backed groups arrives with the CLI rework.
+            GroupState::Starting { .. }
             | GroupState::Ready { .. }
             | GroupState::Delivering { .. }
             | GroupState::Busy { .. } => {
@@ -799,42 +800,43 @@ async fn close(
     }
 
     let mode = CloseMode::Manual { force };
-    let (branches, _issues) = match close_group(registry, &env.repo_root, &group.key, mode).await? {
-        CloseOutcome::Closed { branches, issues } => (branches, issues),
-        CloseOutcome::Gone => {
-            writeln!(out, "{slug} was already gone")?;
-            return Ok(0);
-        }
-        CloseOutcome::WorktreeDirty(e) => {
-            let path = group.worktree.to_string_lossy();
-            writeln!(
-                out,
-                "could not remove the worktree at {path}, so {slug} was left alone: {e}"
-            )?;
-            if !force {
+    let (branches, _issues) =
+        match close_group(registry, &env.repo_root, &group.key, mode, None).await? {
+            CloseOutcome::Closed { branches, issues } => (branches, issues),
+            CloseOutcome::Gone => {
+                writeln!(out, "{slug} was already gone")?;
+                return Ok(0);
+            }
+            CloseOutcome::WorktreeDirty(e) => {
+                let path = group.worktree.to_string_lossy();
                 writeln!(
                     out,
-                    "if the worktree has uncommitted changes, --force discards them"
+                    "could not remove the worktree at {path}, so {slug} was left alone: {e}"
                 )?;
+                if !force {
+                    writeln!(
+                        out,
+                        "if the worktree has uncommitted changes, --force discards them"
+                    )?;
+                }
+                return Ok(EXIT_REFUSED);
             }
-            return Ok(EXIT_REFUSED);
-        }
-        // Only reachable without --force, when state changed after the lookup.
-        CloseOutcome::Busy => {
-            writeln!(
-                out,
-                "{slug} became busy; use --force to stop it and close anyway"
-            )?;
-            return Ok(EXIT_REFUSED);
-        }
-        CloseOutcome::HasPending => {
-            writeln!(
-                out,
-                "{slug} has queued event(s); use --force to discard them and close"
-            )?;
-            return Ok(EXIT_REFUSED);
-        }
-    };
+            // Only reachable without --force, when state changed after the lookup.
+            CloseOutcome::Busy => {
+                writeln!(
+                    out,
+                    "{slug} became busy; use --force to stop it and close anyway"
+                )?;
+                return Ok(EXIT_REFUSED);
+            }
+            CloseOutcome::HasPending => {
+                writeln!(
+                    out,
+                    "{slug} has queued event(s); use --force to discard them and close"
+                )?;
+                return Ok(EXIT_REFUSED);
+            }
+        };
 
     if !group.worktree.as_os_str().is_empty() {
         writeln!(out, "removed worktree {}", group.worktree.display())?;

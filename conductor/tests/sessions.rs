@@ -18,6 +18,7 @@ use common::{linear_event, Harness};
 use conductor::dispatcher::{DispatchSink, Dispatcher, Signal};
 use conductor::registry::{process_is_alive, recorded_start_time, GroupKey, GroupState, RunResult};
 use conductor::sessions::SessionsCommand;
+use conductor::tmux::SessionRuntime;
 use conductor::EventSink;
 use sqlx::PgPool;
 
@@ -82,10 +83,15 @@ async fn seeded(
     );
     assert!(
         harness
-            .wait_for_state(key, PATIENCE, |s| *s == GroupState::Idle)
+            .wait_for_state(key, PATIENCE, |s| matches!(s, GroupState::Ready { .. }))
             .await,
-        "the group never returned to idle after the seeding run"
+        "the group never became ready after the seeding run"
     );
+    // The CLI still drives claude itself, so hand it a group with no tmux
+    // session, as an operator would find one whose session has ended.
+    let slug = key.slug();
+    harness.fake.kill(&slug).await.expect("kill");
+    harness.set_state(key, &GroupState::NoSession).await;
     (dispatcher, sink)
 }
 
@@ -115,13 +121,13 @@ fn attach_in_background(
     })
 }
 
-/// Dispatched runs carry `--print`; an interactive attach never does. That is
-/// what separates the two in the shared log.
+/// Dispatched turns end with the pasted `<channel …>` prompt; an interactive
+/// attach never has one. That is what separates the two in the shared log.
 fn dispatched_runs(harness: &Harness) -> usize {
     harness
         .starts()
         .iter()
-        .filter(|r| r.argv.iter().any(|a| a == "--print"))
+        .filter(|r| r.argv.last().is_some_and(|a| a.starts_with("<channel")))
         .count()
 }
 
@@ -334,7 +340,7 @@ async fn attach_honours_skip_permissions_being_turned_off(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn attach_waits_for_a_running_dispatch_then_takes_over(pool: PgPool) {
+async fn attach_leaves_a_tmux_backed_session_alone_for_now(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(800, 0, None, false);
     let key = named("irr");
 
@@ -342,28 +348,20 @@ async fn attach_waits_for_a_running_dispatch_then_takes_over(pool: PgPool) {
     sink.submit(linear_event("NEX-1", "irr", None));
     assert!(
         harness
-            .wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::Running { .. }))
+            .wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::Busy { .. }))
             .await,
-        "the dispatched run never started"
+        "the dispatched turn never started"
     );
 
     let (code, text) = attach_in_background(&harness, "irr", false)
         .await
         .expect("join");
-
-    assert_eq!(code, 0, "attach should succeed:\n{text}");
-    assert!(
-        text.contains("waiting for current run"),
-        "the operator should be told why nothing is happening:\n{text}"
-    );
-
-    let group = harness.group(&key).await.expect("group");
-    assert_eq!(
-        group.last_run.map(|r| r.result),
-        Some(RunResult::Exited { code: 0 }),
-        "waiting must not disturb the run it waited for"
-    );
-    assert_eq!(group.state, GroupState::Idle);
+    assert_ne!(code, 0, "attach must refuse:\n{text}");
+    assert!(text.contains("tmux"), "{text}");
+    assert!(matches!(
+        harness.state_of(&key).await,
+        Some(GroupState::Busy { .. } | GroupState::Ready { .. })
+    ));
 }
 
 #[sqlx::test(migrations = "./migrations")]
