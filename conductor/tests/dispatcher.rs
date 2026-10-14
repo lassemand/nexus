@@ -72,6 +72,10 @@ async fn runs_in_one_group_never_overlap_and_keep_order(pool: PgPool) {
     let (first_id, first_resumed) = starts[0].session().expect("session arg");
     assert!(!first_resumed, "the first run must not resume");
     assert_eq!(h.fake.started.lock().unwrap().len(), 1, "one tmux session");
+    // Fresh (--session-id) and resumed (--resume) runs both carry the model.
+    for run in &starts {
+        assert_eq!(run.model(), Some("sonnet"), "argv was {:?}", run.argv);
+    }
     for later in &starts[1..] {
         let (id, _) = later.session().expect("session arg");
         assert_eq!(id, first_id, "the session id must be stable across runs");

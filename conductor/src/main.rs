@@ -120,6 +120,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     None => None,
                 };
             let config = dispatch.into_config();
+            match &config.model {
+                Some(model) => tracing::info!("claude model: {model}"),
+                None => {
+                    tracing::warn!(
+                        "CONDUCTOR_CLAUDE_MODEL not set; sessions use Claude Code's default model"
+                    );
+                    tracing::info!("claude model: default");
+                }
+            }
             tracing::info!(
                 max_sessions = config.max_sessions,
                 repo_root = %config.repo_root.display(),

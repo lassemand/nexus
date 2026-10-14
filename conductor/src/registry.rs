@@ -307,6 +307,10 @@ pub struct RunOutcome {
     pub result: RunResult,
     pub finished_at: DateTime<Utc>,
     pub duration: Duration,
+    /// Model the run was started with (`--model`); `None` means Claude Code's
+    /// default. Absent in outcomes recorded before this field existed.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// An accepted event waiting to be dispatched.
@@ -503,6 +507,8 @@ pub struct Registry {
     pool: PgPool,
     clock: Arc<dyn Clock>,
     idle_days: i64,
+    /// Model recorded on turn outcomes; see `with_model`.
+    model: Option<String>,
 }
 
 impl Registry {
@@ -512,7 +518,25 @@ impl Registry {
             pool,
             clock,
             idle_days,
+            model: None,
         }
+    }
+
+    /// Sets the model recorded on each turn's outcome.
+    ///
+    /// A builder rather than a `new` parameter because the model is the
+    /// dispatcher's concern and every other caller — the CLI, the tests — has
+    /// no opinion on it.
+    ///
+    /// This is the *currently configured* model, not one stored per session. A
+    /// session started before the configuration changed would have its later
+    /// turns recorded under the new value; every start and resume passes the
+    /// current `--model`, so that only misreports a turn a human typed into a
+    /// session older than the change.
+    #[must_use]
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
     }
 
     /// Connects using `DATABASE_URL`, with the idle window from
@@ -545,6 +569,7 @@ impl Registry {
             tx,
             now: self.clock.now(),
             idle_days: self.idle_days,
+            model: self.model.clone(),
         })
     }
 
@@ -884,6 +909,7 @@ pub struct RegistryTxn<'a> {
     tx: Transaction<'a, Postgres>,
     now: DateTime<Utc>,
     idle_days: i64,
+    model: Option<String>,
 }
 
 impl RegistryTxn<'_> {
@@ -1178,6 +1204,7 @@ impl RegistryTxn<'_> {
                 result: RunResult::Lost,
                 finished_at: self.now,
                 duration: (self.now - started_at).to_std().unwrap_or_default(),
+                model: None,
             };
             sqlx::query("UPDATE session_groups SET state = $2, last_run = $3 WHERE slug = $1")
                 .bind(&slug)
@@ -1313,6 +1340,10 @@ impl RegistryTxn<'_> {
             result,
             finished_at: self.now,
             duration: (self.now - since).to_std().unwrap_or_default(),
+            // Recorded per turn so `sessions list` can show what a set ran
+            // with. Taken from the dispatcher's configuration, which is also
+            // what every start and resume passes as `--model`.
+            model: self.model.clone(),
         };
         sqlx::query("UPDATE session_groups SET last_run = $2 WHERE slug = $1")
             .bind(slug)

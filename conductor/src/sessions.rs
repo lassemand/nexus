@@ -192,6 +192,7 @@ async fn list(
         "LAST ISSUE",
         "LAST ACTIVE",
         "LAST RUN",
+        "MODEL",
         "SESSION",
         "WORKTREE",
     ];
@@ -205,6 +206,10 @@ async fn list(
             g.issues.last().cloned().unwrap_or_else(|| "-".into()),
             format!("{} ago", human_duration(now - g.last_active)),
             describe_outcome(g.last_run.as_ref()),
+            g.last_run
+                .as_ref()
+                .and_then(|o| o.model.clone())
+                .unwrap_or_else(|| "-".into()),
             // Enough to correlate with a log line without filling the row.
             g.session_id.to_string()[..8].to_string(),
             display_path(&g.worktree),
@@ -528,6 +533,7 @@ async fn run_interactive(
     // The agent the session was dispatched under. Resuming without it would
     // drop the instructions the conversation has been following.
     command.arg(format!("--agent={}", env.agent));
+    crate::dispatcher::push_model_arg(&mut command, env.model.as_deref());
     // `--dangerously-skip-permissions` is passed here too, governed by the same
     // setting as dispatched runs.
     //
@@ -933,6 +939,7 @@ async fn stop_process(
             result: RunResult::Killed { by: by.to_string() },
             finished_at: now,
             duration: (now - started_at).to_std().unwrap_or_default(),
+            model: None,
         },
     )
     .await?;
@@ -963,6 +970,7 @@ mod tests {
             result,
             finished_at: Utc::now(),
             duration: Duration::from_secs(1),
+            model: None,
         }
     }
 

@@ -73,6 +73,26 @@ spec:
                 name: conductor-secret
 
           env:
+            # Declared here, not just exported by the entrypoint.
+            #
+            # The entrypoint's `export HOME` reaches only its own process tree,
+            # so `kubectl exec` — which is how the operator CLI runs — started
+            # with HOME=/home/agent from the passwd entry, a directory that does
+            # not exist. Everything Claude Code keeps per-user lives under
+            # /data/home: conversation transcripts, agents/, settings.json and
+            # the .claude.json holding MCP server config. So `sessions attach`
+            # resumed into nothing —
+            #   No conversation found with session ID: <id>
+            # — while the transcript sat in /data/home/.claude/projects, and a
+            # fresh attach silently ran with no agent definition and no MCP
+            # servers. The GitHub App credential helper defaults to
+            # $HOME/.config/github-app/private-key.pem and was broken the same
+            # way for any exec'd git operation.
+            #
+            # Must agree with ${CONDUCTOR_DATA_DIR:-/data}/home in the
+            # entrypoint, like the three paths below.
+            - name: HOME
+              value: "/data/home"
             - name: CONDUCTOR_STATE_DIR
               value: "/data/state"
             - name: CONDUCTOR_REPO_ROOT
@@ -89,6 +109,8 @@ spec:
               value: "120"
             - name: CONDUCTOR_AGENT
               value: "backend"
+            - name: CONDUCTOR_CLAUDE_MODEL
+              value: {{ .Values.claude.model | quote }}
             - name: GITHUB_WEBHOOK_USERS
               value: {{ .Values.githubWebhookUsers | quote }}
             - name: CONDUCTOR_BIND
