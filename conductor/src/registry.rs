@@ -1448,6 +1448,7 @@ impl RegistryTxn<'_> {
             result: RunResult::StartFailed,
             finished_at: self.now,
             duration: (self.now - since).to_std().unwrap_or_default(),
+            model: None,
         };
         sqlx::query("UPDATE session_groups SET state = $2, last_run = $3 WHERE slug = $1")
             .bind(&slug)
