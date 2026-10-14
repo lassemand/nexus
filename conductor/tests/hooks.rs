@@ -45,6 +45,12 @@ impl SessionRuntime for NoTmux {
     async fn kill(&self, _: &str) -> Result<(), TmuxError> {
         Ok(())
     }
+    async fn detach_clients(&self, _: &str) -> Result<(), TmuxError> {
+        Ok(())
+    }
+    fn attach_command(&self, _: &str, _: bool) -> Vec<String> {
+        vec![]
+    }
 }
 
 async fn post(app: &axum::Router, body: String) -> StatusCode {

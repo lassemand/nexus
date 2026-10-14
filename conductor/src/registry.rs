@@ -225,6 +225,17 @@ impl GroupState {
     }
 }
 
+/// A one-word name for a tmux-model state, for messages to an operator.
+fn describe_tmux_state(state: &GroupState) -> &'static str {
+    match state {
+        GroupState::Starting { .. } => "starting",
+        GroupState::Ready { .. } => "ready",
+        GroupState::Delivering { .. } => "delivering",
+        GroupState::Busy { .. } => "busy",
+        _ => "no session",
+    }
+}
+
 /// A Claude Code hook that moves a tmux-model group between states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
@@ -1522,6 +1533,71 @@ impl RegistryTxn<'_> {
         Ok(Some(queued))
     }
 
+    /// Clears `delivery_blocked` and unsticks a tmux-model state that no longer
+    /// matches reality, for `conductor sessions release`. `alive` says whether
+    /// the group's tmux session exists. Returns what changed, in words.
+    ///
+    /// * `Starting`/`Delivering`/`Busy` with no session → `NoSession`
+    /// * `Starting`/`Delivering`/`Busy` with a live session → `Ready`
+    ///
+    /// A `Busy` turn is recorded `Lost` (the operator is saying it is over; how
+    /// it ended is unknown). A `Delivering` event stays queued: its paste was
+    /// never confirmed, and the operator has just checked the input box.
+    pub async fn release_session(
+        &mut self,
+        key: &GroupKey,
+        alive: bool,
+        pane_pid: u32,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let slug = key.slug();
+        let mut changes = Vec::new();
+        let Some(state) = self.state_for_update(&slug).await? else {
+            return Ok(changes);
+        };
+
+        let blocked: Option<String> =
+            sqlx::query_scalar("SELECT delivery_blocked FROM session_groups WHERE slug = $1")
+                .bind(&slug)
+                .fetch_one(&mut *self.tx)
+                .await?;
+        if let Some(reason) = blocked {
+            sqlx::query("UPDATE session_groups SET delivery_blocked = NULL WHERE slug = $1")
+                .bind(&slug)
+                .execute(&mut *self.tx)
+                .await?;
+            changes.push(format!("cleared the delivery block ({reason})"));
+        }
+
+        if !matches!(
+            state,
+            GroupState::Starting { .. } | GroupState::Delivering { .. } | GroupState::Busy { .. }
+        ) {
+            return Ok(changes);
+        }
+        if matches!(state, GroupState::Busy { .. }) {
+            self.finish_turn(&slug, &state, RunResult::Lost).await?;
+        }
+        let (to, word) = if alive {
+            (
+                GroupState::Ready {
+                    pane_pid,
+                    since: self.now,
+                },
+                "ready",
+            )
+        } else {
+            (GroupState::NoSession, "no session")
+        };
+        sqlx::query("UPDATE session_groups SET state = $2, last_active = $3 WHERE slug = $1")
+            .bind(&slug)
+            .bind(Json(&to))
+            .bind(self.now)
+            .execute(&mut *self.tx)
+            .await?;
+        changes.push(format!("{} → {word}", describe_tmux_state(&state)));
+        Ok(changes)
+    }
+
     /// Halts delivery to a group whose paste was not confirmed, if it is still
     /// waiting on that paste. The event stays queued.
     pub async fn block_delivery(
@@ -2574,6 +2650,12 @@ mod tmux_model {
             self.live.lock().unwrap().remove(slug);
             self.killed.lock().unwrap().push(slug.into());
             Ok(())
+        }
+        async fn detach_clients(&self, _: &str) -> Result<(), TmuxError> {
+            Ok(())
+        }
+        fn attach_command(&self, _: &str, _: bool) -> Vec<String> {
+            vec![]
         }
     }
 
