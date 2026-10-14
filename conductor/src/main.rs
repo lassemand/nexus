@@ -120,6 +120,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     None => None,
                 };
             let config = dispatch.into_config();
+            // In the tmux model the registry writes turn outcomes, not the
+            // dispatcher, so the model has to reach it as well — otherwise
+            // `sessions list` would report every turn as the default.
+            let registry = registry.with_model(config.model.clone());
             match &config.model {
                 Some(model) => tracing::info!("claude model: {model}"),
                 None => {
