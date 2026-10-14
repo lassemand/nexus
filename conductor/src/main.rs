@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use conductor::{
     dispatcher::{DispatchArgs, Dispatcher},
     github::watched_users_from_env,
-    hooks::{self, HookState},
+    hooks,
     http::{serve_with_shutdown, AppState, DEFAULT_BIND},
     linear_api::{IssueSetSource, LinearGraphql},
     registry::{Registry, SystemClock},
@@ -132,8 +132,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Cloned before the move below: the resolver reads branch ownership
             // from the same registry the dispatcher writes to.
             let resolver_registry = registry.clone();
-            let hook_registry = registry.clone();
             let shutting_down = Arc::new(AtomicBool::new(false));
+            let runtime: Arc<dyn SessionRuntime> = Arc::new(TmuxRuntime::from_env());
             let (dispatcher, sink, rx) = Dispatcher::new(
                 registry,
                 config,
@@ -144,18 +144,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )),
                 Arc::clone(&shutting_down),
                 issue_source,
+                Arc::clone(&runtime),
             );
 
             // Hooks drive the tmux-model states; the listener is loopback only,
             // so it is never reachable through the public webhook address.
-            let runtime: Arc<dyn SessionRuntime> = Arc::new(TmuxRuntime::from_env());
-            dispatcher.set_runtime(Arc::clone(&runtime));
             dispatcher.reconcile_tmux().await;
             let hook_addr = format!("127.0.0.1:{}", hooks::hook_port());
-            let hook_state = HookState {
-                registry: hook_registry,
-                runtime,
-            };
+            let hook_state = dispatcher.hook_state();
             tokio::spawn(async move {
                 if let Err(e) = hooks::serve(&hook_addr, hook_state).await {
                     tracing::error!(error = %e, addr = %hook_addr, "hook listener stopped");

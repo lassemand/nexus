@@ -193,7 +193,7 @@ async fn run_todo(
     let id = identifier.to_string();
     assert!(
         h.wait_for_group(key, PATIENCE, |g| {
-            g.state == GroupState::Idle && g.issues.contains(&id)
+            matches!(g.state, GroupState::Ready { .. }) && g.issues.contains(&id)
         })
         .await,
         "{identifier} never finished running"
@@ -419,7 +419,7 @@ async fn completion_during_a_run_closes_after_it_ends(pool: PgPool) {
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(matches!(
         h.state_of(&key).await,
-        Some(GroupState::Running { .. })
+        Some(GroupState::Busy { .. })
     ));
     assert_eq!(source.calls(), 0, "no check while the run is going");
 
@@ -438,7 +438,7 @@ async fn completion_while_attached_closes_after_release(pool: PgPool) {
     let key = named("attach");
 
     run_todo(&h, &sink, &key, "NEX-1", &["attach"], "t1").await;
-    h.set_state(&key, &attached()).await;
+    h.fake.set_clients(&key.slug(), &["client-1"]);
     sink.submit(closed("NEX-1", &["attach"], ClosedKind::Completed, "c1"));
     assert!(
         h.wait_for_group(&key, PATIENCE, |g| g.close_requested_at.is_some())
@@ -449,8 +449,12 @@ async fn completion_while_attached_closes_after_release(pool: PgPool) {
     assert!(h.group(&key).await.is_some());
     assert_eq!(source.calls(), 0);
 
-    h.set_state(&key, &GroupState::Idle).await;
+    h.fake.set_clients(&key.slug(), &[]);
     wait_gone(&h, &key).await;
+    assert!(
+        h.fake.killed.lock().unwrap().contains(&key.slug()),
+        "closing kills the tmux session"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -470,7 +474,14 @@ async fn pending_work_runs_before_the_group_closes(pool: PgPool) {
             .await
     );
 
-    h.set_state(&key, &GroupState::Idle).await;
+    h.set_state(
+        &key,
+        &GroupState::Ready {
+            pane_pid: 1,
+            since: chrono::Utc::now(),
+        },
+    )
+    .await;
     wait_gone(&h, &key).await;
 
     assert_eq!(
@@ -568,6 +579,7 @@ async fn a_todo_racing_a_close_is_never_lost(pool: PgPool) {
         Arc::new(PerPullRequestResolver),
         Arc::clone(&h.shutting_down),
         Some(source),
+        h.fake.clone(),
     );
     tokio::spawn(Arc::clone(&d).run_ingest(rx));
 
@@ -690,9 +702,11 @@ async fn tasks_three_days_apart_resume_one_session(pool: PgPool) {
     let starts = h.starts();
     assert_eq!(starts.len(), 2);
     let (first, first_resumed) = starts[0].session().expect("first session");
-    let (second, second_resumed) = starts[1].session().expect("second session");
+    let (second, _) = starts[1].session().expect("second session");
     assert!(!first_resumed);
-    assert!(second_resumed, "the second task must --resume");
+    // The second task is pasted into the set's live session rather than
+    // starting a new one.
+    assert_eq!(h.fake.started.lock().unwrap().len(), 1, "one tmux session");
     assert_eq!(first, second);
     assert_eq!(starts[0].cwd, starts[1].cwd, "same worktree");
 }
@@ -752,8 +766,8 @@ async fn label_case_does_not_split_a_set(pool: PgPool) {
 
     let starts = h.starts();
     let (first, _) = starts[0].session().unwrap();
-    let (second, resumed) = starts[1].session().unwrap();
-    assert!(resumed);
+    let (second, _) = starts[1].session().unwrap();
+    assert_eq!(h.fake.started.lock().unwrap().len(), 1, "one tmux session");
     assert_eq!(first, second);
     assert_eq!(starts[0].cwd, starts[1].cwd);
 }

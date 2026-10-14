@@ -20,6 +20,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::Notify;
+
 use axum::{extract::State, http::StatusCode, routing::post, Router};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -73,6 +75,11 @@ impl HookPayload {
 pub struct HookState {
     pub registry: Registry,
     pub runtime: Arc<dyn SessionRuntime>,
+    /// Wakes the scheduler: a turn ending frees capacity and may unblock work.
+    pub wake: Arc<Notify>,
+    /// Signalled on every applied hook, for tasks waiting on a state change.
+    /// They re-read the registry on each wake; the signal is only a prompt.
+    pub events: Arc<Notify>,
 }
 
 /// Router for the loopback listener. Kept apart from the public webhook router.
@@ -90,17 +97,21 @@ pub async fn serve(addr: &str, state: HookState) -> std::io::Result<()> {
 }
 
 /// `POST /hook`.
+async fn handle_hook(State(state): State<HookState>, body: axum::body::Bytes) -> StatusCode {
+    match serde_json::from_slice::<HookPayload>(&body) {
+        Ok(payload) => process(&state, &payload).await,
+        Err(e) => {
+            tracing::warn!(error = %e, "unparseable hook payload");
+            StatusCode::BAD_REQUEST
+        }
+    }
+}
+
+/// Applies one hook payload.
 ///
 /// `204` for everything accepted or deliberately ignored; unknown sessions are
 /// the entrypoint smoke check and ad-hoc Claude runs, not errors.
-async fn handle_hook(State(state): State<HookState>, body: axum::body::Bytes) -> StatusCode {
-    let payload: HookPayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "unparseable hook payload");
-            return StatusCode::BAD_REQUEST;
-        }
-    };
+pub async fn process(state: &HookState, payload: &HookPayload) -> StatusCode {
     let (Some(event), Ok(session_id)) = (payload.event(), Uuid::parse_str(&payload.session_id))
     else {
         tracing::debug!(event = %payload.hook_event_name, "hook ignored");
@@ -129,6 +140,11 @@ async fn handle_hook(State(state): State<HookState>, body: axum::body::Bytes) ->
     match state.registry.apply_hook(session_id, event, pane_pid).await {
         Ok(Some((slug, from, to))) => {
             tracing::info!(group = %slug, hook = %payload.hook_event_name, ?from, ?to, "hook applied");
+            if event == HookEvent::Stop {
+                record_branch(state, &slug).await;
+            }
+            state.events.notify_waiters();
+            state.wake.notify_one();
             StatusCode::NO_CONTENT
         }
         Ok(None) => {
@@ -139,6 +155,37 @@ async fn handle_hook(State(state): State<HookState>, body: axum::body::Bytes) ->
             tracing::error!(error = %e, "applying hook failed");
             StatusCode::INTERNAL_SERVER_ERROR
         }
+    }
+}
+
+/// Records the branch checked out in the group's worktree after a turn.
+///
+/// Routing a pull request comment back to the group depends on every branch the
+/// session has worked on, and the agent may have switched during the turn.
+async fn record_branch(state: &HookState, slug: &str) {
+    let group = match state.registry.group_by_slug(slug).await {
+        Ok(Some(g)) => g,
+        _ => return,
+    };
+    if group.worktree.as_os_str().is_empty() {
+        return;
+    }
+    let Ok(out) = crate::dispatcher::run_git(&group.worktree, &["branch", "--show-current"]).await
+    else {
+        return;
+    };
+    let branch = out.trim();
+    if branch.is_empty() {
+        return;
+    }
+    let result = async {
+        let mut txn = state.registry.begin().await?;
+        txn.record_branch(&group.key, branch).await?;
+        txn.commit().await
+    }
+    .await;
+    if let Err(e) = result {
+        tracing::error!(group = %slug, error = %e, "cannot record the branch");
     }
 }
 

@@ -13,7 +13,8 @@
 use std::path::Path;
 
 use crate::dispatcher::run_git;
-use crate::registry::{GroupKey, GroupState, Registry};
+use crate::registry::{GroupKey, GroupState, Registry, RunResult};
+use crate::tmux::SessionRuntime;
 
 /// Who is closing, and how much they may override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,12 +62,55 @@ pub enum CloseOutcome {
 ///
 /// Only the worktree and the registry row are removed; branches and Claude
 /// transcripts stay. If the worktree cannot be removed, nothing is deleted.
+///
+/// A set is closable while `Ready` or without a session, provided nobody is
+/// attached to its tmux session; the session is killed before the worktree goes.
+/// With `runtime: None` a live tmux session counts as busy.
 pub async fn close_group(
     registry: &Registry,
     repo_root: &Path,
     key: &GroupKey,
     mode: CloseMode,
+    runtime: Option<&dyn SessionRuntime>,
 ) -> Result<CloseOutcome, sqlx::Error> {
+    let slug = key.slug();
+
+    // The tmux session is ended first, in its own short transaction, so no row
+    // lock is held across a tmux call. The checks are repeated under the lock.
+    if let (Some(rt), Some(group)) = (runtime, registry.group_by_slug(&slug).await?) {
+        let live = group.state.is_tmux() && group.state != GroupState::NoSession;
+        if live {
+            if !mode.force() {
+                if !matches!(group.state, GroupState::Ready { .. }) {
+                    return Ok(CloseOutcome::Busy);
+                }
+                if !group.pending.is_empty() {
+                    return Ok(CloseOutcome::HasPending);
+                }
+                if !rt.clients(&slug).await.is_empty() {
+                    return Ok(CloseOutcome::Busy);
+                }
+            }
+            let mut txn = registry.begin().await?;
+            let ended = txn
+                .end_session(
+                    key,
+                    RunResult::Interrupted,
+                    Some(&group.state),
+                    chrono::Duration::zero(),
+                )
+                .await?;
+            txn.commit().await?;
+            if !ended {
+                // It changed under us; let the caller try again later.
+                return Ok(CloseOutcome::Busy);
+            }
+            if let Err(e) = rt.kill(&slug).await {
+                tracing::error!(group = %slug, error = %e, "cannot kill the session being closed");
+            }
+        }
+    }
+
     let mut txn = registry.begin().await?;
 
     let Some(group) = txn.group_by_slug(&key.slug()).await? else {

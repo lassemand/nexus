@@ -8,22 +8,21 @@
 //! session in the background — two events close together produced two
 //! concurrent resumes of the same conversation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
-use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, Mutex, Notify, Semaphore};
+use tokio::process::Command;
+use tokio::sync::{mpsc, Mutex, Notify};
 
 use crate::github::PrCommentKind;
 
 use crate::closing::{close_group, CloseMode, CloseOutcome};
+use crate::hooks::HookState;
 use crate::linear_api::{IssueSetSource, LinearApiError};
-use crate::registry::{GroupKey, QueuedEvent, Registry, RunOutcome, RunResult};
+use crate::registry::{Group, GroupKey, GroupState, QueuedEvent, Registry, RunResult};
 use crate::resolve::{fallback_key, GroupResolver};
 use crate::tmux::SessionRuntime;
 use crate::{EventSink, InboundEvent};
@@ -38,6 +37,15 @@ const DEFAULT_RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Grace between `SIGTERM` and `SIGKILL` for a run being stopped.
 const DEFAULT_TERM_TO_KILL: Duration = Duration::from_secs(30);
+
+/// How long to wait for `Stop` after interrupting a timed-out turn.
+const DEFAULT_INTERRUPT_GRACE: Duration = Duration::from_secs(30);
+
+/// How long a set is left alone after its session failed to start.
+const DEFAULT_START_BACKOFF: Duration = Duration::from_secs(300);
+
+/// How often tasks waiting on a hook re-read the registry even without a signal.
+const HOOK_POLL: Duration = Duration::from_millis(250);
 
 /// How often `sessions attach` polls a group that is still running.
 pub const DEFAULT_ATTACH_POLL: Duration = Duration::from_secs(2);
@@ -148,6 +156,18 @@ pub struct DispatchArgs {
     #[arg(long, env = "CONDUCTOR_RUN_TIMEOUT_SECS")]
     pub run_timeout_secs: Option<u64>,
 
+    /// Most tmux sessions (idle ones included) kept alive at once.
+    #[arg(long, env = "CONDUCTOR_MAX_LIVE_SESSIONS", default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..))]
+    pub max_live_sessions: u16,
+
+    /// How long a new session may take to report `SessionStart`, in seconds.
+    #[arg(long, env = "CONDUCTOR_START_TIMEOUT_SECS", default_value_t = 60)]
+    pub start_timeout_secs: u64,
+
+    /// How long a pasted prompt may take to report `UserPromptSubmit`, in seconds.
+    #[arg(long, env = "CONDUCTOR_DELIVER_TIMEOUT_SECS", default_value_t = 30)]
+    pub deliver_timeout_secs: u64,
+
     /// How long shutdown waits for runs to finish, in seconds.
     #[arg(long, env = "CONDUCTOR_SHUTDOWN_GRACE_SECS", default_value_t = 600)]
     pub shutdown_grace_secs: u64,
@@ -191,10 +211,14 @@ impl DispatchArgs {
                     .unwrap_or_else(|| self.run_timeout_min.saturating_mul(60)),
             ),
             shutdown_grace: Duration::from_secs(self.shutdown_grace_secs),
+            max_live_sessions: usize::from(self.max_live_sessions),
+            start_timeout: Duration::from_secs(self.start_timeout_secs),
+            deliver_timeout: Duration::from_secs(self.deliver_timeout_secs),
+            interrupt_grace: DEFAULT_INTERRUPT_GRACE,
+            start_backoff: DEFAULT_START_BACKOFF,
             rescan_interval: DEFAULT_RESCAN_INTERVAL,
             close_sweep: (self.close_sweep_mins > 0)
                 .then(|| Duration::from_secs(self.close_sweep_mins.saturating_mul(60))),
-            term_to_kill: DEFAULT_TERM_TO_KILL,
         }
     }
 }
@@ -226,6 +250,20 @@ pub struct DispatchConfig {
     pub run_timeout: Duration,
     /// How long shutdown waits for runs to finish.
     pub shutdown_grace: Duration,
+    /// Most tmux sessions kept alive at once, idle ones included.
+    pub max_live_sessions: usize,
+    /// How long a new session may take to report `SessionStart`.
+    pub start_timeout: Duration,
+    /// How long a pasted prompt may take to report `UserPromptSubmit`.
+    pub deliver_timeout: Duration,
+    /// How long after an interrupt to wait for `Stop` before killing the session.
+    ///
+    /// Not a flag: it exists so tests need not wait the production thirty seconds.
+    pub interrupt_grace: Duration,
+    /// How long a set is left alone after its session failed to start.
+    ///
+    /// Likewise test-only.
+    pub start_backoff: Duration,
     /// How often to re-scan when nothing wakes the scheduler.
     ///
     /// Not exposed as a flag: it exists so tests need not wait the production
@@ -234,10 +272,6 @@ pub struct DispatchConfig {
     /// How often every idle group is checked for a completed set; `None`
     /// disables the sweep.
     pub close_sweep: Option<Duration>,
-    /// Grace between `SIGTERM` and `SIGKILL` when stopping a run.
-    ///
-    /// Likewise test-only, so the kill path can be exercised without a 30s wait.
-    pub term_to_kill: Duration,
 }
 
 /// Stub resolver giving every pull request its own group.
@@ -275,19 +309,19 @@ impl EventSink for DispatchSink {
     }
 }
 
-/// A run in progress, kept in memory for timeout and shutdown.
-struct RunHandle {
-    pid: u32,
-}
-
 /// Owns the scheduler, the worktrees and the running children.
 pub struct Dispatcher {
     registry: Registry,
     config: DispatchConfig,
     resolver: Arc<dyn GroupResolver>,
-    permits: Arc<Semaphore>,
+    runtime: Arc<dyn SessionRuntime>,
     wake: Arc<Notify>,
-    running: Arc<Mutex<HashMap<String, RunHandle>>>,
+    /// Signalled by the hook handler; waiters re-read the registry on wake.
+    events: Arc<Notify>,
+    /// Sets whose session failed to start, and when they may be tried again.
+    backoff: StdMutex<HashMap<String, Instant>>,
+    /// Sets with a turn-timeout in progress, so it is handled once.
+    timing_out: StdMutex<HashSet<String>>,
     shutting_down: Arc<AtomicBool>,
     /// Lists a set's issues for the completeness check. `None` disables
     /// automatic closing.
@@ -303,9 +337,6 @@ pub struct Dispatcher {
     /// the default cap of five groups that is the normal case, not an edge one.
     /// Only setup is serialised — the runs themselves stay parallel.
     repo_lock: Mutex<()>,
-    /// tmux runtime reconciled on each scheduler pass; unset until the
-    /// dispatcher drives tmux sessions.
-    runtime: std::sync::OnceLock<Arc<dyn SessionRuntime>>,
 }
 
 impl Dispatcher {
@@ -316,6 +347,7 @@ impl Dispatcher {
         resolver: Arc<dyn GroupResolver>,
         shutting_down: Arc<AtomicBool>,
         issue_source: Option<Arc<dyn IssueSetSource>>,
+        runtime: Arc<dyn SessionRuntime>,
     ) -> (
         Arc<Self>,
         DispatchSink,
@@ -323,33 +355,35 @@ impl Dispatcher {
     ) {
         let (tx, rx) = mpsc::unbounded_channel();
         let dispatcher = Arc::new(Dispatcher {
-            permits: Arc::new(Semaphore::new(config.max_sessions)),
             registry,
             config,
             resolver,
+            runtime,
             wake: Arc::new(Notify::new()),
-            running: Arc::new(Mutex::new(HashMap::new())),
+            events: Arc::new(Notify::new()),
+            backoff: StdMutex::new(HashMap::new()),
+            timing_out: StdMutex::new(HashSet::new()),
             repo_lock: Mutex::new(()),
             shutting_down,
             issue_source,
             closing: AtomicBool::new(false),
-            runtime: std::sync::OnceLock::new(),
         });
         (dispatcher, DispatchSink { tx }, rx)
     }
 
-    /// Supplies the tmux runtime to reconcile against. Only the first call has
-    /// an effect.
-    pub fn set_runtime(&self, runtime: Arc<dyn SessionRuntime>) {
-        let _ = self.runtime.set(runtime);
+    /// State for the hook listener, sharing this dispatcher's wake-ups.
+    pub fn hook_state(&self) -> HookState {
+        HookState {
+            registry: self.registry.clone(),
+            runtime: Arc::clone(&self.runtime),
+            wake: Arc::clone(&self.wake),
+            events: Arc::clone(&self.events),
+        }
     }
 
-    /// Reconciles tmux-model groups with the tmux server, if one is configured.
+    /// Reconciles tmux-model groups with the tmux server.
     pub async fn reconcile_tmux(&self) {
-        let Some(runtime) = self.runtime.get() else {
-            return;
-        };
-        match self.registry.reconcile_tmux(runtime.as_ref()).await {
+        match self.registry.reconcile_tmux(self.runtime.as_ref()).await {
             Ok((0, 0)) => {}
             Ok((reset, killed)) => {
                 tracing::warn!(reset, killed, "tmux reconciliation changed state")
@@ -573,6 +607,13 @@ impl Dispatcher {
         };
         let slug = key.slug();
 
+        // Somebody watching the session is a reason to wait, not to ask Linear.
+        // The request stays set, so the next scan looks again.
+        if !self.runtime.clients(&slug).await.is_empty() {
+            tracing::debug!(group = %slug, "set complete but tmux clients are attached; will retry");
+            return Ok(());
+        }
+
         let issues = match source.issues_in_set(key).await {
             Ok(issues) => issues,
             Err(LinearApiError::NotASet) => {
@@ -599,7 +640,15 @@ impl Dispatcher {
             return self.registry.clear_close_request(key).await;
         }
 
-        match close_group(&self.registry, &self.config.repo_root, key, CloseMode::Auto).await? {
+        match close_group(
+            &self.registry,
+            &self.config.repo_root,
+            key,
+            CloseMode::Auto,
+            Some(self.runtime.as_ref()),
+        )
+        .await?
+        {
             CloseOutcome::Closed { .. } | CloseOutcome::Gone => {}
             CloseOutcome::Busy => {
                 tracing::info!(group = %slug, reason = "busy", "set complete but group is busy; will retry when idle");
@@ -615,199 +664,437 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// Starts as many runnable groups as permits allow.
-    async fn start_runnable(self: &Arc<Self>) -> Result<(), sqlx::Error> {
-        let mut txn = self.registry.begin().await?;
-        let keys = txn.runnable_groups().await?;
-        txn.commit().await?;
+    // ── scheduling ───────────────────────────────────────────────────────────
+    //
+    // Everything here is driven by the registry. A scheduling pass looks at the
+    // stored states and, for each set with queued work, advances it one step
+    // under the row lock (`NoSession → Starting`, `Ready → Delivering`), then
+    // hands the slow part — tmux calls and waiting for hooks — to a task. No
+    // lock is held across a tmux call or a wait.
+    //
+    // Concurrency is counted from the registry too: a set is "active" while it
+    // is `Starting`, `Delivering` or `Busy`. That is the permit — held from
+    // delivery (or a human turn starting) until `Stop`, never by an idle `Ready`
+    // session — and, being derived from stored state, it survives restarts and
+    // needs no bookkeeping to release.
 
-        for key in keys {
+    /// Advances every set that has work, up to the concurrency limits.
+    async fn start_runnable(self: &Arc<Self>) -> Result<(), sqlx::Error> {
+        let groups = self.registry.snapshot().await?;
+
+        let is_active = |s: &GroupState| {
+            matches!(
+                s,
+                GroupState::Starting { .. }
+                    | GroupState::Delivering { .. }
+                    | GroupState::Busy { .. }
+                    | GroupState::Running { .. }
+            )
+        };
+        let mut active = groups.iter().filter(|g| is_active(&g.state)).count();
+        let mut live = groups
+            .iter()
+            .filter(|g| g.state.is_tmux() && g.state != GroupState::NoSession)
+            .count();
+
+        self.check_timeouts(&groups);
+
+        let mut work: Vec<&Group> = groups.iter().filter(|g| !g.pending.is_empty()).collect();
+        work.sort_by_key(|g| g.pending.front().map(|p| p.received_at));
+
+        for g in work {
             if self.shutting_down.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            // Non-blocking: if the cap is reached, leave the rest queued.
-            let Ok(permit) = Arc::clone(&self.permits).try_acquire_owned() else {
-                return Ok(());
-            };
-
-            let own_pid = std::process::id();
-            let mut txn = self.registry.begin().await?;
-            let claimed = txn.claim_next(&key, own_pid, Utc::now()).await?;
-            txn.commit().await?;
-
-            let Some(queued) = claimed else {
-                // Another writer took it, or it went busy.
-                drop(permit);
-                continue;
-            };
-
-            let me = Arc::clone(self);
-            tokio::spawn(async move {
-                me.run_one(key, queued).await;
-                drop(permit);
-            });
+            if active >= self.config.max_sessions {
+                break;
+            }
+            let key = &g.key;
+            match &g.state {
+                GroupState::Idle | GroupState::NoSession => {
+                    if self.backed_off(&key.slug()) {
+                        continue;
+                    }
+                    if live >= self.config.max_live_sessions {
+                        if !self.evict_one(&groups).await {
+                            continue;
+                        }
+                        live -= 1;
+                    }
+                    let mut txn = self.registry.begin().await?;
+                    let started = txn.begin_start(key).await?;
+                    txn.commit().await?;
+                    if started {
+                        active += 1;
+                        live += 1;
+                        let me = Arc::clone(self);
+                        let key = key.clone();
+                        tokio::spawn(async move { me.start_session_task(key).await });
+                    }
+                }
+                GroupState::Ready { .. } if g.delivery_blocked.is_none() => {
+                    let mut txn = self.registry.begin().await?;
+                    let claimed = txn.begin_delivery(key).await?;
+                    txn.commit().await?;
+                    if let Some(queued) = claimed {
+                        active += 1;
+                        let me = Arc::clone(self);
+                        let key = key.clone();
+                        tokio::spawn(async move { me.deliver_task(key, queued).await });
+                    }
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
 
-    /// Executes exactly one event, then lets the scheduler re-evaluate.
-    async fn run_one(self: Arc<Self>, key: GroupKey, queued: QueuedEvent) {
-        let slug = key.slug();
-        let started = Instant::now();
-
-        let outcome = match self.execute(&key, &queued).await {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                tracing::error!(group = %slug, error = %e, "run could not start");
-                RunResult::Exited { code: -1 }
+    fn backed_off(&self, slug: &str) -> bool {
+        let mut map = self.backoff.lock().unwrap_or_else(|e| e.into_inner());
+        match map.get(slug) {
+            Some(until) if Instant::now() < *until => true,
+            Some(_) => {
+                map.remove(slug);
+                false
             }
-        };
-
-        let duration = started.elapsed();
-        tracing::info!(
-            group = %slug,
-            issue = ?issue_identifier(&queued.event),
-            outcome = ?outcome,
-            duration_secs = duration.as_secs(),
-            "run finished"
-        );
-
-        self.running.lock().await.remove(&slug);
-
-        if let Err(e) = self
-            .record_completion(&key, &queued, outcome, duration)
-            .await
-        {
-            tracing::error!(group = %slug, error = %e, "failed to record run outcome");
+            None => false,
         }
+    }
 
-        // A failed run is recorded, never retried: re-running half-finished work
-        // can open a duplicate pull request. The next queued event runs normally.
+    /// Frees one live-session slot by ending the least-recently-active `Ready`
+    /// session that nobody is attached to. Never touches `Busy`, `Delivering` or
+    /// attached sessions, and skips sets with queued work. Returns whether a
+    /// slot was freed.
+    async fn evict_one(&self, groups: &[Group]) -> bool {
+        let mut candidates: Vec<&Group> = groups
+            .iter()
+            .filter(|g| matches!(g.state, GroupState::Ready { .. }) && g.pending.is_empty())
+            .collect();
+        candidates.sort_by_key(|g| g.last_active);
+
+        for g in candidates {
+            let slug = g.key.slug();
+            if !self.runtime.clients(&slug).await.is_empty() {
+                continue;
+            }
+            let ended = async {
+                let mut txn = self.registry.begin().await?;
+                // Pinned to the state we looked at: if a turn started meanwhile
+                // the session is no longer an eviction candidate.
+                let ended = txn
+                    .end_session(
+                        &g.key,
+                        RunResult::Lost,
+                        Some(&g.state),
+                        chrono::Duration::zero(),
+                    )
+                    .await?;
+                txn.commit().await?;
+                Ok::<_, sqlx::Error>(ended)
+            }
+            .await;
+            match ended {
+                Ok(true) => {
+                    tracing::info!(group = %slug, "evicting idle session to stay under the live-session limit");
+                    if let Err(e) = self.runtime.kill(&slug).await {
+                        tracing::error!(group = %slug, error = %e, "cannot kill evicted session");
+                    }
+                    return true;
+                }
+                Ok(false) => {}
+                Err(e) => tracing::error!(group = %slug, error = %e, "eviction failed"),
+            }
+        }
+        false
+    }
+
+    /// Waits until `done` accepts the group's stored state, or `timeout` passes.
+    ///
+    /// The registry is the source of truth: every wake re-reads it, and a poll
+    /// covers a signal that fired before this started listening.
+    async fn wait_for_state(
+        &self,
+        slug: &str,
+        timeout: Duration,
+        mut done: impl FnMut(&GroupState) -> bool,
+    ) -> Option<GroupState> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match self.registry.group_by_slug(slug).await {
+                Ok(Some(g)) if done(&g.state) => return Some(g.state),
+                Ok(Some(_)) => {}
+                Ok(None) => return None,
+                Err(e) => {
+                    tracing::error!(group = %slug, error = %e, "cannot read group while waiting")
+                }
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let nap = HOOK_POLL.min(deadline - now);
+            tokio::select! {
+                _ = self.events.notified() => {}
+                _ = tokio::time::sleep(nap) => {}
+            }
+        }
+    }
+
+    /// Starts a set's tmux session and waits for it to report in.
+    async fn start_session_task(self: Arc<Self>, key: GroupKey) {
+        let slug = key.slug();
+        match self.start_session(&key).await {
+            Ok(()) => tracing::info!(group = %slug, "session ready"),
+            Err(reason) => {
+                tracing::error!(group = %slug, %reason, "session failed to start; backing off");
+                if let Err(e) = self.runtime.kill(&slug).await {
+                    tracing::error!(group = %slug, error = %e, "cannot kill failed session");
+                }
+                let recorded = async {
+                    let mut txn = self.registry.begin().await?;
+                    let changed = txn.fail_start(&key).await?;
+                    txn.commit().await?;
+                    Ok::<_, sqlx::Error>(changed)
+                }
+                .await;
+                if let Err(e) = recorded {
+                    tracing::error!(group = %slug, error = %e, "cannot record the failed start");
+                }
+                // The event stays queued; the set is left alone for a while
+                // rather than retried in a loop.
+                self.backoff
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(slug, Instant::now() + self.config.start_backoff);
+            }
+        }
         self.wake.notify_one();
     }
 
-    /// Prepares the worktree, spawns the child and waits for it.
-    async fn execute(
-        &self,
-        key: &GroupKey,
-        queued: &QueuedEvent,
-    ) -> Result<RunResult, Box<dyn std::error::Error + Send + Sync>> {
+    async fn start_session(&self, key: &GroupKey) -> Result<(), String> {
         let slug = key.slug();
-        let base_ref = self.registry.worktree_ref(key).await?;
+        let base_ref = self
+            .registry
+            .worktree_ref(key)
+            .await
+            .map_err(|e| e.to_string())?;
         let worktree = {
-            // Scoped so the lock is released long before the child is waited
-            // on: it covers repository setup only, never the run.
+            // Repository setup only; never held while waiting on Claude.
             let _repo = self.repo_lock.lock().await;
-            self.ensure_worktree(&slug, base_ref.as_deref()).await?
+            self.ensure_worktree(&slug, base_ref.as_deref())
+                .await
+                .map_err(|e| e.to_string())?
         };
 
-        let mut txn = self.registry.begin().await?;
-        txn.set_worktree(key, &worktree).await?;
-        // Recorded now as well as on completion: routing a pull request comment
-        // back to this group needs every branch it has worked on, and the branch
-        // it started from would otherwise be lost the moment the agent switches.
-        if let Some(branch) = self.current_branch(&slug).await {
-            txn.record_branch(key, &branch).await?;
-        }
-        let (session_id, resume) = txn.session_for_dispatch(key).await?;
-        txn.commit().await?;
+        let (session_id, resume) = {
+            let mut txn = self.registry.begin().await.map_err(|e| e.to_string())?;
+            txn.set_worktree(key, &worktree)
+                .await
+                .map_err(|e| e.to_string())?;
+            // Recorded now as well as after each turn: routing a pull request
+            // comment back to this group needs every branch it has worked on.
+            if let Some(branch) = self.current_branch(&slug).await {
+                txn.record_branch(key, &branch)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            let r = txn
+                .session_for_dispatch(key)
+                .await
+                .map_err(|e| e.to_string())?;
+            txn.commit().await.map_err(|e| e.to_string())?;
+            r
+        };
 
-        let log_path = self.log_path(&slug, &queued.event)?;
-        let log = std::fs::File::create(&log_path)?;
-        let log_err = log.try_clone()?;
-
-        let prompt = prompt_for(&queued.event);
-        let mut command = Command::new(&self.config.claude_bin);
-        command.current_dir(&worktree);
-        if resume {
-            command.arg("--resume").arg(session_id.to_string());
-        } else {
-            command.arg("--session-id").arg(session_id.to_string());
-        }
-        command.arg(format!("--agent={}", self.config.agent));
+        let mut argv = vec![self.config.claude_bin.clone()];
+        argv.push(if resume { "--resume" } else { "--session-id" }.into());
+        argv.push(session_id.to_string());
+        argv.push(format!("--agent={}", self.config.agent));
         if self.config.skip_permissions {
-            command.arg("--dangerously-skip-permissions");
+            argv.push("--dangerously-skip-permissions".into());
         }
-        command.arg("--print").arg(&prompt);
         // Each worktree needs its own build cache; a shared target directory
         // would serialise parallel sessions on cargo's lock.
-        command.env("CARGO_TARGET_DIR", worktree.join("target"));
-        command
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(log_err));
-        command.kill_on_drop(true);
+        let env = vec![(
+            "CARGO_TARGET_DIR".to_string(),
+            worktree.join("target").to_string_lossy().into_owned(),
+        )];
 
-        tracing::info!(
-            group = %slug,
-            issue = ?issue_identifier(&queued.event),
-            resume,
-            log = %log_path.display(),
-            "run starting"
-        );
-
-        let mut child = command.spawn()?;
-        let pid = child.id().unwrap_or_default();
-
-        let mut txn = self.registry.begin().await?;
-        txn.set_running_process(key, pid, Utc::now()).await?;
-        txn.mark_session_started(key).await?;
-        txn.commit().await?;
-
-        self.running
-            .lock()
+        tracing::info!(group = %slug, resume, "starting session");
+        self.runtime
+            .start(&slug, &worktree, &argv, &env)
             .await
-            .insert(slug.clone(), RunHandle { pid });
+            .map_err(|e| e.to_string())?;
 
-        Ok(self.wait_with_timeout(&mut child, pid, &slug).await)
-    }
-
-    /// Waits for the child, stopping it if it outlives the timeout.
-    async fn wait_with_timeout(&self, child: &mut Child, pid: u32, slug: &str) -> RunResult {
-        match tokio::time::timeout(self.config.run_timeout, child.wait()).await {
-            Ok(Ok(status)) => exit_to_result(status),
-            Ok(Err(e)) => {
-                tracing::error!(group = %slug, error = %e, "waiting on the run failed");
-                RunResult::Exited { code: -1 }
-            }
-            Err(_) => {
-                tracing::warn!(
-                    group = %slug,
-                    timeout_secs = self.config.run_timeout.as_secs(),
-                    "run exceeded its timeout; stopping it"
-                );
-                terminate(pid, child, self.config.term_to_kill).await;
-                RunResult::TimedOut
-            }
+        let reached = self
+            .wait_for_state(&slug, self.config.start_timeout, |s| {
+                !matches!(s, GroupState::Starting { .. })
+            })
+            .await;
+        match reached {
+            // Ready, or already past it (a human typed before we looked).
+            Some(GroupState::Ready { .. } | GroupState::Busy { .. }) => Ok(()),
+            Some(other) => Err(format!("session ended while starting ({other:?})")),
+            None => Err(format!(
+                "no SessionStart within {}s",
+                self.config.start_timeout.as_secs()
+            )),
         }
     }
 
-    /// Writes the outcome and the history the next run depends on.
-    async fn record_completion(
-        &self,
-        key: &GroupKey,
-        queued: &QueuedEvent,
-        result: RunResult,
-        duration: Duration,
-    ) -> Result<(), sqlx::Error> {
-        let branch = self.current_branch(&key.slug()).await;
+    /// Pastes one queued event into a `Ready` session and waits for the turn to
+    /// begin.
+    async fn deliver_task(self: Arc<Self>, key: GroupKey, queued: QueuedEvent) {
+        let slug = key.slug();
+        let id = queued.id;
+        tracing::info!(group = %slug, issue = ?issue_identifier(&queued.event), "delivering");
 
-        let mut txn = self.registry.begin().await?;
-        txn.finish_run(
-            key,
-            &RunOutcome {
-                result,
-                finished_at: txn.now(),
-                duration,
-            },
-        )
-        .await?;
-        if let Some(issue) = issue_identifier(&queued.event) {
-            txn.append_issue(key, &issue).await?;
+        let pasted = self
+            .runtime
+            .deliver(&slug, &prompt_for(&queued.event))
+            .await;
+        let failure = match pasted {
+            Err(e) => Some(format!("paste failed: {e}")),
+            Ok(()) => {
+                let confirmed = self
+                    .wait_for_state(&slug, self.config.deliver_timeout, |s| {
+                        !matches!(s, GroupState::Delivering { event_id, .. } if *event_id == id)
+                    })
+                    .await;
+                confirmed.is_none().then(|| {
+                    format!(
+                        "no UserPromptSubmit within {}s of pasting",
+                        self.config.deliver_timeout.as_secs()
+                    )
+                })
+            }
+        };
+
+        if let Some(reason) = failure {
+            // The text may be sitting unsent in the input box, so pasting again
+            // could submit the task twice. Stop delivering and say so loudly.
+            let blocked = async {
+                let mut txn = self.registry.begin().await?;
+                let b = txn.block_delivery(&key, id, &reason).await?;
+                txn.commit().await?;
+                Ok::<_, sqlx::Error>(b)
+            }
+            .await;
+            match blocked {
+                Ok(true) => tracing::error!(
+                    group = %slug, event_id = id, %reason,
+                    "delivery not confirmed; delivery to this set is halted until an operator releases it"
+                ),
+                Ok(false) => {} // The hook arrived in the meantime.
+                Err(e) => {
+                    tracing::error!(group = %slug, error = %e, "cannot record the blocked delivery")
+                }
+            }
         }
-        if let Some(branch) = branch {
-            txn.record_branch(key, &branch).await?;
+        self.wake.notify_one();
+    }
+
+    /// Starts timeout handling for every turn that has run too long.
+    fn check_timeouts(self: &Arc<Self>, groups: &[Group]) {
+        let now = chrono::Utc::now();
+        for g in groups {
+            let GroupState::Busy { since, .. } = &g.state else {
+                continue;
+            };
+            let age = (now - *since).to_std().unwrap_or_default();
+            if age <= self.config.run_timeout {
+                continue;
+            }
+            let slug = g.key.slug();
+            if !self
+                .timing_out
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(slug.clone())
+            {
+                continue;
+            }
+            let me = Arc::clone(self);
+            let (key, since) = (g.key.clone(), *since);
+            tokio::spawn(async move {
+                me.time_out_turn(&key, since).await;
+                me.timing_out
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&slug);
+                me.wake.notify_one();
+            });
         }
-        txn.commit().await
+    }
+
+    /// Interrupts an overlong turn and, failing that, ends the session.
+    ///
+    /// `TimedOut` is recorded before the interrupt, so the result is the same
+    /// whether or not Claude fires `Stop` for an interrupted turn (unverified,
+    /// see [`crate::hooks`]); if it does not, the session is killed after the
+    /// grace period.
+    async fn time_out_turn(&self, key: &GroupKey, since: chrono::DateTime<chrono::Utc>) {
+        let slug = key.slug();
+        let still_busy = async {
+            let mut txn = self.registry.begin().await?;
+            let b = txn.time_out_turn(key, since).await?;
+            txn.commit().await?;
+            Ok::<_, sqlx::Error>(b)
+        }
+        .await;
+        match still_busy {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                tracing::error!(group = %slug, error = %e, "cannot record the turn timeout");
+                return;
+            }
+        }
+        tracing::warn!(
+            group = %slug,
+            timeout_secs = self.config.run_timeout.as_secs(),
+            "turn exceeded its timeout; interrupting"
+        );
+        if let Err(e) = self.runtime.interrupt(&slug).await {
+            tracing::error!(group = %slug, error = %e, "cannot interrupt the session");
+        }
+
+        let moved_on = self
+            .wait_for_state(
+                &slug,
+                self.config.interrupt_grace,
+                |s| !matches!(s, GroupState::Busy { since: s2, .. } if *s2 == since),
+            )
+            .await;
+        if moved_on.is_some() {
+            return;
+        }
+
+        tracing::warn!(group = %slug, "no Stop after the interrupt; killing the session");
+        let current = match self.registry.group_by_slug(&slug).await {
+            Ok(Some(g)) => g.state,
+            _ => return,
+        };
+        let ended = async {
+            let mut txn = self.registry.begin().await?;
+            let e = txn
+                .end_session(
+                    key,
+                    RunResult::TimedOut,
+                    Some(&current),
+                    chrono::Duration::zero(),
+                )
+                .await?;
+            txn.commit().await?;
+            Ok::<_, sqlx::Error>(e)
+        }
+        .await;
+        if let Err(e) = ended {
+            tracing::error!(group = %slug, error = %e, "cannot end the timed-out session");
+        }
+        if let Err(e) = self.runtime.kill(&slug).await {
+            tracing::error!(group = %slug, error = %e, "cannot kill the timed-out session");
+        }
     }
 
     /// Creates the group's worktree, or reuses it if it is already one.
@@ -833,48 +1120,84 @@ impl Dispatcher {
         (!name.is_empty()).then_some(name)
     }
 
-    /// Per-run log file, one directory per group.
-    fn log_path(&self, slug: &str, event: &InboundEvent) -> std::io::Result<PathBuf> {
-        let dir = self.config.state_dir.join("logs").join(slug);
-        std::fs::create_dir_all(&dir)?;
-        Ok(dir.join(format!(
-            "{}-{}.log",
-            Utc::now().timestamp(),
-            event_name(event)
-        )))
-    }
-
-    /// Stops accepting work and waits for runs to finish, then stops them.
+    /// Stops delivering, lets running turns finish, then ends every session.
+    ///
+    /// Waits up to the grace period for `Busy` turns to reach `Stop`. Anything
+    /// still unfinished is recorded as `Interrupted` and not re-queued:
+    /// re-running half-finished work can open a duplicate pull request. Every
+    /// tmux session is then killed, idle ones included; after a restart tmux is
+    /// gone anyway and every set starts in `NoSession`.
     pub async fn shutdown(self: Arc<Self>) {
         self.shutting_down.store(true, Ordering::SeqCst);
         self.wake.notify_waiters();
         tracing::info!(
             grace_secs = self.config.shutdown_grace.as_secs(),
-            "shutting down; waiting for runs to finish"
+            "shutting down; waiting for turns to finish"
         );
 
         let deadline = Instant::now() + self.config.shutdown_grace;
-        while Instant::now() < deadline {
-            if self.running.lock().await.is_empty() {
-                tracing::info!("all runs finished");
-                return;
+        loop {
+            let groups = match self.registry.snapshot().await {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::error!(error = %e, "cannot read the registry during shutdown");
+                    break;
+                }
+            };
+            let mid_turn = groups.iter().any(|g| {
+                matches!(
+                    g.state,
+                    GroupState::Starting { .. }
+                        | GroupState::Delivering { .. }
+                        | GroupState::Busy { .. }
+                )
+            });
+            if !mid_turn {
+                tracing::info!("all turns finished");
+                break;
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            if Instant::now() >= deadline {
+                tracing::warn!("grace period over; interrupting unfinished turns");
+                break;
+            }
+            let nap = HOOK_POLL.min(deadline - Instant::now());
+            tokio::select! {
+                _ = self.events.notified() => {}
+                _ = tokio::time::sleep(nap) => {}
+            }
         }
 
-        // Whatever is left gets stopped. Its events are deliberately not
-        // re-queued: re-running half-finished work can open a duplicate PR.
-        let running = self.running.lock().await;
-        for (slug, handle) in running.iter() {
-            tracing::warn!(group = %slug, pid = handle.pid, "run interrupted by shutdown");
-            signal_process(handle.pid, nix::sys::signal::Signal::SIGTERM);
-        }
-        drop(running);
-
-        tokio::time::sleep(self.config.term_to_kill).await;
-        for (slug, handle) in self.running.lock().await.iter() {
-            tracing::warn!(group = %slug, pid = handle.pid, "run did not stop; killing it");
-            signal_process(handle.pid, nix::sys::signal::Signal::SIGKILL);
+        let groups = self.registry.snapshot().await.unwrap_or_default();
+        for g in groups
+            .iter()
+            .filter(|g| g.state.is_tmux() && g.state != GroupState::NoSession)
+        {
+            let slug = g.key.slug();
+            let ended = async {
+                let mut txn = self.registry.begin().await?;
+                let e = txn
+                    .end_session(
+                        &g.key,
+                        RunResult::Interrupted,
+                        None,
+                        chrono::Duration::zero(),
+                    )
+                    .await?;
+                txn.commit().await?;
+                Ok::<_, sqlx::Error>(e)
+            }
+            .await;
+            if let Err(e) = ended {
+                tracing::error!(group = %slug, error = %e, "cannot record shutdown for the session");
+            } else if matches!(
+                g.state,
+                GroupState::Busy { .. } | GroupState::Delivering { .. }
+            ) {
+                tracing::warn!(group = %slug, "turn interrupted by shutdown");
+            }
+            if let Err(e) = self.runtime.kill(&slug).await {
+                tracing::error!(group = %slug, error = %e, "cannot kill session during shutdown");
+            }
         }
     }
 }
@@ -952,15 +1275,6 @@ pub fn signal_process(pid: u32, sig: nix::sys::signal::Signal) {
     let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), sig);
 }
 
-/// `SIGTERM`, then `SIGKILL` if the child is still there.
-async fn terminate(pid: u32, child: &mut Child, grace: Duration) {
-    signal_process(pid, nix::sys::signal::Signal::SIGTERM);
-    if tokio::time::timeout(grace, child.wait()).await.is_err() {
-        signal_process(pid, nix::sys::signal::Signal::SIGKILL);
-        let _ = child.wait().await;
-    }
-}
-
 /// Runs git, returning stdout or the captured error.
 pub(crate) async fn run_git(
     cwd: &Path,
@@ -981,20 +1295,6 @@ pub(crate) async fn run_git(
         .into());
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
-}
-
-/// Translates an exit status into a recordable outcome.
-fn exit_to_result(status: std::process::ExitStatus) -> RunResult {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        if let Some(signal) = status.signal() {
-            return RunResult::Signaled { signal };
-        }
-    }
-    RunResult::Exited {
-        code: status.code().unwrap_or(-1),
-    }
 }
 
 /// The channel event name, matching what CLAUDE.md documents.
@@ -1172,26 +1472,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn exit_status_maps_to_outcome() {
-        use std::os::unix::process::ExitStatusExt;
-        // Exit code 0 and 2.
-        assert_eq!(
-            exit_to_result(std::process::ExitStatus::from_raw(0)),
-            RunResult::Exited { code: 0 }
-        );
-        assert_eq!(
-            exit_to_result(std::process::ExitStatus::from_raw(2 << 8)),
-            RunResult::Exited { code: 2 }
-        );
-        // Killed by SIGKILL (9).
-        assert_eq!(
-            exit_to_result(std::process::ExitStatus::from_raw(9)),
-            RunResult::Signaled { signal: 9 }
-        );
-    }
-
     #[test]
     fn signalling_an_invalid_pid_is_a_no_op() {
         // pid 0 addresses the caller's process group; it must never be signalled.
@@ -1208,6 +1488,9 @@ mod config_tests {
     fn args() -> DispatchArgs {
         DispatchArgs {
             max_sessions: 5,
+            max_live_sessions: 10,
+            start_timeout_secs: 60,
+            deliver_timeout_secs: 30,
             env: SessionEnvArgs {
                 repo_root: Some(PathBuf::from("/repo")),
                 worktree_root: None,
@@ -1223,6 +1506,14 @@ mod config_tests {
             close_sweep_mins: 30,
             github_token: None,
         }
+    }
+
+    #[test]
+    fn tmux_limits_default_from_the_args() {
+        let c = args().into_config();
+        assert_eq!(c.max_live_sessions, 10);
+        assert_eq!(c.start_timeout, Duration::from_secs(60));
+        assert_eq!(c.deliver_timeout, Duration::from_secs(30));
     }
 
     #[test]

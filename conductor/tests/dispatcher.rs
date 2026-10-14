@@ -68,12 +68,12 @@ async fn runs_in_one_group_never_overlap_and_keep_order(pool: PgPool) {
     assert!(issues[1].contains("NEX-2"));
     assert!(issues[2].contains("NEX-3"));
 
-    // First run starts the session, the rest resume the same one.
+    // One live session serves the whole set: started once, then pasted into.
     let (first_id, first_resumed) = starts[0].session().expect("session arg");
     assert!(!first_resumed, "the first run must not resume");
+    assert_eq!(h.fake.started.lock().unwrap().len(), 1, "one tmux session");
     for later in &starts[1..] {
-        let (id, resumed) = later.session().expect("session arg");
-        assert!(resumed, "later runs must resume");
+        let (id, _) = later.session().expect("session arg");
         assert_eq!(id, first_id, "the session id must be stable across runs");
     }
 }
@@ -229,8 +229,12 @@ async fn a_foreign_directory_at_the_worktree_path_is_left_alone(pool: PgPool) {
     let group = h.group(&key).await.expect("group exists");
     assert_eq!(
         group.state,
-        GroupState::Idle,
-        "the group must not stay Running"
+        GroupState::NoSession,
+        "the group must not stay Starting"
+    );
+    assert_eq!(
+        group.last_run.expect("an outcome").result,
+        RunResult::StartFailed
     );
 }
 
@@ -268,26 +272,127 @@ async fn branches_created_by_the_agent_are_recorded(pool: PgPool) {
 // ── failure and timeout ──────────────────────────────────────────────────────
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_failing_run_is_recorded_and_not_retried(pool: PgPool) {
-    let h = Harness::new(pool).with_fake(50, 1, None, false);
+async fn a_session_that_never_starts_is_recorded_and_backed_off(pool: PgPool) {
+    let mut h = Harness::new(pool).with_fake(50, 0, None, false);
+    h.config.start_timeout = Duration::from_millis(300);
+    h.config.start_backoff = Duration::from_secs(60);
+    h.fake
+        .send_session_start
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     let (_d, sink) = h.start();
     sink.submit(linear_event("NEX-1", "failing", Some("d1")));
+    let key = group("failing");
 
-    assert!(h.wait_for_runs(1, PATIENCE).await);
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    assert_eq!(h.starts().len(), 1, "a failed run must not be retried");
-
-    let group = h.group(&group("failing")).await.expect("group");
-    let outcome = group.last_run.expect("an outcome");
-    assert_eq!(outcome.result, RunResult::Exited { code: 1 });
-    assert_eq!(group.state, GroupState::Idle);
-
-    // And the group is not poisoned: its next event still runs.
-    sink.submit(linear_event("NEX-2", "failing", Some("d2")));
     assert!(
-        h.wait_for_runs(2, PATIENCE).await,
-        "the next event should still run"
+        h.wait_for_group(&key, PATIENCE, |g| {
+            g.last_run
+                .as_ref()
+                .is_some_and(|o| o.result == RunResult::StartFailed)
+        })
+        .await,
+        "the failed start should be recorded"
     );
+    // Not retried in a loop, and the event is kept for later.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(
+        h.fake.started.lock().unwrap().len(),
+        1,
+        "no retry while backed off"
+    );
+    assert!(h.fake.killed.lock().unwrap().contains(&key.slug()));
+    let g = h.group(&key).await.expect("group");
+    assert_eq!(g.state, GroupState::NoSession);
+    assert_eq!(g.pending.len(), 1, "the event stays queued");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn an_unconfirmed_paste_halts_delivery_and_is_never_repeated(pool: PgPool) {
+    let mut h = Harness::new(pool).with_fake(50, 0, None, false);
+    h.config.deliver_timeout = Duration::from_millis(300);
+    h.fake
+        .send_prompt_submit
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let (_d, sink) = h.start();
+    let key = group("blocked");
+    sink.submit(linear_event("NEX-1", "blocked", Some("d1")));
+
+    assert!(
+        h.wait_for_group(&key, PATIENCE, |g| g.delivery_blocked.is_some())
+            .await,
+        "an unconfirmed paste must block the set"
+    );
+    sink.submit(linear_event("NEX-2", "blocked", Some("d2")));
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(
+        h.fake.delivered.lock().unwrap().len(),
+        1,
+        "never pasted twice"
+    );
+    assert_eq!(h.group(&key).await.expect("group").pending.len(), 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_human_typing_while_ready_is_a_human_turn(pool: PgPool) {
+    let h = Harness::new(pool).with_fake(50, 0, None, false);
+    let (_d, sink) = h.start();
+    let key = group("human");
+    sink.submit(linear_event("NEX-1", "human", Some("d1")));
+    assert!(
+        h.wait_for_group(&key, PATIENCE, |g| matches!(
+            g.state,
+            GroupState::Ready { .. }
+        ))
+        .await
+    );
+
+    h.fake.hook(&key.slug(), "UserPromptSubmit").await;
+    let g = h.group(&key).await.expect("group");
+    assert!(matches!(
+        g.state,
+        GroupState::Busy {
+            delivered_event: None,
+            ..
+        }
+    ));
+    // Nothing is pasted into a busy set.
+    sink.submit(linear_event("NEX-2", "human", Some("d2")));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(h.fake.delivered.lock().unwrap().len(), 1);
+
+    h.fake.hook(&key.slug(), "Stop").await;
+    assert!(
+        h.wait_for(PATIENCE, |hh| hh.fake.delivered.lock().unwrap().len() == 2)
+            .await
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_live_session_limit_evicts_the_idlest_unattached_session(pool: PgPool) {
+    let mut h = Harness::new(pool).with_fake(30, 0, None, false);
+    h.config.max_live_sessions = 2;
+    let (_d, sink) = h.start();
+    for name in ["one", "two"] {
+        sink.submit(linear_event(&format!("NEX-{name}"), name, Some(name)));
+        let key = group(name);
+        assert!(
+            h.wait_for_group(&key, PATIENCE, |g| matches!(
+                g.state,
+                GroupState::Ready { .. }
+            ) && !g.issues.is_empty())
+                .await
+        );
+    }
+    // "one" is attached and "two" is more recent: only "one" is idlest, but it
+    // is protected, so "two" goes.
+    h.fake.set_clients("one", &["viewer"]);
+    sink.submit(linear_event("NEX-three", "three", Some("three")));
+    assert!(
+        h.wait_for_group(&group("three"), PATIENCE, |g| !g.issues.is_empty())
+            .await
+    );
+    assert!(h.fake.has("one"), "an attached session is never evicted");
+    assert!(!h.fake.has("two"), "the idle unattached one made room");
+    assert_eq!(h.state_of(&group("two")).await, Some(GroupState::NoSession));
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -314,6 +419,16 @@ async fn a_run_that_ignores_sigterm_is_killed_and_recorded_as_timed_out(pool: Pg
     }
     let outcome = outcome.expect("the run should have been stopped and recorded");
     assert_eq!(outcome.result, RunResult::TimedOut);
+
+    // Escape was tried first; the fake ignores it and never sends Stop, so the
+    // session is killed after the grace period and the event is not re-queued.
+    assert!(
+        h.wait_for_state(&key, PATIENCE, |s| *s == GroupState::NoSession)
+            .await
+    );
+    assert_eq!(*h.fake.interrupted.lock().unwrap(), vec![key.slug()]);
+    assert!(h.fake.killed.lock().unwrap().contains(&key.slug()));
+    assert!(h.group(&key).await.expect("group").pending.is_empty());
 }
 
 // ── state changed from outside the process ───────────────────────────────────
