@@ -218,9 +218,9 @@ async fn list(
 /// Sort key putting running groups first, then attached, then idle.
 fn state_rank(state: &GroupState) -> u8 {
     match state {
-        GroupState::Running { .. } => 0,
-        GroupState::Attached { .. } => 1,
-        GroupState::Idle => 2,
+        GroupState::Running { .. } | GroupState::Busy { .. } | GroupState::Delivering { .. } => 0,
+        GroupState::Attached { .. } | GroupState::Starting { .. } | GroupState::Ready { .. } => 1,
+        GroupState::Idle | GroupState::NoSession => 2,
     }
 }
 
@@ -284,6 +284,11 @@ fn describe_state(state: &GroupState, now: DateTime<Utc>) -> String {
             format!("running {}", human_duration(now - *started_at))
         }
         GroupState::Attached { .. } => "attached".into(),
+        GroupState::NoSession => "no session".into(),
+        GroupState::Starting { .. } => "starting".into(),
+        GroupState::Ready { .. } => "ready".into(),
+        GroupState::Delivering { .. } => "delivering".into(),
+        GroupState::Busy { since, .. } => format!("busy {}", human_duration(now - *since)),
     }
 }
 
@@ -377,6 +382,15 @@ async fn attach(
 
         match current.state {
             GroupState::Idle => {}
+            // Attaching to tmux-backed groups arrives with the dispatcher switch.
+            GroupState::NoSession
+            | GroupState::Starting { .. }
+            | GroupState::Ready { .. }
+            | GroupState::Delivering { .. }
+            | GroupState::Busy { .. } => {
+                writeln!(out, "{slug} is a tmux session; use tmux to attach")?;
+                return Ok(EXIT_REFUSED);
+            }
             GroupState::Attached { pid, .. } => {
                 writeln!(
                     out,
@@ -632,6 +646,18 @@ async fn kill(
         GroupState::Idle => {
             writeln!(out, "{slug} is not running")?;
         }
+        GroupState::NoSession => {
+            writeln!(out, "{slug} has no session")?;
+        }
+        GroupState::Starting { .. }
+        | GroupState::Ready { .. }
+        | GroupState::Delivering { .. }
+        | GroupState::Busy { .. } => {
+            writeln!(
+                out,
+                "{slug} is a tmux session; killing those is not supported yet"
+            )?;
+        }
         GroupState::Running { pid, started_at } | GroupState::Attached { pid, started_at } => {
             writeln!(out, "stopping pid {pid}…")?;
             out.flush()?;
@@ -848,10 +874,10 @@ async fn lookup(
 /// The process backing a group, when it has one.
 fn busy(state: &GroupState) -> Option<(u32, DateTime<Utc>)> {
     match state {
-        GroupState::Idle => None,
         GroupState::Running { pid, started_at } | GroupState::Attached { pid, started_at } => {
             Some((*pid, *started_at))
         }
+        _ => None,
     }
 }
 
@@ -860,6 +886,11 @@ fn state_word(state: &GroupState) -> &'static str {
         GroupState::Idle => "idle",
         GroupState::Running { .. } => "running",
         GroupState::Attached { .. } => "attached",
+        GroupState::NoSession => "no_session",
+        GroupState::Starting { .. } => "starting",
+        GroupState::Ready { .. } => "ready",
+        GroupState::Delivering { .. } => "delivering",
+        GroupState::Busy { .. } => "busy",
     }
 }
 

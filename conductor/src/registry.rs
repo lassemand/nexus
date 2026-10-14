@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgRow, types::Json, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
+use crate::tmux::SessionRuntime;
 use crate::InboundEvent;
 
 /// Environment variable holding the Postgres connection string.
@@ -30,6 +31,9 @@ pub const DEFAULT_IDLE_DAYS: i64 = 7;
 pub const MAX_SEEN_DELIVERIES: usize = 1000;
 /// Longest a named group key may be.
 const MAX_KEY_LEN: usize = 63;
+/// How long a `Starting` group may lack its tmux session before reconcile gives
+/// up on it; covers the gap between recording the state and tmux coming up.
+const STARTING_GRACE_SECS: i64 = 30;
 /// Tolerance when matching a recorded process start time against the live one.
 #[cfg(target_os = "linux")]
 const START_TIME_TOLERANCE: Duration = Duration::from_secs(2);
@@ -171,17 +175,105 @@ pub enum GroupState {
     },
     /// An operator has attached to the session.
     Attached { pid: u32, started_at: DateTime<Utc> },
+
+    // ── tmux model ───────────────────────────────────────────────────────────
+    //
+    // Driven by Claude Code hooks rather than process exit. The variants above
+    // stay until the dispatcher moves over to these.
+    /// No tmux session; the next dispatch or attach starts one.
+    NoSession,
+    /// tmux was started; waiting for the `SessionStart` hook.
+    Starting { since: DateTime<Utc> },
+    /// Claude is idle at its prompt.
+    Ready {
+        /// PID of the tmux pane's process; `0` when it could not be read.
+        pane_pid: u32,
+        since: DateTime<Utc>,
+    },
+    /// A prompt was pasted; waiting for the `UserPromptSubmit` hook.
+    Delivering { since: DateTime<Utc>, event_id: i64 },
+    /// A turn is running.
+    Busy {
+        since: DateTime<Utc>,
+        /// The queued event being worked on; `None` when a human started the turn.
+        delivered_event: Option<i64>,
+    },
 }
 
 impl GroupState {
+    /// Whether this is one of the tmux-model states.
+    pub fn is_tmux(&self) -> bool {
+        !matches!(
+            self,
+            GroupState::Idle | GroupState::Running { .. } | GroupState::Attached { .. }
+        )
+    }
+
     /// The process backing this state, if any.
     fn process(&self) -> Option<(u32, DateTime<Utc>)> {
         match self {
-            GroupState::Idle => None,
+            GroupState::Idle
+            | GroupState::NoSession
+            | GroupState::Starting { .. }
+            | GroupState::Ready { .. }
+            | GroupState::Delivering { .. }
+            | GroupState::Busy { .. } => None,
             GroupState::Running { pid, started_at } | GroupState::Attached { pid, started_at } => {
                 Some((*pid, *started_at))
             }
         }
+    }
+}
+
+/// A Claude Code hook that moves a tmux-model group between states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookEvent {
+    /// `SessionStart`.
+    SessionStart,
+    /// `UserPromptSubmit`: a turn began.
+    UserPromptSubmit,
+    /// `Stop`: the main agent finished responding.
+    Stop,
+    /// `SessionEnd`.
+    SessionEnd,
+}
+
+/// The state a hook moves a group to, or `None` when the hook is out of order
+/// and must be ignored.
+///
+/// Hooks are only honoured from tmux-model states, so a legacy `--print` run
+/// (which fires hooks too once they are registered) is never disturbed.
+/// `SessionStart` also fires for `/clear` and compaction, so it is ignored while
+/// a turn is in flight.
+pub fn state_after_hook(
+    current: &GroupState,
+    event: HookEvent,
+    pane_pid: u32,
+    now: DateTime<Utc>,
+) -> Option<GroupState> {
+    use GroupState::*;
+    match (event, current) {
+        (HookEvent::SessionStart, NoSession | Starting { .. } | Ready { .. }) => Some(Ready {
+            pane_pid,
+            since: now,
+        }),
+        (HookEvent::UserPromptSubmit, Delivering { event_id, .. }) => Some(Busy {
+            since: now,
+            delivered_event: Some(*event_id),
+        }),
+        (HookEvent::UserPromptSubmit, Starting { .. } | Ready { .. }) => Some(Busy {
+            since: now,
+            delivered_event: None,
+        }),
+        (HookEvent::Stop, Busy { .. }) => Some(Ready {
+            pane_pid,
+            since: now,
+        }),
+        (
+            HookEvent::SessionEnd,
+            Starting { .. } | Ready { .. } | Delivering { .. } | Busy { .. },
+        ) => Some(NoSession),
+        _ => None,
     }
 }
 
@@ -600,6 +692,91 @@ impl Registry {
         let n = txn.reconcile_stale_processes().await?;
         txn.commit().await?;
         Ok(n)
+    }
+
+    /// The slug of the group that owns a Claude session id, if any.
+    pub async fn slug_for_session(&self, session_id: Uuid) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT slug FROM session_groups WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    /// Applies a Claude Code hook to the group owning `session_id`.
+    ///
+    /// See [`RegistryTxn::apply_hook`].
+    pub async fn apply_hook(
+        &self,
+        session_id: Uuid,
+        event: HookEvent,
+        pane_pid: u32,
+    ) -> Result<Option<(String, GroupState, GroupState)>, sqlx::Error> {
+        let mut txn = self.begin().await?;
+        let r = txn.apply_hook(session_id, event, pane_pid).await?;
+        txn.commit().await?;
+        Ok(r)
+    }
+
+    /// Brings the registry in line with the tmux server.
+    ///
+    /// * A group in a tmux state whose session no longer exists becomes
+    ///   `NoSession` (its turn is recorded `Lost` if one was running).
+    /// * A tmux session with no group is killed.
+    ///
+    /// Returns `(groups reset, sessions killed)`. Called at startup and on each
+    /// scheduler pass.
+    pub async fn reconcile_tmux(
+        &self,
+        runtime: &dyn SessionRuntime,
+    ) -> Result<(usize, usize), sqlx::Error> {
+        let groups = self.snapshot().await?;
+
+        let mut reset = 0;
+        for g in groups.iter().filter(|g| g.state.is_tmux()) {
+            if g.state == GroupState::NoSession || runtime.exists(&g.key.slug()).await {
+                continue;
+            }
+            let mut txn = self.begin().await?;
+            // Checked again under the lock, in case the session came up meanwhile.
+            if runtime.exists(&g.key.slug()).await {
+                continue;
+            }
+            if txn
+                .mark_session_gone(&g.key, chrono::Duration::seconds(STARTING_GRACE_SECS))
+                .await?
+            {
+                tracing::warn!(group = %g.key.slug(), state = ?g.state, "tmux session is gone; group reset");
+                reset += 1;
+            }
+            txn.commit().await?;
+        }
+
+        let sessions = match runtime.list_sessions().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot list tmux sessions; skipping orphan cleanup");
+                return Ok((reset, 0));
+            }
+        };
+        // Groups are re-read after the sessions: a group created in between
+        // must not have its brand-new session mistaken for an orphan.
+        let known: BTreeSet<String> = self
+            .snapshot()
+            .await?
+            .iter()
+            .map(|g| g.key.slug())
+            .collect();
+        let mut killed = 0;
+        for name in sessions.into_iter().filter(|n| !known.contains(n)) {
+            tracing::warn!(session = %name, "tmux session has no group; killing it");
+            match runtime.kill(&name).await {
+                Ok(()) => killed += 1,
+                Err(e) => {
+                    tracing::error!(session = %name, error = %e, "cannot kill orphan tmux session")
+                }
+            }
+        }
+        Ok((reset, killed))
     }
 
     /// One group by its slug, with its queue.
@@ -1058,6 +1235,114 @@ impl RegistryTxn<'_> {
             reset += 1;
         }
         Ok(reset)
+    }
+
+    /// Applies a hook to the group owning `session_id`, under its row lock.
+    ///
+    /// Returns the `(slug, from, to)` of the transition, or `None` when the
+    /// session is unknown or the hook is out of order for the current state.
+    pub async fn apply_hook(
+        &mut self,
+        session_id: Uuid,
+        event: HookEvent,
+        pane_pid: u32,
+    ) -> Result<Option<(String, GroupState, GroupState)>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT slug, state, last_run FROM session_groups WHERE session_id = $1 FOR UPDATE",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let slug: String = row.try_get("slug")?;
+        let from = row.try_get::<Json<GroupState>, _>("state")?.0;
+        let Some(to) = state_after_hook(&from, event, pane_pid, self.now) else {
+            return Ok(None);
+        };
+
+        // The session ended under a turn: that turn's outcome is unknown.
+        let lost = match (&event, &from) {
+            (
+                HookEvent::SessionEnd,
+                GroupState::Busy { since, .. } | GroupState::Delivering { since, .. },
+            ) => Some(self.lost_outcome(*since)),
+            _ => None,
+        };
+        let last_run = match lost {
+            Some(o) => Some(Json(o)),
+            None => row.try_get::<Option<Json<RunOutcome>>, _>("last_run")?,
+        };
+        sqlx::query(
+            "UPDATE session_groups SET state = $2, last_run = $3, last_active = $4 WHERE slug = $1",
+        )
+        .bind(&slug)
+        .bind(Json(&to))
+        .bind(last_run)
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(Some((slug, from, to)))
+    }
+
+    fn lost_outcome(&self, since: DateTime<Utc>) -> RunOutcome {
+        RunOutcome {
+            result: RunResult::Lost,
+            finished_at: self.now,
+            duration: (self.now - since).to_std().unwrap_or_default(),
+        }
+    }
+
+    /// Moves a group whose tmux session has vanished to `NoSession`.
+    ///
+    /// Re-checks the state under the row lock, since it may have changed since
+    /// the caller looked. A `Busy` or `Delivering` group has its turn recorded
+    /// as [`RunResult::Lost`]. Returns whether anything changed.
+    pub async fn mark_session_gone(
+        &mut self,
+        key: &GroupKey,
+        starting_grace: chrono::Duration,
+    ) -> Result<bool, sqlx::Error> {
+        let slug = key.slug();
+        let state = sqlx::query_scalar::<_, Json<GroupState>>(
+            "SELECT state FROM session_groups WHERE slug = $1 FOR UPDATE",
+        )
+        .bind(&slug)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        let Some(Json(state)) = state else {
+            return Ok(false);
+        };
+        let lost = match &state {
+            GroupState::Busy { since, .. } | GroupState::Delivering { since, .. } => {
+                Some(self.lost_outcome(*since))
+            }
+            // tmux may simply not have been started yet.
+            GroupState::Starting { since } if self.now - *since < starting_grace => {
+                return Ok(false)
+            }
+            GroupState::Starting { .. } | GroupState::Ready { .. } => None,
+            _ => return Ok(false),
+        };
+        match lost {
+            Some(o) => {
+                sqlx::query("UPDATE session_groups SET state = $2, last_run = $3 WHERE slug = $1")
+                    .bind(&slug)
+                    .bind(Json(GroupState::NoSession))
+                    .bind(Json(o))
+                    .execute(&mut *self.tx)
+                    .await?;
+            }
+            None => {
+                sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+                    .bind(&slug)
+                    .bind(Json(GroupState::NoSession))
+                    .execute(&mut *self.tx)
+                    .await?;
+            }
+        }
+        Ok(true)
     }
 
     // ── operator controls (`conductor sessions`) ─────────────────────────────
@@ -1826,5 +2111,360 @@ mod verification {
             !process_alive(pid, actual - chrono::Duration::seconds(60)),
             "a mismatched start time means the PID was recycled"
         );
+    }
+}
+
+#[cfg(test)]
+mod tmux_model {
+    use super::tests_support::*;
+    use super::*;
+    use crate::tmux::TmuxError;
+    use std::collections::BTreeSet as Set;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    fn at(secs: i64) -> DateTime<Utc> {
+        epoch() + chrono::Duration::seconds(secs)
+    }
+
+    // ── transition table (no database) ───────────────────────────────────────
+
+    #[test]
+    fn hooks_walk_the_happy_path() {
+        let mut s = GroupState::Starting { since: at(0) };
+        s = state_after_hook(&s, HookEvent::SessionStart, 7, at(1)).unwrap();
+        assert_eq!(
+            s,
+            GroupState::Ready {
+                pane_pid: 7,
+                since: at(1)
+            }
+        );
+        s = state_after_hook(&s, HookEvent::UserPromptSubmit, 7, at(2)).unwrap();
+        assert_eq!(
+            s,
+            GroupState::Busy {
+                since: at(2),
+                delivered_event: None
+            }
+        );
+        s = state_after_hook(&s, HookEvent::Stop, 7, at(3)).unwrap();
+        assert_eq!(
+            s,
+            GroupState::Ready {
+                pane_pid: 7,
+                since: at(3)
+            }
+        );
+        s = state_after_hook(&s, HookEvent::SessionEnd, 7, at(4)).unwrap();
+        assert_eq!(s, GroupState::NoSession);
+    }
+
+    #[test]
+    fn a_delivered_prompt_keeps_its_event_id() {
+        let s = GroupState::Delivering {
+            since: at(0),
+            event_id: 42,
+        };
+        assert_eq!(
+            state_after_hook(&s, HookEvent::UserPromptSubmit, 0, at(1)),
+            Some(GroupState::Busy {
+                since: at(1),
+                delivered_event: Some(42)
+            })
+        );
+    }
+
+    #[test]
+    fn out_of_order_hooks_are_ignored() {
+        let busy = GroupState::Busy {
+            since: at(0),
+            delivered_event: Some(1),
+        };
+        let delivering = GroupState::Delivering {
+            since: at(0),
+            event_id: 1,
+        };
+        for ev in [
+            HookEvent::Stop,
+            HookEvent::UserPromptSubmit,
+            HookEvent::SessionEnd,
+        ] {
+            if ev != HookEvent::SessionEnd {
+                assert_eq!(
+                    state_after_hook(&GroupState::NoSession, ev, 0, at(1)),
+                    None,
+                    "{ev:?}"
+                );
+            }
+        }
+        assert_eq!(
+            state_after_hook(&GroupState::NoSession, HookEvent::SessionEnd, 0, at(1)),
+            None
+        );
+        // A late Stop from the previous turn while the next is being pasted.
+        assert_eq!(
+            state_after_hook(&delivering, HookEvent::Stop, 0, at(1)),
+            None
+        );
+        // /clear or compaction mid-turn.
+        assert_eq!(
+            state_after_hook(&busy, HookEvent::SessionStart, 0, at(1)),
+            None
+        );
+        // Legacy states are never touched by hooks.
+        for legacy in [
+            GroupState::Idle,
+            GroupState::Running {
+                pid: 1,
+                started_at: at(0),
+            },
+        ] {
+            for ev in [
+                HookEvent::SessionStart,
+                HookEvent::UserPromptSubmit,
+                HookEvent::Stop,
+                HookEvent::SessionEnd,
+            ] {
+                assert_eq!(state_after_hook(&legacy, ev, 0, at(1)), None);
+            }
+        }
+    }
+
+    #[test]
+    fn new_states_round_trip_through_json() {
+        for s in [
+            GroupState::NoSession,
+            GroupState::Starting { since: at(0) },
+            GroupState::Ready {
+                pane_pid: 3,
+                since: at(0),
+            },
+            GroupState::Delivering {
+                since: at(0),
+                event_id: 9,
+            },
+            GroupState::Busy {
+                since: at(0),
+                delivered_event: None,
+            },
+        ] {
+            let json = serde_json::to_string(&s).unwrap();
+            assert_eq!(serde_json::from_str::<GroupState>(&json).unwrap(), s);
+            assert!(s.is_tmux());
+        }
+    }
+
+    // ── against the database ─────────────────────────────────────────────────
+
+    async fn seed(reg: &Registry, key: &GroupKey, state: &GroupState) -> Uuid {
+        let mut txn = reg.begin().await.expect("begin");
+        let (id, _) = txn.session_for_dispatch(key).await.expect("group");
+        txn.commit().await.expect("commit");
+        set_state(reg, key, state).await;
+        id
+    }
+
+    async fn set_state(reg: &Registry, key: &GroupKey, state: &GroupState) {
+        sqlx::query("UPDATE session_groups SET state = $2 WHERE slug = $1")
+            .bind(key.slug())
+            .bind(Json(state))
+            .execute(&reg.pool)
+            .await
+            .expect("set state");
+    }
+
+    async fn state_of(reg: &Registry, key: &GroupKey) -> Group {
+        reg.group_by_slug(&key.slug())
+            .await
+            .unwrap()
+            .expect("group")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn hooks_for_unknown_sessions_change_nothing(pool: PgPool) {
+        let reg = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("g".into());
+        seed(&reg, &key, &GroupState::NoSession).await;
+        let r = reg
+            .apply_hook(Uuid::new_v4(), HookEvent::SessionStart, 1)
+            .await
+            .unwrap();
+        assert_eq!(r, None);
+        assert_eq!(state_of(&reg, &key).await.state, GroupState::NoSession);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stop_for_a_group_without_a_session_is_ignored(pool: PgPool) {
+        let reg = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("g".into());
+        let id = seed(&reg, &key, &GroupState::NoSession).await;
+        assert_eq!(reg.apply_hook(id, HookEvent::Stop, 1).await.unwrap(), None);
+        assert_eq!(state_of(&reg, &key).await.state, GroupState::NoSession);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn session_end_under_a_turn_records_it_lost(pool: PgPool) {
+        let clock = FakeClock::new(epoch());
+        let reg = Registry::new(pool, clock.clone(), DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("g".into());
+        let id = seed(
+            &reg,
+            &key,
+            &GroupState::Busy {
+                since: epoch(),
+                delivered_event: None,
+            },
+        )
+        .await;
+        clock.advance(chrono::Duration::seconds(30));
+        reg.apply_hook(id, HookEvent::SessionEnd, 0)
+            .await
+            .unwrap()
+            .expect("applied");
+        let g = state_of(&reg, &key).await;
+        assert_eq!(g.state, GroupState::NoSession);
+        assert_eq!(g.last_run.expect("outcome").result, RunResult::Lost);
+    }
+
+    #[derive(Default)]
+    struct FakeRuntime {
+        live: Mutex<Set<String>>,
+        killed: Mutex<Vec<String>>,
+    }
+
+    impl FakeRuntime {
+        fn with(names: &[&str]) -> Self {
+            Self {
+                live: Mutex::new(names.iter().map(|s| s.to_string()).collect()),
+                killed: Mutex::default(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionRuntime for FakeRuntime {
+        async fn start(
+            &self,
+            slug: &str,
+            _: &Path,
+            _: &[String],
+            _: &[(String, String)],
+        ) -> Result<(), TmuxError> {
+            self.live.lock().unwrap().insert(slug.into());
+            Ok(())
+        }
+        async fn exists(&self, slug: &str) -> bool {
+            self.live.lock().unwrap().contains(slug)
+        }
+        async fn pane_pid(&self, _: &str) -> Option<u32> {
+            Some(1)
+        }
+        async fn clients(&self, _: &str) -> Vec<String> {
+            vec![]
+        }
+        async fn list_sessions(&self) -> Result<Vec<String>, TmuxError> {
+            Ok(self.live.lock().unwrap().iter().cloned().collect())
+        }
+        async fn deliver(&self, _: &str, _: &str) -> Result<(), TmuxError> {
+            Ok(())
+        }
+        async fn interrupt(&self, _: &str) -> Result<(), TmuxError> {
+            Ok(())
+        }
+        async fn kill(&self, slug: &str) -> Result<(), TmuxError> {
+            self.live.lock().unwrap().remove(slug);
+            self.killed.lock().unwrap().push(slug.into());
+            Ok(())
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reconcile_resets_groups_whose_session_vanished(pool: PgPool) {
+        let clock = FakeClock::new(epoch());
+        let reg = Registry::new(pool, clock.clone(), DEFAULT_IDLE_DAYS);
+        let (busy, ready, alive, legacy) = (
+            GroupKey::Named("busy".into()),
+            GroupKey::Named("ready".into()),
+            GroupKey::Named("alive".into()),
+            GroupKey::Named("legacy".into()),
+        );
+        seed(
+            &reg,
+            &busy,
+            &GroupState::Busy {
+                since: epoch(),
+                delivered_event: Some(1),
+            },
+        )
+        .await;
+        seed(
+            &reg,
+            &ready,
+            &GroupState::Ready {
+                pane_pid: 1,
+                since: epoch(),
+            },
+        )
+        .await;
+        seed(
+            &reg,
+            &alive,
+            &GroupState::Ready {
+                pane_pid: 1,
+                since: epoch(),
+            },
+        )
+        .await;
+        seed(&reg, &legacy, &GroupState::Idle).await;
+        clock.advance(chrono::Duration::seconds(60));
+
+        let rt = FakeRuntime::with(&["alive"]);
+        assert_eq!(reg.reconcile_tmux(&rt).await.unwrap(), (2, 0));
+
+        let g = state_of(&reg, &busy).await;
+        assert_eq!(g.state, GroupState::NoSession);
+        assert_eq!(g.last_run.expect("outcome").result, RunResult::Lost);
+        let g = state_of(&reg, &ready).await;
+        assert_eq!(g.state, GroupState::NoSession);
+        assert!(g.last_run.is_none(), "an idle group lost no turn");
+        assert!(matches!(
+            state_of(&reg, &alive).await.state,
+            GroupState::Ready { .. }
+        ));
+        assert_eq!(state_of(&reg, &legacy).await.state, GroupState::Idle);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reconcile_gives_a_fresh_starting_group_time(pool: PgPool) {
+        let reg = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("new".into());
+        seed(&reg, &key, &GroupState::Starting { since: epoch() }).await;
+        assert_eq!(
+            reg.reconcile_tmux(&FakeRuntime::default()).await.unwrap(),
+            (0, 0)
+        );
+        assert!(matches!(
+            state_of(&reg, &key).await.state,
+            GroupState::Starting { .. }
+        ));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reconcile_kills_sessions_with_no_group(pool: PgPool) {
+        let reg = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("known".into());
+        seed(
+            &reg,
+            &key,
+            &GroupState::Ready {
+                pane_pid: 1,
+                since: epoch(),
+            },
+        )
+        .await;
+        let rt = FakeRuntime::with(&["known", "stray"]);
+        assert_eq!(reg.reconcile_tmux(&rt).await.unwrap(), (0, 1));
+        assert_eq!(*rt.killed.lock().unwrap(), vec!["stray".to_string()]);
     }
 }

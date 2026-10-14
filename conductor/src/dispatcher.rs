@@ -25,6 +25,7 @@ use crate::closing::{close_group, CloseMode, CloseOutcome};
 use crate::linear_api::{IssueSetSource, LinearApiError};
 use crate::registry::{GroupKey, QueuedEvent, Registry, RunOutcome, RunResult};
 use crate::resolve::{fallback_key, GroupResolver};
+use crate::tmux::SessionRuntime;
 use crate::{EventSink, InboundEvent};
 /// Re-exported so callers can name a signal without depending on `nix`.
 pub use nix::sys::signal::Signal;
@@ -302,6 +303,9 @@ pub struct Dispatcher {
     /// the default cap of five groups that is the normal case, not an edge one.
     /// Only setup is serialised — the runs themselves stay parallel.
     repo_lock: Mutex<()>,
+    /// tmux runtime reconciled on each scheduler pass; unset until the
+    /// dispatcher drives tmux sessions.
+    runtime: std::sync::OnceLock<Arc<dyn SessionRuntime>>,
 }
 
 impl Dispatcher {
@@ -329,8 +333,29 @@ impl Dispatcher {
             shutting_down,
             issue_source,
             closing: AtomicBool::new(false),
+            runtime: std::sync::OnceLock::new(),
         });
         (dispatcher, DispatchSink { tx }, rx)
+    }
+
+    /// Supplies the tmux runtime to reconcile against. Only the first call has
+    /// an effect.
+    pub fn set_runtime(&self, runtime: Arc<dyn SessionRuntime>) {
+        let _ = self.runtime.set(runtime);
+    }
+
+    /// Reconciles tmux-model groups with the tmux server, if one is configured.
+    pub async fn reconcile_tmux(&self) {
+        let Some(runtime) = self.runtime.get() else {
+            return;
+        };
+        match self.registry.reconcile_tmux(runtime.as_ref()).await {
+            Ok((0, 0)) => {}
+            Ok((reset, killed)) => {
+                tracing::warn!(reset, killed, "tmux reconciliation changed state")
+            }
+            Err(e) => tracing::error!(error = %e, "tmux reconciliation failed"),
+        }
     }
 
     /// Persists an accepted event and wakes the scheduler.
@@ -472,6 +497,8 @@ impl Dispatcher {
                 tracing::info!("scheduler stopping; no new runs will start");
                 return;
             }
+
+            self.reconcile_tmux().await;
 
             if let Err(e) = self.start_runnable().await {
                 tracing::error!(error = %e, "scheduling pass failed");
