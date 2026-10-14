@@ -941,13 +941,18 @@ impl RegistryTxn<'_> {
     /// is minted — but the group itself is kept, along with its worktree,
     /// branches and issue history, so expiry costs the conversation and nothing
     /// else.
+    ///
+    /// A group whose tmux session is live (starting or beyond) keeps its id
+    /// whatever the rules above say. Every incoming event calls this to create
+    /// the group, so minting here would swap the id out from under a running
+    /// Claude, and the hooks it sends would then name a session nobody owns.
     pub async fn session_for_dispatch(
         &mut self,
         key: &GroupKey,
     ) -> Result<(Uuid, bool), sqlx::Error> {
         let slug = key.slug();
         let existing = sqlx::query(
-            "SELECT session_id, session_started, last_active \
+            "SELECT session_id, session_started, last_active, state \
              FROM session_groups WHERE slug = $1",
         )
         .bind(&slug)
@@ -974,6 +979,18 @@ impl RegistryTxn<'_> {
         let session_id: Uuid = row.try_get("session_id")?;
         let session_started: bool = row.try_get("session_started")?;
         let last_active: DateTime<Utc> = row.try_get("last_active")?;
+        let live = {
+            let state = row.try_get::<Json<GroupState>, _>("state")?.0;
+            state.is_tmux() && state != GroupState::NoSession
+        };
+        if live {
+            sqlx::query("UPDATE session_groups SET last_active = $2 WHERE slug = $1")
+                .bind(&slug)
+                .bind(self.now)
+                .execute(&mut *self.tx)
+                .await?;
+            return Ok((session_id, session_started));
+        }
 
         let idle_for = self.now - last_active;
         let resumable = session_started && idle_for < chrono::Duration::days(self.idle_days);
@@ -2713,6 +2730,46 @@ mod tmux_model {
             GroupState::Ready { .. }
         ));
         assert_eq!(state_of(&reg, &legacy).await.state, GroupState::Idle);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn events_arriving_during_a_start_do_not_change_the_session_id(pool: PgPool) {
+        let clock = FakeClock::new(epoch());
+        let reg = Registry::new(pool, clock.clone(), DEFAULT_IDLE_DAYS);
+        let key = GroupKey::Named("g".into());
+        let launched = seed(&reg, &key, &GroupState::Starting { since: epoch() }).await;
+
+        // Every webhook calls this to create the group; none may re-mint the id
+        // of a session that is launching, or its hooks are ignored.
+        for state in [
+            GroupState::Starting { since: epoch() },
+            GroupState::Ready {
+                pane_pid: 1,
+                since: epoch(),
+            },
+        ] {
+            set_state(&reg, &key, &state).await;
+            // Even idle for longer than the expiry window.
+            clock.advance(chrono::Duration::days(DEFAULT_IDLE_DAYS + 1));
+            let mut txn = reg.begin().await.expect("begin");
+            let (id, _) = txn.session_for_dispatch(&key).await.expect("dispatch");
+            txn.commit().await.expect("commit");
+            assert_eq!(id, launched, "{state:?}");
+        }
+        assert_eq!(state_of(&reg, &key).await.session_id, launched);
+
+        // With no live session the usual expiry applies again.
+        set_state(&reg, &key, &GroupState::NoSession).await;
+        let mut txn = reg.begin().await.expect("begin");
+        txn.mark_session_started(&key).await.expect("started");
+        txn.commit().await.expect("commit");
+        // A transaction fixes its clock when it begins, so advance first.
+        clock.advance(chrono::Duration::days(DEFAULT_IDLE_DAYS + 1));
+        let mut txn = reg.begin().await.expect("begin");
+        let (fresh, resumable) = txn.session_for_dispatch(&key).await.expect("dispatch");
+        txn.commit().await.expect("commit");
+        assert!(!resumable);
+        assert_ne!(fresh, launched);
     }
 
     #[sqlx::test(migrations = "./migrations")]

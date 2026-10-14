@@ -5,6 +5,12 @@
 
 #![allow(dead_code)]
 
+pub mod tty;
+
+/// How long a real-tmux test may wait for work it expects to happen. A ceiling
+/// for contention, not an expected duration: a wrong assertion still fails at once.
+pub const PATIENCE_TTY: std::time::Duration = std::time::Duration::from_secs(45);
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -475,6 +481,12 @@ impl Harness {
     /// Builds a bare origin with one commit on `main`, plus a clone to add
     /// worktrees from — the shape the dispatcher expects of a real checkout.
     pub fn new(pool: PgPool) -> Self {
+        // Dispatcher logs go to the test's captured output, which libtest shows
+        // only when the test fails: exactly when they are wanted.
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .try_init();
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().to_path_buf();
         let origin = root.join("origin.git");
