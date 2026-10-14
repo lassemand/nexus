@@ -282,6 +282,11 @@ async fn attach_holds_a_group_for_the_session_then_gives_it_back(pool: PgPool) {
         !argv.iter().any(|a| a == "--print"),
         "an interactive session must not be given --print: {argv:?}"
     );
+    assert_eq!(
+        starts.last().expect("an attach run").model(),
+        Some("sonnet"),
+        "attach must pass the configured model: {argv:?}"
+    );
     // Present, and deliberately so. The original expectation was that an
     // attached operator would answer permission prompts themselves; over
     // `kubectl exec` those prompts just block the session, so the interactive

@@ -109,6 +109,8 @@ spec:
               value: "120"
             - name: CONDUCTOR_AGENT
               value: "backend"
+            - name: CONDUCTOR_CLAUDE_MODEL
+              value: {{ .Values.claude.model | quote }}
             - name: GITHUB_WEBHOOK_USERS
               value: {{ .Values.githubWebhookUsers | quote }}
             - name: CONDUCTOR_BIND
