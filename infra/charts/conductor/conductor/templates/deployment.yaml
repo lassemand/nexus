@@ -93,6 +93,18 @@ spec:
               value: {{ .Values.githubWebhookUsers | quote }}
             - name: CONDUCTOR_BIND
               value: "0.0.0.0:8788"
+            # tmux-backed sessions. The hook port is loopback only, so it is
+            # deliberately not a containerPort or a Service port.
+            - name: CONDUCTOR_TMUX_SOCKET
+              value: {{ .Values.tmux.socket | quote }}
+            - name: CONDUCTOR_HOOK_PORT
+              value: {{ .Values.tmux.hookPort | quote }}
+            - name: CONDUCTOR_MAX_LIVE_SESSIONS
+              value: {{ .Values.maxLiveSessions | quote }}
+            - name: CONDUCTOR_START_TIMEOUT_SECS
+              value: {{ .Values.startTimeoutSecs | quote }}
+            - name: CONDUCTOR_DELIVER_TIMEOUT_SECS
+              value: {{ .Values.deliverTimeoutSecs | quote }}
 
           volumeMounts:
             - name: data

@@ -371,6 +371,53 @@ printf '== claude configuration ==\n'
   rm -rf "$SANDBOX"
 )
 
+printf '== turn hooks and tmux config ==\n'
+
+(
+  new_sandbox; init_layout >/dev/null
+  # Existing keys and an unrelated hook must survive; an old conductor entry
+  # must not be duplicated.
+  jq -n '{theme: "light", hooks: {Stop: [{hooks: [{type: "command", command: "echo mine"}]}], PreToolUse: [{hooks: [{type: "command", command: "echo keep"}]}]}}' > "$SETTINGS_JSON"
+  seed_claude_config >/dev/null
+  seed_claude_config >/dev/null
+  cmd="/usr/local/bin/conductor hook"
+  for ev in UserPromptSubmit Stop SessionStart SessionEnd; do
+    check "exactly one conductor hook for $ev" \
+      "$(jq -r --arg e "$ev" --arg c "$cmd" '[.hooks[$e][] | .hooks[] | select(.command == $c)] | length' "$SETTINGS_JSON")" "1"
+  done
+  check "hook timeout is 5s" "$(jq -r '.hooks.SessionEnd[0].hooks[0].timeout' "$SETTINGS_JSON")" "5"
+  check "the user's own Stop hook is kept" \
+    "$(jq -r '[.hooks.Stop[] | .hooks[] | select(.command == "echo mine")] | length' "$SETTINGS_JSON")" "1"
+  check "no hooks are added for other events" \
+    "$(jq -r '.hooks | keys | join(",")' "$SETTINGS_JSON")" "PreToolUse,SessionEnd,SessionStart,Stop,UserPromptSubmit"
+  check "unrelated hooks untouched" \
+    "$(jq -r '.hooks.PreToolUse | length' "$SETTINGS_JSON")" "1"
+  check "other settings preserved" "$(jq -r '.theme' "$SETTINGS_JSON")" "light"
+  check "dangerous-mode prompt still suppressed" \
+    "$(jq -r '.skipDangerousModePermissionPrompt' "$SETTINGS_JSON")" "true"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  write_tmux_conf >/dev/null
+  for line in "set -g prefix C-a" "set -sg escape-time 10" "set -g history-limit 100000" \
+              "set -g mouse on" "set -g default-terminal tmux-256color" "set -g focus-events on" \
+              "set -g remain-on-exit off" "set -g window-size latest"; do
+    grep -qxF "$line" "$HOME/.tmux.conf" && ok "tmux.conf has: $line" || bad "tmux.conf has: $line"
+  done
+  before="$(cat "$HOME/.tmux.conf")"
+  echo "junk" >> "$HOME/.tmux.conf"
+  write_tmux_conf >/dev/null
+  check "tmux.conf is overwritten, so a second run is a no-op" "$(cat "$HOME/.tmux.conf")" "$before"
+  if command -v tmux >/dev/null; then
+    tmux -L "test-$$" -f "$HOME/.tmux.conf" start-server \; show -g prefix >/dev/null 2>&1 \
+      && ok "tmux accepts the config" || bad "tmux accepts the config"
+    tmux -L "test-$$" kill-server >/dev/null 2>&1
+  fi
+  rm -rf "$SANDBOX"
+)
+
 printf '== static token precedence ==\n'
 
 (
