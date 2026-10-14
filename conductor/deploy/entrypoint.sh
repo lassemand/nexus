@@ -564,7 +564,12 @@ smoke_check() {
   fi
   log "running smoke check"
   local reply
-  reply="$(cd "$REPO_DIR" && timeout 60 claude --print --dangerously-skip-permissions \
+  # A wrong or unavailable model fails here, at startup, not on every dispatch.
+  local model_args=()
+  if [[ -n "${CONDUCTOR_CLAUDE_MODEL:-}" ]]; then
+    model_args=(--model "$CONDUCTOR_CLAUDE_MODEL")
+  fi
+  reply="$(cd "$REPO_DIR" && timeout 60 claude ${model_args[@]+"${model_args[@]}"} --print --dangerously-skip-permissions \
       'Reply with exactly: ok' 2>&1 | tr -d '[:space:]')" || true
   [[ "$reply" == "ok" ]] || die "smoke check failed; claude replied: ${reply:-<nothing>}"
   log "smoke check passed"

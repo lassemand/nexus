@@ -45,6 +45,14 @@ impl FakeRun {
     }
 }
 
+impl FakeRun {
+    /// The value following `--model`, if the flag was passed.
+    pub fn model(&self) -> Option<&str> {
+        let position = self.argv.iter().position(|a| a == "--model")?;
+        self.argv.get(position + 1).map(String::as_str)
+    }
+}
+
 /// Runs git, panicking with its stderr so a broken fixture is obvious.
 pub fn git(cwd: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -112,6 +120,7 @@ impl Harness {
             state_dir: state.clone(),
             claude_bin: fake_claude_path().to_string_lossy().to_string(),
             agent: "backend".into(),
+            model: Some("sonnet".into()),
             skip_permissions: true,
             run_timeout: Duration::from_secs(30),
             shutdown_grace: Duration::from_secs(30),
@@ -330,6 +339,7 @@ impl Harness {
             state_dir: self.state.clone(),
             claude_bin: self.config.claude_bin.clone(),
             agent: self.config.agent.clone(),
+            model: self.config.model.clone(),
             skip_permissions: self.config.skip_permissions,
             kill_grace: Duration::from_millis(500),
             poll_interval: Duration::from_millis(50),
@@ -412,6 +422,7 @@ impl Harness {
             .env("CONDUCTOR_STATE_DIR", &self.state)
             .env("CONDUCTOR_CLAUDE_BIN", &env.claude_bin)
             .env("CONDUCTOR_AGENT", &env.agent)
+            .env("CONDUCTOR_CLAUDE_MODEL", env.model.as_deref().unwrap_or(""))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()

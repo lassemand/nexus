@@ -7,6 +7,14 @@ image:
   # in-container workspace build found: a login shell lost the Rust toolchain
   # from PATH, and clippy/rustfmt were on the wrong toolchain.)
   tag: "0.1.7"
+claude:
+  # Model for every Claude process conductor starts (`--model`). `sonnet` is an
+  # alias that follows the newest Sonnet known to the image's pinned Claude Code
+  # version (CLAUDE_CODE_VERSION in infra/Dockerfile.conductor): Sonnet 5.5,
+  # `claude-sonnet-5-5`, today. Bumping Claude Code can move it to a newer
+  # Sonnet. To pin, set a full model ID such as `claude-sonnet-5-5`.
+  # Empty uses Claude Code's own default.
+  model: "sonnet"
 # Maximum concurrent Claude sessions. See the memory note on resources below
 # before raising this.
 maxSessions: 5

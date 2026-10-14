@@ -71,6 +71,10 @@ async fn runs_in_one_group_never_overlap_and_keep_order(pool: PgPool) {
     // First run starts the session, the rest resume the same one.
     let (first_id, first_resumed) = starts[0].session().expect("session arg");
     assert!(!first_resumed, "the first run must not resume");
+    // Fresh (--session-id) and resumed (--resume) runs both carry the model.
+    for run in &starts {
+        assert_eq!(run.model(), Some("sonnet"), "argv was {:?}", run.argv);
+    }
     for later in &starts[1..] {
         let (id, resumed) = later.session().expect("session arg");
         assert!(resumed, "later runs must resume");

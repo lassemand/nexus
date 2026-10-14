@@ -303,6 +303,10 @@ pub struct RunOutcome {
     pub result: RunResult,
     pub finished_at: DateTime<Utc>,
     pub duration: Duration,
+    /// Model the run was started with (`--model`); `None` means Claude Code's
+    /// default. Absent in outcomes recorded before this field existed.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// An accepted event waiting to be dispatched.
@@ -1225,6 +1229,7 @@ impl RegistryTxn<'_> {
                 result: RunResult::Lost,
                 finished_at: self.now,
                 duration: (self.now - started_at).to_std().unwrap_or_default(),
+                model: None,
             };
             sqlx::query("UPDATE session_groups SET state = $2, last_run = $3 WHERE slug = $1")
                 .bind(&slug)
@@ -1291,6 +1296,7 @@ impl RegistryTxn<'_> {
             result: RunResult::Lost,
             finished_at: self.now,
             duration: (self.now - since).to_std().unwrap_or_default(),
+            model: None,
         }
     }
 

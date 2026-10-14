@@ -69,6 +69,11 @@ pub struct SessionEnvArgs {
     #[arg(long, env = "CONDUCTOR_AGENT", default_value = "backend")]
     pub agent: String,
 
+    /// Model passed to Claude as `--model`: an alias such as `sonnet`, or a full
+    /// model ID. Unset or empty leaves the choice to Claude Code.
+    #[arg(long, env = "CONDUCTOR_CLAUDE_MODEL", value_parser = parse_model)]
+    pub model: Option<String>,
+
     /// Pass `--dangerously-skip-permissions` to Claude.
     ///
     /// Governs dispatched runs and `sessions attach` alike. The interactive
@@ -93,6 +98,7 @@ impl SessionEnvArgs {
             state_dir,
             claude_bin: self.claude_bin,
             agent: self.agent,
+            model: self.model.filter(|m| !m.is_empty()),
             skip_permissions: self.skip_permissions,
             kill_grace: DEFAULT_TERM_TO_KILL,
             poll_interval: DEFAULT_ATTACH_POLL,
@@ -113,6 +119,8 @@ pub struct SessionEnv {
     pub claude_bin: String,
     /// Agent passed through to Claude.
     pub agent: String,
+    /// Model passed as `--model`; `None` leaves it to Claude Code.
+    pub model: Option<String>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// Grace between `SIGTERM` and `SIGKILL` when the CLI stops a process.
@@ -184,6 +192,7 @@ impl DispatchArgs {
             state_dir: env.state_dir,
             claude_bin: env.claude_bin,
             agent: env.agent,
+            model: env.model,
             skip_permissions: env.skip_permissions,
             // Seconds win when given, so a test can use a timeout far under a minute.
             run_timeout: Duration::from_secs(
@@ -196,6 +205,39 @@ impl DispatchArgs {
                 .then(|| Duration::from_secs(self.close_sweep_mins.saturating_mul(60))),
             term_to_kill: DEFAULT_TERM_TO_KILL,
         }
+    }
+}
+
+/// Validates a model name against `^[a-z0-9][a-z0-9.-]*(\[1m\])?$`.
+///
+/// Empty is accepted and means "no `--model` flag". Hand-rolled to avoid a
+/// regex dependency for one pattern.
+pub fn parse_model(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    let base = value.strip_suffix("[1m]").unwrap_or(value);
+    let mut chars = base.chars();
+    let valid = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-');
+    if valid {
+        Ok(value.to_string())
+    } else {
+        Err(format!(
+            "invalid CONDUCTOR_CLAUDE_MODEL {value:?}: must match ^[a-z0-9][a-z0-9.-]*(\\[1m\\])?$"
+        ))
+    }
+}
+
+/// Adds `--model` to a Claude command line when a model is configured.
+///
+/// Precedence against an agent definition's `model:` frontmatter: see the
+/// comment at the call site in `Dispatcher::execute`.
+pub fn push_model_arg(command: &mut Command, model: Option<&str>) {
+    if let Some(model) = model {
+        command.arg("--model").arg(model);
     }
 }
 
@@ -220,6 +262,8 @@ pub struct DispatchConfig {
     pub claude_bin: String,
     /// Agent passed through to Claude.
     pub agent: String,
+    /// Model passed as `--model`; `None` leaves it to Claude Code.
+    pub model: Option<String>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// How long a run may take before it is stopped.
@@ -725,6 +769,13 @@ impl Dispatcher {
             command.arg("--session-id").arg(session_id.to_string());
         }
         command.arg(format!("--agent={}", self.config.agent));
+        // Precedence of `--model` against a `model:` in the agent's frontmatter
+        // (Claude Code 2.1.285, `--agent=backend`) is NOT verified: it could not
+        // be probed without a logged-in Claude in the dev sandbox. `backend.md`
+        // has no `model:`, so `--model` applies today either way. Before adding
+        // one, run `claude --agent=<a> --model sonnet --print ...` and read
+        // `.message.model` in the transcript (see the NEX-146 PR).
+        push_model_arg(&mut command, self.config.model.as_deref());
         if self.config.skip_permissions {
             command.arg("--dangerously-skip-permissions");
         }
@@ -798,6 +849,7 @@ impl Dispatcher {
                 result,
                 finished_at: txn.now(),
                 duration,
+                model: self.config.model.clone(),
             },
         )
         .await?;
@@ -1048,6 +1100,57 @@ fn delivery_id(event: &InboundEvent) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Probe {
+        #[command(flatten)]
+        env: SessionEnvArgs,
+    }
+
+    fn model_from(args: &[&str]) -> Result<Option<String>, clap::Error> {
+        let argv = std::iter::once("probe").chain(args.iter().copied());
+        Probe::try_parse_from(argv).map(|p| p.env.resolve().model)
+    }
+
+    #[test]
+    fn model_flag_is_parsed_and_unset_or_empty_means_none() {
+        assert_eq!(
+            model_from(&["--model", "sonnet"]).unwrap().as_deref(),
+            Some("sonnet")
+        );
+        assert_eq!(
+            model_from(&["--model", "claude-sonnet-5-5"])
+                .unwrap()
+                .as_deref(),
+            Some("claude-sonnet-5-5")
+        );
+        assert_eq!(
+            model_from(&["--model", "opus[1m]"]).unwrap().as_deref(),
+            Some("opus[1m]")
+        );
+        assert_eq!(model_from(&[]).unwrap(), None);
+        assert_eq!(model_from(&["--model", ""]).unwrap(), None);
+    }
+
+    #[test]
+    fn invalid_models_are_rejected() {
+        for bad in [
+            "Sonnet",
+            "-x",
+            ".x",
+            "a b",
+            "a;b",
+            "sonnet[2m]",
+            "[1m]",
+            "a_b",
+            "--x",
+        ] {
+            assert!(parse_model(bad).is_err(), "{bad:?} should be rejected");
+        }
+        assert!(model_from(&["--model=Sonnet"]).is_err());
+    }
+
     use super::*;
     use crate::github::GithubPrComment;
     use crate::linear::LinearIssue;
@@ -1214,6 +1317,7 @@ mod config_tests {
                 state_dir: Some(PathBuf::from("/state")),
                 claude_bin: "claude".into(),
                 agent: "backend".into(),
+                model: None,
                 skip_permissions: true,
             },
             run_timeout_min: 120,
