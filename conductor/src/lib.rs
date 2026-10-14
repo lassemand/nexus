@@ -13,12 +13,14 @@
 pub mod closing;
 pub mod dispatcher;
 pub mod github;
+pub mod hooks;
 pub mod http;
 pub mod linear;
 pub mod linear_api;
 pub mod registry;
 pub mod resolve;
 pub mod sessions;
+pub mod tmux;
 
 use serde::{Deserialize, Serialize};
 

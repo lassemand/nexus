@@ -74,7 +74,7 @@ pub async fn close_group(
     };
 
     if !mode.force() {
-        if group.state != GroupState::Idle {
+        if !matches!(group.state, GroupState::Idle | GroupState::NoSession) {
             return Ok(CloseOutcome::Busy);
         }
         if !group.pending.is_empty() {

@@ -404,7 +404,7 @@ fn started_at_of(state: &GroupState) -> chrono::DateTime<chrono::Utc> {
         GroupState::Running { started_at, .. } | GroupState::Attached { started_at, .. } => {
             *started_at
         }
-        GroupState::Idle => chrono::Utc::now(),
+        _ => chrono::Utc::now(),
     }
 }
 

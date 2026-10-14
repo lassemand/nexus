@@ -8,11 +8,13 @@ use clap::{Parser, Subcommand};
 use conductor::{
     dispatcher::{DispatchArgs, Dispatcher},
     github::watched_users_from_env,
+    hooks::{self, HookState},
     http::{serve_with_shutdown, AppState, DEFAULT_BIND},
     linear_api::{IssueSetSource, LinearGraphql},
     registry::{Registry, SystemClock},
     resolve::BranchResolver,
     sessions::{self, SessionsArgs},
+    tmux::{SessionRuntime, TmuxRuntime},
 };
 
 #[derive(Parser)]
@@ -43,16 +45,33 @@ enum Command {
     /// Operates on the same registry as a running server, through Postgres, so
     /// it is safe to use while `serve` is working.
     Sessions(SessionsArgs),
+
+    /// Forward a Claude Code hook payload (read from stdin) to `conductor serve`.
+    ///
+    /// Registered as a Claude hook command. Always exits 0 and prints nothing to
+    /// stdout, even when conductor is unreachable: a non-zero exit or any stdout
+    /// output can change Claude's behaviour.
+    Hook,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+
+    if matches!(cli.command, Command::Hook) {
+        // stderr only: stdout is read by Claude.
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .init();
+        run_hook().await;
+        return Ok(());
+    }
+
     // Plain formatter on stdout — what Kubernetes log collection expects.
     tracing_subscriber::fmt::init();
 
-    let cli = Cli::parse();
-
     match cli.command {
+        Command::Hook => unreachable!("handled above"),
         Command::Sessions(args) => {
             let registry = Registry::from_env(Arc::new(SystemClock)).await?;
             // No `migrate` here: the CLI inspects a database the server owns,
@@ -113,6 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Cloned before the move below: the resolver reads branch ownership
             // from the same registry the dispatcher writes to.
             let resolver_registry = registry.clone();
+            let hook_registry = registry.clone();
             let shutting_down = Arc::new(AtomicBool::new(false));
             let (dispatcher, sink, rx) = Dispatcher::new(
                 registry,
@@ -125,6 +145,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Arc::clone(&shutting_down),
                 issue_source,
             );
+
+            // Hooks drive the tmux-model states; the listener is loopback only,
+            // so it is never reachable through the public webhook address.
+            let runtime: Arc<dyn SessionRuntime> = Arc::new(TmuxRuntime::from_env());
+            dispatcher.set_runtime(Arc::clone(&runtime));
+            dispatcher.reconcile_tmux().await;
+            let hook_addr = format!("127.0.0.1:{}", hooks::hook_port());
+            let hook_state = HookState {
+                registry: hook_registry,
+                runtime,
+            };
+            tokio::spawn(async move {
+                if let Err(e) = hooks::serve(&hook_addr, hook_state).await {
+                    tracing::error!(error = %e, addr = %hook_addr, "hook listener stopped");
+                }
+            });
 
             tokio::spawn(Arc::clone(&dispatcher).run_ingest(rx));
             tokio::spawn(Arc::clone(&dispatcher).run_scheduler());
@@ -147,6 +183,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             Ok(())
         }
+    }
+}
+
+/// Reads the hook JSON from stdin and POSTs it to the local listener.
+///
+/// Never fails: every error goes to stderr and the process still exits 0.
+async fn run_hook() {
+    use tokio::io::AsyncReadExt;
+
+    let mut body = Vec::new();
+    if let Err(e) = tokio::io::stdin().read_to_end(&mut body).await {
+        tracing::warn!(error = %e, "cannot read hook payload from stdin");
+        return;
+    }
+    let url = format!("http://127.0.0.1:{}/hook", hooks::hook_port());
+    if let Err(e) = hooks::forward(&url, body).await {
+        tracing::warn!(error = %e, %url, "cannot deliver hook to conductor");
     }
 }
 
