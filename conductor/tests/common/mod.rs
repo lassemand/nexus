@@ -117,6 +117,7 @@ impl Harness {
             shutdown_grace: Duration::from_secs(30),
             // Short so tests observe outside changes quickly.
             rescan_interval: Duration::from_millis(100),
+            close_sweep: None,
             term_to_kill: Duration::from_millis(200),
         };
 
@@ -201,6 +202,24 @@ impl Harness {
             self.config.clone(),
             Arc::new(PerPullRequestResolver),
             Arc::clone(&self.shutting_down),
+            None,
+        );
+        tokio::spawn(Arc::clone(&dispatcher).run_ingest(rx));
+        tokio::spawn(Arc::clone(&dispatcher).run_scheduler());
+        (dispatcher, sink)
+    }
+
+    /// Like [`Harness::start`], with automatic closing backed by `source`.
+    pub fn start_with_source(
+        &self,
+        source: Arc<dyn conductor::linear_api::IssueSetSource>,
+    ) -> (Arc<Dispatcher>, DispatchSink) {
+        let (dispatcher, sink, rx) = Dispatcher::new(
+            self.registry.clone(),
+            self.config.clone(),
+            Arc::new(PerPullRequestResolver),
+            Arc::clone(&self.shutting_down),
+            Some(source),
         );
         tokio::spawn(Arc::clone(&dispatcher).run_ingest(rx));
         tokio::spawn(Arc::clone(&dispatcher).run_scheduler());

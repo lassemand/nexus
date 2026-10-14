@@ -151,7 +151,11 @@ async fn list_shows_busy_groups_first_with_one_row_each(pool: PgPool) {
         .await;
 
     let (code, text) = harness
-        .sessions(SessionsCommand::List { json: false })
+        .sessions(SessionsCommand::List {
+            json: false,
+            closed: false,
+            limit: 20,
+        })
         .await;
     assert_eq!(code, 0, "list should succeed: {text}");
 
@@ -182,7 +186,13 @@ async fn list_json_carries_the_whole_group_not_the_summary(pool: PgPool) {
         .enqueue(&named("alpha"), &linear_event("NEX-1", "alpha", None))
         .await;
 
-    let (code, text) = harness.sessions(SessionsCommand::List { json: true }).await;
+    let (code, text) = harness
+        .sessions(SessionsCommand::List {
+            json: true,
+            closed: false,
+            limit: 20,
+        })
+        .await;
     assert_eq!(code, 0);
 
     let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -199,7 +209,11 @@ async fn list_json_carries_the_whole_group_not_the_summary(pool: PgPool) {
 async fn an_empty_registry_says_so_rather_than_printing_a_bare_header(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);
     let (code, text) = harness
-        .sessions(SessionsCommand::List { json: false })
+        .sessions(SessionsCommand::List {
+            json: false,
+            closed: false,
+            limit: 20,
+        })
         .await;
     assert_eq!(code, 0);
     assert!(text.contains("no session groups"), "{text}");

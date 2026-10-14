@@ -247,6 +247,25 @@ pub struct Group {
     pub last_active: DateTime<Utc>,
     pub last_run: Option<RunOutcome>,
     pub created_at: DateTime<Utc>,
+    /// Set when a task in the group's set completed and the set should be
+    /// checked for completeness.
+    #[serde(default)]
+    pub close_requested_at: Option<DateTime<Utc>>,
+    /// Why the last automatic close was refused; blocks further automatic checks.
+    #[serde(default)]
+    pub close_blocked: Option<String>,
+}
+
+/// An audit row for a group that has been closed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClosedGroup {
+    pub slug: String,
+    pub session_id: Uuid,
+    pub issues: Vec<String>,
+    pub branches: Vec<String>,
+    /// `auto` or `manual`.
+    pub mode: String,
+    pub closed_at: DateTime<Utc>,
 }
 
 // ── process liveness ─────────────────────────────────────────────────────────
@@ -443,6 +462,70 @@ impl Registry {
         Ok(out)
     }
 
+    /// Groups eligible for a completeness check: idle, nothing queued, not
+    /// blocked, and not a GitHub pull request group (`gh-*`), which has no
+    /// Linear set and stays manual.
+    ///
+    /// With `requested_only`, only groups a webhook flagged; otherwise all of
+    /// them, which is what the periodic sweep wants.
+    pub async fn close_candidates(
+        &self,
+        requested_only: bool,
+    ) -> Result<Vec<GroupKey>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT g.key AS key FROM session_groups g \
+             WHERE g.state->>'state' = 'idle' \
+               AND g.close_blocked IS NULL \
+               AND g.slug NOT LIKE 'gh-%' \
+               AND ($1 = FALSE OR g.close_requested_at IS NOT NULL) \
+               AND NOT EXISTS (SELECT 1 FROM pending_events p WHERE p.group_slug = g.slug) \
+             ORDER BY g.slug",
+        )
+        .bind(requested_only)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| Ok(r.try_get::<Json<GroupKey>, _>("key")?.0))
+            .collect()
+    }
+
+    /// Withdraws a group's close request.
+    pub async fn clear_close_request(&self, key: &GroupKey) -> Result<(), sqlx::Error> {
+        let mut txn = self.begin().await?;
+        txn.clear_close_request(key).await?;
+        txn.commit().await
+    }
+
+    /// Records that closing was refused, stopping automatic re-checks.
+    pub async fn block_close(&self, key: &GroupKey, reason: &str) -> Result<(), sqlx::Error> {
+        let mut txn = self.begin().await?;
+        txn.block_close(key, reason).await?;
+        txn.commit().await
+    }
+
+    /// Most recently closed groups, newest first.
+    pub async fn recent_closed(&self, limit: i64) -> Result<Vec<ClosedGroup>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT slug, session_id, issues, branches, mode, closed_at FROM closed_groups \
+             ORDER BY closed_at DESC, id DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(ClosedGroup {
+                    slug: r.try_get("slug")?,
+                    session_id: r.try_get("session_id")?,
+                    issues: r.try_get("issues")?,
+                    branches: r.try_get("branches")?,
+                    mode: r.try_get("mode")?,
+                    closed_at: r.try_get("closed_at")?,
+                })
+            })
+            .collect()
+    }
+
     /// Every group, with its pending queue, ordered by slug.
     ///
     /// Read-only and unlocked: callers get a consistent snapshot from the
@@ -578,6 +661,8 @@ fn group_from_row(row: &PgRow, pending: VecDeque<QueuedEvent>) -> Result<Group, 
             .try_get::<Option<Json<RunOutcome>>, _>("last_run")?
             .map(|j| j.0),
         created_at: row.try_get("created_at")?,
+        close_requested_at: row.try_get("close_requested_at")?,
+        close_blocked: row.try_get("close_blocked")?,
     })
 }
 
@@ -1078,6 +1163,61 @@ impl RegistryTxn<'_> {
         .fetch_all(&mut *self.tx)
         .await?;
         Ok(pending_from_rows(&rows)?.into())
+    }
+
+    /// Flags a group for a completeness check and returns whether it existed.
+    ///
+    /// A blocked group is left alone: it is not re-checked automatically.
+    pub async fn request_close(&mut self, key: &GroupKey) -> Result<bool, sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE session_groups SET close_requested_at = $2 \
+             WHERE slug = $1 AND close_blocked IS NULL",
+        )
+        .bind(key.slug())
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Withdraws a group's close request.
+    pub async fn clear_close_request(&mut self, key: &GroupKey) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE session_groups SET close_requested_at = NULL WHERE slug = $1")
+            .bind(key.slug())
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Marks a group as refusing automatic close, and clears its request.
+    pub async fn block_close(&mut self, key: &GroupKey, reason: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE session_groups SET close_blocked = $2, close_requested_at = NULL \
+             WHERE slug = $1",
+        )
+        .bind(key.slug())
+        .bind(reason)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Writes the audit row for a group being closed.
+    pub async fn record_closed(&mut self, group: &Group, mode: &str) -> Result<(), sqlx::Error> {
+        let branches: Vec<String> = group.branches.iter().cloned().collect();
+        sqlx::query(
+            "INSERT INTO closed_groups (slug, session_id, issues, branches, mode, closed_at) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(group.key.slug())
+        .bind(group.session_id)
+        .bind(&group.issues)
+        .bind(&branches)
+        .bind(mode)
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
     }
 
     /// Forgets a group entirely. Its queue goes with it, by cascade.

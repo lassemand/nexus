@@ -10,6 +10,9 @@ image:
 # Maximum concurrent Claude sessions. See the memory note on resources below
 # before raising this.
 maxSessions: 5
+# Minutes between sweeps that close idle groups whose Linear set is complete.
+# 0 disables the sweep; webhook-triggered checks still run.
+closeSweepMins: 30
 # Users whose pull request comments are routed to a session.
 githubWebhookUsers: "lassemand"
 persistence:

@@ -21,6 +21,8 @@ use tokio::sync::{mpsc, Mutex, Notify, Semaphore};
 
 use crate::github::PrCommentKind;
 
+use crate::closing::{close_group, CloseMode, CloseOutcome};
+use crate::linear_api::{IssueSetSource, LinearApiError};
 use crate::registry::{GroupKey, QueuedEvent, Registry, RunOutcome, RunResult};
 use crate::resolve::{fallback_key, GroupResolver};
 use crate::{EventSink, InboundEvent};
@@ -149,6 +151,11 @@ pub struct DispatchArgs {
     #[arg(long, env = "CONDUCTOR_SHUTDOWN_GRACE_SECS", default_value_t = 600)]
     pub shutdown_grace_secs: u64,
 
+    /// How often to re-check every idle group for a completed set, in minutes.
+    /// `0` disables the sweep.
+    #[arg(long, env = "CONDUCTOR_CLOSE_SWEEP_MINS", default_value_t = 30)]
+    pub close_sweep_mins: u64,
+
     /// GitHub API base URL. Overridable so tests can point at a mock.
     #[arg(
         long,
@@ -184,6 +191,8 @@ impl DispatchArgs {
             ),
             shutdown_grace: Duration::from_secs(self.shutdown_grace_secs),
             rescan_interval: DEFAULT_RESCAN_INTERVAL,
+            close_sweep: (self.close_sweep_mins > 0)
+                .then(|| Duration::from_secs(self.close_sweep_mins.saturating_mul(60))),
             term_to_kill: DEFAULT_TERM_TO_KILL,
         }
     }
@@ -221,6 +230,9 @@ pub struct DispatchConfig {
     /// Not exposed as a flag: it exists so tests need not wait the production
     /// five seconds to observe a change made from outside the process.
     pub rescan_interval: Duration,
+    /// How often every idle group is checked for a completed set; `None`
+    /// disables the sweep.
+    pub close_sweep: Option<Duration>,
     /// Grace between `SIGTERM` and `SIGKILL` when stopping a run.
     ///
     /// Likewise test-only, so the kill path can be exercised without a 30s wait.
@@ -276,6 +288,11 @@ pub struct Dispatcher {
     wake: Arc<Notify>,
     running: Arc<Mutex<HashMap<String, RunHandle>>>,
     shutting_down: Arc<AtomicBool>,
+    /// Lists a set's issues for the completeness check. `None` disables
+    /// automatic closing.
+    issue_source: Option<Arc<dyn IssueSetSource>>,
+    /// Set while a completeness pass runs, so passes never overlap.
+    closing: AtomicBool,
     /// Serialises setup against the shared git repository.
     ///
     /// `git fetch` and `git worktree add` both write `.git/config` and take
@@ -294,6 +311,7 @@ impl Dispatcher {
         config: DispatchConfig,
         resolver: Arc<dyn GroupResolver>,
         shutting_down: Arc<AtomicBool>,
+        issue_source: Option<Arc<dyn IssueSetSource>>,
     ) -> (
         Arc<Self>,
         DispatchSink,
@@ -309,6 +327,8 @@ impl Dispatcher {
             running: Arc::new(Mutex::new(HashMap::new())),
             repo_lock: Mutex::new(()),
             shutting_down,
+            issue_source,
+            closing: AtomicBool::new(false),
         });
         (dispatcher, DispatchSink { tx }, rx)
     }
@@ -318,14 +338,8 @@ impl Dispatcher {
     /// Resolution happens before the lock is taken, so a slow lookup never
     /// holds up other writers.
     async fn ingest(&self, event: InboundEvent) {
-        // Completion handling arrives later; until then it is observed only,
-        // and must never be queued or cause a session to start.
-        if let InboundEvent::LinearIssueClosed { issue, .. } = &event {
-            tracing::info!(
-                identifier = %issue.identifier,
-                kind = ?issue.kind,
-                "linear issue closed; no close handling yet, dropping"
-            );
+        if let InboundEvent::LinearIssueClosed { .. } = &event {
+            self.ingest_closed(&event).await;
             return;
         }
 
@@ -387,6 +401,47 @@ impl Dispatcher {
         }
     }
 
+    /// Flags the closed issue's group for a completeness check.
+    ///
+    /// Never queued as work and never starts `claude`. A set that never ran has
+    /// no group, so there is nothing to do.
+    async fn ingest_closed(&self, event: &InboundEvent) {
+        if self.issue_source.is_none() {
+            return;
+        }
+        let key = crate::registry::group_key_for(event);
+        let delivery = delivery_id(event).map(str::to_string);
+
+        let mut txn = match self.registry.begin().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!(error = %e, "cannot reach the registry; close event dropped");
+                return;
+            }
+        };
+        let result = async {
+            if !txn.mark_delivery_seen(delivery.as_deref()).await? {
+                tracing::info!(delivery_id = ?delivery, "duplicate delivery ignored");
+                return Ok(false);
+            }
+            txn.request_close(&key).await
+        }
+        .await;
+        match result {
+            Ok(requested) => {
+                if let Err(e) = txn.commit().await {
+                    tracing::error!(error = %e, "failed to persist close request");
+                    return;
+                }
+                if requested {
+                    tracing::info!(group = %key.slug(), "close requested; set will be checked");
+                    self.wake.notify_one();
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "failed to record close request"),
+        }
+    }
+
     /// Receives submitted events until the sink is dropped.
     pub async fn run_ingest(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<InboundEvent>) {
         while let Some(event) = rx.recv().await {
@@ -404,6 +459,14 @@ impl Dispatcher {
             Err(e) => tracing::error!(error = %e, "stale process recovery failed"),
         }
 
+        if self.issue_source.is_none() {
+            tracing::info!(
+                "LINEAR_API_KEY not set; automatic closing of finished sets is disabled"
+            );
+        }
+        // `None` makes the first pass sweep, catching sets finished while down.
+        let mut last_sweep: Option<Instant> = None;
+
         loop {
             if self.shutting_down.load(Ordering::SeqCst) {
                 tracing::info!("scheduler stopping; no new runs will start");
@@ -414,11 +477,115 @@ impl Dispatcher {
                 tracing::error!(error = %e, "scheduling pass failed");
             }
 
+            let sweep = self
+                .config
+                .close_sweep
+                .is_some_and(|every| last_sweep.is_none_or(|t| t.elapsed() >= every));
+            if sweep {
+                last_sweep = Some(Instant::now());
+            }
+            self.spawn_close_pass(sweep);
+
             tokio::select! {
                 _ = self.wake.notified() => {}
                 _ = tokio::time::sleep(self.config.rescan_interval) => {}
             }
         }
+    }
+
+    /// Runs a completeness pass in the background, unless one is still going.
+    ///
+    /// Detached because each check calls Linear, which must not hold up
+    /// scheduling.
+    fn spawn_close_pass(self: &Arc<Self>, sweep: bool) {
+        if self.issue_source.is_none()
+            || self
+                .closing
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+        {
+            return;
+        }
+        let me = Arc::clone(self);
+        tokio::spawn(async move {
+            me.close_pass(sweep).await;
+            me.closing.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// Checks groups for a completed set, one at a time.
+    ///
+    /// `sweep` widens the scope from groups a webhook flagged to every
+    /// eligible group. One group failing never stops the others.
+    pub async fn close_pass(&self, sweep: bool) {
+        let keys = match self.registry.close_candidates(!sweep).await {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::error!(error = %e, "cannot list groups to check for closing");
+                return;
+            }
+        };
+        for key in keys {
+            if self.shutting_down.load(Ordering::SeqCst) {
+                return;
+            }
+            if let Err(e) = self.check_and_close(&key).await {
+                tracing::error!(group = %key.slug(), error = %e, "close check failed");
+            }
+        }
+    }
+
+    /// Closes the group if Linear says every issue in its set is complete.
+    ///
+    /// Linear is queried first and without any lock; local state is re-verified
+    /// under the lock by [`close_group`]. Any uncertainty means not closing, and
+    /// the request is withdrawn so the next sweep, not the next 5s scan, retries.
+    async fn check_and_close(&self, key: &GroupKey) -> Result<(), sqlx::Error> {
+        let Some(source) = &self.issue_source else {
+            return Ok(());
+        };
+        let slug = key.slug();
+
+        let issues = match source.issues_in_set(key).await {
+            Ok(issues) => issues,
+            Err(LinearApiError::NotASet) => {
+                return self.registry.clear_close_request(key).await;
+            }
+            Err(e) => {
+                tracing::warn!(group = %slug, error = %e, "cannot read the set from Linear; not closing");
+                return self.registry.clear_close_request(key).await;
+            }
+        };
+
+        if issues.is_empty() {
+            tracing::warn!(
+                group = %slug,
+                "Linear returned no issues for this set (label renamed or deleted?); not closing"
+            );
+            return self.registry.clear_close_request(key).await;
+        }
+        if let Some(open) = issues
+            .iter()
+            .find(|i| !matches!(i.state_type.as_str(), "completed" | "canceled"))
+        {
+            tracing::debug!(group = %slug, open = %open.identifier, "set still has open issues");
+            return self.registry.clear_close_request(key).await;
+        }
+
+        match close_group(&self.registry, &self.config.repo_root, key, CloseMode::Auto).await? {
+            CloseOutcome::Closed { .. } | CloseOutcome::Gone => {}
+            CloseOutcome::Busy => {
+                tracing::info!(group = %slug, reason = "busy", "set complete but group is busy; will retry when idle");
+            }
+            CloseOutcome::HasPending => {
+                tracing::info!(group = %slug, reason = "pending events", "set complete but work is queued; not closing");
+            }
+            CloseOutcome::WorktreeDirty(reason) => {
+                tracing::warn!(group = %slug, reason = %reason, "worktree could not be removed; not closing");
+                self.registry.block_close(key, &reason).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Starts as many runnable groups as permits allow.
@@ -1026,6 +1193,7 @@ mod config_tests {
             run_timeout_secs: None,
             shutdown_grace_secs: 600,
             github_api_url: "https://api.github.com".into(),
+            close_sweep_mins: 30,
             github_token: None,
         }
     }

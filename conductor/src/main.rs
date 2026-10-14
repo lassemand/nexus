@@ -9,6 +9,7 @@ use conductor::{
     dispatcher::{DispatchArgs, Dispatcher},
     github::watched_users_from_env,
     http::{serve_with_shutdown, AppState, DEFAULT_BIND},
+    linear_api::{IssueSetSource, LinearGraphql},
     registry::{Registry, SystemClock},
     resolve::BranchResolver,
     sessions::{self, SessionsArgs},
@@ -88,6 +89,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                      so issue comments will route to a per-pull-request group"
                 );
             }
+            let issue_source: Option<Arc<dyn IssueSetSource>> =
+                match std::env::var("LINEAR_API_KEY")
+                    .ok()
+                    .filter(|k| !k.is_empty())
+                {
+                    Some(key) => Some(Arc::new(LinearGraphql::new(
+                        key,
+                        std::env::var("CONDUCTOR_LINEAR_API_URL").ok(),
+                    )?)),
+                    None => None,
+                };
             let config = dispatch.into_config();
             tracing::info!(
                 max_sessions = config.max_sessions,
@@ -111,6 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     github_token,
                 )),
                 Arc::clone(&shutting_down),
+                issue_source,
             );
 
             tokio::spawn(Arc::clone(&dispatcher).run_ingest(rx));

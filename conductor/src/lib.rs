@@ -10,6 +10,7 @@
 //! per group, each in its own git worktree. [`sessions`] is the operator's view
 //! of those sessions.
 
+pub mod closing;
 pub mod dispatcher;
 pub mod github;
 pub mod http;
