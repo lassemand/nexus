@@ -58,15 +58,4 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Tests
-        run: |
-          set -euo pipefail
-          # Everything but conductor runs at full width.
-          cargo test --all --exclude conductor
-          # conductor's integration suites are connection-hungry: each test
-          # stands up a dispatcher with its own pool, and the `sessions` tests
-          # additionally spawn the CLI as a child process, which opens a second
-          # pool of its own against the same database. Unbounded, that walks
-          # into Postgres' default 100-connection ceiling, and the symptom is
-          # not an assertion but `PoolTimedOut` from sqlx's own test harness —
-          # tests early in the binary pass and later ones fail in a block.
-          cargo test -p conductor -- --test-threads=2
+        run: cargo test --all
