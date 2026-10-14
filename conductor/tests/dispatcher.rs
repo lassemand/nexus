@@ -222,8 +222,16 @@ async fn a_foreign_directory_at_the_worktree_path_is_left_alone(pool: PgPool) {
 
     // The run cannot proceed, but the group must not be left wedged.
     let key = group("squat");
-    // The run fails while preparing the worktree, so nothing is ever spawned.
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    // Wait for the terminal state instead of assuming a fixed delay reaches it.
+    // The start path has to fail, record StartFailed and reset the group, and
+    // 1.2s was not enough on a loaded runner: the assertion read the group while
+    // it was still `Starting` and failed there rather than on anything real.
+    assert!(
+        h.wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::NoSession))
+            .await,
+        "the group must not stay Starting"
+    );
+    // Only now is "nothing was spawned" a settled fact rather than a race.
     assert!(h.starts().is_empty(), "nothing should have been spawned");
     assert_eq!(
         std::fs::read_to_string(squatter.join("precious.txt")).expect("still there"),
@@ -231,11 +239,6 @@ async fn a_foreign_directory_at_the_worktree_path_is_left_alone(pool: PgPool) {
         "the directory's contents must be untouched"
     );
     let group = h.group(&key).await.expect("group exists");
-    assert_eq!(
-        group.state,
-        GroupState::NoSession,
-        "the group must not stay Starting"
-    );
     assert_eq!(
         group.last_run.expect("an outcome").result,
         RunResult::StartFailed
