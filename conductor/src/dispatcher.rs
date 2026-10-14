@@ -26,17 +26,12 @@ use crate::registry::{Group, GroupKey, GroupState, QueuedEvent, Registry, RunRes
 use crate::resolve::{fallback_key, GroupResolver};
 use crate::tmux::SessionRuntime;
 use crate::{EventSink, InboundEvent};
-/// Re-exported so callers can name a signal without depending on `nix`.
-pub use nix::sys::signal::Signal;
 
 /// How long the scheduler waits before re-scanning when nothing wakes it.
 ///
 /// The CLI mutates the registry from another process, so polling is how those
 /// changes take effect without inventing an IPC channel.
 const DEFAULT_RESCAN_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Grace between `SIGTERM` and `SIGKILL` for a run being stopped.
-const DEFAULT_TERM_TO_KILL: Duration = Duration::from_secs(30);
 
 /// How long to wait for `Stop` after interrupting a timed-out turn.
 const DEFAULT_INTERRUPT_GRACE: Duration = Duration::from_secs(30);
@@ -46,9 +41,6 @@ const DEFAULT_START_BACKOFF: Duration = Duration::from_secs(300);
 
 /// How often tasks waiting on a hook re-read the registry even without a signal.
 const HOOK_POLL: Duration = Duration::from_millis(250);
-
-/// How often `sessions attach` polls a group that is still running.
-pub const DEFAULT_ATTACH_POLL: Duration = Duration::from_secs(2);
 
 /// Settings shared by `conductor serve` and `conductor sessions`.
 ///
@@ -82,6 +74,10 @@ pub struct SessionEnvArgs {
     #[arg(long, env = "CONDUCTOR_CLAUDE_MODEL", value_parser = parse_model)]
     pub model: Option<String>,
 
+    /// How long a new session may take to report `SessionStart`, in seconds.
+    #[arg(long, env = "CONDUCTOR_START_TIMEOUT_SECS", default_value_t = 60)]
+    pub start_timeout_secs: u64,
+
     /// Pass `--dangerously-skip-permissions` to Claude.
     ///
     /// Governs dispatched runs and `sessions attach` alike. The interactive
@@ -108,8 +104,7 @@ impl SessionEnvArgs {
             agent: self.agent,
             model: self.model.filter(|m| !m.is_empty()),
             skip_permissions: self.skip_permissions,
-            kill_grace: DEFAULT_TERM_TO_KILL,
-            poll_interval: DEFAULT_ATTACH_POLL,
+            start_timeout: Duration::from_secs(self.start_timeout_secs),
         }
     }
 }
@@ -131,15 +126,8 @@ pub struct SessionEnv {
     pub model: Option<String>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
-    /// Grace between `SIGTERM` and `SIGKILL` when the CLI stops a process.
-    ///
-    /// Not exposed as a flag: it exists so tests need not wait the production
-    /// thirty seconds to watch the kill path through.
-    pub kill_grace: Duration,
-    /// How often `sessions attach` re-checks a group it is waiting for.
-    ///
-    /// Likewise test-only.
-    pub poll_interval: Duration,
+    /// How long a new session may take to report `SessionStart`.
+    pub start_timeout: Duration,
 }
 
 /// Dispatcher configuration, parsed by `clap` from flags or environment.
@@ -167,10 +155,6 @@ pub struct DispatchArgs {
     /// Most tmux sessions (idle ones included) kept alive at once.
     #[arg(long, env = "CONDUCTOR_MAX_LIVE_SESSIONS", default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..))]
     pub max_live_sessions: u16,
-
-    /// How long a new session may take to report `SessionStart`, in seconds.
-    #[arg(long, env = "CONDUCTOR_START_TIMEOUT_SECS", default_value_t = 60)]
-    pub start_timeout_secs: u64,
 
     /// How long a pasted prompt may take to report `UserPromptSubmit`, in seconds.
     #[arg(long, env = "CONDUCTOR_DELIVER_TIMEOUT_SECS", default_value_t = 30)]
@@ -221,7 +205,7 @@ impl DispatchArgs {
             ),
             shutdown_grace: Duration::from_secs(self.shutdown_grace_secs),
             max_live_sessions: usize::from(self.max_live_sessions),
-            start_timeout: Duration::from_secs(self.start_timeout_secs),
+            start_timeout: env.start_timeout,
             deliver_timeout: Duration::from_secs(self.deliver_timeout_secs),
             interrupt_grace: DEFAULT_INTERRUPT_GRACE,
             start_backoff: DEFAULT_START_BACKOFF,
@@ -853,35 +837,13 @@ impl Dispatcher {
     }
 
     /// Waits until `done` accepts the group's stored state, or `timeout` passes.
-    ///
-    /// The registry is the source of truth: every wake re-reads it, and a poll
-    /// covers a signal that fired before this started listening.
     async fn wait_for_state(
         &self,
         slug: &str,
         timeout: Duration,
-        mut done: impl FnMut(&GroupState) -> bool,
+        done: impl FnMut(&GroupState) -> bool,
     ) -> Option<GroupState> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            match self.registry.group_by_slug(slug).await {
-                Ok(Some(g)) if done(&g.state) => return Some(g.state),
-                Ok(Some(_)) => {}
-                Ok(None) => return None,
-                Err(e) => {
-                    tracing::error!(group = %slug, error = %e, "cannot read group while waiting")
-                }
-            }
-            let now = tokio::time::Instant::now();
-            if now >= deadline {
-                return None;
-            }
-            let nap = HOOK_POLL.min(deadline - now);
-            tokio::select! {
-                _ = self.events.notified() => {}
-                _ = tokio::time::sleep(nap) => {}
-            }
-        }
+        wait_for_group_state(&self.registry, slug, timeout, Some(&self.events), done).await
     }
 
     /// Starts a set's tmux session and waits for it to report in.
@@ -916,87 +878,15 @@ impl Dispatcher {
     }
 
     async fn start_session(&self, key: &GroupKey) -> Result<(), String> {
-        let slug = key.slug();
-        let base_ref = self
-            .registry
-            .worktree_ref(key)
-            .await
-            .map_err(|e| e.to_string())?;
-        let worktree = {
-            // Repository setup only; never held while waiting on Claude.
-            let _repo = self.repo_lock.lock().await;
-            self.ensure_worktree(&slug, base_ref.as_deref())
-                .await
-                .map_err(|e| e.to_string())?
-        };
-
-        let (session_id, resume) = {
-            let mut txn = self.registry.begin().await.map_err(|e| e.to_string())?;
-            txn.set_worktree(key, &worktree)
-                .await
-                .map_err(|e| e.to_string())?;
-            // Recorded now as well as after each turn: routing a pull request
-            // comment back to this group needs every branch it has worked on.
-            if let Some(branch) = self.current_branch(&slug).await {
-                txn.record_branch(key, &branch)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            let r = txn
-                .session_for_dispatch(key)
-                .await
-                .map_err(|e| e.to_string())?;
-            txn.commit().await.map_err(|e| e.to_string())?;
-            r
-        };
-
-        let mut argv = vec![self.config.claude_bin.clone()];
-        argv.push(if resume { "--resume" } else { "--session-id" }.into());
-        argv.push(session_id.to_string());
-        argv.push(format!("--agent={}", self.config.agent));
-        // Precedence of `--model` against a `model:` in the agent's frontmatter
-        // (Claude Code 2.1.285, `--agent=backend`) is NOT verified: it could not
-        // be probed without a logged-in Claude in the dev sandbox. `backend.md`
-        // has no `model:`, so `--model` applies today either way. Before adding
-        // one, run `claude --agent=<a> --model sonnet --print ...` and read
-        // `.message.model` in the transcript (see the NEX-146 PR).
-        //
-        // Passed on resume as well as on a fresh start, so a model change takes
-        // effect for a set's next turn rather than only for a brand-new session.
-        if let Some(model) = self.config.model.as_deref() {
-            argv.push("--model".into());
-            argv.push(model.to_string());
-        }
-        if self.config.skip_permissions {
-            argv.push("--dangerously-skip-permissions".into());
-        }
-        // Each worktree needs its own build cache; a shared target directory
-        // would serialise parallel sessions on cargo's lock.
-        let env = vec![(
-            "CARGO_TARGET_DIR".to_string(),
-            worktree.join("target").to_string_lossy().into_owned(),
-        )];
-
-        tracing::info!(group = %slug, resume, "starting session");
-        self.runtime
-            .start(&slug, &worktree, &argv, &env)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let reached = self
-            .wait_for_state(&slug, self.config.start_timeout, |s| {
-                !matches!(s, GroupState::Starting { .. })
-            })
-            .await;
-        match reached {
-            // Ready, or already past it (a human typed before we looked).
-            Some(GroupState::Ready { .. } | GroupState::Busy { .. }) => Ok(()),
-            Some(other) => Err(format!("session ended while starting ({other:?})")),
-            None => Err(format!(
-                "no SessionStart within {}s",
-                self.config.start_timeout.as_secs()
-            )),
-        }
+        launch_session(
+            &self.registry,
+            self.runtime.as_ref(),
+            &self.config.start_spec(),
+            key,
+            Some(&self.repo_lock),
+            Some(&self.events),
+        )
+        .await
     }
 
     /// Pastes one queued event into a `Ready` session and waits for the turn to
@@ -1154,29 +1044,6 @@ impl Dispatcher {
         }
     }
 
-    /// Creates the group's worktree, or reuses it if it is already one.
-    async fn ensure_worktree(
-        &self,
-        slug: &str,
-        base_ref: Option<&str>,
-    ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
-        ensure_worktree(
-            &self.config.repo_root,
-            &self.config.worktree_root,
-            slug,
-            base_ref,
-        )
-        .await
-    }
-
-    /// The branch currently checked out in the group's worktree.
-    async fn current_branch(&self, slug: &str) -> Option<String> {
-        let path = self.config.worktree_root.join(slug);
-        let out = run_git(&path, &["branch", "--show-current"]).await.ok()?;
-        let name = out.trim().to_string();
-        (!name.is_empty()).then_some(name)
-    }
-
     /// Stops delivering, lets running turns finish, then ends every session.
     ///
     /// Waits up to the grace period for `Busy` turns to reach `Stop`. Anything
@@ -1259,6 +1126,211 @@ impl Dispatcher {
     }
 }
 
+/// What starting a set's tmux session needs.
+///
+/// Shared by the dispatcher and `conductor sessions attach`, so both start a
+/// session exactly the same way.
+#[derive(Debug, Clone)]
+pub struct StartSpec {
+    /// Repository the worktrees are added from.
+    pub repo_root: PathBuf,
+    /// Directory holding one worktree per group.
+    pub worktree_root: PathBuf,
+    /// Claude binary.
+    pub claude_bin: String,
+    /// Agent passed to Claude.
+    pub agent: String,
+    /// Model passed as `--model`; `None` leaves it to Claude Code.
+    pub model: Option<String>,
+    /// Whether to pass `--dangerously-skip-permissions`.
+    pub skip_permissions: bool,
+    /// How long to wait for `SessionStart`.
+    pub start_timeout: Duration,
+}
+
+impl SessionEnv {
+    /// The start-path settings, for [`launch_session`].
+    pub fn start_spec(&self) -> StartSpec {
+        StartSpec {
+            repo_root: self.repo_root.clone(),
+            worktree_root: self.worktree_root.clone(),
+            claude_bin: self.claude_bin.clone(),
+            agent: self.agent.clone(),
+            model: self.model.clone(),
+            skip_permissions: self.skip_permissions,
+            start_timeout: self.start_timeout,
+        }
+    }
+}
+
+impl DispatchConfig {
+    /// The start-path settings, for [`launch_session`].
+    pub fn start_spec(&self) -> StartSpec {
+        StartSpec {
+            repo_root: self.repo_root.clone(),
+            worktree_root: self.worktree_root.clone(),
+            claude_bin: self.claude_bin.clone(),
+            agent: self.agent.clone(),
+            model: self.model.clone(),
+            skip_permissions: self.skip_permissions,
+            start_timeout: self.start_timeout,
+        }
+    }
+}
+
+/// Waits until `done` accepts the group's stored state, or `timeout` passes.
+///
+/// The registry is the source of truth: every wake re-reads it. `events`, when
+/// given, makes a hook wake the wait immediately; the poll covers a signal that
+/// fired before listening began, and callers in another process (the CLI) that
+/// have no signal at all. `None` means the group is gone or the wait timed out.
+pub async fn wait_for_group_state(
+    registry: &Registry,
+    slug: &str,
+    timeout: Duration,
+    events: Option<&Notify>,
+    mut done: impl FnMut(&GroupState) -> bool,
+) -> Option<GroupState> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match registry.group_by_slug(slug).await {
+            Ok(Some(g)) if done(&g.state) => return Some(g.state),
+            Ok(Some(_)) => {}
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::error!(group = %slug, error = %e, "cannot read group while waiting")
+            }
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        let nap = HOOK_POLL.min(deadline - now);
+        match events {
+            Some(events) => {
+                tokio::select! {
+                    _ = events.notified() => {}
+                    _ = tokio::time::sleep(nap) => {}
+                }
+            }
+            None => tokio::time::sleep(nap).await,
+        }
+    }
+}
+
+/// Starts a set's tmux session and waits for it to report `SessionStart`.
+///
+/// The caller has already moved the group to `Starting` (see
+/// `RegistryTxn::begin_start`). On error nothing is cleaned up: the caller
+/// kills the session and records the failed start.
+pub async fn launch_session(
+    registry: &Registry,
+    runtime: &dyn SessionRuntime,
+    spec: &StartSpec,
+    key: &GroupKey,
+    repo_lock: Option<&Mutex<()>>,
+    events: Option<&Notify>,
+) -> Result<(), String> {
+    let slug = key.slug();
+    let base_ref = registry
+        .worktree_ref(key)
+        .await
+        .map_err(|e| e.to_string())?;
+    let worktree = {
+        // Repository setup only; never held while waiting on Claude. Serialised
+        // in-process by the dispatcher's lock; the CLI has no equivalent and
+        // relies on git's own locking.
+        let _repo = match repo_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
+        ensure_worktree(
+            &spec.repo_root,
+            &spec.worktree_root,
+            &slug,
+            base_ref.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    };
+
+    let (session_id, resume) = {
+        let mut txn = registry.begin().await.map_err(|e| e.to_string())?;
+        txn.set_worktree(key, &worktree)
+            .await
+            .map_err(|e| e.to_string())?;
+        // Recorded now as well as after each turn: routing a pull request
+        // comment back to this group needs every branch it has worked on.
+        if let Some(branch) = current_branch(&spec.worktree_root, &slug).await {
+            txn.record_branch(key, &branch)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let r = txn
+            .session_for_dispatch(key)
+            .await
+            .map_err(|e| e.to_string())?;
+        txn.commit().await.map_err(|e| e.to_string())?;
+        r
+    };
+
+    let mut argv = vec![spec.claude_bin.clone()];
+    argv.push(if resume { "--resume" } else { "--session-id" }.into());
+    argv.push(session_id.to_string());
+    argv.push(format!("--agent={}", spec.agent));
+    // Precedence of `--model` against a `model:` in the agent's frontmatter
+    // (Claude Code 2.1.285, `--agent=backend`) is NOT verified: it could not
+    // be probed without a logged-in Claude in the dev sandbox. `backend.md`
+    // has no `model:`, so `--model` applies today either way. Before adding
+    // one, run `claude --agent=<a> --model sonnet --print ...` and read
+    // `.message.model` in the transcript (see the NEX-146 PR).
+    //
+    // Passed on resume as well as on a fresh start, so a model change takes
+    // effect for a set's next turn rather than only for a brand-new session.
+    if let Some(model) = spec.model.as_deref() {
+        argv.push("--model".into());
+        argv.push(model.to_string());
+    }
+    if spec.skip_permissions {
+        argv.push("--dangerously-skip-permissions".into());
+    }
+    // Each worktree needs its own build cache; a shared target directory
+    // would serialise parallel sessions on cargo's lock.
+    let env = vec![(
+        "CARGO_TARGET_DIR".to_string(),
+        worktree.join("target").to_string_lossy().into_owned(),
+    )];
+
+    tracing::info!(group = %slug, resume, "starting session");
+    runtime
+        .start(&slug, &worktree, &argv, &env)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let reached = wait_for_group_state(registry, &slug, spec.start_timeout, events, |s| {
+        !matches!(s, GroupState::Starting { .. })
+    })
+    .await;
+    match reached {
+        // Ready, or already past it (a human typed before we looked).
+        Some(GroupState::Ready { .. } | GroupState::Busy { .. }) => Ok(()),
+        Some(other) => Err(format!("session ended while starting ({other:?})")),
+        None => Err(format!(
+            "no SessionStart within {}s",
+            spec.start_timeout.as_secs()
+        )),
+    }
+}
+
+/// The branch currently checked out in a group's worktree.
+async fn current_branch(worktree_root: &Path, slug: &str) -> Option<String> {
+    let out = run_git(&worktree_root.join(slug), &["branch", "--show-current"])
+        .await
+        .ok()?;
+    let name = out.trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 /// Prepares the git worktree a group works in, creating it on first use.
 ///
 /// Shared with `conductor sessions attach`, which has to be able to take over a
@@ -1320,16 +1392,6 @@ pub async fn ensure_worktree(
     run_git(repo_root, &args).await?;
     tracing::info!(worktree = %path.display(), branch = %branch, "worktree ready");
     Ok(path)
-}
-
-/// Sends a signal, ignoring a process that has already gone.
-pub fn signal_process(pid: u32, sig: nix::sys::signal::Signal) {
-    // `kill` reads 0 and negative pids as "a process group", not "a process",
-    // so they must never reach it.
-    if pid == 0 || pid > i32::MAX as u32 {
-        return;
-    }
-    let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), sig);
 }
 
 /// Runs git, returning stdout or the captured error.
@@ -1579,13 +1641,6 @@ mod tests {
             None
         );
     }
-
-    #[test]
-    fn signalling_an_invalid_pid_is_a_no_op() {
-        // pid 0 addresses the caller's process group; it must never be signalled.
-        signal_process(0, nix::sys::signal::Signal::SIGTERM);
-        signal_process(u32::MAX, nix::sys::signal::Signal::SIGTERM);
-    }
 }
 
 #[cfg(test)]
@@ -1597,7 +1652,6 @@ mod config_tests {
         DispatchArgs {
             max_sessions: 5,
             max_live_sessions: 10,
-            start_timeout_secs: 60,
             deliver_timeout_secs: 30,
             env: SessionEnvArgs {
                 repo_root: Some(PathBuf::from("/repo")),
@@ -1606,6 +1660,7 @@ mod config_tests {
                 claude_bin: "claude".into(),
                 agent: "backend".into(),
                 model: None,
+                start_timeout_secs: 60,
                 skip_permissions: true,
             },
             run_timeout_min: 120,

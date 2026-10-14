@@ -81,7 +81,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The unlocked handle: a held `StdoutLock` is not `Send`, and the
             // attach path awaits across writes. Each write locks internally.
             let mut out = std::io::stdout();
-            let code = sessions::run(args.command, &env, &registry, &mut out).await?;
+            let runtime = TmuxRuntime::from_env();
+            let code = sessions::run(
+                args.command,
+                &env,
+                &registry,
+                &runtime,
+                &sessions::StdTerminal,
+                &mut out,
+            )
+            .await?;
             out.flush()?;
             std::process::exit(code);
         }

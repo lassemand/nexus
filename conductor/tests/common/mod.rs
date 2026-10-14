@@ -18,7 +18,7 @@ use conductor::dispatcher::{
 use conductor::hooks::{self, HookPayload, HookState};
 use conductor::linear::LinearIssue;
 use conductor::registry::{Group, GroupKey, GroupState, Registry, SystemClock};
-use conductor::sessions::{self, SessionsCommand};
+use conductor::sessions::{self, SessionsCommand, Terminal};
 use conductor::tmux::{SessionRuntime, TmuxError};
 use conductor::InboundEvent;
 use serde::Deserialize;
@@ -80,6 +80,8 @@ struct FakeSession {
     env: Vec<(String, String)>,
     clients: Vec<String>,
     interrupt: Arc<tokio::sync::Notify>,
+    /// Set when the session is killed, so a turn in flight stops reporting.
+    dead: Arc<AtomicBool>,
 }
 
 /// A `SessionRuntime` that plays both tmux and the Claude inside it.
@@ -111,6 +113,8 @@ pub struct FakeTmux {
     pub delivered: Mutex<Vec<(String, String)>>,
     /// Slugs killed, in order.
     pub killed: Mutex<Vec<String>>,
+    /// Slugs whose clients were detached, in order.
+    pub detached: Mutex<Vec<String>>,
     /// Slugs interrupted, in order.
     pub interrupted: Mutex<Vec<String>>,
     /// Slugs started, in order.
@@ -131,6 +135,7 @@ impl FakeTmux {
             sessions: Mutex::new(HashMap::new()),
             delivered: Mutex::new(Vec::new()),
             killed: Mutex::new(Vec::new()),
+            detached: Mutex::new(Vec::new()),
             interrupted: Mutex::new(Vec::new()),
             started: Mutex::new(Vec::new()),
         })
@@ -164,7 +169,9 @@ impl FakeTmux {
 
     /// Drops the session without telling anyone, as a crash would.
     pub fn crash(&self, slug: &str) {
-        self.sessions.lock().unwrap().remove(slug);
+        if let Some(s) = self.sessions.lock().unwrap().remove(slug) {
+            s.dead.store(true, Ordering::SeqCst);
+        }
     }
 
     /// Sends a hook for this session, as the real `conductor hook` would.
@@ -189,6 +196,40 @@ impl FakeTmux {
             ..Default::default()
         };
         hooks::process(&state, &payload).await;
+    }
+}
+
+/// A terminal that records what `attach` would exec instead of doing it.
+pub struct FakeTerminal {
+    interactive: bool,
+    /// Every command line `attach` handed over to tmux.
+    pub execs: Mutex<Vec<Vec<String>>>,
+}
+
+impl FakeTerminal {
+    pub fn interactive() -> Self {
+        FakeTerminal {
+            interactive: true,
+            execs: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn piped() -> Self {
+        FakeTerminal {
+            interactive: false,
+            execs: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Terminal for FakeTerminal {
+    fn is_interactive(&self) -> bool {
+        self.interactive
+    }
+
+    fn exec(&self, command: &[String]) -> i32 {
+        self.execs.lock().unwrap().push(command.to_vec());
+        0
     }
 }
 
@@ -249,6 +290,7 @@ impl SessionRuntime for FakeTmux {
                     env: env.to_vec(),
                     clients: vec![],
                     interrupt: Arc::new(tokio::sync::Notify::new()),
+                    dead: Arc::new(AtomicBool::new(false)),
                 },
             );
         }
@@ -292,7 +334,7 @@ impl SessionRuntime for FakeTmux {
     }
 
     async fn deliver(&self, slug: &str, text: &str) -> Result<(), TmuxError> {
-        let (session_id, interrupt, cwd, argv, env) = {
+        let (session_id, interrupt, dead, cwd, argv, env) = {
             let sessions = self.sessions.lock().unwrap();
             let Some(s) = sessions.get(slug) else {
                 return Err(TmuxError::Failed {
@@ -304,6 +346,7 @@ impl SessionRuntime for FakeTmux {
             (
                 s.session_id.clone(),
                 Arc::clone(&s.interrupt),
+                Arc::clone(&s.dead),
                 s.cwd.clone(),
                 s.argv.clone(),
                 s.env.clone(),
@@ -356,6 +399,10 @@ impl SessionRuntime for FakeTmux {
                     .output()
                     .await;
             }
+            // A killed session's Claude is gone; it reports nothing further.
+            if dead.load(Ordering::SeqCst) {
+                return;
+            }
             record_turn(&log, "end", &cwd, &argv, &env);
             if send_stop {
                 hooks::process(&state, &payload("Stop")).await;
@@ -377,8 +424,27 @@ impl SessionRuntime for FakeTmux {
 
     async fn kill(&self, slug: &str) -> Result<(), TmuxError> {
         self.killed.lock().unwrap().push(slug.to_string());
-        self.sessions.lock().unwrap().remove(slug);
+        if let Some(s) = self.sessions.lock().unwrap().remove(slug) {
+            s.dead.store(true, Ordering::SeqCst);
+        }
         Ok(())
+    }
+
+    async fn detach_clients(&self, slug: &str) -> Result<(), TmuxError> {
+        self.detached.lock().unwrap().push(slug.to_string());
+        if let Some(s) = self.sessions.lock().unwrap().get_mut(slug) {
+            s.clients.clear();
+        }
+        Ok(())
+    }
+
+    fn attach_command(&self, slug: &str, read_only: bool) -> Vec<String> {
+        let mut cmd = vec!["fake-tmux".to_string(), "attach".to_string()];
+        if read_only {
+            cmd.push("-r".into());
+        }
+        cmd.push(slug.to_string());
+        cmd
     }
 }
 
@@ -666,10 +732,6 @@ impl Harness {
     // ── `conductor sessions` ────────────────────────────────────────────────
 
     /// The CLI's view of this harness's paths and binary.
-    ///
-    /// The two durations are cut right down: production waits thirty seconds
-    /// between `SIGTERM` and `SIGKILL` and polls every two seconds, neither of
-    /// which a test should sit through.
     pub fn session_env(&self) -> SessionEnv {
         SessionEnv {
             repo_root: self.repo.clone(),
@@ -679,18 +741,35 @@ impl Harness {
             agent: self.config.agent.clone(),
             model: self.config.model.clone(),
             skip_permissions: self.config.skip_permissions,
-            kill_grace: Duration::from_millis(500),
-            poll_interval: Duration::from_millis(50),
+            start_timeout: self.config.start_timeout,
         }
     }
 
-    /// Runs a subcommand, returning its exit code and everything it printed.
+    /// Runs a subcommand on an interactive terminal, returning its exit code
+    /// and everything it printed.
     pub async fn sessions(&self, command: SessionsCommand) -> (i32, String) {
+        self.sessions_on(command, &FakeTerminal::interactive())
+            .await
+    }
+
+    /// Like [`Harness::sessions`], on a chosen terminal.
+    pub async fn sessions_on(
+        &self,
+        command: SessionsCommand,
+        terminal: &FakeTerminal,
+    ) -> (i32, String) {
         let env = self.session_env();
         let mut out: Vec<u8> = Vec::new();
-        let code = sessions::run(command, &env, &self.registry, &mut out)
-            .await
-            .expect("sessions command");
+        let code = sessions::run(
+            command,
+            &env,
+            &self.registry,
+            self.fake.as_ref(),
+            terminal,
+            &mut out,
+        )
+        .await
+        .expect("sessions command");
         (code, String::from_utf8(out).expect("utf8 output"))
     }
 

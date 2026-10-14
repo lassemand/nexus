@@ -2,12 +2,17 @@
 # Run `conductor` inside the cluster from a laptop terminal.
 #
 #   scripts/conductor sessions list
-#   scripts/conductor sessions attach irr
+#   scripts/conductor sessions attach irr              # join the live terminal
+#   scripts/conductor sessions attach irr --read-only  # watch without typing
 #   scripts/conductor sessions list --json | jq '.[].key'
 #
 # `conductor sessions` talks to the registry in Postgres, so it has to run in
-# the pod: that is where DATABASE_URL, the worktrees and the session processes
+# the pod: that is where DATABASE_URL, the worktrees and the tmux sessions
 # are. There is no network API by design — control is local to the pod.
+#
+# `attach` hands the terminal to tmux, so it needs the TTY branch below. The
+# pod's tmux prefix is Ctrl-a (detach with Ctrl-a d); inside a local tmux that
+# also uses Ctrl-a, press it twice.
 set -euo pipefail
 
 CONTEXT="${CONDUCTOR_KUBE_CONTEXT:-orbstack}"

@@ -1,22 +1,20 @@
 //! Tests for `conductor sessions`.
 //!
-//! The CLI's job is to take control of processes the server owns, so these
-//! tests check the handover rather than the formatting: that a group is marked
-//! attached for exactly as long as the interactive session lasts, that queued
-//! events wait while it does, and that a group is always given back — including
-//! when the connection drops and the terminal sends SIGHUP.
+//! Each set is an interactive Claude in a tmux session, so the CLI's job is to
+//! join that terminal and to steer the session through the registry. The tests
+//! therefore check the hand-over (what `attach` would exec, and that nothing is
+//! locked or waited for), the control commands' effect on the registry and on
+//! the fake tmux, and that the hooks keep tracking who started a turn.
 //!
-//! Reuses NEX-129's fake claude and temp-repo harness, so no real Claude runs
-//! and nothing touches the real repository.
+//! They run against the same fake tmux/Claude and temp-repo harness as the
+//! dispatcher tests, so no real Claude or tmux runs.
 
 mod common;
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use common::{linear_event, Harness};
-use conductor::dispatcher::{DispatchSink, Dispatcher, Signal};
-use conductor::registry::{process_is_alive, recorded_start_time, GroupKey, GroupState, RunResult};
+use common::{linear_event, FakeTerminal, Harness};
+use conductor::registry::{GroupKey, GroupState, RunResult};
 use conductor::sessions::SessionsCommand;
 use conductor::tmux::SessionRuntime;
 use conductor::EventSink;
@@ -24,137 +22,96 @@ use sqlx::PgPool;
 
 /// How long any test may wait for work it expects to happen.
 ///
-/// A ceiling for contention rather than an expected duration — see the same
-/// constant in `dispatcher.rs`. A wrong assertion still fails immediately.
+/// A ceiling for contention rather than an expected duration. A wrong
+/// assertion still fails immediately.
 const PATIENCE: Duration = Duration::from_secs(60);
 
 fn named(group: &str) -> GroupKey {
     GroupKey::Named(group.into())
 }
 
-/// A process the test does not own, plus the record saying a group owns it.
-///
-/// Deliberately orphaned via `sh`, which exits immediately and leaves `sleep`
-/// reparented: a direct child would stay a zombie after being killed until this
-/// process reaped it, and a zombie still answers `kill(pid, 0)`. The CLI would
-/// then wait out its whole grace period and reach SIGKILL for a process that
-/// had already died.
-///
-/// The start time comes from the same source the registry's liveness check
-/// reads, or the record would be indistinguishable from a recycled PID and the
-/// reconcile pass would reset the group out from under the test.
-fn orphan_process() -> (u32, GroupState) {
-    let out = std::process::Command::new("sh")
-        .args(["-c", "sleep 30 >/dev/null 2>&1 & printf %s \"$!\""])
-        .output()
-        .expect("spawn sleep");
-    let pid: u32 = String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse()
-        .expect("a pid on stdout");
-    let state = GroupState::Running {
-        pid,
-        started_at: recorded_start_time(pid),
-    };
-    (pid, state)
+fn attach(group: &str) -> SessionsCommand {
+    SessionsCommand::Attach {
+        group: group.into(),
+        read_only: false,
+        force: false,
+    }
 }
 
-/// Stops a leftover orphan, so a test never leaves a `sleep` behind.
-fn reap(pid: u32) {
-    conductor::dispatcher::signal_process(pid, Signal::SIGKILL);
-}
-
-/// Runs one event to completion, leaving the group as an operator would find it:
-/// idle, with a started session and a real worktree.
-///
-/// Returns the dispatcher and sink so callers can submit more events into the
-/// same running dispatcher rather than starting a second one.
-async fn seeded(
-    harness: &Harness,
-    key: &GroupKey,
-    identifier: &str,
-    group: &str,
-) -> (Arc<Dispatcher>, DispatchSink) {
-    let (dispatcher, sink) = harness.start();
+/// Runs one event through a live dispatcher and leaves the set `Ready` with a
+/// real session, as an operator would find it between tasks.
+async fn ready_set(harness: &Harness, group: &str, identifier: &str) -> GroupKey {
+    let key = named(group);
+    let (_dispatcher, sink) = harness.start();
     sink.submit(linear_event(identifier, group, None));
     assert!(
-        harness.wait_for_runs(1, PATIENCE).await,
-        "the seeding run never finished"
-    );
-    assert!(
         harness
-            .wait_for_state(key, PATIENCE, |s| matches!(s, GroupState::Ready { .. }))
+            .wait_for_group(&key, PATIENCE, |g| {
+                matches!(g.state, GroupState::Ready { .. }) && !g.issues.is_empty()
+            })
             .await,
-        "the group never became ready after the seeding run"
+        "the set never became ready"
     );
-    // The CLI still drives claude itself, so hand it a group with no tmux
-    // session, as an operator would find one whose session has ended.
-    let slug = key.slug();
-    harness.fake.kill(&slug).await.expect("kill");
-    harness.set_state(key, &GroupState::NoSession).await;
-    (dispatcher, sink)
-}
-
-/// Runs `sessions attach` on a task, so the caller can watch the registry while
-/// the interactive session is still going.
-fn attach_in_background(
-    harness: &Harness,
-    group: &'static str,
-    force: bool,
-) -> tokio::task::JoinHandle<(i32, String)> {
-    let env = harness.session_env();
-    let registry = harness.registry.clone();
-    tokio::spawn(async move {
-        let mut out: Vec<u8> = Vec::new();
-        let code = conductor::sessions::run(
-            SessionsCommand::Attach {
-                group: group.into(),
-                force,
-            },
-            &env,
-            &registry,
-            &mut out,
-        )
-        .await
-        .expect("attach");
-        (code, String::from_utf8(out).expect("utf8 output"))
-    })
-}
-
-/// Dispatched turns end with the pasted `<channel …>` prompt; an interactive
-/// attach never has one. That is what separates the two in the shared log.
-fn dispatched_runs(harness: &Harness) -> usize {
-    harness
-        .starts()
-        .iter()
-        .filter(|r| r.argv.last().is_some_and(|a| a.starts_with("<channel")))
-        .count()
+    // The scheduler task keeps running without these handles; the ingest task
+    // ends when the sink goes, which is fine because no more events are sent.
+    drop((_dispatcher, sink));
+    key
 }
 
 // ── list ─────────────────────────────────────────────────────────────────────
 
 #[sqlx::test(migrations = "./migrations")]
-async fn list_shows_busy_groups_first_with_one_row_each(pool: PgPool) {
+async fn list_shows_state_clients_and_who_started_the_turn(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);
 
-    let (idle, running, attached) = (named("alpha"), named("beta"), named("gamma"));
-    for key in [&idle, &running, &attached] {
+    let (idle, agent_turn, human_turn, ready) = (
+        named("alpha"),
+        named("beta"),
+        named("gamma"),
+        named("delta"),
+    );
+    for key in [&idle, &agent_turn, &human_turn, &ready] {
         harness
             .enqueue(key, &linear_event("NEX-1", "x", None))
             .await;
     }
-
-    let (pid, run_state) = orphan_process();
-    harness.set_state(&running, &run_state).await;
+    let now = chrono::Utc::now();
     harness
         .set_state(
-            &attached,
-            &GroupState::Attached {
-                pid: std::process::id(),
-                started_at: recorded_start_time(std::process::id()),
+            &agent_turn,
+            &GroupState::Busy {
+                since: now,
+                delivered_event: Some(1),
             },
         )
         .await;
+    harness
+        .set_state(
+            &human_turn,
+            &GroupState::Busy {
+                since: now,
+                delivered_event: None,
+            },
+        )
+        .await;
+    harness
+        .set_state(
+            &ready,
+            &GroupState::Ready {
+                pane_pid: 1,
+                since: now,
+            },
+        )
+        .await;
+    // Sessions the fake knows about, so it can report clients.
+    for g in [&agent_turn, &human_turn, &ready] {
+        harness
+            .fake
+            .start(&g.slug(), &harness.repo, &["claude".into()], &[])
+            .await
+            .expect("fake session");
+    }
+    harness.fake.set_clients("delta", &["c1", "c2"]);
 
     let (code, text) = harness
         .sessions(SessionsCommand::List {
@@ -167,26 +124,70 @@ async fn list_shows_busy_groups_first_with_one_row_each(pool: PgPool) {
 
     let lines: Vec<&str> = text.lines().collect();
     assert!(lines[0].starts_with("GROUP"), "header missing:\n{text}");
-    assert_eq!(lines.len(), 4, "expected a header and three rows:\n{text}");
+    assert!(lines[0].contains("CLIENTS"), "{text}");
+    assert_eq!(lines.len(), 5, "a header and four rows:\n{text}");
 
+    let row = |name: &str| {
+        lines
+            .iter()
+            .find(|l| l.split_whitespace().next() == Some(name))
+            .unwrap_or_else(|| panic!("no row for {name}:\n{text}"))
+            .to_string()
+    };
+    assert!(row("beta").contains("busy (agent)"), "{text}");
+    assert!(row("gamma").contains("busy (you)"), "{text}");
+    assert!(row("delta").contains("ready"), "{text}");
+    assert!(row("alpha").contains("no session"), "{text}");
+    let delta = row("delta");
+    assert!(
+        delta.split_whitespace().any(|c| c == "2"),
+        "two clients on delta:\n{text}"
+    );
+
+    // Busy sets sort ahead of the rest.
     let order: Vec<&str> = lines[1..]
         .iter()
         .map(|l| l.split_whitespace().next().unwrap_or(""))
         .collect();
-    assert_eq!(
-        order,
-        vec!["beta", "gamma", "alpha"],
-        "expected running, then attached, then idle:\n{text}"
+    assert!(
+        order[..2].contains(&"beta") && order[..2].contains(&"gamma"),
+        "{order:?}"
     );
-    assert!(lines[1].contains("running"), "beta:\n{text}");
-    assert!(lines[2].contains("attached"), "gamma:\n{text}");
-    assert!(lines[3].contains("idle"), "alpha:\n{text}");
-
-    reap(pid);
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn list_json_carries_the_whole_group_not_the_summary(pool: PgPool) {
+async fn list_marks_blocked_deliveries_and_closes(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let key = named("stuck");
+    harness
+        .enqueue(&key, &linear_event("NEX-1", "stuck", None))
+        .await;
+    sqlx::query(
+        "UPDATE session_groups SET delivery_blocked = $2, close_blocked = $3 WHERE slug = $1",
+    )
+    .bind(key.slug())
+    .bind("no UserPromptSubmit within 30s")
+    .bind("worktree dirty")
+    .execute(&harness.pool)
+    .await
+    .expect("mark blocked");
+
+    let (_, text) = harness
+        .sessions(SessionsCommand::List {
+            json: false,
+            closed: false,
+            limit: 20,
+        })
+        .await;
+    assert!(
+        text.contains("delivery blocked: no UserPromptSubmit"),
+        "{text}"
+    );
+    assert!(text.contains("close blocked: worktree dirty"), "{text}");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn list_json_carries_the_whole_group_and_the_client_count(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);
     harness
         .enqueue(&named("alpha"), &linear_event("NEX-1", "alpha", None))
@@ -204,11 +205,9 @@ async fn list_json_carries_the_whole_group_not_the_summary(pool: PgPool) {
     let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
     let groups = parsed.as_array().expect("an array of groups");
     assert_eq!(groups.len(), 1);
-    assert_eq!(
-        groups[0]["pending"].as_array().map(Vec::len),
-        Some(1),
-        "the queue should be included, which the table only counts"
-    );
+    assert_eq!(groups[0]["pending"].as_array().map(Vec::len), Some(1));
+    assert_eq!(groups[0]["clients"], 0);
+    assert!(groups[0].get("delivery_blocked").is_some());
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -225,7 +224,7 @@ async fn an_empty_registry_says_so_rather_than_printing_a_bare_header(pool: PgPo
     assert!(text.contains("no session groups"), "{text}");
 }
 
-// ── unknown groups ───────────────────────────────────────────────────────────
+// ── attach ───────────────────────────────────────────────────────────────────
 
 #[sqlx::test(migrations = "./migrations")]
 async fn an_unknown_group_exits_two_and_lists_what_does_exist(pool: PgPool) {
@@ -237,314 +236,365 @@ async fn an_unknown_group_exits_two_and_lists_what_does_exist(pool: PgPool) {
         )
         .await;
 
-    let (code, text) = harness
-        .sessions(SessionsCommand::Attach {
-            group: "typo".into(),
-            force: false,
-        })
-        .await;
+    let terminal = FakeTerminal::interactive();
+    let (code, text) = harness.sessions_on(attach("typo"), &terminal).await;
 
     assert_eq!(code, 2, "unknown group should exit 2:\n{text}");
     assert!(text.contains("no group"), "{text}");
-    // The point of exit 2 is that the operator can see what they meant.
     assert!(text.contains("real-group"), "{text}");
-}
-
-// ── attach ───────────────────────────────────────────────────────────────────
-
-#[sqlx::test(migrations = "./migrations")]
-async fn attach_holds_a_group_for_the_session_then_gives_it_back(pool: PgPool) {
-    // Long enough that the attached state is observable while it runs.
-    let harness = Harness::new(pool).with_fake(1_500, 0, None, false);
-    let key = named("irr");
-    let (_dispatcher, _sink) = seeded(&harness, &key, "NEX-1", "irr").await;
-    let before = harness.starts().len();
-
-    let attaching = attach_in_background(&harness, "irr", false);
-
-    assert!(
-        harness
-            .wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::Attached { .. }))
-            .await,
-        "group was never marked attached"
-    );
-
-    let (code, text) = attaching.await.expect("join");
-    assert_eq!(code, 0, "attach should succeed:\n{text}");
-    assert_eq!(
-        harness.state_of(&key).await,
-        Some(GroupState::Idle),
-        "the group must be idle once the session ends"
-    );
-
-    let starts = harness.starts();
-    assert_eq!(starts.len(), before + 1, "expected exactly one attach");
-    let argv = &starts.last().expect("an attach run").argv;
-    assert!(
-        argv.iter().any(|a| a == "--resume"),
-        "a started session must be resumed, not restarted: {argv:?}"
-    );
-    assert!(
-        !argv.iter().any(|a| a == "--print"),
-        "an interactive session must not be given --print: {argv:?}"
-    );
-    assert_eq!(
-        starts.last().expect("an attach run").model(),
-        Some("sonnet"),
-        "attach must pass the configured model: {argv:?}"
-    );
-    // Present, and deliberately so. The original expectation was that an
-    // attached operator would answer permission prompts themselves; over
-    // `kubectl exec` those prompts just block the session, so the interactive
-    // path now follows the same setting as dispatched runs.
-    assert!(
-        argv.iter().any(|a| a == "--dangerously-skip-permissions"),
-        "attach should skip permission prompts when configured to: {argv:?}"
-    );
+    assert!(terminal.execs.lock().unwrap().is_empty());
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn attach_honours_skip_permissions_being_turned_off(pool: PgPool) {
-    let harness = Harness::new(pool).with_fake(100, 0, None, false);
+async fn attach_joins_a_busy_set_without_waiting_or_locking(pool: PgPool) {
+    // A long turn, so the set is plainly Busy while we attach.
+    let harness = Harness::new(pool).with_fake(5_000, 0, None, false);
     let key = named("irr");
-    let (_dispatcher, _sink) = seeded(&harness, &key, "NEX-1", "irr").await;
-    let before = harness.starts().len();
-
-    // Not hardcoded: an operator who does want the prompts can have them.
-    let mut env = harness.session_env();
-    env.skip_permissions = false;
-    let registry = harness.registry.clone();
-    let attaching = tokio::spawn(async move {
-        let mut out: Vec<u8> = Vec::new();
-        conductor::sessions::run(
-            SessionsCommand::Attach {
-                group: "irr".into(),
-                force: false,
-            },
-            &env,
-            &registry,
-            &mut out,
-        )
-        .await
-        .expect("attach")
-    });
-    attaching.await.expect("join");
-
-    let starts = harness.starts();
-    assert_eq!(starts.len(), before + 1, "expected one attach");
-    let argv = &starts.last().expect("an attach run").argv;
-    assert!(
-        !argv.iter().any(|a| a == "--dangerously-skip-permissions"),
-        "the flag should be absent when skip_permissions is false: {argv:?}"
-    );
-}
-
-#[sqlx::test(migrations = "./migrations")]
-async fn attach_leaves_a_tmux_backed_session_alone_for_now(pool: PgPool) {
-    let harness = Harness::new(pool).with_fake(800, 0, None, false);
-    let key = named("irr");
-
     let (_dispatcher, sink) = harness.start();
     sink.submit(linear_event("NEX-1", "irr", None));
     assert!(
         harness
             .wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::Busy { .. }))
-            .await,
-        "the dispatched turn never started"
+            .await
     );
 
-    let (code, text) = attach_in_background(&harness, "irr", false)
-        .await
-        .expect("join");
-    assert_ne!(code, 0, "attach must refuse:\n{text}");
-    assert!(text.contains("tmux"), "{text}");
+    let (first, second) = (FakeTerminal::interactive(), FakeTerminal::interactive());
+    let started = std::time::Instant::now();
+    let (a, b) = tokio::join!(
+        harness.sessions_on(attach("irr"), &first),
+        harness.sessions_on(attach("irr"), &second),
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "attach must not wait for the turn"
+    );
+
+    for (code, text) in [&a, &b] {
+        assert_eq!(*code, 0, "{text}");
+        assert!(
+            text.contains(
+                "attached to irr — detach with Ctrl-a d (read-write: anything you type goes to the agent)"
+            ),
+            "{text}"
+        );
+    }
+    // Both joined the same session, read-write, with no -r.
+    let expected = vec!["fake-tmux".to_string(), "attach".into(), "irr".into()];
+    assert_eq!(*first.execs.lock().unwrap(), vec![expected.clone()]);
+    assert_eq!(*second.execs.lock().unwrap(), vec![expected]);
+
+    // Attaching claimed nothing: the turn carries on as the agent's.
     assert!(matches!(
         harness.state_of(&key).await,
-        Some(GroupState::Busy { .. } | GroupState::Ready { .. })
+        Some(GroupState::Busy {
+            delivered_event: Some(_),
+            ..
+        })
     ));
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn attach_force_stops_the_running_session_and_records_a_kill(pool: PgPool) {
-    let harness = Harness::new(pool).with_fake(100, 0, None, false);
-    let key = named("irr");
-    let (_dispatcher, _sink) = seeded(&harness, &key, "NEX-1", "irr").await;
+async fn read_only_attach_adds_the_read_only_flag(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+    assert!(harness.fake.has(&key.slug()));
 
-    // A live process with no dispatcher competing to record its death, which is
-    // what keeps the recorded outcome deterministic.
-    let (pid, state) = orphan_process();
-    harness.set_state(&key, &state).await;
-
+    let terminal = FakeTerminal::interactive();
     let (code, text) = harness
-        .sessions(SessionsCommand::Attach {
-            group: "irr".into(),
-            force: true,
-        })
+        .sessions_on(
+            SessionsCommand::Attach {
+                group: "irr".into(),
+                read_only: true,
+                force: false,
+            },
+            &terminal,
+        )
         .await;
-    assert_eq!(code, 0, "forced attach should succeed:\n{text}");
-    assert!(text.contains("stopping current run"), "{text}");
-
-    let group = harness.group(&key).await.expect("group");
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("read-only"), "{text}");
     assert_eq!(
-        group.last_run.map(|r| r.result),
-        Some(RunResult::Killed {
-            by: "attach --force".into()
-        }),
-        "the kill should be attributed to the flag that caused it"
-    );
-    assert_eq!(group.state, GroupState::Idle, "and the group handed back");
-
-    // Gone in fact, not merely recorded as gone.
-    assert!(
-        !process_is_alive(pid, started_at_of(&state)),
-        "the stopped process should be gone"
+        *terminal.execs.lock().unwrap(),
+        vec![vec![
+            "fake-tmux".to_string(),
+            "attach".into(),
+            "-r".into(),
+            "irr".into()
+        ]]
     );
 }
 
-/// The start time recorded in a seeded state, for a liveness check afterwards.
-fn started_at_of(state: &GroupState) -> chrono::DateTime<chrono::Utc> {
-    match state {
-        GroupState::Running { started_at, .. } | GroupState::Attached { started_at, .. } => {
-            *started_at
-        }
-        _ => chrono::Utc::now(),
+#[sqlx::test(migrations = "./migrations")]
+async fn attach_starts_a_missing_session_through_the_dispatchers_path(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    // A group with a session id and nothing running. The dispatcher is up (so
+    // hooks are wired) but has nothing queued to start it.
+    let key = named("irr");
+    let (_dispatcher, _sink) = harness.start();
+    {
+        let mut txn = harness.registry.begin().await.expect("begin");
+        txn.session_for_dispatch(&key).await.expect("create group");
+        txn.commit().await.expect("commit");
+    }
+
+    let terminal = FakeTerminal::interactive();
+    let (code, text) = harness.sessions_on(attach("irr"), &terminal).await;
+
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("starting session for irr…"), "{text}");
+    assert_eq!(*harness.fake.started.lock().unwrap(), vec!["irr"]);
+    assert!(
+        matches!(harness.state_of(&key).await, Some(GroupState::Ready { .. })),
+        "the session must be Ready before the terminal is handed over"
+    );
+    assert_eq!(terminal.execs.lock().unwrap().len(), 1);
+    // The worktree and model flag are the dispatcher's, not a separate recipe.
+    let group = harness.group(&key).await.expect("group");
+    assert!(group.worktree.join(".git").exists(), "a real worktree");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn attach_that_cannot_start_a_session_fails_cleanly(pool: PgPool) {
+    let mut harness = Harness::new(pool).with_fake(50, 0, None, false);
+    harness.config.start_timeout = Duration::from_millis(300);
+    harness
+        .fake
+        .send_session_start
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let key = named("irr");
+    let (_dispatcher, _sink) = harness.start();
+    {
+        let mut txn = harness.registry.begin().await.expect("begin");
+        txn.session_for_dispatch(&key).await.expect("create group");
+        txn.commit().await.expect("commit");
+    }
+
+    let terminal = FakeTerminal::interactive();
+    let (code, text) = harness.sessions_on(attach("irr"), &terminal).await;
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("could not start the session"), "{text}");
+    assert!(terminal.execs.lock().unwrap().is_empty());
+    assert!(
+        !harness.fake.has("irr"),
+        "the half-started session is killed"
+    );
+    let group = harness.group(&key).await.expect("group");
+    assert_eq!(group.state, GroupState::NoSession);
+    assert_eq!(
+        group.last_run.map(|o| o.result),
+        Some(RunResult::StartFailed)
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn attach_to_a_registry_entry_tmux_no_longer_has_starts_a_new_session(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+    // The tmux server restarted: the registry still says Ready.
+    harness.fake.crash(&key.slug());
+
+    let terminal = FakeTerminal::interactive();
+    let (code, text) = harness.sessions_on(attach("irr"), &terminal).await;
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("starting session for irr…"), "{text}");
+    assert!(harness.fake.has("irr"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn attach_goes_ahead_while_delivering_or_starting(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+
+    for state in [
+        GroupState::Delivering {
+            since: chrono::Utc::now(),
+            event_id: 1,
+        },
+        GroupState::Starting {
+            since: chrono::Utc::now(),
+        },
+    ] {
+        harness.set_state(&key, &state).await;
+        let terminal = FakeTerminal::interactive();
+        let (code, text) = harness.sessions_on(attach("irr"), &terminal).await;
+        assert_eq!(code, 0, "{state:?}: {text}");
+        assert_eq!(terminal.execs.lock().unwrap().len(), 1, "{state:?}");
     }
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_group_cannot_be_attached_twice(pool: PgPool) {
+async fn attach_needs_a_terminal_and_changes_nothing_without_one(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);
     let key = named("irr");
     harness
         .enqueue(&key, &linear_event("NEX-1", "irr", None))
         .await;
-    harness
-        .set_state(
-            &key,
-            &GroupState::Attached {
-                pid: std::process::id(),
-                started_at: recorded_start_time(std::process::id()),
-            },
-        )
-        .await;
 
-    let (code, text) = harness
-        .sessions(SessionsCommand::Attach {
-            group: "irr".into(),
-            force: false,
+    let terminal = FakeTerminal::piped();
+    let (code, text) = harness.sessions_on(attach("irr"), &terminal).await;
+    assert_eq!(code, 1);
+    assert!(
+        text.contains(
+            "attach needs an interactive terminal (use scripts/conductor from a terminal)"
+        ),
+        "{text}"
+    );
+    assert!(terminal.execs.lock().unwrap().is_empty());
+    assert!(harness.fake.started.lock().unwrap().is_empty());
+    assert_ne!(
+        harness.state_of(&key).await,
+        Some(GroupState::Starting {
+            since: chrono::Utc::now()
         })
-        .await;
-
-    assert_eq!(code, 1, "a second attach should be refused:\n{text}");
-    assert!(text.contains("already attached"), "{text}");
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn events_arriving_during_an_attach_wait_for_it_to_end(pool: PgPool) {
-    let harness = Harness::new(pool).with_fake(1_500, 0, None, false);
-    let key = named("irr");
-    // The same dispatcher stays up for the whole test, so the event below is
-    // competing with a live scheduler rather than a dormant one.
-    let (_dispatcher, sink) = seeded(&harness, &key, "NEX-1", "irr").await;
-    let before = dispatched_runs(&harness);
+async fn force_is_accepted_with_a_note_and_attaches_normally(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let _key = ready_set(&harness, "irr", "NEX-1").await;
 
-    let attaching = attach_in_background(&harness, "irr", false);
+    let terminal = FakeTerminal::interactive();
+    let (code, text) = harness
+        .sessions_on(
+            SessionsCommand::Attach {
+                group: "irr".into(),
+                read_only: false,
+                force: true,
+            },
+            &terminal,
+        )
+        .await;
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("--force is no longer needed"), "{text}");
+    assert_eq!(terminal.execs.lock().unwrap().len(), 1);
+}
+
+// ── a human typing while attached ────────────────────────────────────────────
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_prompt_typed_while_attached_holds_back_the_next_task(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let key = named("irr");
+    let (_dispatcher, sink) = harness.start();
+    sink.submit(linear_event("NEX-1", "irr", None));
     assert!(
         harness
-            .wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::Attached { .. }))
-            .await,
-        "group was never marked attached"
+            .wait_for_group(&key, PATIENCE, |g| {
+                matches!(g.state, GroupState::Ready { .. }) && !g.issues.is_empty()
+            })
+            .await
     );
 
+    // Someone joins and submits a prompt of their own.
+    let terminal = FakeTerminal::interactive();
+    let (code, _) = harness.sessions_on(attach("irr"), &terminal).await;
+    assert_eq!(code, 0);
+    harness.fake.hook("irr", "UserPromptSubmit").await;
+    assert!(matches!(
+        harness.state_of(&key).await,
+        Some(GroupState::Busy {
+            delivered_event: None,
+            ..
+        })
+    ));
+
+    // A new task arrives mid-way through their turn: queued, not pasted.
+    let pasted_before = harness.fake.delivered.lock().unwrap().len();
     sink.submit(linear_event("NEX-2", "irr", None));
     assert!(
         harness
-            .wait_for_group(&key, PATIENCE, |g| !g.pending.is_empty())
-            .await,
-        "the event was never queued"
+            .wait_for_group(&key, PATIENCE, |g| g.pending.len() == 1)
+            .await
     );
-
-    // Several of the harness's 100ms re-scans come round inside this.
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(
-        dispatched_runs(&harness),
-        before,
-        "an attached group must not be dispatched into"
+        harness.fake.delivered.lock().unwrap().len(),
+        pasted_before,
+        "nothing may be pasted into a human's turn"
     );
 
-    attaching.await.expect("join");
+    let (_, listing) = harness
+        .sessions(SessionsCommand::List {
+            json: false,
+            closed: false,
+            limit: 20,
+        })
+        .await;
+    assert!(listing.contains("busy (you)"), "{listing}");
 
-    // Released, so the next re-scan picks the event up with no prompting.
+    // Their turn ends; only then does the queued task go in.
+    harness.fake.hook("irr", "Stop").await;
     assert!(
         harness
-            .wait_for(PATIENCE, |h| dispatched_runs(h) == before + 1)
+            .wait_for(PATIENCE, |h| h.fake.delivered.lock().unwrap().len()
+                == pasted_before + 1)
             .await,
-        "the queued event should run once the attach ends"
+        "the task should be delivered after the human's Stop"
     );
 }
 
-// ── signals ──────────────────────────────────────────────────────────────────
+// ── interrupt ────────────────────────────────────────────────────────────────
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_hangup_ends_the_session_and_still_releases_the_group(pool: PgPool) {
-    // Long enough that only a forwarded signal can end it inside PATIENCE.
-    let harness = Harness::new(pool).with_fake(60_000, 0, None, false);
+async fn interrupt_presses_escape_and_leaves_the_session_alive(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(5_000, 0, None, false);
     let key = named("irr");
-    // Deliberately not a dispatched run: this fake sleeps for a minute, so a
-    // seeding run would blow PATIENCE before the test began. The group is
-    // created directly instead, and `attach` builds the worktree itself —
-    // which also covers attaching to a group that has never run.
-    harness
-        .enqueue(&key, &linear_event("NEX-1", "irr", None))
-        .await;
-
-    // A real process, because the behaviour under test is signal handling, and
-    // an in-process attach would have the test runner catching the signal.
-    let mut cli = harness.spawn_cli(&["sessions", "attach", "irr"]);
+    let (_dispatcher, sink) = harness.start();
+    sink.submit(linear_event("NEX-1", "irr", None));
     assert!(
         harness
-            .wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::Attached { .. }))
-            .await,
-        "the spawned CLI never attached"
+            .wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::Busy { .. }))
+            .await
     );
 
-    // What a dropped `kubectl exec` sends.
-    conductor::dispatcher::signal_process(cli.id(), Signal::SIGHUP);
-
-    // The CLI installs a handler, so SIGHUP does not kill it outright. The only
-    // way out is forwarding the signal, waiting for Claude to go, and reaching
-    // the release. Had it swallowed the signal, the group would stay attached
-    // until the fake's sixty seconds elapsed, long past PATIENCE.
-    let released = harness
-        .wait_for_state(&key, PATIENCE, |s| *s == GroupState::Idle)
+    let (code, text) = harness
+        .sessions(SessionsCommand::Interrupt {
+            group: "irr".into(),
+        })
         .await;
-    if !released {
-        let _ = cli.kill();
-    }
-    assert!(released, "the group was not released after SIGHUP");
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(*harness.fake.interrupted.lock().unwrap(), vec!["irr"]);
+    assert!(harness.fake.has("irr"), "the session stays alive");
+    assert!(harness.fake.killed.lock().unwrap().is_empty());
+}
 
-    let status = cli.wait().expect("wait for cli");
-    assert!(
-        status.code().is_some(),
-        "the CLI should exit on its own terms rather than be killed: {status:?}"
-    );
+#[sqlx::test(migrations = "./migrations")]
+async fn interrupt_without_a_session_says_so(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    harness
+        .enqueue(&named("irr"), &linear_event("NEX-1", "irr", None))
+        .await;
+    let (code, text) = harness
+        .sessions(SessionsCommand::Interrupt {
+            group: "irr".into(),
+        })
+        .await;
+    assert_eq!(code, 1);
+    assert!(text.contains("no session"), "{text}");
+    assert!(harness.fake.interrupted.lock().unwrap().is_empty());
 }
 
 // ── kill ─────────────────────────────────────────────────────────────────────
 
 #[sqlx::test(migrations = "./migrations")]
-async fn kill_stops_the_process_and_leaves_the_queue_alone(pool: PgPool) {
-    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+async fn kill_ends_the_session_records_the_turn_and_keeps_the_queue(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(5_000, 0, None, false);
     let key = named("irr");
-    harness
-        .enqueue(&key, &linear_event("NEX-1", "irr", None))
-        .await;
-    harness
-        .enqueue(&key, &linear_event("NEX-2", "irr", None))
-        .await;
-
-    let (pid, state) = orphan_process();
-    harness.set_state(&key, &state).await;
+    let (_dispatcher, sink) = harness.start();
+    sink.submit(linear_event("NEX-1", "irr", None));
+    assert!(
+        harness
+            .wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::Busy { .. }))
+            .await
+    );
+    // Queued behind the running turn.
+    sink.submit(linear_event("NEX-2", "irr", None));
+    assert!(
+        harness
+            .wait_for_group(&key, PATIENCE, |g| g.pending.len() == 2)
+            .await,
+        "the running event stays queued until its turn ends"
+    );
 
     let (code, text) = harness
         .sessions(SessionsCommand::Kill {
@@ -553,27 +603,36 @@ async fn kill_stops_the_process_and_leaves_the_queue_alone(pool: PgPool) {
         })
         .await;
     assert_eq!(code, 0, "{text}");
-
-    assert!(
-        !process_is_alive(pid, started_at_of(&state)),
-        "the process should be gone"
-    );
+    assert!(harness
+        .fake
+        .killed
+        .lock()
+        .unwrap()
+        .contains(&"irr".to_string()));
 
     let group = harness.group(&key).await.expect("group");
     assert_eq!(
-        group.last_run.map(|r| r.result),
-        Some(RunResult::Killed { by: "cli".into() })
+        group.last_run.expect("outcome").result,
+        RunResult::Killed { by: "cli".into() }
     );
-    assert_eq!(group.state, GroupState::Idle);
-    assert_eq!(
-        group.pending.len(),
-        2,
-        "killing a run must not discard accepted work"
+    // The killed turn's event is gone; the one behind it survives.
+    assert_eq!(group.pending.len(), 1, "{text}");
+
+    // The next event starts a fresh session that resumes the conversation.
+    harness.fake.set_turn(20, None);
+    assert!(
+        harness
+            .wait_for(PATIENCE, |h| h.fake.started.lock().unwrap().len() == 2)
+            .await,
+        "a fresh session should start for the queued event"
     );
     assert!(
-        text.contains("2 queued event"),
-        "the operator should be told the work is still there:\n{text}"
+        harness.wait_for(PATIENCE, |h| h.starts().len() == 2).await,
+        "the queued event should be delivered into the new session"
     );
+    let starts = harness.starts();
+    let argv = &starts.last().expect("a turn").argv;
+    assert!(argv.iter().any(|a| a == "--resume"), "{argv:?}");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -581,14 +640,11 @@ async fn kill_drain_discards_the_queue_and_names_what_it_dropped(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);
     let key = named("irr");
     harness
-        .enqueue(&key, &linear_event("NEX-1", "irr", None))
+        .enqueue(&key, &linear_event("NEX-7", "irr", None))
         .await;
     harness
-        .enqueue(&key, &linear_event("NEX-2", "irr", None))
+        .enqueue(&key, &linear_event("NEX-8", "irr", None))
         .await;
-
-    let (pid, state) = orphan_process();
-    harness.set_state(&key, &state).await;
 
     let (code, text) = harness
         .sessions(SessionsCommand::Kill {
@@ -597,97 +653,114 @@ async fn kill_drain_discards_the_queue_and_names_what_it_dropped(pool: PgPool) {
         })
         .await;
     assert_eq!(code, 0, "{text}");
-
-    let group = harness.group(&key).await.expect("group");
-    assert!(
-        group.pending.is_empty(),
-        "--drain should empty the queue, found {}",
-        group.pending.len()
-    );
-    // Dropped work is named, so it can be re-queued by hand if it mattered.
-    assert!(text.contains("NEX-1"), "{text}");
-    assert!(text.contains("NEX-2"), "{text}");
-
-    reap(pid);
+    assert!(text.contains("dropped 2 queued event(s)"), "{text}");
+    assert!(text.contains("NEX-7") && text.contains("NEX-8"), "{text}");
+    assert!(harness.group(&key).await.expect("group").pending.is_empty());
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn killing_an_idle_group_is_not_an_error(pool: PgPool) {
+async fn killing_a_set_with_no_session_is_not_an_error(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);
-    let key = named("irr");
     harness
-        .enqueue(&key, &linear_event("NEX-1", "irr", None))
+        .enqueue(&named("irr"), &linear_event("NEX-1", "irr", None))
         .await;
-
     let (code, text) = harness
         .sessions(SessionsCommand::Kill {
             group: "irr".into(),
             drain: false,
         })
         .await;
-
-    assert_eq!(code, 0, "an idle group is the desired end state:\n{text}");
-    assert!(text.contains("not running"), "{text}");
+    assert_eq!(code, 0);
+    assert!(text.contains("has no session"), "{text}");
+    assert!(text.contains("1 queued event(s) still waiting"), "{text}");
 }
 
-// ── reset ────────────────────────────────────────────────────────────────────
+// ── release ──────────────────────────────────────────────────────────────────
 
 #[sqlx::test(migrations = "./migrations")]
-async fn reset_makes_the_next_run_start_a_fresh_session_in_the_same_worktree(pool: PgPool) {
+async fn release_clears_a_blocked_delivery_and_a_live_session_goes_ready(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);
-    let key = named("irr");
-    let (_dispatcher, sink) = seeded(&harness, &key, "NEX-1", "irr").await;
-
-    let (old_session, resumed) = harness
-        .starts()
-        .last()
-        .expect("a first run")
-        .session()
-        .expect("a session argument");
-    assert!(!resumed, "the first run of a group starts a session");
-    let worktree_before = harness.group(&key).await.expect("group").worktree;
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+    harness
+        .set_state(
+            &key,
+            &GroupState::Delivering {
+                since: chrono::Utc::now(),
+                event_id: 9,
+            },
+        )
+        .await;
+    sqlx::query("UPDATE session_groups SET delivery_blocked = 'unconfirmed paste' WHERE slug = $1")
+        .bind(key.slug())
+        .execute(&harness.pool)
+        .await
+        .expect("block");
 
     let (code, text) = harness
-        .sessions(SessionsCommand::Reset {
+        .sessions(SessionsCommand::Release {
             group: "irr".into(),
-            force: false,
         })
         .await;
     assert_eq!(code, 0, "{text}");
+    assert!(text.contains("cleared the delivery block"), "{text}");
+    assert!(text.contains("delivering → ready"), "{text}");
 
-    // Dispatch again and read what Claude was actually invoked with.
-    sink.submit(linear_event("NEX-2", "irr", None));
-    assert!(harness.wait_for_runs(2, PATIENCE).await, "second run");
-
-    let (new_session, resumed) = harness
-        .starts()
-        .last()
-        .expect("a second run")
-        .session()
-        .expect("a session argument");
-    assert!(
-        !resumed,
-        "after a reset the next run must start a session, not resume the old one"
-    );
-    assert_ne!(new_session, old_session, "the session id should be new");
-    assert_eq!(
-        harness.group(&key).await.expect("group").worktree,
-        worktree_before,
-        "a reset keeps the worktree: only the conversation is discarded"
-    );
+    let group = harness.group(&key).await.expect("group");
+    assert!(matches!(group.state, GroupState::Ready { .. }));
+    assert!(group.delivery_blocked.is_none());
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn reset_refuses_a_busy_group_unless_forced(pool: PgPool) {
+async fn release_resets_a_stuck_state_with_no_session_to_no_session(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);
     let key = named("irr");
     harness
         .enqueue(&key, &linear_event("NEX-1", "irr", None))
         .await;
+    harness
+        .set_state(
+            &key,
+            &GroupState::Busy {
+                since: chrono::Utc::now(),
+                delivered_event: None,
+            },
+        )
+        .await;
 
-    let before = harness.group(&key).await.expect("group").session_id;
-    let (pid, state) = orphan_process();
-    harness.set_state(&key, &state).await;
+    let (code, text) = harness
+        .sessions(SessionsCommand::Release {
+            group: "irr".into(),
+        })
+        .await;
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("busy → no session"), "{text}");
+    assert_eq!(harness.state_of(&key).await, Some(GroupState::NoSession));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn release_with_nothing_to_do_says_so(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+    let (code, text) = harness
+        .sessions(SessionsCommand::Release {
+            group: "irr".into(),
+        })
+        .await;
+    assert_eq!(code, 0);
+    assert!(text.contains("nothing to release"), "{text}");
+    assert!(matches!(
+        harness.state_of(&key).await,
+        Some(GroupState::Ready { .. })
+    ));
+}
+
+// ── reset ────────────────────────────────────────────────────────────────────
+
+#[sqlx::test(migrations = "./migrations")]
+async fn reset_kills_the_session_before_minting_a_new_id(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+    let before = harness.group(&key).await.expect("group");
 
     let (code, text) = harness
         .sessions(SessionsCommand::Reset {
@@ -695,42 +768,28 @@ async fn reset_refuses_a_busy_group_unless_forced(pool: PgPool) {
             force: false,
         })
         .await;
-    assert_eq!(code, 1, "a running group should be refused:\n{text}");
-    assert!(text.contains("--force"), "{text}");
-    assert_eq!(
-        harness.group(&key).await.expect("group").session_id,
-        before,
-        "a refused reset must change nothing"
-    );
-
-    let (code, text) = harness
-        .sessions(SessionsCommand::Reset {
-            group: "irr".into(),
-            force: true,
-        })
-        .await;
     assert_eq!(code, 0, "{text}");
-    assert_ne!(
-        harness.group(&key).await.expect("group").session_id,
-        before,
-        "--force should reset after stopping the run"
-    );
-    assert!(
-        !process_is_alive(pid, started_at_of(&state)),
-        "--force should have stopped the process"
-    );
+    assert!(harness
+        .fake
+        .killed
+        .lock()
+        .unwrap()
+        .contains(&"irr".to_string()));
+
+    let after = harness.group(&key).await.expect("group");
+    assert_eq!(after.state, GroupState::NoSession);
+    assert_ne!(after.session_id, before.session_id, "a fresh conversation");
+    assert!(!after.session_started);
+    assert_eq!(after.worktree, before.worktree, "same worktree");
 }
 
 // ── close ────────────────────────────────────────────────────────────────────
 
 #[sqlx::test(migrations = "./migrations")]
-async fn close_removes_the_worktree_and_forgets_the_group(pool: PgPool) {
+async fn close_refuses_while_clients_are_attached(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);
-    let key = named("irr");
-    let (_dispatcher, _sink) = seeded(&harness, &key, "NEX-1", "irr").await;
-
-    let worktree = harness.group(&key).await.expect("group").worktree;
-    assert!(worktree.exists(), "the seeding run should have made one");
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+    harness.fake.set_clients("irr", &["viewer"]);
 
     let (code, text) = harness
         .sessions(SessionsCommand::Close {
@@ -738,53 +797,18 @@ async fn close_removes_the_worktree_and_forgets_the_group(pool: PgPool) {
             force: false,
         })
         .await;
-    assert_eq!(code, 0, "{text}");
-
-    assert!(!worktree.exists(), "the worktree should be gone:\n{text}");
-    assert!(
-        harness.group(&key).await.is_none(),
-        "the group should be gone"
-    );
-    // Branches outlive the group: the work on them may not be merged.
-    assert!(text.contains("agent/irr"), "{text}");
-    let branches = common::git(&harness.repo, &["branch", "--list", "agent/irr"]);
-    assert!(
-        branches.contains("agent/irr"),
-        "close must not delete branches: {branches:?}"
-    );
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("1 client(s) attached"), "{text}");
+    assert!(harness.group(&key).await.is_some(), "the group survives");
+    assert!(harness.fake.has("irr"));
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn close_refuses_a_dirty_worktree_and_leaves_it_untouched(pool: PgPool) {
+async fn close_force_detaches_clients_kills_the_session_and_closes(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);
-    let key = named("irr");
-    let (_dispatcher, _sink) = seeded(&harness, &key, "NEX-1", "irr").await;
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+    harness.fake.set_clients("irr", &["viewer"]);
 
-    let worktree = harness.group(&key).await.expect("group").worktree;
-    let scratch = worktree.join("work-in-progress.txt");
-    std::fs::write(&scratch, "uncommitted\n").expect("write");
-    common::git(&worktree, &["add", "work-in-progress.txt"]);
-
-    let (code, text) = harness
-        .sessions(SessionsCommand::Close {
-            group: "irr".into(),
-            force: false,
-        })
-        .await;
-
-    assert_eq!(code, 1, "a dirty worktree should be refused:\n{text}");
-    assert!(worktree.exists(), "the worktree must survive a refusal");
-    assert!(scratch.exists(), "and so must the uncommitted work");
-    assert!(
-        harness.group(&key).await.is_some(),
-        "the group must survive too, or the registry would forget a live worktree"
-    );
-    assert!(
-        text.contains("--force"),
-        "the way out should be stated:\n{text}"
-    );
-
-    // And with --force it goes.
     let (code, text) = harness
         .sessions(SessionsCommand::Close {
             group: "irr".into(),
@@ -792,8 +816,71 @@ async fn close_refuses_a_dirty_worktree_and_leaves_it_untouched(pool: PgPool) {
         })
         .await;
     assert_eq!(code, 0, "{text}");
-    assert!(!worktree.exists(), "--force should discard the changes");
+    assert_eq!(*harness.fake.detached.lock().unwrap(), vec!["irr"]);
+    assert!(!harness.fake.has("irr"), "the session is killed");
+    assert!(harness.group(&key).await.is_none(), "the group is gone");
+    assert!(text.contains("closed irr"), "{text}");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn close_refuses_a_busy_set_unless_forced(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(5_000, 0, None, false);
+    let key = named("irr");
+    let (_dispatcher, sink) = harness.start();
+    sink.submit(linear_event("NEX-1", "irr", None));
+    assert!(
+        harness
+            .wait_for_state(&key, PATIENCE, |s| matches!(s, GroupState::Busy { .. }))
+            .await
+    );
+
+    let (code, text) = harness
+        .sessions(SessionsCommand::Close {
+            group: "irr".into(),
+            force: false,
+        })
+        .await;
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("busy"), "{text}");
+    assert!(harness.group(&key).await.is_some());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn close_removes_the_worktree_and_forgets_the_group(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+    let worktree = harness.group(&key).await.expect("group").worktree;
+    assert!(worktree.exists());
+
+    let (code, text) = harness
+        .sessions(SessionsCommand::Close {
+            group: "irr".into(),
+            force: false,
+        })
+        .await;
+    assert_eq!(code, 0, "{text}");
+    assert!(!worktree.exists(), "the worktree is removed");
     assert!(harness.group(&key).await.is_none());
+    assert!(!harness.fake.has("irr"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn close_refuses_a_dirty_worktree_and_leaves_it_untouched(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+    let worktree = harness.group(&key).await.expect("group").worktree;
+    std::fs::write(worktree.join("scratch.txt"), "uncommitted").expect("dirty the tree");
+
+    let (code, text) = harness
+        .sessions(SessionsCommand::Close {
+            group: "irr".into(),
+            force: false,
+        })
+        .await;
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("could not remove the worktree"), "{text}");
+    assert!(worktree.join("scratch.txt").exists());
+    assert!(harness.group(&key).await.is_some());
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -810,26 +897,8 @@ async fn close_refuses_a_group_with_queued_events_unless_forced(pool: PgPool) {
             force: false,
         })
         .await;
-    assert_eq!(code, 1, "queued work should block a close:\n{text}");
+    assert_eq!(code, 1, "{text}");
     assert!(text.contains("queued event"), "{text}");
-    assert!(harness.group(&key).await.is_some());
-
-    let (code, text) = harness
-        .sessions(SessionsCommand::Close {
-            group: "irr".into(),
-            force: true,
-        })
-        .await;
-    assert_eq!(code, 0, "{text}");
-    assert!(harness.group(&key).await.is_none());
-}
-
-#[sqlx::test(migrations = "./migrations")]
-async fn a_closed_group_is_rebuilt_by_the_next_event_for_its_key(pool: PgPool) {
-    let harness = Harness::new(pool).with_fake(50, 0, None, false);
-    let key = named("irr");
-    let (_dispatcher, sink) = seeded(&harness, &key, "NEX-1", "irr").await;
-    let original = harness.group(&key).await.expect("group").session_id;
 
     let (code, _) = harness
         .sessions(SessionsCommand::Close {
@@ -839,27 +908,4 @@ async fn a_closed_group_is_rebuilt_by_the_next_event_for_its_key(pool: PgPool) {
         .await;
     assert_eq!(code, 0);
     assert!(harness.group(&key).await.is_none());
-
-    sink.submit(linear_event("NEX-2", "irr", Some("fresh-delivery")));
-
-    // Waiting on the registry, not on the fake's log: the child exits before
-    // the dispatcher records the completion, so the issue history is written
-    // strictly after the run the log reports as finished.
-    assert!(
-        harness
-            .wait_for_group(&key, PATIENCE, |g| !g.issues.is_empty())
-            .await,
-        "the rebuilt group never recorded its issue"
-    );
-
-    let rebuilt = harness.group(&key).await.expect("group rebuilt");
-    assert_ne!(
-        rebuilt.session_id, original,
-        "a rebuilt group is a new session, not the old one resurrected"
-    );
-    assert_eq!(
-        rebuilt.issues,
-        vec!["NEX-2".to_string()],
-        "and it starts with no history from before the close"
-    );
 }

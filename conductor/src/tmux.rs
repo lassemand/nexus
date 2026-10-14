@@ -81,6 +81,14 @@ pub trait SessionRuntime: Send + Sync + 'static {
 
     /// Kills the session. Succeeds if it does not exist.
     async fn kill(&self, slug: &str) -> Result<(), TmuxError>;
+
+    /// Detaches every client from the session, leaving it running.
+    async fn detach_clients(&self, slug: &str) -> Result<(), TmuxError>;
+
+    /// The command line (program first) that attaches a terminal to the
+    /// session; `read_only` adds `-r`. Run by `conductor sessions attach`, which
+    /// replaces itself with it so the terminal belongs to tmux.
+    fn attach_command(&self, slug: &str, read_only: bool) -> Vec<String>;
 }
 
 /// [`SessionRuntime`] backed by the `tmux` CLI.
@@ -318,6 +326,33 @@ impl SessionRuntime for TmuxRuntime {
             Err(e) => Err(e),
         }
     }
+
+    async fn detach_clients(&self, slug: &str) -> Result<(), TmuxError> {
+        match self
+            .run_ok(&args(&["detach-client", "-s", &session(slug)]), None)
+            .await
+        {
+            Ok(_) => Ok(()),
+            // No clients attached is the normal case, and reads as an error.
+            Err(TmuxError::Failed { .. }) if self.clients(slug).await.is_empty() => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn attach_command(&self, slug: &str, read_only: bool) -> Vec<String> {
+        let mut cmd = vec![
+            self.bin.clone(),
+            "-L".into(),
+            self.socket.clone(),
+            "attach-session".into(),
+        ];
+        if read_only {
+            cmd.push("-r".into());
+        }
+        cmd.push("-t".into());
+        cmd.push(session(slug));
+        cmd
+    }
 }
 
 #[cfg(test)]
@@ -428,6 +463,36 @@ esac"#;
         let dir = tempfile::tempdir().unwrap();
         let (rt, _) = fake_tmux(dir.path(), "echo 'no server running on /tmp/x' >&2; exit 1");
         assert!(rt.list_sessions().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn attach_targets_the_session_exactly_and_read_only_adds_r() {
+        let rt = TmuxRuntime::new("tmux", "conductor");
+        assert_eq!(
+            rt.attach_command("grp", false),
+            ["tmux", "-L", "conductor", "attach-session", "-t", "=grp"]
+        );
+        assert_eq!(
+            rt.attach_command("grp", true),
+            [
+                "tmux",
+                "-L",
+                "conductor",
+                "attach-session",
+                "-r",
+                "-t",
+                "=grp"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn detach_with_no_clients_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = r#"case "$3" in detach-client) echo 'no client' >&2; exit 1;; esac"#;
+        let (rt, log) = fake_tmux(dir.path(), body);
+        rt.detach_clients("g").await.unwrap();
+        assert_eq!(calls(&log)[0], "CALL -L sock detach-client -s =g");
     }
 
     #[tokio::test]

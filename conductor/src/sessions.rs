@@ -1,44 +1,40 @@
 //! Operator controls for the dispatcher's sessions.
 //!
 //! `conductor serve` runs unattended. These subcommands are how a human sees
-//! what it is doing and steps in: take a session over interactively, stop a
-//! runaway run, force a fresh conversation, or retire a finished group.
+//! what it is doing and steps in: join a set's live terminal, interrupt a turn,
+//! kill or reset a session, clear a stuck delivery, or retire a finished group.
 //!
 //! They run inside the pod via `kubectl exec`, against the same registry the
 //! server writes to. Coordination is entirely through Postgres: every mutation
 //! is one locked transaction, and the dispatcher re-scans periodically, so a
 //! change made here takes effect without any IPC channel between the two.
 //!
-//! The lock is held only for the read-modify-write. Waiting for a run to end,
-//! killing a process and the interactive session itself all happen with the
-//! lock released, because holding it would block the server that is trying to
-//! make progress.
+//! Each set is an interactive Claude in a tmux session on the pod's tmux
+//! server, so "attaching" is just joining that terminal. There is no exclusive
+//! lock and no waiting: any number of clients can watch or type at once, and
+//! the Claude hooks keep the registry's idea of busy/idle current regardless of
+//! who typed. The registry lock is held only for read-modify-write, never across
+//! a tmux call or a wait.
 
 use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use clap::Subcommand;
-use nix::sys::signal::Signal;
 
 use crate::closing::{close_group, CloseMode, CloseOutcome};
-use crate::dispatcher::{ensure_worktree, signal_process, SessionEnv};
-use crate::registry::{
-    process_is_alive, recorded_start_time, Group, GroupKey, GroupState, QueuedEvent, Registry,
-    RunOutcome, RunResult,
-};
+use crate::dispatcher::{launch_session, SessionEnv};
+use crate::registry::{Group, GroupKey, GroupState, QueuedEvent, Registry, RunOutcome, RunResult};
+use crate::tmux::SessionRuntime;
 use crate::InboundEvent;
 
 /// Exit code for a group that does not exist.
 const EXIT_NO_SUCH_GROUP: i32 = 2;
-/// Exit code for a refusal the operator can override with `--force`.
+/// Exit code for a refusal the operator can override with `--force`, or a failure.
 const EXIT_REFUSED: i32 = 1;
-/// Exit code for an interrupted wait, by convention `128 + SIGINT`.
-const EXIT_INTERRUPTED: i32 = 130;
 
-/// How often to re-check a process we signalled but cannot `wait()` for.
-const DEATH_POLL: Duration = Duration::from_millis(100);
+/// A `Starting` group older than this with no tmux session is stale.
+const STARTING_GRACE: i64 = 30;
 
 /// What went wrong running a subcommand.
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +46,40 @@ pub enum SessionsError {
     /// Anything git or the filesystem refused, already phrased for an operator.
     #[error("{0}")]
     Failed(String),
+}
+
+/// The terminal `attach` hands over to tmux.
+///
+/// A trait so tests can observe the hand-over: the real one replaces the
+/// process, which a test cannot survive.
+pub trait Terminal: Send + Sync {
+    /// Whether stdin and stdout are both a terminal.
+    fn is_interactive(&self) -> bool;
+
+    /// Replaces this process with `command` (program first). Returns only if
+    /// that failed, as the exit code to use.
+    fn exec(&self, command: &[String]) -> i32;
+}
+
+/// The process's real terminal.
+pub struct StdTerminal;
+
+impl Terminal for StdTerminal {
+    fn is_interactive(&self) -> bool {
+        use std::io::IsTerminal;
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+    }
+
+    fn exec(&self, command: &[String]) -> i32 {
+        use std::os::unix::process::CommandExt;
+        let Some((program, args)) = command.split_first() else {
+            return EXIT_REFUSED;
+        };
+        // Only returns on failure; on success the terminal belongs to tmux.
+        let error = std::process::Command::new(program).args(args).exec();
+        tracing::error!(%error, %program, "cannot exec tmux");
+        EXIT_REFUSED
+    }
 }
 
 /// `conductor sessions <...>`
@@ -77,25 +107,42 @@ pub enum SessionsCommand {
         limit: i64,
     },
 
-    /// Take over a session interactively.
+    /// Join a group's live terminal.
     ///
-    /// Waits for any dispatched run to finish first, then starts an interactive
-    /// Claude in the group's worktree. The group is marked `attached` for the
-    /// duration, so the dispatcher leaves it alone and queues its events.
+    /// Starts the group's session first if it has none. Then this process is
+    /// replaced by `tmux attach-session`: you are in the same terminal the
+    /// agent is working in, live, even mid-turn. Any number of people can attach
+    /// at once. Read-write is the default, as before conductor; anything you
+    /// type goes to the agent. A prompt you submit makes the group busy, and
+    /// conductor waits for your turn to finish before giving it the next task.
     ///
-    /// A dropped `kubectl exec` sends SIGHUP; that is forwarded to Claude and
-    /// the group is still returned to `idle`. If this command is SIGKILLed
-    /// instead, nothing can run on exit, and the group is recovered by the
-    /// registry's stale-process check the next time the server loads it.
+    /// The pod's tmux prefix is Ctrl-a (not Ctrl-b, so it does not clash with a
+    /// tmux running on your own machine): press Ctrl-a then d to detach. If you
+    /// attach from inside a local tmux that also uses Ctrl-a, press it twice.
     Attach {
         /// Group to attach to, as shown by `sessions list`.
         group: String,
-        /// Stop whatever is running first, instead of waiting for it.
-        #[arg(long)]
+        /// Watch and scroll, but do not send keystrokes.
+        #[arg(long, short = 'r')]
+        read_only: bool,
+        /// No longer needed: attaching never takes the session over.
+        #[arg(long, hide = true)]
         force: bool,
     },
 
-    /// Stop a group's running process.
+    /// Press Escape in a group's session, interrupting the current turn.
+    ///
+    /// The session stays alive.
+    Interrupt {
+        /// Group to interrupt.
+        group: String,
+    },
+
+    /// Kill a group's tmux session.
+    ///
+    /// Claude exits and any turn in progress is recorded as killed. Queued
+    /// events stay; the next one starts a fresh session that resumes the
+    /// conversation.
     Kill {
         /// Group to stop.
         group: String,
@@ -104,23 +151,38 @@ pub enum SessionsCommand {
         drain: bool,
     },
 
+    /// Clear a stuck delivery or a state that no longer matches reality.
+    ///
+    /// Clears the delivery block set when a pasted task was never confirmed.
+    /// A group stuck delivering or busy goes to `no session` if its tmux session
+    /// is gone, or `ready` if it is alive. Use it after attaching and checking
+    /// that the input box is clean.
+    Release {
+        /// Group to release.
+        group: String,
+    },
+
     /// Start a fresh Claude conversation for a group, keeping its worktree.
+    ///
+    /// Kills the group's tmux session first, if it has one.
     Reset {
         /// Group to reset.
         group: String,
-        /// Stop a running process first, instead of refusing.
-        #[arg(long)]
+        /// No longer needed: a running session is always killed.
+        #[arg(long, hide = true)]
         force: bool,
     },
 
     /// Retire a group: remove its worktree and forget it.
     ///
     /// Branches are left alone. A later event for the same key builds the group
-    /// again from scratch.
+    /// again from scratch. Refuses while anyone is attached or a turn is running
+    /// unless --force, which detaches them and kills the session.
     Close {
         /// Group to close.
         group: String,
-        /// Proceed despite a running process, queued events or a dirty worktree.
+        /// Proceed despite attached clients, a running turn, queued events or a
+        /// dirty worktree.
         #[arg(long)]
         force: bool,
     },
@@ -134,6 +196,8 @@ pub async fn run(
     command: SessionsCommand,
     env: &SessionEnv,
     registry: &Registry,
+    runtime: &dyn SessionRuntime,
+    terminal: &dyn Terminal,
     out: &mut (dyn Write + Send),
 ) -> Result<i32, SessionsError> {
     match command {
@@ -145,28 +209,68 @@ pub async fn run(
             if closed {
                 list_closed(registry, out, json, limit).await
             } else {
-                list(registry, out, json).await
+                list(registry, runtime, out, json).await
             }
         }
-        SessionsCommand::Attach { group, force } => attach(&group, force, env, registry, out).await,
-        SessionsCommand::Kill { group, drain } => kill(&group, drain, env, registry, out).await,
-        SessionsCommand::Reset { group, force } => reset(&group, force, env, registry, out).await,
-        SessionsCommand::Close { group, force } => close(&group, force, env, registry, out).await,
+        SessionsCommand::Attach {
+            group,
+            read_only,
+            force,
+        } => {
+            attach(
+                &group, read_only, force, env, registry, runtime, terminal, out,
+            )
+            .await
+        }
+        SessionsCommand::Interrupt { group } => interrupt(&group, registry, runtime, out).await,
+        SessionsCommand::Kill { group, drain } => kill(&group, drain, registry, runtime, out).await,
+        SessionsCommand::Release { group } => release(&group, registry, runtime, out).await,
+        SessionsCommand::Reset { group, force: _ } => reset(&group, registry, runtime, out).await,
+        SessionsCommand::Close { group, force } => {
+            close(&group, force, env, registry, runtime, out).await
+        }
     }
 }
 
 // ── list ─────────────────────────────────────────────────────────────────────
 
+/// How many tmux clients are attached to a group's session.
+///
+/// Only asked of groups that should have a session; a tmux call per group is
+/// not worth making for the rest.
+async fn client_count(runtime: &dyn SessionRuntime, g: &Group) -> usize {
+    if g.state.is_tmux() && g.state != GroupState::NoSession {
+        runtime.clients(&g.key.slug()).await.len()
+    } else {
+        0
+    }
+}
+
 async fn list(
     registry: &Registry,
+    runtime: &dyn SessionRuntime,
     out: &mut (dyn Write + Send),
     json: bool,
 ) -> Result<i32, SessionsError> {
     // Unlocked read, so this works while the server is mid-write.
     let mut groups = registry.snapshot().await?;
 
+    let mut clients = std::collections::HashMap::new();
+    for g in &groups {
+        clients.insert(g.key.slug(), client_count(runtime, g).await);
+    }
+
     if json {
-        let body = serde_json::to_string_pretty(&groups)
+        let mut items = Vec::with_capacity(groups.len());
+        for g in &groups {
+            let mut v = serde_json::to_value(g)
+                .map_err(|e| SessionsError::Failed(format!("serialising groups: {e}")))?;
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("clients".into(), clients[&g.key.slug()].into());
+            }
+            items.push(v);
+        }
+        let body = serde_json::to_string_pretty(&items)
             .map_err(|e| SessionsError::Failed(format!("serialising groups: {e}")))?;
         writeln!(out, "{body}")?;
         return Ok(0);
@@ -188,6 +292,7 @@ async fn list(
     let header = [
         "GROUP",
         "STATE",
+        "CLIENTS",
         "PENDING",
         "LAST ISSUE",
         "LAST ACTIVE",
@@ -197,11 +302,11 @@ async fn list(
         "WORKTREE",
     ];
     let mut rows: Vec<Vec<String>> = vec![header.iter().map(|h| h.to_string()).collect()];
-
     for g in &groups {
         rows.push(vec![
             g.key.slug(),
             describe_group_state(g, now),
+            clients[&g.key.slug()].to_string(),
             g.pending.len().to_string(),
             g.issues.last().cloned().unwrap_or_else(|| "-".into()),
             format!("{} ago", human_duration(now - g.last_active)),
@@ -220,7 +325,7 @@ async fn list(
     Ok(0)
 }
 
-/// Sort key putting running groups first, then attached, then idle.
+/// Sort key putting active groups first.
 fn state_rank(state: &GroupState) -> u8 {
     match state {
         GroupState::Running { .. } | GroupState::Busy { .. } | GroupState::Delivering { .. } => 0,
@@ -229,17 +334,20 @@ fn state_rank(state: &GroupState) -> u8 {
     }
 }
 
-/// The STATE column: the process state, then whether a close is pending or refused.
+/// The STATE column: the session state, then any marker an operator must see.
 fn describe_group_state(g: &Group, now: DateTime<Utc>) -> String {
-    let state = describe_state(&g.state, now);
+    let mut text = describe_state(&g.state, now);
+    if let Some(reason) = &g.delivery_blocked {
+        let reason: String = reason.chars().take(60).collect();
+        text.push_str(&format!(", delivery blocked: {reason}"));
+    }
     if let Some(reason) = &g.close_blocked {
         let reason: String = reason.chars().take(60).collect();
-        format!("{state}, close blocked: {reason}")
+        text.push_str(&format!(", close blocked: {reason}"));
     } else if g.close_requested_at.is_some() {
-        format!("{state}, closing")
-    } else {
-        state
+        text.push_str(", closing");
     }
+    text
 }
 
 /// `sessions list --closed`: the audit trail, newest first.
@@ -284,16 +392,25 @@ async fn list_closed(
 
 fn describe_state(state: &GroupState, now: DateTime<Utc>) -> String {
     match state {
-        GroupState::Idle => "idle".into(),
-        GroupState::Running { started_at, .. } => {
-            format!("running {}", human_duration(now - *started_at))
-        }
-        GroupState::Attached { .. } => "attached".into(),
-        GroupState::NoSession => "no session".into(),
+        GroupState::Idle | GroupState::NoSession => "no session".into(),
         GroupState::Starting { .. } => "starting".into(),
         GroupState::Ready { .. } => "ready".into(),
         GroupState::Delivering { .. } => "delivering".into(),
-        GroupState::Busy { since, .. } => format!("busy {}", human_duration(now - *since)),
+        // Who started the turn matters: "you" means a human typed it.
+        GroupState::Busy {
+            since,
+            delivered_event,
+        } => format!(
+            "busy ({}) {}",
+            if delivered_event.is_some() {
+                "agent"
+            } else {
+                "you"
+            },
+            human_duration(now - *since)
+        ),
+        // Written by versions that ran `claude --print`; recovered at startup.
+        GroupState::Running { .. } | GroupState::Attached { .. } => "legacy".into(),
     }
 }
 
@@ -359,11 +476,15 @@ fn write_table(out: &mut (dyn Write + Send), rows: &[Vec<String>]) -> std::io::R
 
 // ── attach ───────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn attach(
     slug: &str,
+    read_only: bool,
     force: bool,
     env: &SessionEnv,
     registry: &Registry,
+    runtime: &dyn SessionRuntime,
+    terminal: &dyn Terminal,
     out: &mut (dyn Write + Send),
 ) -> Result<i32, SessionsError> {
     let Some(group) = lookup(registry, slug, out).await? else {
@@ -371,306 +492,232 @@ async fn attach(
     };
     let key = group.key.clone();
 
-    // Before anything is claimed, so there is no moment where a hangup can
-    // kill this process while the registry says the group is attached.
-    let mut signals = StopSignals::install()?;
+    // Before anything is started: tmux would otherwise fail with a cryptic
+    // message, after we had already spun up a session for nobody.
+    if !terminal.is_interactive() {
+        writeln!(
+            out,
+            "attach needs an interactive terminal (use scripts/conductor from a terminal)"
+        )?;
+        return Ok(EXIT_REFUSED);
+    }
+    if force {
+        writeln!(
+            out,
+            "--force is no longer needed: attaching never takes the session over"
+        )?;
+    }
 
-    // ── 1. get the group to ourselves ───────────────────────────────────────
-    //
-    // Looped rather than checked once: between a run ending and this process
-    // claiming the group, the dispatcher may start the next queued event. With
-    // `--force` that run is stopped too, which is what an operator asking to
-    // force their way in means.
-    let group = loop {
+    // A few rounds, because the dispatcher may change the group between our
+    // read and our write; each round re-reads.
+    for _ in 0..5 {
         let Some(current) = registry.group_by_slug(slug).await? else {
-            writeln!(out, "group {slug} disappeared while waiting")?;
+            writeln!(out, "group {slug} disappeared")?;
             return Ok(EXIT_NO_SUCH_GROUP);
         };
+        let mut state = current.state;
 
-        match current.state {
-            GroupState::Idle | GroupState::NoSession => {}
-            // Attaching to tmux-backed groups arrives with the CLI rework.
-            GroupState::Starting { .. }
-            | GroupState::Ready { .. }
-            | GroupState::Delivering { .. }
-            | GroupState::Busy { .. } => {
-                writeln!(out, "{slug} is a tmux session; use tmux to attach")?;
-                return Ok(EXIT_REFUSED);
-            }
-            GroupState::Attached { pid, .. } => {
-                writeln!(
-                    out,
-                    "{slug} is already attached (pid {pid}); detach there first"
-                )?;
-                return Ok(EXIT_REFUSED);
-            }
-            GroupState::Running { pid, started_at } if force => {
-                writeln!(
-                    out,
-                    "stopping current run (pid {pid}, started {} ago)…",
-                    human_duration(Utc::now() - started_at)
-                )?;
-                out.flush()?;
-                stop_process(registry, &key, pid, started_at, env, "attach --force").await?;
-                continue;
-            }
-            GroupState::Running { pid, started_at } => {
-                writeln!(
-                    out,
-                    "waiting for current run (pid {pid}, started {} ago)…",
-                    human_duration(Utc::now() - started_at)
-                )?;
-                out.flush()?;
-                // Ctrl-C here leaves the registry exactly as it was.
-                if wait_or_interrupt(env.poll_interval, &mut signals)
-                    .await
-                    .is_err()
-                {
-                    writeln!(out, "interrupted; nothing was changed")?;
-                    return Ok(EXIT_INTERRUPTED);
-                }
-                continue;
-            }
+        if matches!(
+            state,
+            GroupState::Running { .. } | GroupState::Attached { .. }
+        ) {
+            writeln!(
+                out,
+                "{slug} is in a state left by an older conductor; start `conductor serve` once to recover it"
+            )?;
+            return Ok(EXIT_REFUSED);
         }
 
-        // Claim it. The read above is advisory — this transaction re-checks
-        // under the row lock, and only one claimant can win.
-        let my_pid = std::process::id();
-        let started_at = recorded_start_time(my_pid);
-        let mut txn = registry.begin().await?;
-        let claimed = txn.attach(&key, my_pid, started_at).await?;
-        if !claimed {
-            // Something took it between the read and here. Look again, after a
-            // pause: without one, a group that keeps being claimed would turn
-            // this into a tight loop against the database.
+        // The registry can name a session tmux no longer has (a restart, a
+        // crash). Reset it rather than attaching to nothing.
+        if state.is_tmux() && state != GroupState::NoSession && !runtime.exists(slug).await {
+            let mut txn = registry.begin().await?;
+            let reset = txn
+                .mark_session_gone(&key, chrono::Duration::seconds(STARTING_GRACE))
+                .await?;
             txn.commit().await?;
-            if wait_or_interrupt(env.poll_interval, &mut signals)
-                .await
-                .is_err()
-            {
-                writeln!(out, "interrupted; nothing was changed")?;
-                return Ok(EXIT_INTERRUPTED);
+            if reset {
+                state = GroupState::NoSession;
             }
-            continue;
         }
-        let group = txn
-            .group_by_slug(slug)
-            .await?
-            .ok_or_else(|| SessionsError::Failed(format!("group {slug} vanished mid-claim")))?;
-        if !group.session_started {
-            txn.mark_session_started(&key).await?;
-        }
-        txn.commit().await?;
-        break group;
-    };
 
-    // ── 2. run, and give the group back whatever happens ────────────────────
-    //
-    // Past this point the group is marked attached, so every exit path has to
-    // release it or the dispatcher will never touch the group again.
-    let outcome = run_interactive(&group, env, registry, out, &mut signals).await;
-
-    let mut txn = registry.begin().await?;
-    txn.release(&key).await?;
-    txn.commit().await?;
-
-    match outcome {
-        Ok(code) => {
-            writeln!(out, "detached; {slug} is idle again")?;
-            Ok(code)
+        match state {
+            GroupState::Idle | GroupState::NoSession => {
+                writeln!(out, "starting session for {slug}…")?;
+                out.flush()?;
+                let mut txn = registry.begin().await?;
+                let claimed = txn.begin_start(&key).await?;
+                txn.commit().await?;
+                if !claimed {
+                    // The dispatcher got there first; look again.
+                    continue;
+                }
+                if let Err(reason) = start_claimed(registry, runtime, env, &key).await {
+                    writeln!(out, "could not start the session: {reason}")?;
+                    return Ok(EXIT_REFUSED);
+                }
+            }
+            // Somebody else is starting it; join once tmux has the session.
+            GroupState::Starting { .. }
+                if !wait_for_session(runtime, slug, env.start_timeout).await =>
+            {
+                writeln!(out, "{slug} is starting but its session never appeared")?;
+                return Ok(EXIT_REFUSED);
+            }
+            // Ready, Delivering, Busy, or Starting with a session: attach right
+            // away, whatever it is doing.
+            _ => {}
         }
-        Err(e) => {
-            writeln!(out, "attach failed: {e}")?;
-            Ok(EXIT_REFUSED)
+
+        let command = runtime.attach_command(slug, read_only);
+        if read_only {
+            writeln!(
+                out,
+                "attached to {slug} read-only — detach with Ctrl-a d (you can watch and scroll, not type)"
+            )?;
+        } else {
+            writeln!(
+                out,
+                "attached to {slug} — detach with Ctrl-a d (read-write: anything you type goes to the agent)"
+            )?;
         }
+        // Nothing buffered may be lost: exec replaces the process.
+        out.flush()?;
+        return Ok(terminal.exec(&command));
+    }
+
+    writeln!(out, "{slug} kept changing state; try again")?;
+    Ok(EXIT_REFUSED)
+}
+
+/// Finishes starting a group this process has moved to `Starting`, the way the
+/// dispatcher does, undoing it if the session never comes up.
+async fn start_claimed(
+    registry: &Registry,
+    runtime: &dyn SessionRuntime,
+    env: &SessionEnv,
+    key: &GroupKey,
+) -> Result<(), String> {
+    let result = launch_session(registry, runtime, &env.start_spec(), key, None, None).await;
+    if let Err(reason) = &result {
+        tracing::error!(group = %key.slug(), %reason, "session failed to start");
+        let _ = runtime.kill(&key.slug()).await;
+        let recorded = async {
+            let mut txn = registry.begin().await?;
+            txn.fail_start(key).await?;
+            txn.commit().await
+        }
+        .await;
+        if let Err(e) = recorded {
+            tracing::error!(error = %e, "cannot record the failed start");
+        }
+    }
+    result
+}
+
+/// Polls until tmux has the session, or `timeout` passes.
+async fn wait_for_session(
+    runtime: &dyn SessionRuntime,
+    slug: &str,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if runtime.exists(slug).await {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 
-/// Prepares the worktree, then runs an interactive Claude to completion.
-async fn run_interactive(
-    group: &Group,
-    env: &SessionEnv,
+// ── interrupt ────────────────────────────────────────────────────────────────
+
+async fn interrupt(
+    slug: &str,
     registry: &Registry,
+    runtime: &dyn SessionRuntime,
     out: &mut (dyn Write + Send),
-    signals: &mut StopSignals,
 ) -> Result<i32, SessionsError> {
-    let slug = group.key.slug();
-
-    // A group can exist with queued events and no checkout yet, if it was
-    // created while the dispatcher was at its concurrency cap.
-    //
-    // The server serialises its own worktree creation with an in-process lock,
-    // which does not reach across to this process. The window is one operator
-    // command against a server that happens to be preparing another worktree
-    // at that instant, and it surfaces as a clear git error and an unchanged
-    // group rather than as damage; a cross-process lock would be the fix if it
-    // ever actually bites.
-    let base_ref = registry.worktree_ref(&group.key).await?;
-    let worktree = ensure_worktree(
-        &env.repo_root,
-        &env.worktree_root,
-        &slug,
-        base_ref.as_deref(),
-    )
-    .await
-    .map_err(|e| SessionsError::Failed(e.to_string()))?;
-
-    if worktree != group.worktree {
-        let mut txn = registry.begin().await?;
-        txn.set_worktree(&group.key, &worktree).await?;
-        txn.commit().await?;
+    let Some(group) = lookup(registry, slug, out).await? else {
+        return Ok(EXIT_NO_SUCH_GROUP);
+    };
+    if !runtime.exists(&group.key.slug()).await {
+        writeln!(out, "{slug} has no session to interrupt")?;
+        return Ok(EXIT_REFUSED);
     }
-
-    let mut command = tokio::process::Command::new(&env.claude_bin);
-    command.current_dir(&worktree);
-    if group.session_started {
-        command.arg("--resume").arg(group.session_id.to_string());
-    } else {
-        command
-            .arg("--session-id")
-            .arg(group.session_id.to_string());
-    }
-    // The agent the session was dispatched under. Resuming without it would
-    // drop the instructions the conversation has been following.
-    command.arg(format!("--agent={}", env.agent));
-    crate::dispatcher::push_model_arg(&mut command, env.model.as_deref());
-    // `--dangerously-skip-permissions` is passed here too, governed by the same
-    // setting as dispatched runs.
-    //
-    // The original reasoning was that an attached operator is present to answer
-    // permission prompts. That does not survive contact with `kubectl exec`:
-    // answering them through an exec'd TTY is impractical, so the prompts just
-    // block the session. Dispatched runs in this pod already skip them, and an
-    // operator who can exec into the pod can run anything in it regardless, so
-    // the interactive path gains no protection by differing.
-    if env.skip_permissions {
-        command.arg("--dangerously-skip-permissions");
-    }
-    // Still no `--print`: this is an interactive session, not a one-shot.
-    command.env("CARGO_TARGET_DIR", worktree.join("target"));
-    // stdio is inherited by default, which is what makes the session usable.
-
+    runtime
+        .interrupt(slug)
+        .await
+        .map_err(|e| SessionsError::Failed(format!("cannot interrupt {slug}: {e}")))?;
     writeln!(
         out,
-        "attached to {slug} in {} (session {})",
-        worktree.display(),
-        &group.session_id.to_string()[..8]
+        "sent Escape to {slug}; the session stays alive (state: {})",
+        describe_state(&group.state, Utc::now())
     )?;
-    out.flush()?;
-
-    let mut child = command
-        .spawn()
-        .map_err(|e| SessionsError::Failed(format!("starting {}: {e}", env.claude_bin)))?;
-    let child_pid = child.id().unwrap_or_default();
-
-    wait_forwarding_signals(&mut child, child_pid, signals).await
-}
-
-/// The signals that mean "stop", installed once and shared by both phases.
-///
-/// Installed *before* the group is claimed, which closes a window that was
-/// otherwise real: the handlers used to go up only once Claude had been
-/// spawned, so a hangup arriving while the worktree was still being prepared
-/// killed this process at its default action and left the group stuck in
-/// `attached` with nothing running. A dropped `kubectl exec` during a slow
-/// `git fetch` is exactly when that would happen.
-struct StopSignals {
-    hangup: tokio::signal::unix::Signal,
-    terminate: tokio::signal::unix::Signal,
-    interrupt: tokio::signal::unix::Signal,
-}
-
-impl StopSignals {
-    fn install() -> Result<Self, SessionsError> {
-        use tokio::signal::unix::{signal, SignalKind};
-        Ok(StopSignals {
-            hangup: signal(SignalKind::hangup())?,
-            terminate: signal(SignalKind::terminate())?,
-            interrupt: signal(SignalKind::interrupt())?,
-        })
-    }
-
-    /// Resolves with the first stop signal to arrive.
-    async fn recv(&mut self) -> Signal {
-        tokio::select! {
-            _ = self.hangup.recv() => Signal::SIGHUP,
-            _ = self.terminate.recv() => Signal::SIGTERM,
-            _ = self.interrupt.recv() => Signal::SIGINT,
-        }
-    }
-}
-
-/// Waits for the child, passing on any signal that means "stop".
-///
-/// SIGHUP is the one that matters in practice: a dropped `kubectl exec`
-/// connection sends it, and without forwarding, Claude would be left running
-/// with nobody attached. The wait continues afterwards in every case, so the
-/// caller still reaches the release once the child is actually gone.
-async fn wait_forwarding_signals(
-    child: &mut tokio::process::Child,
-    child_pid: u32,
-    signals: &mut StopSignals,
-) -> Result<i32, SessionsError> {
-    loop {
-        tokio::select! {
-            status = child.wait() => {
-                return Ok(status?.code().unwrap_or(EXIT_REFUSED));
-            }
-            sig = signals.recv() => {
-                tracing::info!(pid = child_pid, ?sig, "forwarding a stop signal to the attached session");
-                signal_process(child_pid, sig);
-            }
-        }
-    }
-}
-
-/// Sleeps, unless a stop signal arrives first.
-///
-/// `Err(())` means the operator gave up — Ctrl-C, or the connection dropping.
-/// Nothing has been claimed at this point, so returning leaves the registry
-/// exactly as it was.
-async fn wait_or_interrupt(period: Duration, signals: &mut StopSignals) -> Result<(), ()> {
-    tokio::select! {
-        _ = tokio::time::sleep(period) => Ok(()),
-        _ = signals.recv() => Err(()),
-    }
+    Ok(0)
 }
 
 // ── kill ─────────────────────────────────────────────────────────────────────
 
+/// Ends a group's tmux session as the operator asked: the turn in progress is
+/// recorded as `Killed { by: "cli" }`, the state becomes `NoSession`, and tmux
+/// is told to kill the session. Returns whether there was anything to end.
+async fn end_session_by_cli(
+    registry: &Registry,
+    runtime: &dyn SessionRuntime,
+    group: &Group,
+) -> Result<bool, SessionsError> {
+    let slug = group.key.slug();
+    let mut txn = registry.begin().await?;
+    let changed = txn
+        .end_session(
+            &group.key,
+            RunResult::Killed { by: "cli".into() },
+            None,
+            chrono::Duration::zero(),
+        )
+        .await?;
+    txn.commit().await?;
+
+    // Asked even when the registry thought there was no session: a stray tmux
+    // session is exactly what an operator running `kill` wants gone.
+    let existed = runtime.exists(&slug).await;
+    runtime
+        .kill(&slug)
+        .await
+        .map_err(|e| SessionsError::Failed(format!("cannot kill the session for {slug}: {e}")))?;
+    Ok(changed || existed)
+}
+
 async fn kill(
     slug: &str,
     drain: bool,
-    env: &SessionEnv,
     registry: &Registry,
+    runtime: &dyn SessionRuntime,
     out: &mut (dyn Write + Send),
 ) -> Result<i32, SessionsError> {
     let Some(group) = lookup(registry, slug, out).await? else {
         return Ok(EXIT_NO_SUCH_GROUP);
     };
 
-    match group.state {
-        GroupState::Idle => {
-            writeln!(out, "{slug} is not running")?;
-        }
-        GroupState::NoSession => {
-            writeln!(out, "{slug} has no session")?;
-        }
-        GroupState::Starting { .. }
-        | GroupState::Ready { .. }
-        | GroupState::Delivering { .. }
-        | GroupState::Busy { .. } => {
+    let turn = matches!(
+        group.state,
+        GroupState::Busy { .. } | GroupState::Delivering { .. }
+    );
+    if end_session_by_cli(registry, runtime, &group).await? {
+        if turn {
             writeln!(
                 out,
-                "{slug} is a tmux session; killing those is not supported yet"
+                "killed the session for {slug}; its turn is recorded as killed"
             )?;
+        } else {
+            writeln!(out, "killed the session for {slug}")?;
         }
-        GroupState::Running { pid, started_at } | GroupState::Attached { pid, started_at } => {
-            writeln!(out, "stopping pid {pid}…")?;
-            out.flush()?;
-            stop_process(registry, &group.key, pid, started_at, env, "cli").await?;
-            writeln!(out, "{slug} stopped")?;
-        }
+    } else {
+        writeln!(out, "{slug} has no session")?;
     }
 
     if drain {
@@ -694,10 +741,42 @@ async fn kill(
             .unwrap_or(0);
         writeln!(
             out,
-            "{queued} queued event(s) still waiting; they run on the next scan"
+            "{queued} queued event(s) still waiting; the next one starts a fresh session that resumes the conversation"
         )?;
     }
 
+    Ok(0)
+}
+
+// ── release ──────────────────────────────────────────────────────────────────
+
+async fn release(
+    slug: &str,
+    registry: &Registry,
+    runtime: &dyn SessionRuntime,
+    out: &mut (dyn Write + Send),
+) -> Result<i32, SessionsError> {
+    let Some(group) = lookup(registry, slug, out).await? else {
+        return Ok(EXIT_NO_SUCH_GROUP);
+    };
+    let alive = runtime.exists(slug).await;
+    let pane_pid = if alive {
+        runtime.pane_pid(slug).await.unwrap_or(0)
+    } else {
+        0
+    };
+
+    let mut txn = registry.begin().await?;
+    let changes = txn.release_session(&group.key, alive, pane_pid).await?;
+    txn.commit().await?;
+
+    if changes.is_empty() {
+        writeln!(out, "nothing to release for {slug}")?;
+    } else {
+        for change in &changes {
+            writeln!(out, "{slug}: {change}")?;
+        }
+    }
     Ok(0)
 }
 
@@ -728,27 +807,17 @@ fn summarise(queued: &QueuedEvent) -> String {
 
 async fn reset(
     slug: &str,
-    force: bool,
-    env: &SessionEnv,
     registry: &Registry,
+    runtime: &dyn SessionRuntime,
     out: &mut (dyn Write + Send),
 ) -> Result<i32, SessionsError> {
     let Some(group) = lookup(registry, slug, out).await? else {
         return Ok(EXIT_NO_SUCH_GROUP);
     };
 
-    if let Some((pid, started_at)) = busy(&group.state) {
-        if !force {
-            writeln!(
-                out,
-                "{slug} is {} (pid {pid}); use --force to stop it first",
-                state_word(&group.state)
-            )?;
-            return Ok(EXIT_REFUSED);
-        }
-        writeln!(out, "stopping pid {pid}…")?;
-        out.flush()?;
-        stop_process(registry, &group.key, pid, started_at, env, "cli").await?;
+    // The old conversation's session must not outlive its id.
+    if end_session_by_cli(registry, runtime, &group).await? {
+        writeln!(out, "killed the running session for {slug}")?;
     }
 
     let mut txn = registry.begin().await?;
@@ -770,38 +839,55 @@ async fn close(
     force: bool,
     env: &SessionEnv,
     registry: &Registry,
+    runtime: &dyn SessionRuntime,
     out: &mut (dyn Write + Send),
 ) -> Result<i32, SessionsError> {
     let Some(group) = lookup(registry, slug, out).await? else {
         return Ok(EXIT_NO_SUCH_GROUP);
     };
 
-    if let Some((pid, started_at)) = busy(&group.state) {
-        if !force {
+    let live = group.state.is_tmux() && group.state != GroupState::NoSession;
+    let clients = if live {
+        runtime.clients(slug).await.len()
+    } else {
+        0
+    };
+
+    if !force {
+        if live && !matches!(group.state, GroupState::Ready { .. }) {
             writeln!(
                 out,
-                "{slug} is {} (pid {pid}); use --force to stop it and close anyway",
-                state_word(&group.state)
+                "{slug} is {}; use --force to kill it and close anyway",
+                describe_state(&group.state, Utc::now())
             )?;
             return Ok(EXIT_REFUSED);
         }
-        writeln!(out, "stopping pid {pid}…")?;
-        out.flush()?;
-        stop_process(registry, &group.key, pid, started_at, env, "cli").await?;
-    }
-
-    if !group.pending.is_empty() && !force {
-        writeln!(
-            out,
-            "{slug} has {} queued event(s); use --force to discard them and close",
-            group.pending.len()
-        )?;
-        return Ok(EXIT_REFUSED);
+        if clients > 0 {
+            writeln!(
+                out,
+                "{slug} has {clients} client(s) attached; use --force to detach them and close"
+            )?;
+            return Ok(EXIT_REFUSED);
+        }
+        if !group.pending.is_empty() {
+            writeln!(
+                out,
+                "{slug} has {} queued event(s); use --force to discard them and close",
+                group.pending.len()
+            )?;
+            return Ok(EXIT_REFUSED);
+        }
+    } else if clients > 0 {
+        writeln!(out, "detaching {clients} client(s) from {slug}…")?;
+        runtime
+            .detach_clients(slug)
+            .await
+            .map_err(|e| SessionsError::Failed(format!("cannot detach clients: {e}")))?;
     }
 
     let mode = CloseMode::Manual { force };
     let (branches, _issues) =
-        match close_group(registry, &env.repo_root, &group.key, mode, None).await? {
+        match close_group(registry, &env.repo_root, &group.key, mode, Some(runtime)).await? {
             CloseOutcome::Closed { branches, issues } => (branches, issues),
             CloseOutcome::Gone => {
                 writeln!(out, "{slug} was already gone")?;
@@ -825,7 +911,7 @@ async fn close(
             CloseOutcome::Busy => {
                 writeln!(
                     out,
-                    "{slug} became busy; use --force to stop it and close anyway"
+                    "{slug} became busy or was attached; use --force to kill it and close anyway"
                 )?;
                 return Ok(EXIT_REFUSED);
             }
@@ -879,91 +965,10 @@ async fn lookup(
     Ok(None)
 }
 
-/// The process backing a group, when it has one.
-fn busy(state: &GroupState) -> Option<(u32, DateTime<Utc>)> {
-    match state {
-        GroupState::Running { pid, started_at } | GroupState::Attached { pid, started_at } => {
-            Some((*pid, *started_at))
-        }
-        _ => None,
-    }
-}
-
-fn state_word(state: &GroupState) -> &'static str {
-    match state {
-        GroupState::Idle => "idle",
-        GroupState::Running { .. } => "running",
-        GroupState::Attached { .. } => "attached",
-        GroupState::NoSession => "no_session",
-        GroupState::Starting { .. } => "starting",
-        GroupState::Ready { .. } => "ready",
-        GroupState::Delivering { .. } => "delivering",
-        GroupState::Busy { .. } => "busy",
-    }
-}
-
-/// `SIGTERM`, then `SIGKILL` after the grace, then record the outcome.
-///
-/// The process belongs to `conductor serve`, not to us, so it cannot be
-/// `wait()`ed for — liveness is polled with the same start-time-aware check the
-/// registry uses, which is what stops a recycled PID being read as "still
-/// running" and leaving us waiting on a stranger's process.
-///
-/// The outcome is written after the process is confirmed gone. If the server is
-/// also running it will record its own view of the same death as it reaps the
-/// child; whichever transaction commits last wins, so the recorded outcome may
-/// be the server's `signaled 15` rather than this `killed`. The group ends up
-/// `Idle` either way, which is the part that matters.
-async fn stop_process(
-    registry: &Registry,
-    key: &GroupKey,
-    pid: u32,
-    started_at: DateTime<Utc>,
-    env: &SessionEnv,
-    by: &str,
-) -> Result<(), SessionsError> {
-    signal_process(pid, Signal::SIGTERM);
-
-    if !await_death(pid, started_at, env.kill_grace).await {
-        tracing::warn!(pid, "process ignored SIGTERM; sending SIGKILL");
-        signal_process(pid, Signal::SIGKILL);
-        // SIGKILL cannot be caught, so this only waits out the kernel.
-        await_death(pid, started_at, env.kill_grace).await;
-    }
-
-    let mut txn = registry.begin().await?;
-    let now = txn.now();
-    txn.finish_run(
-        key,
-        &RunOutcome {
-            result: RunResult::Killed { by: by.to_string() },
-            finished_at: now,
-            duration: (now - started_at).to_std().unwrap_or_default(),
-            model: None,
-        },
-    )
-    .await?;
-    txn.commit().await?;
-    Ok(())
-}
-
-/// Polls until the process is gone, or the deadline passes. Returns whether it died.
-async fn await_death(pid: u32, started_at: DateTime<Utc>, within: Duration) -> bool {
-    let deadline = tokio::time::Instant::now() + within;
-    loop {
-        if !process_is_alive(pid, started_at) {
-            return true;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(DEATH_POLL).await;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn outcome(result: RunResult) -> RunOutcome {
         RunOutcome {
@@ -1037,14 +1042,56 @@ mod tests {
     }
 
     #[test]
-    fn a_running_state_shows_how_long_it_has_been_going() {
+    fn states_read_as_the_operator_expects() {
         let now = Utc::now();
-        let state = GroupState::Running {
-            pid: 42,
-            started_at: now - chrono::Duration::minutes(7),
-        };
-        assert_eq!(describe_state(&state, now), "running 7m");
-        assert_eq!(describe_state(&GroupState::Idle, now), "idle");
+        let ago = now - chrono::Duration::minutes(7);
+        assert_eq!(describe_state(&GroupState::NoSession, now), "no session");
+        assert_eq!(describe_state(&GroupState::Idle, now), "no session");
+        assert_eq!(
+            describe_state(&GroupState::Starting { since: ago }, now),
+            "starting"
+        );
+        assert_eq!(
+            describe_state(
+                &GroupState::Ready {
+                    pane_pid: 1,
+                    since: ago
+                },
+                now
+            ),
+            "ready"
+        );
+        assert_eq!(
+            describe_state(
+                &GroupState::Delivering {
+                    since: ago,
+                    event_id: 1
+                },
+                now
+            ),
+            "delivering"
+        );
+        // Who started the turn is the point of the label.
+        assert_eq!(
+            describe_state(
+                &GroupState::Busy {
+                    since: ago,
+                    delivered_event: Some(1)
+                },
+                now
+            ),
+            "busy (agent) 7m"
+        );
+        assert_eq!(
+            describe_state(
+                &GroupState::Busy {
+                    since: ago,
+                    delivered_event: None
+                },
+                now
+            ),
+            "busy (you) 7m"
+        );
     }
 
     #[test]
