@@ -74,30 +74,6 @@ lives *outside* this machine (object storage or Terraform Cloud), which breaks t
 cycle without depending on one local file — not `pg` on a cluster inside the VM
 being managed.
 
-### Apply order
-
-```bash
-terraform -chdir=infra/terraform/vault-ssh apply  # layer 0, once (see below)
-terraform -chdir=infra/terraform/orbstack  apply  # then layer 1
-terraform -chdir=infra/terraform/tmux      apply  # then layer 2
-```
-
-Layers 1 and 2 need no cluster, port-forward or credential. **Layer 0 needs all
-three**, which is why it is a separate root module rather than part of either:
-folding Vault configuration into them would have cost them that property, and it
-is the property that makes them usable when the cluster is broken.
-
-Layer 0 is also not part of the enforced chain. `tmux/remote-state.tf` reads
-layer 1's state, so that ordering fails loudly if ignored; nothing reads layer
-0's state, because the thing it produces is consumed by `sshd` on the host
-rather than by Terraform. Applying it is a one-time step, not part of the
-routine cycle.
-
-The ordering is **enforced, not just documented**. `tmux/remote-state.tf` reads
-layer 1's state, and reading a state that does not exist is an error, so a `plan`
-in `tmux/` fails with `Unable to find remote state` until `orbstack/` has been
-applied at least once. If you see that, apply layer 1 — the guardrail is working.
-
 ### Loose end: the unused `terraform` database
 
 `infra/charts/nexus/postgres/templates/nexus-cluster.yaml` still declares a
@@ -106,6 +82,95 @@ uses it now. It is harmless — the Zalando operator creates databases but never
 drops them, so removing the declaration would not delete it either — but it is
 cruft, along with the `terraform_state_orbstack` / `terraform_state_tmux` schemas
 left inside it. Both want cleaning up in a follow-up.
+
+## Applying
+
+Terraform **runs on the host**, in a checkout of this repo on the Mac mini. That
+is a deliberate decision, not a limitation: these layers manage the machine the
+cluster runs inside, and the state describing that machine should live on it.
+Nothing else applies, so there is only ever one copy of the truth.
+
+Two consequences worth stating, because they are easy to assume otherwise:
+
+* **Terraform does not use SSH to reach the host.** It is already on it.
+  Resources are local — `local_file`, `terraform_data` with `local-exec` for
+  `launchctl` and `orb` — not SSH provisioners.
+* **`vault-ssh/` is not part of this flow.** It exists for future automation
+  that needs to connect from elsewhere. Applying it is not a prerequisite for
+  anything here, and this wrapper does not touch it. Asking for it by name is
+  refused.
+
+### From the host
+
+```bash
+make -C infra/terraform plan                 # both layers, in order
+make -C infra/terraform apply                # both layers, interactive
+make -C infra/terraform plan  LAYER=tmux     # one layer
+make -C infra/terraform apply LAYER=orbstack
+```
+
+Layer order is `orbstack`, then `tmux`, because `tmux/` reads
+`../orbstack/terraform.tfstate`. A failed layer stops the run, so a later layer
+is never applied on top of a broken earlier one.
+
+### From a laptop
+
+```bash
+ssh -t agent@Lasses-Mac-mini \
+  'cd Documents/Projects/nexus && git pull --ff-only && make -C infra/terraform apply'
+```
+
+`-t` because `apply` prompts: the wrapper never passes `-auto-approve`, so the
+confirmation is Terraform's own.
+
+### One-time setup on the host
+
+1. Clone this repo as the `agent` account.
+2. Install Terraform ≥ 1.6 (`terraform version` to confirm; 1.16.4 at the time
+   of writing).
+
+Nothing else. No Vault token, no port-forward, no cluster — unlike `vault-ssh/`,
+which needs all three.
+
+### What the wrapper refuses, and why
+
+| Refusal | Why |
+|---|---|
+| Not on the host (`scutil --get LocalHostName` ≠ `HOST_NAME`) | This is what keeps state off a laptop. `scutil` missing counts as "not the host", so a Linux box is refused too rather than erroring. |
+| `apply` with a dirty working tree | The host should be configured from committed code, not from someone's edits. |
+| `apply` when `HEAD` ≠ `origin/main` | The host should match what was reviewed. Checked after `git fetch origin main`. |
+| An unknown `LAYER` | Catches typos, and says plainly that `vault-ssh` is not in this flow. |
+
+`plan` is deliberately exempt from the tree and branch checks — it is read-only,
+and planning a branch before merging it is the point.
+
+`FORCE=1` skips the tree and branch checks, with a warning on stderr. It does
+**not** skip the host check: that one protects where state lives, which is the
+whole decision.
+
+### State backups
+
+Before each `apply`, the layer's current `terraform.tfstate` is copied to
+`<layer>/backups/terraform.tfstate.<UTC timestamp>`, keeping the last 20. The
+directory is gitignored.
+
+This is the minimal answer to "local state has no backup", below. **Known gap:
+the backups are on the same disk as the state they protect.** They survive a
+corrupting `apply`, which is the common case, and not a lost or wiped machine.
+Off-host backup is a separate piece of work.
+
+### Limits, plainly
+
+* **Merging to `main` changes nothing on the host.** Someone has to run
+  `make apply`. There is no reconciliation loop here, unlike the Helm charts
+  ArgoCD watches.
+* **No CI-triggered apply.** GitHub-hosted runners cannot reach the host. A
+  self-hosted runner on the host could call `bin/terraform-run` unchanged, which
+  is why the guards live in the script rather than in the Makefile.
+* **The ordering between layers is enforced for `tmux`, not for layer 0.**
+  `tmux/remote-state.tf` fails to plan until `orbstack/` has been applied once.
+  Nothing reads `vault-ssh/`'s state, so nothing enforces anything about it.
+
 
 ## SSH access to the host (layer 0)
 
