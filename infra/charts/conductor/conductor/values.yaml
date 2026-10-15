@@ -6,7 +6,7 @@ image:
   # missing file. (0.1.0 and 0.1.1 additionally carry two defects the
   # in-container workspace build found: a login shell lost the Rust toolchain
   # from PATH, and clippy/rustfmt were on the wrong toolchain.)
-  tag: "0.1.7"
+  tag: "0.1.8"
 claude:
   # Model for every Claude process conductor starts (`--model`). `sonnet` is an
   # alias that follows the newest Sonnet known to the image's pinned Claude Code
