@@ -88,7 +88,7 @@ async fn a_lost_first_enter_is_resent_until_the_turn_starts(pool: PgPool) {
     // Enter that arrived with the paste, so every task sat unsent in the
     // composer and delivery timed out. Sending Enter again submitted it.
     let h = Harness::new(pool).with_fake(60, 0, None, false);
-    h.fake.swallow_enters.store(1, Ordering::SeqCst);
+    *h.fake.swallow_enters.lock().unwrap() = 1;
     let (_d, sink) = h.start();
 
     sink.submit(linear_event("NEX-1", "lost-enter", Some("d1")));
