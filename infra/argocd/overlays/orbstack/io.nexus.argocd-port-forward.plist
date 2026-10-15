@@ -8,14 +8,17 @@
   so the UI is accessible at https://<lb-ip> without any port-forward.
   This plist is kept for convenience if you prefer https://localhost:8080.
 
-  Install once:
-    cp infra/argocd/overlays/orbstack/io.nexus.argocd-port-forward.plist \
-       ~/Library/LaunchAgents/
-    launchctl load -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+  Installed and loaded by Terraform (infra/terraform/orbstack/), which runs on the
+  host. From a checkout on the Mac mini:
 
-  Uninstall:
-    launchctl unload -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
-    rm ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+    cd infra/terraform && make apply LAYER=orbstack
+
+  Terraform copies this file to ~/Library/LaunchAgents/ and reloads the agent only
+  when the file changes. Do not `cp` or `launchctl load` it by hand: the manual
+  steps are deprecated and would fight Terraform over the same file.
+
+  Uninstall: remove launchagent-argocd-port-forward.tf and apply; Terraform boots
+  the agent out and deletes the installed copy.
 
   Logs:
     tail -f /tmp/argocd-port-forward.log
