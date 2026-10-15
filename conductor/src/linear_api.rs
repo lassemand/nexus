@@ -90,8 +90,19 @@ struct Envelope<T> {
 struct Node {
     identifier: String,
     state: NodeState,
+    /// `Option` because Linear sends `null` here for an issue that is not
+    /// trashed, rather than `false`. `#[serde(default)]` alone does not cover
+    /// that: it supplies a value for an *absent* field, while an explicit null
+    /// is a type error against `bool`. Deserialising it as `bool` failed the
+    /// whole response —
+    ///   malformed Linear response: invalid type: null, expected a boolean
+    /// — which made the auto-close sweep unable to read any set, and because
+    /// the sweep fails safe the only symptom was a warning in the log while
+    /// nothing ever closed.
+    ///
+    /// Absent, null and `false` all mean the same thing: not trashed.
     #[serde(default)]
-    trashed: bool,
+    trashed: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -127,7 +138,7 @@ struct IssueData {
 
 impl Node {
     fn into_set_issue(self) -> Option<SetIssue> {
-        (!self.trashed).then_some(SetIssue {
+        (!self.trashed.unwrap_or(false)).then_some(SetIssue {
             identifier: self.identifier,
             state_type: self.state.state_type,
         })
@@ -325,6 +336,53 @@ mod tests {
         let got = client(&server).issues_in_set(&named("g")).await.unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].identifier, "NEX-1");
+    }
+
+    #[tokio::test]
+    async fn trashed_null_means_not_trashed() {
+        // What Linear actually sends for an issue that is not trashed. Parsing
+        // this as `bool` failed the entire response, so a single such issue
+        // blocked auto-close for the whole set.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "data": { "issues": {
+                    "nodes": [
+                        { "identifier": "NEX-1", "state": { "type": "completed" }, "trashed": null },
+                        { "identifier": "NEX-2", "state": { "type": "started" } },
+                    ],
+                    "pageInfo": { "hasNextPage": false, "endCursor": null }
+                }}})),
+            )
+            .mount(&server)
+            .await;
+        let got = client(&server).issues_in_set(&named("g")).await.unwrap();
+        assert_eq!(
+            got.iter()
+                .map(|i| i.identifier.as_str())
+                .collect::<Vec<_>>(),
+            ["NEX-1", "NEX-2"],
+            "null and absent both mean not trashed"
+        );
+    }
+
+    #[tokio::test]
+    async fn trashed_null_on_the_single_issue_query_too() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "data": { "issue": {
+                    "identifier": "NEX-9", "state": { "type": "started" }, "trashed": null
+                }}})),
+            )
+            .mount(&server)
+            .await;
+        let got = client(&server)
+            .issues_in_set(&GroupKey::Issue("NEX-9".into()))
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 1, "a null trashed must not drop the issue");
+        assert_eq!(got[0].identifier, "NEX-9");
     }
 
     #[tokio::test]
