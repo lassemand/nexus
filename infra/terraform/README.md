@@ -120,10 +120,10 @@ pull from Vault directly.
 | Secret | Consumed by | Where it lives today | Gap |
 |---|---|---|---|
 | Hookdeck CLI API key | `hookdeck listen` | `~/.config/hookdeck/config.toml` (mode `0600`, per-user) | Static local file, not in Vault — lost on machine rebuild |
-| `GITHUB_WEBHOOK_SECRET` | `mcp` server, verifies `X-Hub-Signature-256` | **unset** | Verification is silently skipped; unsigned payloads are accepted |
+| `GITHUB_WEBHOOK_SECRET` | removed `mcp` server (now `conductor`), verifies `X-Hub-Signature-256` | **unset** | Verification is silently skipped; unsigned payloads are accepted |
 | GitHub App private key | `github-mcp-server` | `/Users/agent/.config/github-mcp/private-key.pem` | Mode `0644` — world-readable |
 | `LINEAR_API_TOKEN` | linear MCP server | `~/.claude.json` | Plaintext in a config file |
-| `GITHUB_WEBHOOK_USERS` | `mcp` server | unset (defaults to `lassemand`) | Not a secret — plain config, fine as-is |
+| `GITHUB_WEBHOOK_USERS` | removed `mcp` server (now `conductor`) | unset (defaults to `lassemand`) | Not a secret — plain config, fine as-is |
 
 ### Storing them in Vault
 

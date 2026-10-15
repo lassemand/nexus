@@ -3,9 +3,9 @@
 The webhook router that runs Claude Code agent sessions — one per session
 group, each in its own git worktree on the pod's volume.
 
-Deployed with **webhook intake switched off**. The local `mcp` setup is still
-receiving Linear events; enabling intake here before that is retired would have
-both dispatching the same work twice. Intake is enabled at cutover (NEX-132).
+The old local `mcp` webhook pipeline has been removed from the repository
+(NEX-140). Make sure no `hookdeck listen` is still running on any machine, or
+every event is worked twice.
 
 ```
 Linear ──┐
@@ -151,7 +151,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8788/health   # 200
 
 ## Enabling webhook intake
 
-Only after NEX-132 has retired the local `mcp` setup:
+Only once no local `hookdeck listen` is running anywhere:
 
 ```yaml
 hookdeck:
@@ -181,7 +181,7 @@ The dispatcher verifies each group's recorded PID against its own `/proc` to
 decide whether a run is still alive. A second pod reads the first pod's live
 runs as dead, marks them `Lost`, resets those groups to `Idle`, and starts
 duplicate runs in them — two concurrent resumes of one Claude conversation,
-the exact failure conductor replaced `mcp-watchdog.sh` to eliminate.
+the exact failure conductor replaced the old local watchdog to eliminate.
 
 `Recreate` is part of the requirement: the default `RollingUpdate` briefly runs
 two pods, and that window is long enough for the new pod's startup reconcile to

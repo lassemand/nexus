@@ -45,7 +45,6 @@ COPY chronicle/Cargo.toml chronicle/Cargo.toml
 COPY signal/Cargo.toml    signal/Cargo.toml
 COPY insight/Cargo.toml   insight/Cargo.toml
 COPY cli/Cargo.toml       cli/Cargo.toml
-COPY mcp/Cargo.toml       mcp/Cargo.toml
 COPY conductor/Cargo.toml conductor/Cargo.toml
 
 # Placeholder sources so Cargo can parse the workspace.
@@ -59,7 +58,7 @@ COPY conductor/Cargo.toml conductor/Cargo.toml
 # which is a release-only failure, since the image is not built on pull
 # requests.
 RUN mkdir -p \
-      model/src alpha/src chronicle/src signal/src insight/src cli/src mcp/src \
+      model/src alpha/src chronicle/src signal/src insight/src cli/src \
       conductor/src conductor/tests/fixtures/fake-claude-tty \
     && touch model/src/lib.rs alpha/src/lib.rs conductor/src/lib.rs \
     && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
@@ -73,7 +72,6 @@ RUN mkdir -p \
         signal/src/scanner.rs \
         insight/src/main.rs \
         cli/src/main.rs \
-        mcp/src/main.rs \
         conductor/src/main.rs \
         conductor/tests/fixtures/fake-claude-tty/main.rs
 

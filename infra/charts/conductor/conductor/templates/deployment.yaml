@@ -12,7 +12,7 @@ spec:
   # (NEX-126). A second pod reads the first pod's live runs as dead, records
   # them Lost, resets those groups to Idle, and then starts duplicate runs in
   # them — two concurrent resumes of one Claude conversation, which is the
-  # exact failure conductor replaced mcp-watchdog.sh to eliminate.
+  # exact failure conductor replaced the old local watchdog to eliminate.
   #
   # `Recreate` is part of the requirement, not tidiness: the default
   # RollingUpdate briefly runs two pods, and that window is long enough for the
