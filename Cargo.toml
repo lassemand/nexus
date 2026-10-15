@@ -6,7 +6,6 @@ members = [
     "signal",
     "insight",
     "cli",
-    "mcp",
     "conductor"
 ]
 resolver = "2"
