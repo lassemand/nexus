@@ -1,12 +1,16 @@
 # Local provider/module cache
 .terraform/
 
-# Any state that ends up on disk (e.g. a stray `terraform apply` before init,
-# or `terraform state pull`). Remote state is authoritative; local copies are
-# credential-adjacent and must never be committed.
+# State. All three layers keep it locally and on the host deliberately (see
+# README.md), so these files ARE the authoritative state — which is exactly why
+# they must never be committed: state is credential-adjacent, and a copy in git
+# would be both a leak and a second source of truth.
+#
+# `backups/` holds the pre-apply copies bin/terraform-run makes.
 *.tfstate
 *.tfstate.*
 .terraform.tfstate.lock.info
+backups/
 
 # Variable files may carry secrets
 *.tfvars

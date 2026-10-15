@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+#
+# One entrypoint for Terraform in this repo. The Makefile is a thin wrapper
+# around it, and a future self-hosted runner on the host could call it
+# unchanged.
+#
+# Why a script and not just Make: the guards below are the point of this
+# wrapper, and conditional logic in a Makefile recipe — where every line is its
+# own shell and `$` is contested — is where mistakes hide.
+#
+# macOS ships GNU Make 3.81 and bash 3.2. Nothing here relies on anything newer:
+# no associative arrays, no `mapfile`, no `${var^^}`.
+set -euo pipefail
+
+ACTION="${1:-}"
+case "$ACTION" in
+  plan | apply) ;;
+  *)
+    echo "usage: terraform-run {plan|apply} [layer]" >&2
+    exit 64
+    ;;
+esac
+
+# Repo-relative, so the script works from any working directory.
+TF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "${TF_DIR}/../.." && pwd)"
+
+# Order matters: tmux/ reads ../orbstack/terraform.tfstate, so orbstack must
+# have been applied at least once before tmux can plan.
+ALL_LAYERS="orbstack tmux"
+
+HOST_NAME="${HOST_NAME:-Lasses-Mac-mini}"
+HOST_USER="${HOST_USER:-agent}"
+FORCE="${FORCE:-}"
+LAYER="${2:-${LAYER:-}}"
+
+# ── guard 1: the host ────────────────────────────────────────────────────────
+#
+# This is what keeps state off a laptop. `scutil` is macOS-only, so its absence
+# is itself a refusal rather than an error — a Linux box is not the host either.
+this_host="$(scutil --get LocalHostName 2>/dev/null || echo "not-a-mac")"
+if [[ "$this_host" != "$HOST_NAME" ]]; then
+  cat >&2 <<MSG
+refusing: terraform for this repo runs on the host (${HOST_NAME}) so its state stays there — run: ssh -t ${HOST_USER}@${HOST_NAME} 'cd $(basename "$REPO_ROOT") && make apply'
+  this machine reports: ${this_host}
+MSG
+  exit 1
+fi
+
+# ── guard 2: apply only what is on main ─────────────────────────────────────
+#
+# plan is read-only, so it is left alone; being able to plan a branch is the
+# point of planning.
+if [[ "$ACTION" == "apply" ]]; then
+  if [[ -n "$FORCE" ]]; then
+    echo "warning: FORCE set — applying without checking the tree is clean or on main" >&2
+  else
+    if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+      echo "refusing: working tree is not clean; the host must be configured from committed code" >&2
+      echo "  (git status --porcelain is non-empty; use FORCE=1 to override)" >&2
+      exit 1
+    fi
+    git -C "$REPO_ROOT" fetch --quiet origin main
+    head_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    main_sha="$(git -C "$REPO_ROOT" rev-parse origin/main)"
+    if [[ "$head_sha" != "$main_sha" ]]; then
+      echo "refusing: HEAD is not origin/main; the host must be configured from main" >&2
+      echo "  HEAD        ${head_sha}" >&2
+      echo "  origin/main ${main_sha}" >&2
+      echo "  (use FORCE=1 to override)" >&2
+      exit 1
+    fi
+  fi
+fi
+
+# ── which layers ─────────────────────────────────────────────────────────────
+if [[ -n "$LAYER" ]]; then
+  found=""
+  for candidate in $ALL_LAYERS; do
+    [[ "$candidate" == "$LAYER" ]] && found=yes
+  done
+  if [[ -z "$found" ]]; then
+    echo "unknown layer '${LAYER}'; known layers: ${ALL_LAYERS}" >&2
+    echo "  (vault-ssh is deliberately not part of this flow — see README)" >&2
+    exit 64
+  fi
+  layers="$LAYER"
+else
+  layers="$ALL_LAYERS"
+fi
+
+# Backups keep the last 20. Local state has no other backup, and an apply that
+# corrupts state with no copy is unrecoverable by hand.
+KEEP_BACKUPS=20
+
+backup_state() {
+  local dir="$1" state="$1/terraform.tfstate"
+  [[ -f "$state" ]] || return 0
+  mkdir -p "${dir}/backups"
+  local stamp
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  cp "$state" "${dir}/backups/terraform.tfstate.${stamp}"
+  echo "  state backed up to backups/terraform.tfstate.${stamp}"
+  # Oldest first by name, which sorts chronologically for this format; drop all
+  # but the newest $KEEP_BACKUPS.
+  local count
+  count="$(ls -1 "${dir}/backups" | wc -l | tr -d ' ')"
+  if [[ "$count" -gt "$KEEP_BACKUPS" ]]; then
+    ls -1 "${dir}/backups" | sort | head -n "$((count - KEEP_BACKUPS))" | while read -r old; do
+      rm -f "${dir}/backups/${old}"
+    done
+  fi
+}
+
+sha="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+
+for layer in $layers; do
+  dir="${TF_DIR}/${layer}"
+  echo
+  echo "── ${ACTION}: ${layer} ─────────────────────────────────────────────"
+  echo "  commit      ${sha}"
+  echo "  state       ${dir}/terraform.tfstate"
+  echo "  host        ${this_host}"
+
+  if ! terraform -chdir="$dir" init -input=false >/dev/null; then
+    echo "FAILED: ${layer} (init)" >&2
+    exit 1
+  fi
+
+  if [[ "$ACTION" == "apply" ]]; then
+    backup_state "$dir"
+  fi
+
+  # No -auto-approve: the operator confirms each layer. A failure here stops the
+  # loop, so a later layer is never applied on top of a broken earlier one.
+  if ! terraform -chdir="$dir" "$ACTION" -input="$([[ "$ACTION" == "apply" ]] && echo true || echo false)"; then
+    echo "FAILED: ${layer} (${ACTION}) — later layers were not run" >&2
+    exit 1
+  fi
+done
+
+echo
+echo "${ACTION} complete: ${layers}"
