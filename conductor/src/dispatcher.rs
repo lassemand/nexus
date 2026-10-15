@@ -1311,14 +1311,23 @@ pub async fn launch_session(
         !matches!(s, GroupState::Starting { .. })
     })
     .await;
+    start_outcome(reached, spec.start_timeout)
+}
+
+/// Whether a session counts as started, given the first state seen once it left
+/// `Starting`.
+///
+/// Anything past `Starting` is success: the scheduler may already have claimed
+/// the group for delivery (`Delivering`) or a human may already have typed
+/// (`Busy`) by the time this looks. Only a session that has ended is a failure,
+/// and `None` means nothing arrived in time.
+fn start_outcome(reached: Option<GroupState>, timeout: Duration) -> Result<(), String> {
     match reached {
-        // Ready, or already past it (a human typed before we looked).
-        Some(GroupState::Ready { .. } | GroupState::Busy { .. }) => Ok(()),
-        Some(other) => Err(format!("session ended while starting ({other:?})")),
-        None => Err(format!(
-            "no SessionStart within {}s",
-            spec.start_timeout.as_secs()
-        )),
+        Some(GroupState::NoSession | GroupState::Idle) => {
+            Err("session ended while starting".into())
+        }
+        Some(_) => Ok(()),
+        None => Err(format!("no SessionStart within {}s", timeout.as_secs())),
     }
 }
 
@@ -1670,6 +1679,31 @@ mod config_tests {
             close_sweep_mins: 30,
             github_token: None,
         }
+    }
+
+    #[test]
+    fn a_session_that_moved_on_before_we_looked_still_counts_as_started() {
+        let now = chrono::Utc::now();
+        let t = Duration::from_secs(60);
+        for state in [
+            GroupState::Ready {
+                pane_pid: 1,
+                since: now,
+            },
+            // The scheduler can claim the group the instant it is Ready.
+            GroupState::Delivering {
+                since: now,
+                event_id: 1,
+            },
+            GroupState::Busy {
+                since: now,
+                delivered_event: None,
+            },
+        ] {
+            assert_eq!(start_outcome(Some(state.clone()), t), Ok(()), "{state:?}");
+        }
+        assert!(start_outcome(Some(GroupState::NoSession), t).is_err());
+        assert!(start_outcome(None, t).unwrap_err().contains("60s"));
     }
 
     #[test]

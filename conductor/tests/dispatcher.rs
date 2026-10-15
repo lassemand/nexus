@@ -344,12 +344,13 @@ async fn a_human_typing_while_ready_is_a_human_turn(pool: PgPool) {
     let (_d, sink) = h.start();
     let key = group("human");
     sink.submit(linear_event("NEX-1", "human", Some("d1")));
+    // Ready *and* done: the session is briefly Ready before the task is pasted.
     assert!(
         h.wait_for_group(&key, PATIENCE, |g| matches!(
             g.state,
             GroupState::Ready { .. }
-        ))
-        .await
+        ) && !g.issues.is_empty())
+            .await
     );
 
     h.fake.hook(&key.slug(), "UserPromptSubmit").await;
