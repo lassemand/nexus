@@ -82,6 +82,32 @@ async fn runs_in_one_group_never_overlap_and_keep_order(pool: PgPool) {
     }
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn a_lost_first_enter_is_resent_until_the_turn_starts(pool: PgPool) {
+    // The production failure this encodes: Claude Code's TUI did not act on the
+    // Enter that arrived with the paste, so every task sat unsent in the
+    // composer and delivery timed out. Sending Enter again submitted it.
+    let h = Harness::new(pool).with_fake(60, 0, None, false);
+    h.fake.swallow_enters.store(1, Ordering::SeqCst);
+    let (_d, sink) = h.start();
+
+    sink.submit(linear_event("NEX-1", "lost-enter", Some("d1")));
+
+    assert!(
+        h.wait_for_runs(1, PATIENCE).await,
+        "a swallowed first Enter must not cost the delivery"
+    );
+    let key = group("lost-enter");
+    assert!(
+        h.group(&key).await.expect("group").delivery_blocked.is_none(),
+        "delivery must not be blocked once a later Enter lands"
+    );
+    // The crucial half: the text was pasted once. Re-pasting could run a task
+    // twice, which is why only the Enter is repeated.
+    let pastes = h.fake.delivered.lock().unwrap().len();
+    assert_eq!(pastes, 1, "the prompt must be pasted exactly once");
+}
+
 // ── the global cap ───────────────────────────────────────────────────────────
 
 #[sqlx::test(migrations = "./migrations")]

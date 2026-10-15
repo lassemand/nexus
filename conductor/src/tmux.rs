@@ -74,7 +74,21 @@ pub trait SessionRuntime: Send + Sync + 'static {
     async fn list_sessions(&self) -> Result<Vec<String>, TmuxError>;
 
     /// Pastes `text` as one bracketed paste, then submits it with Enter.
+    ///
+    /// The Enter can be lost: Claude Code's TUI does not always act on one that
+    /// arrives in the same instant as the paste it follows, which left tasks
+    /// sitting unsent in the composer until delivery timed out. The dispatcher
+    /// therefore re-sends it via [`SessionRuntime::submit`] until the
+    /// `UserPromptSubmit` hook confirms the turn started.
     async fn deliver(&self, slug: &str, text: &str) -> Result<(), TmuxError>;
+
+    /// Sends Enter alone, submitting whatever is in the composer.
+    ///
+    /// Separate from [`SessionRuntime::deliver`] so a submission can be retried
+    /// without re-pasting the text. Re-pasting could run a task twice;
+    /// re-submitting cannot — it either submits the pending text once or, if
+    /// the composer is already empty, does nothing a TUI will act on.
+    async fn submit(&self, slug: &str) -> Result<(), TmuxError>;
 
     /// Sends Escape, which interrupts a running turn.
     async fn interrupt(&self, slug: &str) -> Result<(), TmuxError>;
@@ -301,6 +315,10 @@ impl SessionRuntime for TmuxRuntime {
             None,
         )
         .await?;
+        self.submit(slug).await
+    }
+
+    async fn submit(&self, slug: &str) -> Result<(), TmuxError> {
         self.run_ok(&args(&["send-keys", "-t", &pane(slug), "Enter"]), None)
             .await
             .map(|_| ())
