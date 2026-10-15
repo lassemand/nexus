@@ -39,6 +39,13 @@ const DEFAULT_INTERRUPT_GRACE: Duration = Duration::from_secs(30);
 /// How long a set is left alone after its session failed to start.
 const DEFAULT_START_BACKOFF: Duration = Duration::from_secs(300);
 
+/// How often to re-send Enter while waiting for a delivery to be confirmed.
+///
+/// Short enough that a lost first Enter costs a second or two rather than the
+/// whole deliver timeout, long enough that a delivery which is simply slow to
+/// confirm is not pelted with keystrokes.
+const SUBMIT_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
 /// How often tasks waiting on a hook re-read the registry even without a signal.
 const HOOK_POLL: Duration = Duration::from_millis(250);
 
@@ -903,11 +910,42 @@ impl Dispatcher {
         let failure = match pasted {
             Err(e) => Some(format!("paste failed: {e}")),
             Ok(()) => {
-                let confirmed = self
-                    .wait_for_state(&slug, self.config.deliver_timeout, |s| {
-                        !matches!(s, GroupState::Delivering { event_id, .. } if *event_id == id)
-                    })
-                    .await;
+                // Wait in slices, re-sending Enter between them.
+                //
+                // Claude Code's TUI does not reliably act on an Enter that
+                // arrives in the same instant as the bracketed paste it
+                // follows, so the first one is often lost and the task sits
+                // unsent in the composer. Measured in the pod: a paste that had
+                // been stuck for 56s submitted immediately on a second Enter,
+                // and the UserPromptSubmit and Stop hooks then fired normally.
+                //
+                // Only the Enter is repeated, never the text. Re-pasting could
+                // run a task twice; re-submitting cannot — it submits the
+                // pending composer once, and an empty composer is a no-op.
+                let mut confirmed = None;
+                let mut spent = Duration::ZERO;
+                while spent < self.config.deliver_timeout {
+                    let slice = SUBMIT_RETRY_INTERVAL.min(self.config.deliver_timeout - spent);
+                    confirmed = self
+                        .wait_for_state(&slug, slice, |s| {
+                            !matches!(s, GroupState::Delivering { event_id, .. } if *event_id == id)
+                        })
+                        .await;
+                    if confirmed.is_some() {
+                        break;
+                    }
+                    spent += slice;
+                    if spent >= self.config.deliver_timeout {
+                        break;
+                    }
+                    if let Err(e) = self.runtime.submit(&slug).await {
+                        // Not fatal on its own: the loop keeps waiting, and the
+                        // timeout below is what finally decides.
+                        tracing::warn!(group = %slug, error = %e, "re-sending Enter failed");
+                    } else {
+                        tracing::debug!(group = %slug, "delivery unconfirmed; re-sent Enter");
+                    }
+                }
                 confirmed.is_none().then(|| {
                     format!(
                         "no UserPromptSubmit within {}s of pasting",
