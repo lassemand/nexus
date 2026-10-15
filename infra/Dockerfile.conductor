@@ -49,9 +49,18 @@ COPY mcp/Cargo.toml       mcp/Cargo.toml
 COPY conductor/Cargo.toml conductor/Cargo.toml
 
 # Placeholder sources so Cargo can parse the workspace.
+#
+# Every `[[bin]]` any member declares needs a file here, not just the ones that
+# ship: Cargo resolves all targets of the package being built before it
+# compiles anything. conductor declares a test-fixture binary outside src/
+# (tests/fixtures/fake-claude-tty), and without a placeholder the dependency
+# layer fails with
+#   error: can't find bin `fake-claude-tty` at path `...`
+# which is a release-only failure, since the image is not built on pull
+# requests.
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src mcp/src \
-      conductor/src \
+      conductor/src conductor/tests/fixtures/fake-claude-tty \
     && touch model/src/lib.rs alpha/src/lib.rs conductor/src/lib.rs \
     && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
@@ -65,7 +74,8 @@ RUN mkdir -p \
         insight/src/main.rs \
         cli/src/main.rs \
         mcp/src/main.rs \
-        conductor/src/main.rs
+        conductor/src/main.rs \
+        conductor/tests/fixtures/fake-claude-tty/main.rs
 
 RUN cargo fetch --locked
 
