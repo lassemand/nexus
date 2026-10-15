@@ -99,7 +99,11 @@ async fn a_lost_first_enter_is_resent_until_the_turn_starts(pool: PgPool) {
     );
     let key = group("lost-enter");
     assert!(
-        h.group(&key).await.expect("group").delivery_blocked.is_none(),
+        h.group(&key)
+            .await
+            .expect("group")
+            .delivery_blocked
+            .is_none(),
         "delivery must not be blocked once a later Enter lands"
     );
     // The crucial half: the text was pasted once. Re-pasting could run a task
