@@ -112,6 +112,17 @@ pub struct FakeTmux {
     pub send_session_start: AtomicBool,
     /// When false, `deliver` never produces `UserPromptSubmit`.
     pub send_prompt_submit: AtomicBool,
+    /// How many Enters to drop before one takes effect, standing in for Claude
+    /// Code's TUI losing an Enter that arrives with the paste it follows. The
+    /// text stays in `pending`, so a later `submit` still starts the turn —
+    /// which is exactly the production behaviour this models.
+    ///
+    /// A `Mutex` rather than an atomic: the decrement has to be conditional on
+    /// the value, which needs a read-modify-write, and the atomic spelling of
+    /// that was deprecated between two stable releases. Nothing here is hot.
+    pub swallow_enters: Mutex<usize>,
+    /// Pasted text not yet submitted, by slug.
+    pending: Mutex<HashMap<String, String>>,
     /// When false, a finished turn produces no `Stop`.
     pub send_stop: AtomicBool,
     sessions: Mutex<HashMap<String, FakeSession>>,
@@ -137,6 +148,8 @@ impl FakeTmux {
             ignore_interrupt: AtomicBool::new(false),
             send_session_start: AtomicBool::new(true),
             send_prompt_submit: AtomicBool::new(true),
+            swallow_enters: Mutex::new(0),
+            pending: Mutex::new(HashMap::new()),
             send_stop: AtomicBool::new(true),
             sessions: Mutex::new(HashMap::new()),
             delivered: Mutex::new(Vec::new()),
@@ -340,11 +353,32 @@ impl SessionRuntime for FakeTmux {
     }
 
     async fn deliver(&self, slug: &str, text: &str) -> Result<(), TmuxError> {
+        // Only existence matters here; `submit` reads what it needs.
+        if !self.sessions.lock().unwrap().contains_key(slug) {
+            return Err(TmuxError::Failed {
+                command: "load-buffer".into(),
+                status: "1".into(),
+                stderr: "no such session".into(),
+            });
+        }
+        self.delivered
+            .lock()
+            .unwrap()
+            .push((slug.to_string(), text.to_string()));
+        self.pending
+            .lock()
+            .unwrap()
+            .insert(slug.to_string(), text.to_string());
+        // The Enter that follows the paste, which may be lost.
+        self.submit(slug).await
+    }
+
+    async fn submit(&self, slug: &str) -> Result<(), TmuxError> {
         let (session_id, interrupt, dead, cwd, argv, env) = {
             let sessions = self.sessions.lock().unwrap();
             let Some(s) = sessions.get(slug) else {
                 return Err(TmuxError::Failed {
-                    command: "load-buffer".into(),
+                    command: "send-keys".into(),
                     status: "1".into(),
                     stderr: "no such session".into(),
                 });
@@ -358,13 +392,21 @@ impl SessionRuntime for FakeTmux {
                 s.env.clone(),
             )
         };
-        self.delivered
-            .lock()
-            .unwrap()
-            .push((slug.to_string(), text.to_string()));
         if !self.send_prompt_submit.load(Ordering::SeqCst) {
             return Ok(());
         }
+        // A swallowed Enter leaves the text pending, as the real TUI does.
+        {
+            let mut left = self.swallow_enters.lock().unwrap();
+            if *left > 0 {
+                *left -= 1;
+                return Ok(());
+            }
+        }
+        // Nothing in the composer: Enter on an empty prompt does nothing.
+        let Some(text) = self.pending.lock().unwrap().remove(slug) else {
+            return Ok(());
+        };
         let Some(state) = self.hook.lock().unwrap().clone() else {
             return Ok(());
         };

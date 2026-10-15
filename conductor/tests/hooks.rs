@@ -39,6 +39,9 @@ impl SessionRuntime for NoTmux {
     async fn deliver(&self, _: &str, _: &str) -> Result<(), TmuxError> {
         Ok(())
     }
+    async fn submit(&self, _: &str) -> Result<(), TmuxError> {
+        Ok(())
+    }
     async fn interrupt(&self, _: &str) -> Result<(), TmuxError> {
         Ok(())
     }
