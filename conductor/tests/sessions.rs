@@ -399,6 +399,36 @@ async fn attach_to_a_registry_entry_tmux_no_longer_has_starts_a_new_session(pool
     assert!(harness.fake.has("irr"));
 }
 
+/// Deterministic version of the race with the dispatcher's tmux
+/// reconciliation: the group is reset by someone else after attach has read it
+/// as Ready but before attach's own reset.
+#[sqlx::test(migrations = "./migrations")]
+async fn attach_rereads_when_the_group_is_reset_under_it(pool: PgPool) {
+    let harness = Harness::new(pool).with_fake(50, 0, None, false);
+    let key = ready_set(&harness, "irr", "NEX-1").await;
+
+    let fake = harness.fake.clone();
+    let registry = harness.registry.clone();
+    let hook_key = key.clone();
+    harness.fake.on_next_exists(Box::new(move || {
+        Box::pin(async move {
+            // What reconcile_tmux does when it finds the session missing.
+            fake.crash(&hook_key.slug());
+            let mut txn = registry.begin().await.expect("begin");
+            txn.mark_session_gone(&hook_key, chrono::Duration::seconds(60))
+                .await
+                .expect("reset");
+            txn.commit().await.expect("commit");
+        })
+    }));
+
+    let terminal = FakeTerminal::interactive();
+    let (code, text) = harness.sessions_on(attach("irr"), &terminal).await;
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("starting session for irr…"), "{text}");
+    assert!(harness.fake.has("irr"));
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn attach_goes_ahead_while_delivering_or_starting(pool: PgPool) {
     let harness = Harness::new(pool).with_fake(50, 0, None, false);

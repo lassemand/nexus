@@ -97,6 +97,10 @@ struct FakeSession {
 /// handler, so the registry sees exactly what it would from a live pod. Turns
 /// are logged in the fake-claude JSON format, so tests measure order and overlap
 /// from observed behaviour.
+/// A one-shot callback for [`FakeTmux::on_next_exists`].
+pub type ExistsHook =
+    Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send>;
+
 pub struct FakeTmux {
     /// The hook state holds this runtime, so this is a reference cycle until
     /// [`FakeTmux::detach_hooks`] is called. The cycle would keep the test's
@@ -126,6 +130,8 @@ pub struct FakeTmux {
     /// When false, a finished turn produces no `Stop`.
     pub send_stop: AtomicBool,
     sessions: Mutex<HashMap<String, FakeSession>>,
+    /// Runs once, at the start of the next `exists` call, before it answers.
+    exists_hook: Mutex<Option<ExistsHook>>,
     /// Everything pasted, as `(slug, text)`.
     pub delivered: Mutex<Vec<(String, String)>>,
     /// Slugs killed, in order.
@@ -152,6 +158,7 @@ impl FakeTmux {
             pending: Mutex::new(HashMap::new()),
             send_stop: AtomicBool::new(true),
             sessions: Mutex::new(HashMap::new()),
+            exists_hook: Mutex::new(None),
             delivered: Mutex::new(Vec::new()),
             killed: Mutex::new(Vec::new()),
             detached: Mutex::new(Vec::new()),
@@ -179,6 +186,12 @@ impl FakeTmux {
         if let Some(s) = self.sessions.lock().unwrap().get_mut(slug) {
             s.clients = clients.iter().map(|c| c.to_string()).collect();
         }
+    }
+
+    /// Runs `hook` once, at the start of the next `exists` call, so a test can
+    /// interleave another actor between a caller's read and its next step.
+    pub fn on_next_exists(&self, hook: ExistsHook) {
+        *self.exists_hook.lock().unwrap() = Some(hook);
     }
 
     /// Whether the fake still holds this session.
@@ -332,6 +345,10 @@ impl SessionRuntime for FakeTmux {
     }
 
     async fn exists(&self, slug: &str) -> bool {
+        let hook = self.exists_hook.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook().await;
+        }
         self.has(slug)
     }
 
