@@ -81,7 +81,6 @@ if [[ -n "$LAYER" ]]; then
   done
   if [[ -z "$found" ]]; then
     echo "unknown layer '${LAYER}'; known layers: ${ALL_LAYERS}" >&2
-    echo "  (vault-ssh is deliberately not part of this flow — see README)" >&2
     exit 64
   fi
   layers="$LAYER"
