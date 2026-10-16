@@ -184,6 +184,135 @@ Off-host backup is a separate piece of work.
   Nothing reads `vault-ssh/`'s state, so nothing enforces anything about it.
 
 
+## OrbStack settings (layer 1)
+
+Inventoried on the real host rather than from documentation, per ADR-0001's
+live-verification standard. Host: Mac mini, macOS 26.4, arm64, 10 cores
+(4 performance), 16384 MiB RAM. `orbctl version 2.2.3 (2020300)`.
+
+### How settings are exposed
+
+**`orbctl config get|set|show` is the only programmatic surface.** There is no
+user-writable settings file — each of these was checked, not assumed:
+
+| Candidate | Reality |
+|---|---|
+| `~/.orbstack/config/docker.json` | `{}` — 2 bytes |
+| `~/.orbstack/vmconfig.json` | `{}` — 2 bytes |
+| `~/Library/Preferences/dev.kdrag0n.MacVirt.plist` | Sparkle updater keys only (`SULastCheckTime`, `SUUpdateGroupIdentifier`) |
+| `~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/` | VM disk images (`data.img.raw`, `swap.img`), no configuration |
+| `~/Library/Application Support/OrbStack/` | does not exist |
+
+So `local_file` has nothing to write, and `settings.tf` uses `terraform_data`
+with `local-exec` calling `orbctl config set`.
+
+**Nothing on this host has been configured explicitly.** Every value
+`orbctl config show` prints is a built-in default, which the hardware confirms:
+`cpu: 10` is all ten cores, and `memory_mib: 8192` is half of 16 GiB.
+
+### The full inventory
+
+All 31 keys `orbctl config show` reports, with the values measured on this host:
+
+```
+app.start_at_login: false        machine.docker.memory_mib: 0
+app.wait_for_container_stop: false   machine.docker.mounts:
+cpu: 10                          machine.docker.username: root
+data_allow_backup: false         machines.expose_ports_to_lan: true
+docker.expose_ports_to_lan: true machines.forward_ports: true
+docker.node_name: orbstack       memory_mib: 8192
+docker.set_context: true         mount_hide_shared: false
+k8s.enable: false                network.https: true
+k8s.expose_services: false       network.proxy.exclude:
+k8s.kubeconfig_use_domain: false network.subnet4: 192.168.138.0/23
+k8s.tls_san:                     network_bridge: true
+machine.docker.cpu: 0            network_proxy: auto
+machine.docker.disk_bytes: 0     power.pause_in_sleep: true
+machine.docker.http_port: 0      rosetta: true
+machine.docker.https_port: 0     setup.use_admin: false
+machine.docker.isolated: false   ssh.expose_port: false
+```
+
+Every one of these is readable and writable through the CLI, so none of them is
+GUI-only. **What could not be audited from a terminal is the GUI itself**: if
+OrbStack's settings window exposes anything that has no `config` key, this
+inventory would not show it. That is the honest boundary — the list above is
+"everything the CLI exposes", not "everything that exists". Checking the
+remainder needs someone in front of the app.
+
+Four settings are declared in `settings.tf`, each at its current value so the
+first apply proves the mechanism and not the host: `cpu`, `memory_mib`,
+`rosetta`, `power.pause_in_sleep`.
+
+### `k8s.enable` is deliberately not managed
+
+The measured reason, which is also the hazard:
+
+```
+orbctl config get k8s.enable   → false
+kubectl get node orbstack      → Ready, control-plane, 117d, v1.35.6+orb1
+orbctl status                  → Running
+```
+
+**The setting says Kubernetes is off while the cluster has been up for 117
+days.** So it does not describe whether the engine is running, and writing it
+from a declared value could tear down the cluster the whole of `infra/` depends
+on — with the config giving no way to tell that it had.
+
+`manage_k8s_enable` therefore defaults to `false`, which makes the key absent
+from the managed set entirely; `k8s_enable` is ignored until someone opts in.
+
+How this was verified non-destructive, on this host:
+
+```
+$ terraform -chdir=infra/terraform/orbstack plan
+Plan: 6 to add, 0 to change, 0 to destroy.
+  + k8s_enable_managed = false
+  + managed_settings   = { cpu, memory_mib, power.pause_in_sleep, rosetta }
+```
+
+`k8s.enable` is absent from the planned set, and the only planned resources are
+the four settings plus NEX-123's LaunchAgent pair. No
+`orbctl config set k8s.enable` has ever been run here — the discrepancy above
+is exactly why establishing what the key does belongs somewhere the cluster is
+expendable.
+
+The setter also reads before writing, so applying a value that is already set
+runs no `set` at all. That is deliberate for `cpu` and `memory_mib`: it is not
+known whether writing an unchanged value restarts the VM, and not writing is
+the only certain way not to find out during a routine apply.
+
+### Two findings the inventory turned up
+
+**The VM is too small for the conductor chart's own invariant.** The chart says
+`maxSessions` x ~3 GiB of `cargo build` has to fit inside both the container
+limit and the VM's memory:
+
+```
+maxSessions 5 x 3Gi  = 15 GiB needed
+container limit      = 16 GiB    ✓
+VM allocatable       =  7.8 GiB  ✗   (memory_mib 8192)
+```
+
+Violated by roughly 2x. The chart's own remedy is to lower `maxSessions`, since
+raising the limit past what the host has "just moves the failure from a cargo
+OOM to the pod being OOMKilled, which takes every running agent with it". Not
+changed here: `memory_mib` cannot be raised beyond the host's 16 GiB usefully,
+and `maxSessions` belongs to the chart.
+
+**`power.pause_in_sleep: true` is why App JWTs were rejected.** With the VM
+paused during sleep the guest clock stops and resumes behind real time — 26
+minutes behind, measured — and every GitHub App JWT the conductor pod signed
+was already expired when GitHub read it. Keeping the host awake is the remedy;
+the setting is recorded so the interaction is not rediscovered from scratch.
+
+### Changing `cpu` or `memory_mib`
+
+Both almost certainly restart the VM, which tears down the cluster and every
+running agent. They are declared at their current values so an apply is a
+no-op. Change them in a window where losing the cluster is acceptable, and
+expect the restart.
+
 ## SSH access to the host (layer 0)
 
 Terraform manages host-level configuration, which means something has to reach
