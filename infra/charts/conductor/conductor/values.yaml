@@ -38,7 +38,15 @@ claude:
 maxSessions: 2
 # Interactive Claude sessions (one tmux session per set) kept resident at once,
 # idle ones included. Separate from maxSessions, which bounds concurrent turns.
-maxLiveSessions: 10
+#
+# 3, from the measurement in the resources block: ~440 MiB per resident
+# session. At 10 that is 4.4 GiB of idle alone, which does not fit beside two
+# 3 GiB builds in what the node leaves conductor (~3.8 GiB today). At 3 it is
+# 1.3 GiB.
+#
+# Evicting a session is cheap: the transcript stays and the next task resumes
+# it, so a low number costs a resume rather than any work.
+maxLiveSessions: 3
 # Seconds to wait for a new session's SessionStart hook / for a pasted prompt's
 # UserPromptSubmit hook before giving up.
 startTimeoutSecs: 60
@@ -63,17 +71,24 @@ resources:
     cpu: "1"
     memory: "2Gi"
   limits:
-    # Besides the builds below, up to maxLiveSessions idle interactive Claude
-    # processes stay resident. TODO(NEX-144): measure one idle process's RSS in
-    # the deployed pod and record it here; the limit is unchanged until then.
+    # Measured in the deployed pod (NEX-144), not estimated:
     #
-    # Each concurrent session may run a workspace `cargo build`, which peaks
-    # around 2–3 GiB. So maxSessions × 3Gi has to fit inside this limit *and*
-    # inside the OrbStack VM's memory setting. If they do not both hold, lower
-    # maxSessions — raising this past what the VM actually has just moves the
-    # failure from a cargo OOM to the pod being OOMKilled, which takes every
-    # running agent with it.
-    memory: "16Gi"
+    #   container with no sessions        27 MiB
+    #   container with one live session   466 MiB
+    #     claude                            284 MiB RSS
+    #     github-mcp-server                  28 MiB
+    #     tmux server                         4 MiB
+    #
+    # So a resident idle session costs ~440 MiB, and a concurrent workspace
+    # `cargo build` peaks around 3 GiB.
+    #
+    # 6Gi, not 16Gi. The old value could never bind: the node has 7.8 GiB
+    # allocatable and other workloads request 4.0 GiB of it, so a 16 GiB limit
+    # meant the *node* ran out before the container did — and node pressure
+    # kills whatever it likes, which is how the pod died with
+    # `reason=OutOfmemory` while this limit looked generous. A limit the node
+    # can actually honour makes the container the one that dies.
+    memory: "6Gi"
     # No CPU limit on purpose: parallel cargo builds are bursty, and throttling
     # them lengthens every run without bounding anything that matters.
 # Webhook intake. Enabled at the NEX-132 cutover.
