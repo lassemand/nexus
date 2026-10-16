@@ -55,8 +55,8 @@ infra/
   argocd/
     apps/
       nexus-appset.yaml      # ApplicationSet — Git directory generator over infra/charts/*/*
-    overlays/minikube/
-      io.nexus.argocd-port-forward.plist  # LaunchAgent: port-forward for ArgoCD UI (optional; installed by infra/terraform/orbstack)
+    overlays/orbstack/
+      argocd-server-service.yaml  # argocd-server as a LoadBalancer, pinned to 192.168.139.11
     root-app.yaml            # Bootstrap: apply once, then ArgoCD self-manages
     README.md                # Bootstrap steps and Kafka CLI reference
   charts/                    # Layout: infra/charts/<namespace>/<chart>/
@@ -86,11 +86,17 @@ Drop a Helm chart directory under `infra/charts/<namespace>/<chart>/` containing
 |---|---|---|
 | Postgres (primary) | `nexus-postgres.nexus.svc.cluster.local:5432` | — |
 | Kafka bootstrap (internal) | `nexus-kafka-bootstrap.nexus.svc.cluster.local:9092` | — |
-| Kafka bootstrap (external) | — | `localhost:32092` |
-| Vault | `vault.nexus.svc.cluster.local:8200` | `localhost:32200` |
-| Prometheus | — | `localhost:32090` |
-| Grafana | — | `localhost:32300` |
-| ArgoCD | — | `localhost:30443` |
+| Kafka bootstrap (external) | — | LoadBalancer — see below |
+| Vault | `vault.nexus.svc.cluster.local:8200` | LoadBalancer — see below |
+| Prometheus | — | LoadBalancer — see below |
+| Grafana | — | LoadBalancer — see below |
+| ArgoCD | — | `https://192.168.139.11` (pinned) |
+
+On OrbStack, host access is through MetalLB LoadBalancer IPs in
+`192.168.139.10-50`; nodePorts are not routed to the host, so the old
+`localhost:3xxxx` addresses do not work. Only ArgoCD's IP is pinned. The others
+are reassigned when the VM restarts, so read them with
+`kubectl --context orbstack get svc -A | grep LoadBalancer`.
 
 ### Postgres credential secret
 

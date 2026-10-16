@@ -20,7 +20,10 @@ terraform {
   }
 
   required_providers {
-    # hashicorp/local writes the LaunchAgent plist (launchagent-argocd-port-forward.tf).
+    # Nothing in this layer uses hashicorp/local any more. It stays declared only
+    # so the next `make apply` can destroy the former LaunchAgent's local_file,
+    # which is still in state: Terraform needs a resource's provider to remove
+    # it. Drop this block, and re-run `terraform init`, once that apply has run.
     local = {
       source  = "hashicorp/local"
       version = "~> 2.5"
