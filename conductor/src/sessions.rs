@@ -538,6 +538,10 @@ async fn attach(
             txn.commit().await?;
             if reset {
                 state = GroupState::NoSession;
+            } else {
+                // Someone else (the dispatcher's reconciliation) changed the
+                // group first; our local state is stale, so look again.
+                continue;
             }
         }
 
