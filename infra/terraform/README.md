@@ -178,25 +178,70 @@ Inventoried on the real host rather than from documentation, per ADR-0001's
 live-verification standard. Host: Mac mini, macOS 26.4, arm64, 10 cores
 (4 performance), 16384 MiB RAM. `orbctl version 2.2.3 (2020300)`.
 
+### Correction: this inventory is of the wrong OrbStack
+
+Found after the section below was merged, and measured rather than inferred.
+**OrbStack is per macOS user, and this host runs two instances:**
+
+| Account | OrbStack | Kubernetes |
+|---|---|---|
+| `agent` (uid 505) | the one this inventory and `settings.tf` ran against | **off** — `k8s.enable: false` is accurate |
+| `lasse` (uid 501, owns the console) | **serves the `nexus` cluster** | on |
+
+```
+agent's kubeconfig    server: https://127.0.0.1:26443
+netstat               *.26443  LISTEN  OrbStack Helper:18834
+ps                    pid 18834  user lasse
+```
+
+`agent`'s kubeconfig reaches the cluster only because `lasse`'s OrbStack holds
+port 26443. What follows from that:
+
+- **Every value in the inventory below is `agent`'s instance, not the
+  cluster's VM.** The method and the key list still hold — they are the same
+  OrbStack build — but the values describe a VM that does not run the cluster.
+- **`settings.tf` has never configured the cluster.** It runs as `agent`, so
+  `orbctl config set` writes `agent`'s config. Applying it is harmless and
+  pointless until it targets `lasse`'s instance.
+- **The cluster's memory comes from `lasse`'s settings.** Raising `lasse`'s
+  `memory_mib` to 10240 on 2026-10-16 took the node from 7.8 to 9.8 GiB
+  allocatable, while `agent`'s `memory_mib` still read 8192.
+- **The cluster stops if `lasse` logs out**, since `lasse`'s OrbStack runs in
+  `lasse`'s desktop session.
+
+**Open decision**, for the owner of the host: make Terraform manage `lasse`'s
+instance (it would need to run as `lasse`, which `agent` cannot do without
+sudo), move the cluster into `agent`'s OrbStack, or drop `settings.tf`. Until
+then, treat the settings layer as a record of method rather than of the
+cluster's configuration.
+
 ### How settings are exposed
 
-**`orbctl config get|set|show` is the only programmatic surface.** There is no
-user-writable settings file — each of these was checked, not assumed:
+**`orbctl config get|set|show` is the programmatic surface.** Each candidate
+location was checked, not assumed — but one conclusion drawn from this table was
+wrong, see below it:
 
 | Candidate | Reality |
 |---|---|
 | `~/.orbstack/config/docker.json` | `{}` — 2 bytes |
-| `~/.orbstack/vmconfig.json` | `{}` — 2 bytes |
+| `~/.orbstack/vmconfig.json` | `{}` — 2 bytes **when nothing is overridden**; holds every non-default setting |
 | `~/Library/Preferences/dev.kdrag0n.MacVirt.plist` | Sparkle updater keys only (`SULastCheckTime`, `SUUpdateGroupIdentifier`) |
 | `~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/` | VM disk images (`data.img.raw`, `swap.img`), no configuration |
 | `~/Library/Application Support/OrbStack/` | does not exist |
 
-So `local_file` has nothing to write, and `settings.tf` uses `terraform_data`
-with `local-exec` calling `orbctl config set`.
+This originally concluded there was no settings file, so `local_file` had
+nothing to write. That was wrong: `vmconfig.json` read `{}` only because no
+setting had ever been overridden. The first one did it — `orbctl config set
+k8s.expose_services true` wrote `{"k8s.expose_services": true}` there.
+`settings.tf` still uses `terraform_data` with `local-exec` calling `orbctl
+config set`, and that remains the better mechanism: `orbctl` validates the key
+and value and reports when a restart is needed to apply them, neither of which
+writing the JSON directly would do.
 
-**Nothing on this host has been configured explicitly.** Every value
-`orbctl config show` prints is a built-in default, which the hardware confirms:
-`cpu: 10` is all ten cores, and `memory_mib: 8192` is half of 16 GiB.
+**Nothing in `agent`'s instance had been configured explicitly.** Every value
+`orbctl config show` printed was a built-in default, which the hardware
+confirms: `cpu: 10` is all ten cores, and `memory_mib: 8192` is half of 16 GiB.
+Per the correction above, these are `agent`'s values, not the cluster VM's.
 
 ### The full inventory
 
@@ -242,10 +287,17 @@ kubectl get node orbstack      → Ready, control-plane, 117d, v1.35.6+orb1
 orbctl status                  → Running
 ```
 
-**The setting says Kubernetes is off while the cluster has been up for 117
-days.** So it does not describe whether the engine is running, and writing it
-from a declared value could tear down the cluster the whole of `infra/` depends
-on — with the config giving no way to tell that it had.
+This originally argued that the setting "does not describe whether the engine
+is running". **That was wrong.** It is accurate: Kubernetes really is off in
+`agent`'s instance, which is the one being read. The 117-day cluster is
+`lasse`'s (see the correction at the top of this section).
+
+The safeguard stays, for a better reason: this layer runs as `agent` and can
+only write `agent`'s `k8s.enable`, which does not control the cluster. Managing
+it would look like managing the cluster's Kubernetes while doing nothing of the
+kind — and if the layer is ever pointed at `lasse`'s instance, writing it there
+*would* tear down everything `infra/` depends on. Either way it should take a
+deliberate opt-in.
 
 `manage_k8s_enable` therefore defaults to `false`, which makes the key absent
 from the managed set entirely; `k8s_enable` is ignored until someone opts in.
@@ -261,9 +313,8 @@ Plan: 6 to add, 0 to change, 0 to destroy.
 
 `k8s.enable` is absent from the planned set, and the only planned resources are
 the four settings plus NEX-123's LaunchAgent pair. No
-`orbctl config set k8s.enable` has ever been run here — the discrepancy above
-is exactly why establishing what the key does belongs somewhere the cluster is
-expendable.
+`orbctl config set k8s.enable` has ever been run here. The "discrepancy" this
+paragraph once cited was two instances being compared as if they were one.
 
 The setter also reads before writing, so applying a value that is already set
 runs no `set` at all. That is deliberate for `cpu` and `memory_mib`: it is not
@@ -279,7 +330,7 @@ limit and the VM's memory:
 ```
 maxSessions 5 x 3Gi  = 15 GiB needed
 container limit      = 16 GiB    ✓
-VM allocatable       =  7.8 GiB  ✗   (memory_mib 8192)
+VM allocatable       =  7.8 GiB  ✗   (lasse's VM; agent's memory_mib 8192 is unrelated)
 ```
 
 Violated by roughly 2x. The chart's own remedy is to lower `maxSessions`, since
@@ -288,18 +339,28 @@ OOM to the pod being OOMKilled, which takes every running agent with it". Not
 changed here: `memory_mib` cannot be raised beyond the host's 16 GiB usefully,
 and `maxSessions` belongs to the chart.
 
+Since resolved: `maxSessions` went to 2 (#194), and when the pod was still
+OOM-killed the idle-session cost was measured at ~440 MiB, after which
+`maxLiveSessions` went to 3 and the container limit to 6Gi (#197). `lasse`'s
+VM was raised to 10 GiB the same day, leaving conductor about 5.7 GiB.
+
 **`power.pause_in_sleep: true` is why App JWTs were rejected.** With the VM
 paused during sleep the guest clock stops and resumes behind real time — 26
 minutes behind, measured — and every GitHub App JWT the conductor pod signed
-was already expired when GitHub read it. Keeping the host awake is the remedy;
-the setting is recorded so the interaction is not rediscovered from scratch.
+was already expired when GitHub read it. Keeping the host awake is the remedy
+(`sudo pmset -a sleep 0`; `disablesleep` is not reported by `pmset` on this
+host, so it cannot be verified). The VM that pauses is `lasse`'s, so its
+`power.pause_in_sleep` is the one that matters — the value recorded here is
+`agent`'s.
 
 ### Changing `cpu` or `memory_mib`
 
-Both almost certainly restart the VM, which tears down the cluster and every
-running agent. They are declared at their current values so an apply is a
-no-op. Change them in a window where losing the cluster is acceptable, and
-expect the restart.
+As this layer stands, changing them restarts **`agent`'s** VM, which does not
+run the cluster — so it is safe and also achieves nothing. Changing the
+cluster's VM means changing `lasse`'s settings, which `orbctl` confirms needs a
+restart (`Restart OrbStack with "orbctl stop" to apply changes.`) and so takes
+down the cluster and every running agent. Do that in a window where losing the
+cluster is acceptable.
 
 ## Secrets the tmux layer needs
 
