@@ -15,9 +15,27 @@ claude:
   # Sonnet. To pin, set a full model ID such as `claude-sonnet-5-5`.
   # Empty uses Claude Code's own default.
   model: "sonnet"
-# Maximum concurrent Claude sessions. See the memory note on resources below
-# before raising this.
-maxSessions: 5
+# Maximum concurrent runs across all sets — how many agents may be working at
+# once. A set holds one of these only while Starting, Delivering or Busy; an
+# idle Ready session holds nothing, so this is a cap on work in flight, not on
+# resident sessions (that is maxLiveSessions below).
+#
+# 2, because of the arithmetic the resources note below describes. Each
+# concurrent run may peak around 3 GiB in a workspace `cargo build`, and the
+# OrbStack VM reports 7.8 GiB allocatable:
+#
+#   maxSessions 5 x 3 GiB = 15 GiB   does not fit, and cannot: the host has
+#                                    16 GiB total with ~5.5 GiB for macOS, so
+#                                    no VM memory setting makes 15 GiB available
+#   maxSessions 3 x 3 GiB =  9 GiB   needs the VM raised to ~10 GiB, leaving
+#                                    macOS ~6 GiB while it currently wants 5.5
+#   maxSessions 2 x 3 GiB =  6 GiB   fits what the VM already has
+#
+# Measured on the host (NEX-124): 16384 MiB total, 2570 MiB wired, 2933 MiB
+# already compressed. Raising the VM's memory_mib is possible but restarts it,
+# which tears down the cluster and every running agent; see
+# infra/terraform/README.md.
+maxSessions: 2
 # Interactive Claude sessions (one tmux session per set) kept resident at once,
 # idle ones included. Separate from maxSessions, which bounds concurrent turns.
 maxLiveSessions: 10
