@@ -38,9 +38,26 @@ resource "terraform_data" "argocd_port_forward_load" {
     plist = local_file.argocd_port_forward_plist.filename
   }
 
+  # A LaunchAgent can only be loaded from the user's GUI (Aqua) session. The
+  # documented way to apply this is `ssh -t agent@host 'make apply'`, and an SSH
+  # session is in the *Background* domain, where every load path fails —
+  # measured on macOS 26.4:
+  #
+  #   launchctl enable    gui/<uid>/<label>   125 Domain does not support ...
+  #   launchctl bootstrap gui/<uid> <plist>   125 Domain does not support ...
+  #   launchctl bootstrap user/<uid> <plist>    5 Input/output error
+  #   launchctl load -w <plist>                 0 and loads nothing at all
+  #
+  # So this installs the plist and loads it only when it can. Out of a GUI
+  # session it says so and succeeds, rather than failing an apply that did
+  # everything it was actually able to do. The agent has RunAtLoad, so it
+  # starts by itself at the next login regardless.
+  #
   # bootout first so a changed plist, or an agent loaded by the old manual
   # `launchctl load -w`, is replaced rather than failing with "already loaded".
-  # `enable` undoes a previous `unload -w`, which persists a disabled flag.
+  # `enable` undoes a previous `unload -w`, which persists a disabled flag —
+  # and it takes `user/<uid>`, not `gui/<uid>`, which is what produced the 125
+  # above even before the bootstrap was reached.
   provisioner "local-exec" {
     environment = {
       LABEL = self.input.label
@@ -48,10 +65,20 @@ resource "terraform_data" "argocd_port_forward_load" {
     }
     command = <<-EOT
       set -eu
-      domain="gui/$(id -u)"
-      launchctl bootout "$domain/$LABEL" 2>/dev/null || true
-      launchctl enable "$domain/$LABEL"
-      launchctl bootstrap "$domain" "$PLIST"
+      uid="$(id -u)"
+      manager="$(launchctl managername 2>/dev/null || echo unknown)"
+      if [ "$manager" != "Aqua" ]; then
+        echo "launchctl manager is '$manager', not Aqua: the plist is installed but not loaded."
+        echo "To load it now, from Terminal.app on the host:"
+        echo "    launchctl bootout gui/$uid/$LABEL 2>/dev/null || true"
+        echo "    launchctl enable user/$uid/$LABEL"
+        echo "    launchctl bootstrap gui/$uid $PLIST"
+        echo "Otherwise it starts by itself at the next login (RunAtLoad)."
+        exit 0
+      fi
+      launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
+      launchctl enable "user/$uid/$LABEL"
+      launchctl bootstrap "gui/$uid" "$PLIST"
     EOT
   }
 
