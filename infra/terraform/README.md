@@ -15,6 +15,18 @@ Three root modules, each with **its own local state**:
 | 1 | `orbstack/` | `orbstack/terraform.tfstate` | OrbStack itself — the VM and its app settings |
 | 2 | `tmux/` | `tmux/terraform.tfstate` | tmux session/crash-resilience config for host processes |
 
+### Resources in the layers
+
+| Layer | Resource | What it does |
+|---|---|---|
+| `orbstack/` | `launchagent-argocd-port-forward.tf` | Installs `argocd/overlays/orbstack/io.nexus.argocd-port-forward.plist` into `~/Library/LaunchAgents/` and loads it with `launchctl bootstrap`. The agent is reloaded only when the plist's hash changes. Uses the `hashicorp/local` provider. |
+
+The agent is a convenience (`https://localhost:8080`): the orbstack overlay
+already exposes `argocd-server` as a `LoadBalancer` with its own IP. Deleting the
+`.tf` file removes it. Terraform cannot see launchd, so an agent unloaded by hand
+is not noticed; reload it with
+`terraform apply -replace=terraform_data.argocd_port_forward_load`.
+
 ### Why separate states and not one
 
 tmux configuration is only meaningful once OrbStack is up: the processes it

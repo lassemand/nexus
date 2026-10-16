@@ -56,7 +56,7 @@ infra/
     apps/
       nexus-appset.yaml      # ApplicationSet — Git directory generator over infra/charts/*/*
     overlays/minikube/
-      io.nexus.argocd-port-forward.plist  # LaunchAgent: port-forward for ArgoCD UI (optional)
+      io.nexus.argocd-port-forward.plist  # LaunchAgent: port-forward for ArgoCD UI (optional; installed by infra/terraform/orbstack)
     root-app.yaml            # Bootstrap: apply once, then ArgoCD self-manages
     README.md                # Bootstrap steps and Kafka CLI reference
   charts/                    # Layout: infra/charts/<namespace>/<chart>/

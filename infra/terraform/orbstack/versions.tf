@@ -18,4 +18,12 @@ terraform {
   backend "local" {
     path = "terraform.tfstate"
   }
+
+  required_providers {
+    # hashicorp/local writes the LaunchAgent plist (launchagent-argocd-port-forward.tf).
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
+  }
 }

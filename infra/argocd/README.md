@@ -163,23 +163,21 @@ warning).
 <summary>Optional: reach it at <code>https://localhost:8080</code> instead</summary>
 
 A LaunchAgent is provided if you prefer a stable localhost address over the
-assigned LoadBalancer IP:
+assigned LoadBalancer IP. It is installed by Terraform on the host
+(`infra/terraform/orbstack/`) — do not copy it or `launchctl load` it by hand:
 
 ```bash
-cp infra/argocd/overlays/orbstack/io.nexus.argocd-port-forward.plist \
-   ~/Library/LaunchAgents/
-launchctl load -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
+cd infra/terraform && make apply LAYER=orbstack
 
 # Check it is running
 launchctl list io.nexus.argocd-port-forward
 
 # Logs
 tail -f /tmp/argocd-port-forward.log
-
-# Uninstall
-launchctl unload -w ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
-rm ~/Library/LaunchAgents/io.nexus.argocd-port-forward.plist
 ```
+
+To remove it, delete `infra/terraform/orbstack/launchagent-argocd-port-forward.tf`
+and apply; Terraform unloads the agent and deletes the plist.
 </details>
 
 ### 5 — Retrieve the initial admin password
