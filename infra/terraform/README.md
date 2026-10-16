@@ -27,6 +27,41 @@ already exposes `argocd-server` as a `LoadBalancer` with its own IP. Deleting th
 is not noticed; reload it with
 `terraform apply -replace=terraform_data.argocd_port_forward_load`.
 
+### OrbStack application settings (NEX-124, in progress)
+
+There is no Terraform provider for OrbStack, so what is configurable — and how —
+has to be established on the real machine. **Nothing about setting names or file
+paths is assumed here**; this section is filled in from the inventory below.
+
+**Procedure** (on the host, in the checkout):
+
+```bash
+infra/terraform/bin/orbstack-inventory > /tmp/orbstack-inventory.md
+```
+
+It is read-only. It prints `orb`'s own help (including each subcommand's), the
+names and sizes — not contents — of anything OrbStack-shaped in the usual
+`~/.orbstack`, `~/Library/...` locations, the `defaults` domains mentioning
+orb, and the cluster's Kubernetes state. Review it for anything you would not
+publish, then paste it into the NEX-124 PR.
+
+**Findings:** _pending the inventory._
+
+| Setting | Settable how | Declared in |
+|---|---|---|
+| _pending_ | | |
+
+**GUI-only / not automatable:** _pending the inventory._
+
+**Kubernetes safeguard.** `orbstack/kubernetes-guard.tf` is in place ahead of
+the findings. `orbstack_kubernetes_enabled` defaults to `null` (unmanaged), so
+applying this layer cannot touch the engine. Setting it to `false` is refused
+by a precondition unless `allow_kubernetes_disable = true` is also set. Checked
+with `terraform plan` on all four combinations (default, `true`, `false`, and
+`false` + acknowledgement): only `false` alone is refused. What is **not** yet
+verified is the mechanism that would actually apply the value — that waits on
+the inventory.
+
 ### Why separate states and not one
 
 tmux configuration is only meaningful once OrbStack is up: the processes it

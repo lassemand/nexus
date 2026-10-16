@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#
+# Read-only discovery of how OrbStack's configuration is exposed on THIS machine.
+# Run it on the host and paste the output into the NEX-124 PR.
+#
+# It asserts nothing about setting names or file locations: it probes the `orb`
+# CLI's own help and searches the usual places for anything OrbStack-shaped, so
+# the answer comes from the real system. Nothing is modified, and no file
+# contents are printed (config files can hold credentials) — only names, sizes
+# and the CLI's help text.
+#
+# bash 3.2-safe (macOS).
+set -u
+
+section() { printf '\n## %s\n\n' "$1"; }
+run() {
+  printf '$ %s\n' "$*"
+  "$@" 2>&1 | sed 's/^/    /'
+  printf '    (exit %s)\n' "${PIPESTATUS[0]}"
+}
+
+section "Host"
+run scutil --get LocalHostName
+run sw_vers
+run uname -m
+
+section "orb CLI: where and what version"
+run command -v orb
+run orb version
+
+section "orb CLI: top-level help"
+run orb --help
+
+# Every subcommand the top-level help lists is worth its own help page; the
+# loop below reads them from the help rather than assuming any exist.
+section "orb CLI: help per subcommand"
+orb --help 2>&1 \
+  | awk '/^(Available )?[Cc]ommands:/{on=1; next} on && NF==0{on=0} on{print $1}' \
+  | while read -r sub; do
+      [ -n "$sub" ] && run orb "$sub" --help
+    done
+
+section "orb CLI: anything config-shaped (expected to fail if absent)"
+run orb config --help
+run orb settings --help
+
+section "On-disk candidates (names and sizes only)"
+for dir in "$HOME/.orbstack" "$HOME/Library/Application Support/OrbStack" \
+  "$HOME/Library/Preferences" "$HOME/Library/Group Containers" \
+  "$HOME/Library/Containers"; do
+  printf '\n### %s\n\n' "$dir"
+  if [ -d "$dir" ]; then
+    # -maxdepth keeps this bounded; -iname narrows the shared Library folders.
+    find "$dir" -maxdepth 3 -iname '*orb*' 2>/dev/null | head -50 | while read -r p; do
+      ls -ld "$p" | sed 's/^/    /'
+    done
+  else
+    echo "    (does not exist)"
+  fi
+done
+
+section "macOS defaults domains mentioning orb"
+defaults domains 2>/dev/null | tr ',' '\n' | grep -i orb | sed 's/^/    /' || echo "    (none)"
+
+section "Kubernetes: is it on, and what does the cluster report"
+run kubectl config get-contexts
+run kubectl --context orbstack get nodes -o wide
+run orb list
+
+section "Is the OrbStack app running (and as what)"
+run pgrep -lf -i orbstack
+
+echo
+echo "Done. Review the output for anything you do not want to publish, then paste it."
