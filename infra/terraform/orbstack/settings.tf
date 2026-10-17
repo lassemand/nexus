@@ -1,18 +1,17 @@
 # OrbStack application settings, declared.
 #
-# There is no Terraform provider for OrbStack, and — verified on this host, not
-# assumed — no user-writable settings file either:
+# READ FIRST: this applies to the OrbStack of the account that runs it, and
+# `make apply` runs as `agent`. The `nexus` cluster runs in `lasse`'s OrbStack —
+# port 26443 is served by lasse's OrbStack Helper — so as written this never
+# configures the cluster's VM. See the correction in ../README.md, which also
+# records the open decision on which instance this should manage.
 #
-#   ~/.orbstack/config/docker.json      {}        (2 bytes)
-#   ~/.orbstack/vmconfig.json           {}        (2 bytes)
-#   ~/Library/Preferences/dev.kdrag0n.MacVirt.plist
-#                                       Sparkle updater keys only
-#   ~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/
-#                                       VM disk images, no configuration
-#
-# So `local_file` has nothing to write. The only programmatic surface is
-# `orbctl config get|set`, which is what this uses through `terraform_data`
-# plus `local-exec`. See ../README.md for the full inventory.
+# There is no Terraform provider for OrbStack. Settings persist in
+# ~/.orbstack/vmconfig.json, which holds only overrides — it reads `{}` until
+# something is set — and are changed through `orbctl config set`, which is what
+# this uses through `terraform_data` plus `local-exec`. orbctl is preferred over
+# writing the JSON because it validates the value and reports when a restart is
+# needed.
 #
 # Limitation, stated plainly: `local-exec` runs on create and on replace, so
 # this enforces a value when the declaration changes. It does not notice drift
@@ -25,10 +24,11 @@ variable "vm_cpu" {
     CPU cores for the VM. The host has 10 (4 performance), and OrbStack's
     default is all of them, which is what this records.
 
-    Changing this almost certainly restarts the VM, which tears down the
-    Kubernetes cluster and every running agent with it. Declared at the current
-    value so an apply is a no-op; change it deliberately, in a window where
-    losing the cluster is acceptable.
+    Changing a VM's cpu or memory needs an OrbStack restart to take effect
+    (orbctl says so). As applied by `agent` this restarts `agent`'s VM, which
+    does not run the cluster; aimed at `lasse`'s, it would take the cluster and
+    every running agent down. Declared at the current value so an apply is a
+    no-op.
   DESC
   type        = number
   default     = 10
@@ -36,16 +36,11 @@ variable "vm_cpu" {
 
 variable "vm_memory_mib" {
   description = <<-DESC
-    Memory for the VM, in MiB. OrbStack's default on this 16 GiB host is 8192,
-    which is what the VM reports (allocatable 8196572Ki).
-
-    This is currently too small for the conductor chart's own stated invariant:
-    `maxSessions` (5) x ~3 GiB per concurrent `cargo build` needs ~15 GiB, and
-    the chart's comment says that has to fit inside both the container limit
-    (16Gi, which it does) and the VM's memory (8 GiB, which it does not). The
-    chart's own remedy is to lower `maxSessions` rather than raise this past
-    what the host can give. Left at the measured value here, because changing
-    it restarts the VM and because the fix may belong in the chart instead.
+    Memory for the VM, in MiB. 8192 is OrbStack's default on this 16 GiB host
+    and is `agent`'s value. The cluster's VM is `lasse`'s, raised to 10240 on
+    2026-10-16 (node allocatable 7.8 -> 9.8 GiB) without this value changing —
+    which is how the two instances were told apart. Conductor's memory budget is
+    sized against the cluster VM in its chart, not here.
   DESC
   type        = number
   default     = 8192
@@ -71,12 +66,18 @@ variable "pause_in_sleep" {
 
 # ── the Kubernetes safeguard ────────────────────────────────────────────────
 #
-# `k8s.enable` is NOT managed by default, and the reason is measured rather
-# than theoretical: on this host it reads `false` while the cluster has been
-# Ready for 117 days (v1.35.6+orb1, `orbctl status: Running`). The setting
-# therefore does not describe whether Kubernetes is running, so writing it from
-# a declared value could disable the engine the whole of infra/ depends on —
-# with the config offering no way to tell that it had.
+# `k8s.enable` is NOT managed by default.
+#
+# This originally claimed the key "does not describe whether Kubernetes is
+# running", because it read `false` beside a cluster that had been Ready for 117
+# days. That was two instances compared as one: the key is accurate for
+# `agent`'s OrbStack, where Kubernetes really is off, and the cluster is
+# `lasse`'s.
+#
+# The safeguard stays for the corrected reason. Run as `agent`, writing the key
+# looks like managing the cluster's Kubernetes while doing nothing of the kind;
+# pointed at `lasse`'s instance, writing `false` would tear down everything
+# infra/ depends on.
 #
 # Managing it requires opting in explicitly, which is the deliberate act the
 # task asks for.
@@ -86,8 +87,8 @@ variable "manage_k8s_enable" {
     Whether Terraform may write `k8s.enable` at all. Default false, which makes
     this a no-op regardless of `k8s_enable`.
 
-    Before setting this true, establish what `k8s.enable` actually controls on
-    a host where it disagrees with reality, and do it somewhere the cluster is
+    Before setting this true, decide which OrbStack this layer manages (see the
+    README correction), and test the change somewhere the cluster is
     expendable.
   DESC
   type        = bool
