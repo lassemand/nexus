@@ -1,25 +1,78 @@
-prometheus:
-  # ── Alertmanager ────────────────────────────────────────────────────────────
+prometheus-operator-crds:
+  crds:
+    # kube-prometheus-stack CRDs are too large for client-side apply
+    # ("metadata.annotations: Too long") and the ApplicationSet has no
+    # ServerSideApply. Apply only these CRDs server-side.
+    annotations:
+      argocd.argoproj.io/sync-options: ServerSideApply=true
+
+kube-prometheus-stack:
+  # CRDs come from the prometheus-operator-crds dependency above.
+  crds:
+    enabled: false
+
+  # Our own Grafana (infra/charts/nexus/grafana) owns its datasources and
+  # runs the dashboard sidecar. Only render kps's dashboard ConfigMaps
+  # (label grafana_dashboard: "1") for it.
+  grafana:
+    enabled: false
+    forceDeployDashboards: true
+    forceDeployDatasources: false
+
+  defaultRules:
+    rules:
+      # OrbStack's single-node cluster does not expose these components'
+      # metrics the way kubeadm does; their *Down alerts would fire forever.
+      etcd: false
+      kubeSchedulerAlerting: false
+      kubeSchedulerRecording: false
+      kubeControllerManager: false
+      kubeProxy: false
+    disabled:
+      # A one-node cluster can never tolerate losing a node, so these always
+      # fire and carry no information here.
+      KubeCPUOvercommit: true
+      KubeMemoryOvercommit: true
+
+  kubeEtcd:
+    enabled: false
+  kubeScheduler:
+    enabled: false
+  kubeControllerManager:
+    enabled: false
+  kubeProxy:
+    enabled: false
+
+  # node-exporter and kube-state-metrics stay on (kps defaults). It reports
+  # the OrbStack Linux VM, not macOS. The kubelet/cAdvisor ServiceMonitor is
+  # enabled by default as well.
+  nodeExporter:
+    enabled: true
+  kubeStateMetrics:
+    enabled: true
+  kubelet:
+    enabled: true
+
+  # ── Alertmanager ────────────────────────────────────────────────────────
   alertmanager:
     enabled: true
 
-    # Keeps silences and notification state across restarts.
-    persistence:
-      enabled: true
-      size: 1Gi
-      storageClass: local-path
-
-    # Expand ${VAR} in alertmanager.yml so the webhook URL is never hardcoded.
-    extraArgs:
-      "config.expand-env": "true"
-
-    # Inject the webhook URL from the ExternalSecret-managed k8s secret.
-    extraEnv:
-      - name: SLACK_WEBHOOK_URL
-        valueFrom:
-          secretKeyRef:
-            name: alertmanager-slack
-            key: SLACK_WEBHOOK_URL
+    alertmanagerSpec:
+      # Mounted at /etc/alertmanager/secrets/alertmanager-slack/. The operator
+      # does not support --config.expand-env, so the webhook URL is read via
+      # api_url_file below. The secret is created by the alertmanager-slack
+      # ExternalSecret.
+      secrets:
+        - alertmanager-slack
+      # Keeps silences and notification state across restarts.
+      storage:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: local-path
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 1Gi
 
     config:
       global:
@@ -32,6 +85,10 @@ prometheus:
         repeat_interval: 12h
         receiver: slack-alerts
         routes:
+          # Heartbeat / informational alerts never go to Slack.
+          - matchers:
+              - alertname =~ "Watchdog|InfoInhibitor"
+            receiver: "null"
           # Critical alerts repeat every hour until resolved.
           - matchers:
               - severity = critical
@@ -42,9 +99,10 @@ prometheus:
             repeat_interval: 30m
 
       receivers:
+        - name: "null"
         - name: slack-alerts
           slack_configs:
-            - api_url: "${SLACK_WEBHOOK_URL}"
+            - api_url_file: /etc/alertmanager/secrets/alertmanager-slack/SLACK_WEBHOOK_URL
               send_resolved: true
               title: >-
                 [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}]
@@ -56,153 +114,44 @@ prometheus:
                 *Severity:* `{{ .Labels.severity }}`  |  *Namespace:* `{{ .Labels.namespace }}`
                 {{ end }}
 
-  # ── kube-state-metrics (required for pod/job/container alerts) ────────────
-  kube-state-metrics:
-    enabled: true
+      # The chart's default inhibit rules / time intervals are kept.
 
-  # Node-level CPU/memory/disk/network (node_*). Subchart defaults are kept
-  # (DaemonSet, hostNetwork, hostPID, read-only host mounts). It reports the
-  # OrbStack Linux VM, not macOS. Scraped by the default
-  # kubernetes-service-endpoints job via the service's prometheus.io/scrape
-  # annotation; it listens on the VM's port 9100.
-  prometheus-node-exporter:
-    enabled: true
-
-  prometheus-pushgateway:
-    enabled: false
-
-  # ── Prometheus server ────────────────────────────────────────────────────
-  server:
-    # Keep 30 days of metrics on a 20Gi local-path volume so history survives
-    # pod restarts (reboots, ArgoCD syncs, evictions).
-    retention: "30d"
-    # local-path volumes are plain directories in the OrbStack VM and the PVC
-    # size is NOT enforced, so cap the TSDB below the volume size. Prometheus
-    # deletes the oldest blocks first when either limit is reached.
-    retentionSize: "18GB"
-
-    persistentVolume:
-      enabled: true
-      size: 20Gi
-      storageClass: local-path
-
-    # RWO volume: a rolling update would hang on the TSDB lock. This is the
-    # chart default, pinned here explicitly.
-    strategy:
-      type: Recreate
-
+  # ── Prometheus ──────────────────────────────────────────────────────────
+  prometheus:
     service:
       type: LoadBalancer
+      # TODO: pin with metallb.universe.tf/loadBalancerIPs once the current
+      # IP of prometheus-server is supplied (see PR checklist). Never guess it.
 
-    # Scrape saxo_stream Prometheus metrics from its /metrics endpoint.
-    extraScrapeConfigs: |
-      - job_name: saxo-stream
-        static_configs:
-          - targets:
-            - saxo-stream.chronicle.svc.cluster.local:8080
-        metrics_path: /metrics
+    prometheusSpec:
+      # Keep 30 days of metrics on a 20Gi local-path volume so history survives
+      # pod restarts (reboots, ArgoCD syncs, evictions).
+      retention: 30d
+      # local-path volumes are plain directories in the OrbStack VM and the PVC
+      # size is NOT enforced, so cap the TSDB below the volume size. Prometheus
+      # deletes the oldest blocks first when either limit is reached.
+      retentionSize: 18GB
 
-  # ── Alert rules ──────────────────────────────────────────────────────────
-  serverFiles:
-    alerting_rules.yml:
-      groups:
-        - name: nexus.saxo-token
-          rules:
-            # Fire when token expires in <30 min AND a rotation has occurred.
-            # The -1 sentinel suppresses alerts in bootstrap/no-rotation state.
-            - alert: SaxoRefreshTokenExpiringSoon
-              expr: >
-                saxo_refresh_token_seconds_remaining >= 0
-                and saxo_refresh_token_seconds_remaining < 1800
-              for: 2m
-              labels:
-                severity: critical
-              annotations:
-                summary: "Saxo refresh token expires in {{ $value | humanizeDuration }}"
-                description: >-
-                  The saxo_stream OAuth refresh token will expire in
-                  {{ $value | humanizeDuration }}. If it expires the entire Nordic
-                  data pipeline goes dark and manual re-authentication is required.
-                runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+      storageSpec:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: local-path
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 20Gi
 
-            - alert: SaxoRefreshTokenExpired
-              expr: saxo_refresh_token_seconds_remaining == 0
-              for: 1m
-              labels:
-                severity: critical
-              annotations:
-                summary: "Saxo refresh token has expired"
-                description: >-
-                  The Saxo refresh token has expired. The Nordic data pipeline is
-                  dark. Immediate manual re-authentication required.
-                runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+      # Pick up monitors and rules from any namespace/chart without label games.
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+      ruleSelectorNilUsesHelmValues: false
+      probeSelectorNilUsesHelmValues: false
+      scrapeConfigSelectorNilUsesHelmValues: false
 
-            - alert: SaxoRefreshTokenFailure
-              expr: increase(saxo_refresh_token_failures_total[10m]) > 0
-              for: 0m
-              labels:
-                severity: warning
-              annotations:
-                summary: "Saxo token refresh failed"
-                description: >-
-                  The saxo_stream service encountered a token refresh failure.
-                  If this persists the refresh token chain will break within ~1 hour.
-                runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
-
-        - name: nexus.ingestion
-          rules:
-            # Saxo WebSocket stream pod has been not-ready for >2m.
-            - alert: SaxoStreamDown
-              expr: |
-                absent(kube_pod_status_ready{namespace="chronicle", pod=~"saxo-stream.*", condition="true"})
-                or kube_pod_status_ready{namespace="chronicle", pod=~"saxo-stream.*", condition="true"} == 0
-              for: 2m
-              labels:
-                severity: critical
-              annotations:
-                summary: "Saxo stream pod is down"
-                description: >-
-                  The saxo-stream Deployment has had no ready pod for >2m.
-                  Live Nordic bar ingestion has stopped.
-
-            - alert: ChronicleJobFailed
-              expr: kube_job_status_failed{namespace="chronicle"} > 0
-              for: 0m
-              labels:
-                severity: warning
-              annotations:
-                summary: "Chronicle CronJob failed"
-                description: >-
-                  A CronJob in namespace chronicle has a failed execution.
-                  Check pod logs: kubectl logs -n chronicle -l job-name=<name>
-
-        - name: nexus.database
-          rules:
-            - alert: PostgresPrimaryDown
-              expr: |
-                kube_pod_status_ready{namespace="nexus", pod="nexus-postgres-0", condition="true"} == 0
-              for: 1m
-              labels:
-                severity: critical
-              annotations:
-                summary: "Postgres primary is down"
-                description: >-
-                  nexus-postgres-0 is not ready. Signal writes and chronicle
-                  DB reads will fail until it recovers.
-
-        - name: nexus.reliability
-          rules:
-            - alert: PodCrashLooping
-              expr: |
-                rate(kube_pod_container_status_restarts_total{
-                  namespace=~"chronicle|signal|nexus"
-                }[15m]) * 900 > 3
-              for: 5m
-              labels:
-                severity: warning
-              annotations:
-                summary: "Pod {{ $labels.pod }} is crash-looping"
-                description: >-
-                  Container {{ $labels.container }} in
-                  {{ $labels.namespace }}/{{ $labels.pod }} has restarted
-                  more than 3 times in 15 minutes.
+      # Scrape saxo_stream Prometheus metrics from its /metrics endpoint.
+      additionalScrapeConfigs:
+        - job_name: saxo-stream
+          static_configs:
+            - targets:
+                - saxo-stream.chronicle.svc.cluster.local:8080
+          metrics_path: /metrics

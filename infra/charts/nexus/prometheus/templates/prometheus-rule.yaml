@@ -1,0 +1,12 @@
+# nexus alert groups, ported verbatim from the former prometheus-chart
+# serverFiles.alerting_rules.yml. Kept in files/ and included raw (not via
+# values) so the Prometheus alert templates survive Helm rendering.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nexus-alerts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/part-of: nexus
+spec:
+{{ .Files.Get "files/nexus-rules.yaml" | indent 2 }}

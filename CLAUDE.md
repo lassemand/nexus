@@ -66,6 +66,7 @@ infra/
       postgres/              # nexus-postgres cluster CR
       vault/                 # HashiCorp Vault standalone (umbrella Helm chart)
       external-secrets/      # External Secrets Operator + ClusterSecretStore (Vault backend)
+      prometheus/            # kube-prometheus-stack umbrella (operator, Prometheus, Alertmanager, node-exporter, kube-state-metrics, nexus alert rules; Grafana disabled)
     signal/
       signal/                # nexus signal service (Helm chart, Deployment)
     chronicle/
@@ -90,7 +91,8 @@ Node metrics (`node_*` from node-exporter) describe the OrbStack Linux VM that h
 | Kafka bootstrap (internal) | `nexus-kafka-bootstrap.nexus.svc.cluster.local:9092` | — |
 | Kafka bootstrap (external) | — | `localhost:32092` |
 | Vault | `vault.nexus.svc.cluster.local:8200` | `localhost:32200` |
-| Prometheus | — | `localhost:32090` |
+| Prometheus | `prometheus-kube-prometheus-prometheus.nexus.svc.cluster.local:9090` | `localhost:32090` |
+| Alertmanager (ClusterIP, not exposed) | `prometheus-kube-prometheus-alertmanager.nexus.svc.cluster.local:9093` | — |
 | Grafana | — | `localhost:32300` |
 | ArgoCD | — | `localhost:30443` |
 

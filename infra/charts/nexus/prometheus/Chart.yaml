@@ -1,10 +1,20 @@
 apiVersion: v2
 name: prometheus
-description: Umbrella chart for Prometheus (core server only, no alertmanager or exporters).
+description: >-
+  Umbrella chart for kube-prometheus-stack (Prometheus Operator, Prometheus,
+  Alertmanager, node-exporter, kube-state-metrics, kubernetes-mixin rules and
+  dashboards) plus the nexus alert rules and Alertmanager Slack secret. Grafana
+  is deployed separately (infra/charts/nexus/grafana).
 type: application
-version: 0.1.0
-appVersion: "v3.12.0"
+version: 0.2.0
+appVersion: "v0.94.1"
 dependencies:
-  - name: prometheus
-    version: "29.10.1"
+  - name: kube-prometheus-stack
+    version: "92.10.1"
+    repository: https://prometheus-community.github.io/helm-charts
+  # CRDs are installed from this chart (kube-prometheus-stack runs with
+  # crds.enabled: false) so they can carry a per-resource ServerSideApply
+  # annotation; see values.yaml.
+  - name: prometheus-operator-crds
+    version: "32.0.1"
     repository: https://prometheus-community.github.io/helm-charts
