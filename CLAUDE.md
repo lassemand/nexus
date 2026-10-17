@@ -80,6 +80,8 @@ infra/
 
 Drop a Helm chart directory under `infra/charts/<namespace>/<chart>/` containing at minimum `Chart.yaml` and `values.yaml`. The ApplicationSet picks it up automatically on the next ArgoCD sync — no Application CR required. The namespace is derived from the directory path (`infra/charts/<namespace>/`).
 
+Node metrics (`node_*` from node-exporter) describe the OrbStack Linux VM that hosts the cluster, not the Mac mini's macOS.
+
 ### Key addresses
 
 | Service | In-cluster | Host |
