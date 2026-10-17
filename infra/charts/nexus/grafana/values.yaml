@@ -1,6 +1,13 @@
 grafana:
   service:
     type: LoadBalancer
+    annotations:
+      # Pinned to the address it already had, so nothing moves today. MetalLB
+      # does not keep LoadBalancer assignments across a VM restart — grafana
+      # itself went .15 -> .12 in one — so an SSH forward to an unpinned IP
+      # silently starts pointing at another service. Same mechanism as
+      # argocd-server's pin in infra/argocd/overlays/orbstack/.
+      metallb.universe.tf/loadBalancerIPs: 192.168.139.12
 
   persistence:
     enabled: false
