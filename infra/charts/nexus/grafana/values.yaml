@@ -51,3 +51,18 @@ grafana:
       enabled: true
       label: grafana_dashboard
       labelValue: "1"
+      # ConfigMaps pick their folder with this annotation: "Nexus" for ours
+      # (templates/dashboard-*.yaml), "Kubernetes" for the kube-prometheus-stack
+      # ones (annotation set in infra/charts/nexus/prometheus/values.yaml).
+      folderAnnotation: grafana_folder
+      provider:
+        # Required for folderAnnotation to take effect.
+        foldersFromFilesStructure: true
+        # Dashboards are code: edit the ConfigMap, not the UI.
+        allowUiUpdates: false
+
+  # Scrape Grafana itself, which feeds the kube-prometheus-stack "Grafana
+  # Overview" dashboard. Picked up by Prometheus because its monitor selectors
+  # are open (serviceMonitorSelectorNilUsesHelmValues: false).
+  serviceMonitor:
+    enabled: true
