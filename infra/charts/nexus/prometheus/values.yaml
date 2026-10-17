@@ -60,8 +60,13 @@ prometheus:
   kube-state-metrics:
     enabled: true
 
+  # Node-level CPU/memory/disk/network (node_*). Subchart defaults are kept
+  # (DaemonSet, hostNetwork, hostPID, read-only host mounts). It reports the
+  # OrbStack Linux VM, not macOS. Scraped by the default
+  # kubernetes-service-endpoints job via the service's prometheus.io/scrape
+  # annotation; it listens on the VM's port 9100.
   prometheus-node-exporter:
-    enabled: false
+    enabled: true
 
   prometheus-pushgateway:
     enabled: false
