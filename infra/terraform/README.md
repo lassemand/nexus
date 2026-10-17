@@ -3,7 +3,7 @@
 First Terraform usage in this repo. Everything else under `infra/` is Helm reconciled
 by ArgoCD, which is entirely Kubernetes-scoped. Terraform exists here to manage
 **host-level** configuration of the OrbStack machine — things ArgoCD cannot reach
-(OrbStack's own settings, tmux crash-resilience, a manually-installed LaunchAgent).
+(OrbStack's own settings and tmux crash-resilience).
 
 ## Layers
 
@@ -18,13 +18,13 @@ Two root modules, each with **its own local state**:
 
 | Layer | Resource | What it does |
 |---|---|---|
-| `orbstack/` | `launchagent-argocd-port-forward.tf` | Installs `argocd/overlays/orbstack/io.nexus.argocd-port-forward.plist` into `~/Library/LaunchAgents/` and loads it with `launchctl bootstrap`. The agent is reloaded only when the plist's hash changes. Uses the `hashicorp/local` provider. |
+| `orbstack/` | `settings.tf` | Declares OrbStack settings through `orbctl config set`, reading before writing so an unchanged value is never re-set. See "OrbStack settings" below. |
 
-The agent is a convenience (`https://localhost:8080`): the orbstack overlay
-already exposes `argocd-server` as a `LoadBalancer` with its own IP. Deleting the
-`.tf` file removes it. Terraform cannot see launchd, so an agent unloaded by hand
-is not noticed; reload it with
-`terraform apply -replace=terraform_data.argocd_port_forward_load`.
+An ArgoCD port-forward LaunchAgent used to live here too. It was removed: the
+overlay's `argocd-server` LoadBalancer answers directly at
+`https://192.168.139.11`, so nothing needs forwarding — and the agent could
+never have loaded on this host anyway, since its account has no desktop session.
+See `infra/argocd/README.md`.
 
 ### Why separate states and not one
 
@@ -312,7 +312,7 @@ Plan: 6 to add, 0 to change, 0 to destroy.
 ```
 
 `k8s.enable` is absent from the planned set, and the only planned resources are
-the four settings plus NEX-123's LaunchAgent pair. No
+the four settings plus two LaunchAgent resources that have since been removed. No
 `orbctl config set k8s.enable` has ever been run here. The "discrepancy" this
 paragraph once cited was two instances being compared as if they were one.
 

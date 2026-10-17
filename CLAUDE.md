@@ -55,8 +55,8 @@ infra/
   argocd/
     apps/
       nexus-appset.yaml      # ApplicationSet — Git directory generator over infra/charts/*/*
-    overlays/minikube/
-      io.nexus.argocd-port-forward.plist  # LaunchAgent: port-forward for ArgoCD UI (optional; installed by infra/terraform/orbstack)
+    overlays/orbstack/
+      argocd-server-service.yaml  # argocd-server as a LoadBalancer, pinned to 192.168.139.11
     root-app.yaml            # Bootstrap: apply once, then ArgoCD self-manages
     README.md                # Bootstrap steps and Kafka CLI reference
   charts/                    # Layout: infra/charts/<namespace>/<chart>/
@@ -91,6 +91,12 @@ Drop a Helm chart directory under `infra/charts/<namespace>/<chart>/` containing
 | Prometheus | — | `localhost:32090` |
 | Grafana | — | `localhost:32300` |
 | ArgoCD | — | `localhost:30443` |
+
+The `localhost:` addresses are what you use from a laptop, through a port
+forward. On the Mac mini itself they are not listening; there, services are
+reached through MetalLB LoadBalancer IPs in `192.168.139.10-50`. Only ArgoCD's
+is pinned (`192.168.139.11`) — the others are reassigned when the VM restarts,
+so read them with `kubectl --context orbstack get svc -A | grep LoadBalancer`.
 
 ### Postgres credential secret
 

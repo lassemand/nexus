@@ -3,8 +3,28 @@ kind: Service
 metadata:
   name: argocd-server
   namespace: argocd
+  annotations:
+    # Pinned, because MetalLB does not keep assignments across a VM restart:
+    # after one today vault-ui moved .10 -> .16 and grafana .15 -> .12, and
+    # argocd kept .11 only by luck. The UI address is documented in CLAUDE.md,
+    # so it has to be stable. Inside orbstack-pool (192.168.139.10-50).
+    metallb.universe.tf/loadBalancerIPs: 192.168.139.11
 spec:
   type: LoadBalancer
+  # The selector is not optional. This file is a complete Service, not a patch,
+  # so it replaces upstream's argocd-server Service outright — and without a
+  # selector nothing keeps its Endpoints current. They froze at whichever pod
+  # IP existed when the selector disappeared, so the first argocd-server
+  # restart left the Service, its LoadBalancer IP and every
+  # `kubectl port-forward svc/argocd-server` pointing at an address no pod had:
+  #
+  #   Endpoints → 192.168.194.9      pod → 192.168.194.31
+  #   error: cannot attach to *v1.Service: invalid service 'argocd-server':
+  #          Service is defined without a selector
+  #
+  # The value is upstream ArgoCD's own, taken from the running pod's labels.
+  selector:
+    app.kubernetes.io/name: argocd-server
   ports:
     - name: http
       port: 80
