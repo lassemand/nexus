@@ -1,6 +1,7 @@
-# nexus alert groups, ported verbatim from the former prometheus-chart
-# serverFiles.alerting_rules.yml. Kept in files/ and included raw (not via
-# values) so the Prometheus alert templates survive Helm rendering.
+# nexus alert groups. The single source is rules/nexus.rules.yml, a plain
+# Prometheus rule file that is also what `promtool test rules` runs against
+# (rules/nexus.rules.test.yml). Parsed with fromYaml so the Prometheus
+# templates in annotations are never seen by Helm's template engine.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -9,4 +10,4 @@ metadata:
   labels:
     app.kubernetes.io/part-of: nexus
 spec:
-{{ .Files.Get "files/nexus-rules.yaml" | indent 2 }}
+{{ .Files.Get "rules/nexus.rules.yml" | fromYaml | toYaml | indent 2 }}

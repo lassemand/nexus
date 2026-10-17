@@ -1,0 +1,277 @@
+# Unit tests for nexus.rules.yml. Run from this directory:
+#   promtool test rules nexus.rules.test.yml
+# Every alert has at least one firing and one silent case. Series use a 1m
+# step ('a+bxN' = start a, add b, N more samples), '_' is a missing sample.
+rule_files:
+  - nexus.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ── SaxoRefreshTokenExpiringSoon: 0 <= remaining < 1800s for 2m ──────────
+  - name: ExpiringSoon fires at 10 minutes remaining after 2m
+    input_series:
+      - series: 'saxo_refresh_token_seconds_remaining'
+        values: '600+0x20'
+    alert_rule_test:
+      - eval_time: 1m # pending, `for: 2m` not yet served
+        alertname: SaxoRefreshTokenExpiringSoon
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: SaxoRefreshTokenExpiringSoon
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Saxo refresh token expires in 10m 0s"
+              description: "The saxo_stream OAuth refresh token will expire in 10m 0s. If it expires the entire Nordic data pipeline goes dark and manual re-authentication is required."
+              runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+
+  - name: ExpiringSoon is silent at the -1 bootstrap sentinel
+    input_series:
+      - series: 'saxo_refresh_token_seconds_remaining'
+        values: '-1+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SaxoRefreshTokenExpiringSoon
+        exp_alerts: []
+
+  - name: ExpiringSoon is silent at or above 1800s
+    input_series:
+      - series: 'saxo_refresh_token_seconds_remaining{case="boundary"}'
+        values: '1800+0x20'
+      - series: 'saxo_refresh_token_seconds_remaining{case="healthy"}'
+        values: '3500+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SaxoRefreshTokenExpiringSoon
+        exp_alerts: []
+
+  - name: ExpiringSoon is silent when below 1800s for less than 2m
+    input_series:
+      # healthy for 4 samples (0-3m), then 600s remaining from 4m on
+      - series: 'saxo_refresh_token_seconds_remaining'
+        values: '3500+0x3 600+0x20'
+    alert_rule_test:
+      - eval_time: 5m # below threshold for ~1m
+        alertname: SaxoRefreshTokenExpiringSoon
+        exp_alerts: []
+      - eval_time: 7m # below threshold for ~3m
+        alertname: SaxoRefreshTokenExpiringSoon
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Saxo refresh token expires in 10m 0s"
+              description: "The saxo_stream OAuth refresh token will expire in 10m 0s. If it expires the entire Nordic data pipeline goes dark and manual re-authentication is required."
+              runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+
+  # ── SaxoRefreshTokenExpired: remaining == 0 for 1m ───────────────────────
+  - name: Expired fires at 0 after 1m
+    input_series:
+      - series: 'saxo_refresh_token_seconds_remaining'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: SaxoRefreshTokenExpired
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: SaxoRefreshTokenExpired
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Saxo refresh token has expired"
+              description: "The Saxo refresh token has expired. The Nordic data pipeline is dark. Immediate manual re-authentication required."
+              runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+
+  - name: Expired is silent at the -1 bootstrap sentinel and while time remains
+    input_series:
+      - series: 'saxo_refresh_token_seconds_remaining{case="bootstrap"}'
+        values: '-1+0x20'
+      - series: 'saxo_refresh_token_seconds_remaining{case="valid"}'
+        values: '600+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SaxoRefreshTokenExpired
+        exp_alerts: []
+
+  # ── SaxoRefreshTokenFailure: any increase within 10m ─────────────────────
+  - name: Failure fires when the failure counter increases, then clears
+    input_series:
+      # one failure at 6m
+      - series: 'saxo_refresh_token_failures_total'
+        values: '0+0x5 1+0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SaxoRefreshTokenFailure
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: SaxoRefreshTokenFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Saxo token refresh failed"
+              description: "The saxo_stream service encountered a token refresh failure. If this persists the refresh token chain will break within ~1 hour."
+              runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+      - eval_time: 20m # the increase has left the 10m window
+        alertname: SaxoRefreshTokenFailure
+        exp_alerts: []
+
+  - name: Failure is silent when the counter stays flat
+    input_series:
+      - series: 'saxo_refresh_token_failures_total'
+        values: '3+0x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SaxoRefreshTokenFailure
+        exp_alerts: []
+
+  # ── SaxoStreamDown: no ready pod for 2m (absent, or ready == 0) ──────────
+  - name: SaxoStreamDown fires when the series is absent
+    input_series:
+      # an unrelated pod, so only the saxo-stream series is missing
+      - series: 'kube_pod_status_ready{namespace="chronicle", pod="other-0", condition="true"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SaxoStreamDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: SaxoStreamDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: chronicle
+              condition: "true"
+            exp_annotations:
+              summary: "Saxo stream pod is down"
+              description: "The saxo-stream Deployment has had no ready pod for >2m. Live Nordic bar ingestion has stopped."
+
+  - name: SaxoStreamDown fires when the pod is not ready
+    input_series:
+      - series: 'kube_pod_status_ready{namespace="chronicle", pod="saxo-stream-abc", condition="true"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SaxoStreamDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: SaxoStreamDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: chronicle
+              pod: saxo-stream-abc
+              condition: "true"
+            exp_annotations:
+              summary: "Saxo stream pod is down"
+              description: "The saxo-stream Deployment has had no ready pod for >2m. Live Nordic bar ingestion has stopped."
+
+  - name: SaxoStreamDown is silent when the pod is ready
+    input_series:
+      - series: 'kube_pod_status_ready{namespace="chronicle", pod="saxo-stream-abc", condition="true"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SaxoStreamDown
+        exp_alerts: []
+
+  # ── ChronicleJobFailed: any failed job in namespace chronicle ────────────
+  - name: ChronicleJobFailed fires for a failed chronicle job
+    input_series:
+      - series: 'kube_job_status_failed{namespace="chronicle", job_name="market-123"}'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ChronicleJobFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: chronicle
+              job_name: market-123
+            exp_annotations:
+              summary: "Chronicle CronJob failed"
+              description: "A CronJob in namespace chronicle has a failed execution. Check pod logs: kubectl logs -n chronicle -l job-name=<name>"
+
+  - name: ChronicleJobFailed is silent for other namespaces and zero failures
+    input_series:
+      - series: 'kube_job_status_failed{namespace="signal", job_name="x-1"}'
+        values: '1+0x10'
+      - series: 'kube_job_status_failed{namespace="chronicle", job_name="market-124"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ChronicleJobFailed
+        exp_alerts: []
+
+  # ── PostgresPrimaryDown: nexus-postgres-0 not ready for 1m ───────────────
+  - name: PostgresPrimaryDown fires when nexus-postgres-0 is not ready
+    input_series:
+      - series: 'kube_pod_status_ready{namespace="nexus", pod="nexus-postgres-0", condition="true"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: PostgresPrimaryDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: PostgresPrimaryDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: nexus
+              pod: nexus-postgres-0
+              condition: "true"
+            exp_annotations:
+              summary: "Postgres primary is down"
+              description: "nexus-postgres-0 is not ready. Signal writes and chronicle DB reads will fail until it recovers."
+
+  - name: PostgresPrimaryDown is silent when ready or for another pod
+    input_series:
+      - series: 'kube_pod_status_ready{namespace="nexus", pod="nexus-postgres-0", condition="true"}'
+        values: '1+0x10'
+      - series: 'kube_pod_status_ready{namespace="nexus", pod="nexus-postgres-1", condition="true"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: PostgresPrimaryDown
+        exp_alerts: []
+
+  # ── PodCrashLooping: >3 restarts per 15m, sustained 5m ───────────────────
+  - name: PodCrashLooping fires above 3 restarts per 15m in a watched namespace
+    input_series:
+      # one restart per minute
+      - series: 'kube_pod_container_status_restarts_total{namespace="chronicle", pod="saxo-stream-abc", container="saxo-stream"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 3m # rate is high, but `for: 5m` is not yet served
+        alertname: PodCrashLooping
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: PodCrashLooping
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: chronicle
+              pod: saxo-stream-abc
+              container: saxo-stream
+            exp_annotations:
+              summary: "Pod saxo-stream-abc is crash-looping"
+              description: "Container saxo-stream in chronicle/saxo-stream-abc has restarted more than 3 times in 15 minutes."
+
+  - name: PodCrashLooping is silent for other namespaces and for 3 restarts or fewer
+    input_series:
+      # same rate, unwatched namespace
+      - series: 'kube_pod_container_status_restarts_total{namespace="default", pod="noisy-0", container="app"}'
+        values: '0+1x40'
+      # ~1.5 restarts per 15m in a watched namespace
+      - series: 'kube_pod_container_status_restarts_total{namespace="signal", pod="signal-0", container="signal"}'
+        values: '0+0.1x40'
+      # no restarts at all
+      - series: 'kube_pod_container_status_restarts_total{namespace="nexus", pod="steady-0", container="app"}'
+        values: '5+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: PodCrashLooping
+        exp_alerts: []
