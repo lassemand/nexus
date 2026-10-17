@@ -18,6 +18,15 @@ kube-prometheus-stack:
     enabled: false
     forceDeployDashboards: true
     forceDeployDatasources: false
+    sidecar:
+      dashboards:
+        # Put every kps dashboard in the "Kubernetes" Grafana folder; the
+        # sidecar's folderAnnotation is set in the grafana chart.
+        annotations:
+          grafana_folder: Kubernetes
+
+  # Dashboards are code: not editable in the Grafana UI.
+  defaultDashboardsEditable: false
 
   defaultRules:
     rules:
@@ -48,6 +57,13 @@ kube-prometheus-stack:
   # enabled by default as well.
   nodeExporter:
     enabled: true
+    # The node is the OrbStack Linux VM, so the AIX and macOS node dashboards
+    # could never show data.
+    operatingSystems:
+      aix:
+        enabled: false
+      darwin:
+        enabled: false
   kubeStateMetrics:
     enabled: true
   kubelet:

@@ -3,6 +3,9 @@ kind: ConfigMap
 metadata:
   name: dashboard-special-events
   namespace: nexus
+  annotations:
+    # Folder in Grafana (sidecar folderAnnotation, see values.yaml).
+    grafana_folder: Nexus
   labels:
     grafana_dashboard: "1"
 data:

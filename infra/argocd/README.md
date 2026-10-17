@@ -473,6 +473,22 @@ bootstrap — ArgoCD reverts out-of-band changes within its reconcile interval
 2. Commit and push
 3. Re-apply: `kubectl --context orbstack apply -k infra/argocd/install/`
 
+## Dashboards
+
+Grafana (`infra/charts/nexus/grafana/`) loads dashboards from ConfigMaps labelled
+`grafana_dashboard: "1"` through its sidecar. Folders come from the
+`grafana_folder` annotation on each ConfigMap.
+
+| Folder | Source | Updated by |
+|---|---|---|
+| Kubernetes | kube-prometheus-stack's kubernetes-mixin dashboards, rendered by `infra/charts/nexus/prometheus/` (annotation set under `grafana.sidecar.dashboards.annotations`) | bumping the kube-prometheus-stack version |
+| Nexus | Special Events, Saxo Token Health: `infra/charts/nexus/grafana/templates/dashboard-*.yaml` | editing those templates |
+
+Dashboards are code (`allowUiUpdates: false`, `defaultDashboardsEditable: false`):
+UI edits do not stick. The node panels describe the OrbStack Linux VM, not
+macOS, and the AIX/macOS node and the etcd/scheduler/controller-manager/proxy
+dashboards are switched off because they can never show data here.
+
 ## Alert rule tests
 
 The nexus alert rules live in one file,
