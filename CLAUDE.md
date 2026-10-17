@@ -154,3 +154,7 @@ When a comment arrives, apply this decision process:
 Comments are routed to the set whose worktree produced the PR branch. A PR that no set owns gets a `gh-<repo>-pr-<n>` set, which is closed manually (`scripts/conductor sessions close`).
 
 Never silently ignore a comment. Always reply.
+
+## Metrics retention
+
+Prometheus keeps 30 days of metrics (`retention: 30d`, plus `retentionSize: 18GB` as a hard cap) on a 20Gi `local-path` PVC; Alertmanager has a 1Gi PVC. Data survives pod restarts. **Deleting the PVC deletes the history.** `local-path` does not enforce PVC size, hence the size cap.
