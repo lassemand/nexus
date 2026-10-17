@@ -1,0 +1,2 @@
+# Unit tests for the nexus alert rules are not part of the packaged chart.
+rules/*.test.yml

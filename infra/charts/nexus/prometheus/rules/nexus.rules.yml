@@ -1,0 +1,114 @@
+groups:
+  - name: nexus.saxo-token
+    rules:
+      # Saxo token lifetimes: the access token lives ~20 minutes and the refresh
+      # token ~1 hour. saxo_stream rotates the chain continuously, so a broken
+      # rotation is fatal within about an hour and then needs a manual login.
+      #
+      # Fire when the refresh token expires in <30 min AND a rotation has
+      # occurred. 30 min is half the refresh-token lifetime: rotation normally
+      # keeps the remaining time far above it, so crossing it means at least one
+      # rotation was missed, while leaving time to react before the chain dies.
+      # The metric is -1 in bootstrap, before any rotation has happened;
+      # `>= 0` suppresses the alert in that state. `for: 2m` rides out a
+      # single slow scrape or rotation.
+      - alert: SaxoRefreshTokenExpiringSoon
+        expr: >
+          saxo_refresh_token_seconds_remaining >= 0
+          and saxo_refresh_token_seconds_remaining < 1800
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Saxo refresh token expires in {{ $value | humanizeDuration }}"
+          description: >-
+            The saxo_stream OAuth refresh token will expire in
+            {{ $value | humanizeDuration }}. If it expires the entire Nordic
+            data pipeline goes dark and manual re-authentication is required.
+          runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+
+      # 0 means the token has run out; -1 (bootstrap) must stay silent.
+      - alert: SaxoRefreshTokenExpired
+        expr: saxo_refresh_token_seconds_remaining == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Saxo refresh token has expired"
+          description: >-
+            The Saxo refresh token has expired. The Nordic data pipeline is
+            dark. Immediate manual re-authentication required.
+          runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+
+      # Any failed refresh in the last 10 minutes (several rotation attempts
+      # per access-token lifetime), so one failure is visible before the
+      # refresh token expires. Fires immediately (for: 0m).
+      - alert: SaxoRefreshTokenFailure
+        expr: increase(saxo_refresh_token_failures_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Saxo token refresh failed"
+          description: >-
+            The saxo_stream service encountered a token refresh failure.
+            If this persists the refresh token chain will break within ~1 hour.
+          runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
+
+  - name: nexus.ingestion
+    rules:
+      # Saxo WebSocket stream pod has been not-ready for >2m.
+      - alert: SaxoStreamDown
+        expr: |
+          absent(kube_pod_status_ready{namespace="chronicle", pod=~"saxo-stream.*", condition="true"})
+          or kube_pod_status_ready{namespace="chronicle", pod=~"saxo-stream.*", condition="true"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Saxo stream pod is down"
+          description: >-
+            The saxo-stream Deployment has had no ready pod for >2m.
+            Live Nordic bar ingestion has stopped.
+
+      - alert: ChronicleJobFailed
+        expr: kube_job_status_failed{namespace="chronicle"} > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Chronicle CronJob failed"
+          description: >-
+            A CronJob in namespace chronicle has a failed execution.
+            Check pod logs: kubectl logs -n chronicle -l job-name=<name>
+
+  - name: nexus.database
+    rules:
+      - alert: PostgresPrimaryDown
+        expr: |
+          kube_pod_status_ready{namespace="nexus", pod="nexus-postgres-0", condition="true"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Postgres primary is down"
+          description: >-
+            nexus-postgres-0 is not ready. Signal writes and chronicle
+            DB reads will fail until it recovers.
+
+  - name: nexus.reliability
+    rules:
+      - alert: PodCrashLooping
+        expr: |
+          rate(kube_pod_container_status_restarts_total{
+            namespace=~"chronicle|signal|nexus"
+          }[15m]) * 900 > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod {{ $labels.pod }} is crash-looping"
+          description: >-
+            Container {{ $labels.container }} in
+            {{ $labels.namespace }}/{{ $labels.pod }} has restarted
+            more than 3 times in 15 minutes.
