@@ -478,8 +478,8 @@ bootstrap — ArgoCD reverts out-of-band changes within its reconcile interval
 The nexus alert rules live in one file,
 `infra/charts/nexus/prometheus/rules/nexus.rules.yml` (plain Prometheus rule
 format; the chart loads it into the `PrometheusRule`). Unit tests for them are in
-`rules/nexus.rules.test.yml`, and they should run in CI with Prometheus v3.15.0, the
-version kube-prometheus-stack deploys.
+`rules/nexus.rules.test.yml`, and CI (`.github/workflows/alert-rules.yml`) runs them on every change under that
+directory with Prometheus v3.15.0, the version kube-prometheus-stack deploys.
 
 Run them locally with `promtool`, or with Docker if it is not installed:
 

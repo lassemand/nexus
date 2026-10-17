@@ -1,0 +1,38 @@
+name: Alert rules
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/charts/nexus/prometheus/rules/**"
+      - ".github/workflows/alert-rules.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "infra/charts/nexus/prometheus/rules/**"
+      - ".github/workflows/alert-rules.yml"
+
+env:
+  # Prometheus version deployed by kube-prometheus-stack 92.10.1
+  # (quay.io/prometheus/prometheus:v3.15.0). Keep in step with the chart.
+  PROMETHEUS_IMAGE: prom/prometheus:v3.15.0
+
+jobs:
+  promtool:
+    name: promtool check / test nexus alert rules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: promtool check rules
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/infra/charts/nexus/prometheus/rules:/rules:ro" -w /rules \
+            "$PROMETHEUS_IMAGE" check rules nexus.rules.yml
+
+      - name: promtool test rules
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/infra/charts/nexus/prometheus/rules:/rules:ro" -w /rules \
+            "$PROMETHEUS_IMAGE" test rules nexus.rules.test.yml
