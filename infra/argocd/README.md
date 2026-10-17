@@ -159,7 +159,24 @@ LoadBalancer assignments across a VM restart. Open:
 https://192.168.139.11
 ```
 
-(self-signed certificate — expect a browser warning). No port-forward is needed.
+(self-signed certificate — expect a browser warning). That address is only
+reachable **on the Mac mini itself**: it lives on OrbStack's internal network.
+From a laptop, forward a port over the SSH connection you already use — nothing
+has to run on the host:
+
+```bash
+ssh -N -L 30443:192.168.139.11:443 agent@Lasses-Mac-mini
+# then open https://localhost:30443
+```
+
+Or make it automatic for every SSH session, in `~/.ssh/config` on the laptop:
+
+```
+Host Lasses-Mac-mini
+  LocalForward 30443 192.168.139.11:443
+```
+
+The IP is pinned, so the forward's target does not move when the VM restarts.
 
 
 ### 5 — Retrieve the initial admin password
