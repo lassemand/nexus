@@ -160,3 +160,7 @@ Never silently ignore a comment. Always reply.
 ## Metrics retention
 
 Prometheus keeps 30 days of metrics (`retention: 30d`, plus `retentionSize: 18GB` as a hard cap) on a 20Gi `local-path` PVC; Alertmanager has a 1Gi PVC. Data survives pod restarts. **Deleting the PVC deletes the history.** `local-path` does not enforce PVC size, hence the size cap.
+
+### Dashboards
+
+Kubernetes dashboards (dotdc Kubernetes Views and Node Exporter Full) are vendored as JSON in `infra/charts/nexus/grafana/dashboards/kubernetes/`, with pins and local changes recorded in `SOURCES.md`. One template renders a ConfigMap per file into the Grafana folder "Kubernetes". Change them through git only (`allowUiUpdates: false`): bump the pin in `SOURCES.md`, re-download, and re-apply the datasource fix. Node panels show the OrbStack VM, not the Mac. Special Events and Saxo Token Health stay in the General folder.

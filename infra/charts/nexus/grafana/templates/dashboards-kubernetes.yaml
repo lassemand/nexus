@@ -1,0 +1,18 @@
+{{- /* One ConfigMap per vendored dashboard in dashboards/kubernetes/*.json, placed in the "Kubernetes" folder. */}}
+{{- range $path, $_ := .Files.Glob "dashboards/kubernetes/*.json" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-k8s-{{ base $path | trimSuffix ".json" | lower }}
+  namespace: nexus
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: Kubernetes
+    # Client-side apply would copy the JSON into last-applied-configuration (262144-byte limit).
+    argocd.argoproj.io/sync-options: ServerSideApply=true
+data:
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}

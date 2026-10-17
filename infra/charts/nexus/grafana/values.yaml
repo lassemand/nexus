@@ -51,3 +51,10 @@ grafana:
       enabled: true
       label: grafana_dashboard
       labelValue: "1"
+      # ConfigMaps annotated grafana_folder: <name> are placed in that folder.
+      # Unannotated ones (Special Events, Saxo Token Health) stay in General.
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+        # Dashboards come from git; UI edits are not saved.
+        allowUiUpdates: false
