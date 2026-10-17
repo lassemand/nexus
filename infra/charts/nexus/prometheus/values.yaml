@@ -3,8 +3,11 @@ prometheus:
   alertmanager:
     enabled: true
 
+    # Keeps silences and notification state across restarts.
     persistence:
-      enabled: false
+      enabled: true
+      size: 1Gi
+      storageClass: local-path
 
     # Expand ${VAR} in alertmanager.yml so the webhook URL is never hardcoded.
     extraArgs:
@@ -65,10 +68,23 @@ prometheus:
 
   # ── Prometheus server ────────────────────────────────────────────────────
   server:
-    retention: "15d"
+    # Keep 30 days of metrics on a 20Gi local-path volume so history survives
+    # pod restarts (reboots, ArgoCD syncs, evictions).
+    retention: "30d"
+    # local-path volumes are plain directories in the OrbStack VM and the PVC
+    # size is NOT enforced, so cap the TSDB below the volume size. Prometheus
+    # deletes the oldest blocks first when either limit is reached.
+    retentionSize: "18GB"
 
     persistentVolume:
-      enabled: false
+      enabled: true
+      size: 20Gi
+      storageClass: local-path
+
+    # RWO volume: a rolling update would hang on the TSDB lock. This is the
+    # chart default, pinned here explicitly.
+    strategy:
+      type: Recreate
 
     service:
       type: LoadBalancer
