@@ -21,9 +21,8 @@ infra/argocd/
     kustomization.yaml               — pinned upstream install (v3.4.2)
   overlays/
     orbstack/
-      kustomization.yaml             — patches argocd-server to LoadBalancer
-      argocd-server-service.yaml     — LoadBalancer Service patch
-      io.nexus.argocd-port-forward.plist — optional LaunchAgent (localhost:8080)
+      kustomization.yaml             — applies the Service below
+      argocd-server-service.yaml     — argocd-server as a LoadBalancer, IP pinned
   root-app.yaml                      — App-of-Apps bootstrap
   apps/
     nexus-appset.yaml                — two ApplicationSets (see below)
@@ -144,41 +143,41 @@ kubectl --context orbstack get pods -n argocd -w
 
 ### 4 — Expose the ArgoCD UI
 
-Apply the OrbStack overlay, which patches `argocd-server` to a `LoadBalancer`:
+Apply the OrbStack overlay. Note it **replaces** upstream's `argocd-server`
+Service rather than patching it, so the file must carry everything the Service
+needs — including the selector, without which its Endpoints freeze at an old pod
+IP and the UI dies on the first pod restart:
 
 ```bash
 kubectl --context orbstack apply -k infra/argocd/overlays/orbstack/
 ```
 
-Then read the assigned address:
+The address is pinned with a MetalLB annotation, because MetalLB does not keep
+LoadBalancer assignments across a VM restart. Open:
 
-```bash
-kubectl --context orbstack get svc argocd-server -n argocd
+```
+https://192.168.139.11
 ```
 
-Open `https://<EXTERNAL-IP>` (self-signed certificate — expect a browser
-warning).
-
-<details>
-<summary>Optional: reach it at <code>https://localhost:8080</code> instead</summary>
-
-A LaunchAgent is provided if you prefer a stable localhost address over the
-assigned LoadBalancer IP. It is installed by Terraform on the host
-(`infra/terraform/orbstack/`) — do not copy it or `launchctl load` it by hand:
+(self-signed certificate — expect a browser warning). That address is only
+reachable **on the Mac mini itself**: it lives on OrbStack's internal network.
+From a laptop, forward a port over the SSH connection you already use — nothing
+has to run on the host:
 
 ```bash
-cd infra/terraform && make apply LAYER=orbstack
-
-# Check it is running
-launchctl list io.nexus.argocd-port-forward
-
-# Logs
-tail -f /tmp/argocd-port-forward.log
+ssh -N -L 30443:192.168.139.11:443 agent@Lasses-Mac-mini
+# then open https://localhost:30443
 ```
 
-To remove it, delete `infra/terraform/orbstack/launchagent-argocd-port-forward.tf`
-and apply; Terraform unloads the agent and deletes the plist.
-</details>
+Or make it automatic for every SSH session, in `~/.ssh/config` on the laptop:
+
+```
+Host Lasses-Mac-mini
+  LocalForward 30443 192.168.139.11:443
+```
+
+The IP is pinned, so the forward's target does not move when the VM restarts.
+
 
 ### 5 — Retrieve the initial admin password
 
