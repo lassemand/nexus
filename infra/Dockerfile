@@ -25,11 +25,20 @@ COPY insight/Cargo.toml  insight/Cargo.toml
 COPY cli/Cargo.toml      cli/Cargo.toml
 COPY conductor/Cargo.toml conductor/Cargo.toml
 
-# Create placeholder sources so Cargo can parse the workspace
+# Create placeholder sources so Cargo can parse the workspace.
+#
+# Every target a member declares needs a file here, including ones that never
+# ship: `cargo build` resolves all targets of every workspace member before it
+# compiles anything. conductor declares a test-fixture binary outside src/
+# (tests/fixtures/fake-claude-tty) and has a library target, and without
+# placeholders for both this layer fails with
+#   error: can't find bin `fake-claude-tty` at path ...
+# Dockerfile.conductor learned this in #184; this file did not, so it would
+# have broken the next nexus release the same way.
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src \
-      conductor/src \
-    && touch model/src/lib.rs alpha/src/lib.rs \
+      conductor/src conductor/tests/fixtures/fake-claude-tty \
+    && touch model/src/lib.rs alpha/src/lib.rs conductor/src/lib.rs \
     && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
         chronicle/src/market.rs \
@@ -41,7 +50,8 @@ RUN mkdir -p \
         signal/src/scanner.rs \
         insight/src/main.rs \
         cli/src/main.rs \
-        conductor/src/main.rs
+        conductor/src/main.rs \
+        conductor/tests/fixtures/fake-claude-tty/main.rs
 
 # Download dependencies as a separate layer — only re-runs when Cargo.lock changes
 RUN cargo fetch --locked
