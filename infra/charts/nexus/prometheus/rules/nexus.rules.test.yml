@@ -112,7 +112,7 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: "DELIBERATELY BROKEN"
+              summary: "Saxo token refresh failed"
               description: "The saxo_stream service encountered a token refresh failure. If this persists the refresh token chain will break within ~1 hour."
               runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
       - eval_time: 20m # the increase has left the 10m window
