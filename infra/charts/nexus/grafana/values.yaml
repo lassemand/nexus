@@ -29,7 +29,7 @@ grafana:
         - name: Prometheus
           uid: nexus-prometheus
           type: prometheus
-          url: http://prometheus-server.nexus.svc.cluster.local:80
+          url: http://prometheus-kube-prometheus-prometheus.nexus.svc.cluster.local:9090
           isDefault: true
           editable: false
 
