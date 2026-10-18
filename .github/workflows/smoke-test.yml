@@ -40,3 +40,7 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://nexus:nexus@localhost:5432/chronicle
         run: cargo test -p chronicle --test smoke_test
+      - name: Run nordic-reports DB test
+        env:
+          TEST_DATABASE_URL: postgres://nexus:nexus@localhost:5432/chronicle
+        run: cargo test -p chronicle --bin nordic-reports
