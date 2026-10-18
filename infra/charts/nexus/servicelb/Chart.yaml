@@ -1,0 +1,7 @@
+apiVersion: v2
+name: servicelb
+description: >
+  Turns off k3s's built-in ServiceLB on the OrbStack node so it stops competing
+  with MetalLB for LoadBalancer Services.
+type: application
+version: 0.1.0

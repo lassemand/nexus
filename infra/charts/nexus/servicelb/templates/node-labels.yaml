@@ -1,0 +1,22 @@
+{{- /*
+A label-only Node manifest. Server-side apply makes ArgoCD own just this one
+label field, not the Node. Delete=false and Prune=false mean that removing
+this chart, or the app, never deletes the Node. Removing the chart does not
+remove the label either; that is done with
+  kubectl label node <node> svccontroller.k3s.cattle.io/enablelb-
+
+The node name must exist: server-side apply would create a bare Node object
+with that name if it did not.
+*/ -}}
+{{- range .Values.nodes }}
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: {{ . }}
+  labels:
+    svccontroller.k3s.cattle.io/enablelb: "false"
+  annotations:
+    argocd.argoproj.io/sync-options: ServerSideApply=true,Delete=false,Prune=false
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+{{- end }}
