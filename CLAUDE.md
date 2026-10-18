@@ -67,6 +67,7 @@ infra/
       vault/                 # HashiCorp Vault standalone (umbrella Helm chart)
       external-secrets/      # External Secrets Operator + ClusterSecretStore (Vault backend)
       prometheus/            # kube-prometheus-stack umbrella (operator, Prometheus, Alertmanager, node-exporter, kube-state-metrics, nexus alert rules; Grafana disabled)
+      servicelb/             # label-only Node manifest that turns off k3s ServiceLB (MetalLB serves LoadBalancers)
     signal/
       signal/                # nexus signal service (Helm chart, Deployment)
     chronicle/

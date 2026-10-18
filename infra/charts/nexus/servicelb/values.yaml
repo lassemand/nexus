@@ -1,0 +1,16 @@
+# OrbStack's k3s runs ServiceLB (klipper-lb) alongside MetalLB. For every
+# LoadBalancer Service it starts a svclb-* DaemonSet whose pod binds the
+# Service's ports as hostPorts. With one node, Services that share a port
+# (grafana and argocd-server on 80, both Kafka external listeners on 9093,
+# prometheus and insight on 8080) cannot all schedule, and the losers sit
+# Pending with "didn't have free ports for the requested pod ports", firing
+# KubeDaemonSetRolloutStuck / KubePodNotReady. MetalLB serves every
+# LoadBalancer IP, so those pods do nothing.
+#
+# k3s adds the node selector `svccontroller.k3s.cattle.io/enablelb=true` to
+# every svclb DaemonSet as soon as any node carries that label key, whatever
+# its value. Labelling the only node `false` therefore schedules no svclb pods.
+# OrbStack exposes no setting for the k3s `--disable=servicelb` flag, so this
+# is the switch available to us.
+nodes:
+  - orbstack
