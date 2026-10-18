@@ -292,7 +292,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert!(counted >= 10, "{counted}");
+        assert_eq!(counted, 9);
         // The 2025-08-27 correction supersedes the original and is not a report itself.
         let row = sqlx::query(
             "SELECT o.superseded_by, c.id AS cid, c.report_kind, c.is_correction \
