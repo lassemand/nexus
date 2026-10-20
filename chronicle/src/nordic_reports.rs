@@ -87,13 +87,15 @@ pub async fn ingest_company(
                 is_correction,
                 calendar_update,
             };
-            if db::insert_release(pool, &row).await? {
-                outcome.inserted += 1;
-                if calendar_update {
-                    outcome.new_calendar_updates += 1;
+            match db::record_release(pool, &row).await? {
+                db::Recorded::Updated => hit_known = true,
+                db::Recorded::Matched(_) => outcome.inserted += 1,
+                db::Recorded::Inserted => {
+                    outcome.inserted += 1;
+                    if calendar_update {
+                        outcome.new_calendar_updates += 1;
+                    }
                 }
-            } else {
-                hit_known = true;
             }
         }
         start += page.items.len();
@@ -236,33 +238,16 @@ mod tests {
     /// (a role allowed to CREATE DATABASE); skipped otherwise.
     #[tokio::test]
     async fn ingest_is_idempotent_and_links_corrections() {
-        use sqlx::{Connection, Row};
+        use crate::nordic::db::testutil::TestDb;
+        use sqlx::Row;
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        let Some(tdb) = TestDb::create().await else {
             eprintln!("TEST_DATABASE_URL not set, skipping");
             return;
         };
-        let db = format!("nordic_reports_test_{}", std::process::id());
-        let mut admin = sqlx::PgConnection::connect(&url).await.unwrap();
-        sqlx::query(&format!("CREATE DATABASE {db}"))
-            .execute(&mut admin)
-            .await
-            .unwrap();
-        let test_url = match url.rsplit_once('/') {
-            Some((base, _)) => format!("{base}/{db}"),
-            None => unreachable!("database url has a path"),
-        };
-        let pool = PgPoolOptions::new().connect(&test_url).await.unwrap();
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-        sqlx::query(
-            "INSERT INTO companies (ticker, sector, exchange_mic, currency, nasdaq_news_company) \
-             VALUES ('GOMX', 'Technology', 'FNSE', 'SEK', 'GomSpace Group AB')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        let pool = tdb.pool.clone();
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -309,10 +294,7 @@ mod tests {
         assert_eq!(row.get::<Option<String>, _>("report_kind"), None);
         assert!(row.get::<bool, _>("is_correction"));
 
-        pool.close().await;
-        sqlx::query(&format!("DROP DATABASE {db}"))
-            .execute(&mut admin)
-            .await
-            .unwrap();
+        drop(pool);
+        tdb.drop_db().await;
     }
 }
