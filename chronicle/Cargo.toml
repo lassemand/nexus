@@ -24,6 +24,10 @@ name = "pdmr"
 path = "src/pdmr.rs"
 
 [[bin]]
+name = "nordic-reports"
+path = "src/nordic_reports.rs"
+
+[[bin]]
 name = "saxo_stream"
 path = "src/saxo_stream.rs"
 

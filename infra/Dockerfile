@@ -45,6 +45,7 @@ RUN mkdir -p \
         chronicle/src/earnings_bin.rs \
         chronicle/src/filings.rs \
         chronicle/src/pdmr.rs \
+        chronicle/src/nordic_reports.rs \
         chronicle/src/saxo_stream.rs \
         signal/src/main.rs \
         signal/src/scanner.rs \
@@ -93,6 +94,7 @@ COPY --from=builder /build/target/release/market      /usr/local/bin/market
 COPY --from=builder /build/target/release/earnings    /usr/local/bin/earnings
 COPY --from=builder /build/target/release/filings     /usr/local/bin/filings
 COPY --from=builder /build/target/release/pdmr        /usr/local/bin/pdmr
+COPY --from=builder /build/target/release/nordic-reports /usr/local/bin/nordic-reports
 COPY --from=builder /build/target/release/saxo_stream /usr/local/bin/saxo_stream
 COPY --from=builder /build/target/release/signal      /usr/local/bin/signal
 COPY --from=builder /build/target/release/insight     /usr/local/bin/insight
