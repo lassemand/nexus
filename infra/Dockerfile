@@ -38,7 +38,7 @@ COPY conductor/Cargo.toml conductor/Cargo.toml
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src \
       conductor/src conductor/tests/fixtures/fake-claude-tty \
-    && touch model/src/lib.rs alpha/src/lib.rs conductor/src/lib.rs \
+    && touch model/src/lib.rs alpha/src/lib.rs chronicle/src/lib.rs conductor/src/lib.rs \
     && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
         chronicle/src/market.rs \
@@ -46,6 +46,7 @@ RUN mkdir -p \
         chronicle/src/filings.rs \
         chronicle/src/pdmr.rs \
         chronicle/src/nordic_reports.rs \
+        chronicle/src/nordic_calendar.rs \
         chronicle/src/saxo_stream.rs \
         signal/src/main.rs \
         signal/src/scanner.rs \
@@ -95,6 +96,7 @@ COPY --from=builder /build/target/release/earnings    /usr/local/bin/earnings
 COPY --from=builder /build/target/release/filings     /usr/local/bin/filings
 COPY --from=builder /build/target/release/pdmr        /usr/local/bin/pdmr
 COPY --from=builder /build/target/release/nordic-reports /usr/local/bin/nordic-reports
+COPY --from=builder /build/target/release/nordic-calendar /usr/local/bin/nordic-calendar
 COPY --from=builder /build/target/release/saxo_stream /usr/local/bin/saxo_stream
 COPY --from=builder /build/target/release/signal      /usr/local/bin/signal
 COPY --from=builder /build/target/release/insight     /usr/local/bin/insight
