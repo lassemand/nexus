@@ -745,7 +745,8 @@ async fn report_rows(pool: &PgPool, ticker: &str) -> Vec<(String, String, String
     sqlx::query_as(
         "SELECT to_char(released_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
                 report_kind, lang \
-         FROM report_releases WHERE ticker = $1 AND report_kind IS NOT NULL ORDER BY released_at",
+         FROM report_releases \
+         WHERE ticker = $1 AND report_kind IS NOT NULL AND released_at IS NOT NULL ORDER BY released_at",
     )
     .bind(ticker)
     .fetch_all(pool)
