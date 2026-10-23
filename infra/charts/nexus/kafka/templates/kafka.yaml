@@ -27,10 +27,24 @@ spec:
         tls: false
       # External LoadBalancer listener — Strimzi auto-detects the assigned IP
       # and sets the advertised address. No hardcoded nodePort or advertisedHost.
+      #
+      # Both Services are pinned to the addresses they already had. MetalLB
+      # does not keep unpinned assignments across a VM restart, and host
+      # clients hold the bootstrap IP in KAFKA_BROKERS — after one restart it
+      # pointed at what is now argocd-server's .11 and `nexus register` timed
+      # out. Same mechanism as argocd-server (.11) and grafana (.12).
       - name: external
         port: 9093
         type: loadbalancer
         tls: false
+        configuration:
+          bootstrap:
+            annotations:
+              metallb.universe.tf/loadBalancerIPs: 192.168.139.10
+          brokers:
+            - broker: 0
+              annotations:
+                metallb.universe.tf/loadBalancerIPs: 192.168.139.13
     config:
       offsets.topic.replication.factor: "1"
       transaction.state.log.replication.factor: "1"

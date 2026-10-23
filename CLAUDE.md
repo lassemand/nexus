@@ -99,9 +99,11 @@ Node metrics (`node_*` from node-exporter) describe the OrbStack Linux VM that h
 
 The `localhost:` addresses are what you use from a laptop, through a port
 forward. On the Mac mini itself they are not listening; there, services are
-reached through MetalLB LoadBalancer IPs in `192.168.139.10-50`. Only ArgoCD's
-is pinned (`192.168.139.11`) — the others are reassigned when the VM restarts,
-so read them with `kubectl --context orbstack get svc -A | grep LoadBalancer`.
+reached through MetalLB LoadBalancer IPs in `192.168.139.10-50`. Pinned:
+Kafka external bootstrap `192.168.139.10:9093` (use this for `KAFKA_BROKERS` on
+the host), ArgoCD `192.168.139.11`, Grafana `192.168.139.12`, Kafka broker 0
+`192.168.139.13`. The others are reassigned when the VM restarts, so read them
+with `kubectl --context orbstack get svc -A | grep LoadBalancer`.
 
 ### Postgres credential secret
 
