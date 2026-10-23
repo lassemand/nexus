@@ -20,46 +20,50 @@ data:
       "schemaVersion": 39,
       "panels": [
         {
-          "id": 1,
-          "type": "barchart",
-          "title": "Special Events",
-          "gridPos": { "x": 0, "y": 0, "w": 24, "h": 10 },
-          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
-          "fieldConfig": { "defaults": {}, "overrides": [] },
-          "options": {
-            "xField": "day",
-            "orientation": "auto",
-            "legend": { "displayMode": "list", "placement": "bottom" },
-            "tooltip": { "mode": "single" }
-          },
-          "targets": [
-            {
-              "refId": "A",
-              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
-              "format": "table",
-              "rawSql": "SELECT\n  TO_CHAR(DATE_TRUNC('day', occurred_at), 'YYYY-MM-DD') AS day,\n  COUNT(*) AS events\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nGROUP BY DATE_TRUNC('day', occurred_at)\nORDER BY DATE_TRUNC('day', occurred_at)"
-            }
-          ]
-        },
-        {
           "id": 2,
           "type": "table",
           "title": "Event Log",
-          "gridPos": { "x": 0, "y": 10, "w": 24, "h": 12 },
-          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
+          "description": "Special events, plus Nordic quarterly and annual reports: upcoming ones (always listed, even past the end of the time range), released ones, and scheduled reports that were not seen. Report times without a release are MFN estimates.",
+          "gridPos": { "x": 0, "y": 0, "w": 24, "h": 14 },
+          "datasource": { "type": "datasource", "uid": "-- Mixed --" },
           "fieldConfig": {
             "defaults": {},
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "status" },
+                "properties": [
+                  { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      { "type": "value", "options": {
+                        "upcoming":           { "color": "blue",   "index": 0 },
+                        "released":           { "color": "green",  "index": 1 },
+                        "expected, not seen": { "color": "orange", "index": 2 },
+                        "occurred":           { "color": "text",   "index": 3 }
+                      } }
+                    ]
+                  }
+                ]
+              }
+            ]
           },
           "options": {
-            "sortBy": [{ "displayName": "occurred_at", "desc": true }]
+            "sortBy": [{ "displayName": "time", "desc": true }]
           },
+          "transformations": [{ "id": "merge", "options": {} }],
           "targets": [
             {
               "refId": "A",
               "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
               "format": "table",
-              "rawSql": "SELECT occurred_at, ticker, event_type, description\nFROM special_events\nWHERE $__timeFilter(occurred_at)\nORDER BY occurred_at DESC"
+              "rawSql": "SELECT occurred_at AS time, ticker, event_type, 'occurred' AS status, description\nFROM special_events\nWHERE $__timeFilter(occurred_at)"
+            },
+            {
+              "refId": "B",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-chronicle" },
+              "format": "table",
+              "rawSql": "-- Nordic periodic reports: upcoming (always shown, past the range end),\n-- released, and scheduled-but-not-seen. expected_date/expected_time are\n-- Europe/Stockholm local, and expected_time is MFN's estimate.\nSELECT\n  COALESCE(r.released_at,\n           (r.expected_date + COALESCE(r.expected_time, TIME '00:00')) AT TIME ZONE 'Europe/Stockholm') AS time,\n  r.ticker,\n  CASE r.report_kind WHEN 'annual' THEN 'annual report' ELSE 'quarterly report' END AS event_type,\n  CASE\n    WHEN r.released_at IS NOT NULL THEN 'released'\n    WHEN r.expected_date >= (NOW() AT TIME ZONE 'Europe/Stockholm')::date THEN 'upcoming'\n    ELSE 'expected, not seen'\n  END AS status,\n  concat_ws(' · ',\n    r.fiscal_period,\n    COALESCE(r.headline, r.calendar_label),\n    CASE WHEN r.released_at IS NULL AND r.expected_time IS NOT NULL\n         THEN 'time ' || to_char(r.expected_time, 'HH24:MI') || ' (estimated)' END) AS description\nFROM report_releases r\nWHERE r.report_kind IS NOT NULL\n  AND NOT r.is_correction\n  AND (\n    (r.released_at IS NULL AND r.expected_date >= (NOW() AT TIME ZONE 'Europe/Stockholm')::date)\n    OR $__timeFilter(COALESCE(r.released_at, r.expected_date::timestamptz))\n  )"
             }
           ]
         },
@@ -67,7 +71,7 @@ data:
           "id": 3,
           "type": "table",
           "title": "Insider Filings",
-          "gridPos": { "x": 0, "y": 22, "w": 24, "h": 14 },
+          "gridPos": { "x": 0, "y": 14, "w": 24, "h": 14 },
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
           "fieldConfig": {
             "defaults": {},
@@ -106,7 +110,7 @@ data:
           "id": 4,
           "type": "timeseries",
           "title": "Daily Insider Buy vs Sell Volume (90 days)",
-          "gridPos": { "x": 0, "y": 36, "w": 24, "h": 10 },
+          "gridPos": { "x": 0, "y": 28, "w": 24, "h": 10 },
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
           "fieldConfig": { "defaults": {}, "overrides": [] },
           "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
@@ -123,7 +127,7 @@ data:
           "id": 5,
           "type": "table",
           "title": "Ticker Insider Consistency",
-          "gridPos": { "x": 0, "y": 46, "w": 24, "h": 14 },
+          "gridPos": { "x": 0, "y": 38, "w": 24, "h": 14 },
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
           "fieldConfig": {
             "defaults": {},
@@ -171,7 +175,7 @@ data:
           "id": 6,
           "type": "barchart",
           "title": "Top 20 Tickers by Consistency Score",
-          "gridPos": { "x": 0, "y": 60, "w": 24, "h": 12 },
+          "gridPos": { "x": 0, "y": 52, "w": 24, "h": 12 },
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
           "fieldConfig": { "defaults": {}, "overrides": [] },
           "options": {
