@@ -1,0 +1,40 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nordic-calendar
+  labels:
+    app: nordic-calendar
+spec:
+  # Daily refresh of upcoming report dates from each company's public MFN page
+  # (one request per company). nordic-reports also refreshes a company right
+  # after it announces a financial-calendar change.
+  schedule: {{ .Values.schedules.nordicCalendar | quote }}
+  timeZone: "Europe/Stockholm"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # A page change won't heal on retry; the job exits non-zero so the failed
+      # Job is visible, and the next daily run tries again.
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: nordic-calendar
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: nordic-calendar
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/nordic-calendar"]
+              envFrom:
+                - secretRef:
+                    name: chronicle-secret
+              resources:
+                requests:
+                  memory: {{ .Values.resources.requests.memory | quote }}
+                  cpu: {{ .Values.resources.requests.cpu | quote }}
+                limits:
+                  memory: {{ .Values.resources.limits.memory | quote }}

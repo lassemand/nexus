@@ -1,0 +1,547 @@
+//! Upcoming report dates from each company's MFN calendar (NEX-161).
+//!
+//! Only the public company HTML page `https://mfn.se/a/<slug>` is fetched
+//! (MFN's `robots.txt` allows it; the JSON/RSS/XML feeds are disallowed and not
+//! used): once a day per company, plus at most once per `nordic-reports` run
+//! when the company has just announced a calendar change.
+//!
+//! Upcoming reports are written into `report_releases` as *scheduled* rows
+//! (`released_at` / `disclosure_id` NULL). Released rows are never deleted.
+
+use super::classify::ReportKind;
+use super::db::MATCH_WINDOW_DAYS;
+use anyhow::{anyhow, Context};
+use chrono::{NaiveDate, NaiveTime};
+use scraper::{Html, Selector};
+use sqlx::{PgPool, Row};
+use std::time::Duration;
+use thiserror::Error;
+use tokio::time::Instant;
+use tracing::{debug, error, info, warn};
+
+/// Production base URL.
+pub const MFN_BASE_URL: &str = "https://mfn.se";
+
+const MAX_ATTEMPTS: u32 = 3;
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
+const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// Event labels that are known not to be reports (matched case-insensitively
+/// as substrings); they are ignored silently.
+const IGNORED_LABELS: &[&str] = &[
+    "årsstämma",
+    "bolagsstämma",
+    "x-dag",
+    "utdelning",
+    "kapitalmarknadsdag",
+    "capital markets day",
+    "analytiker",
+    "split",
+    "annual general meeting",
+];
+
+/// (needle, kind) pairs for report labels, Swedish and English, lower-case.
+const REPORT_LABELS: &[(&str, ReportKind)] = &[
+    ("kvartalsrapport", ReportKind::Interim),
+    ("delårsrapport", ReportKind::Interim),
+    ("halvårsrapport", ReportKind::Interim),
+    ("interim report", ReportKind::Interim),
+    ("quarterly report", ReportKind::Interim),
+    ("half-year report", ReportKind::Interim),
+    ("bokslutskommuniké", ReportKind::Annual),
+    ("årsredovisning", ReportKind::Annual),
+    ("year-end report", ReportKind::Annual),
+    ("annual report", ReportKind::Annual),
+];
+
+/// One upcoming report from the calendar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarEntry {
+    /// Expected release date (Europe/Stockholm).
+    pub date: NaiveDate,
+    /// Estimated release time (Europe/Stockholm); `None` when MFN shows `-`.
+    pub time: Option<NaiveTime>,
+    /// Original label, e.g. `Kvartalsrapport 2026-Q3`.
+    pub label: String,
+    /// Interim or annual.
+    pub kind: ReportKind,
+    /// `2026-Q3` or `2026`, when the label has one.
+    pub fiscal_period: Option<String>,
+}
+
+/// The calendar page could not be understood. The existing rows must be kept.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ParseError {
+    /// The page has no `table-calender` table.
+    #[error("calendar table not found on page")]
+    NoTable,
+    /// The table exists but no row could be parsed.
+    #[error("calendar table has no parseable rows")]
+    NoRows,
+}
+
+/// How a calendar event label is treated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelClass {
+    /// A periodic report.
+    Report(ReportKind, Option<String>),
+    /// A known non-report event (AGM, ex-dividend date, …).
+    Ignored,
+    /// A wording we don't recognise.
+    Unknown,
+}
+
+/// Classify an event label such as `Kvartalsrapport 2026-Q2`.
+pub fn classify_label(label: &str) -> LabelClass {
+    let lower = label.to_lowercase();
+    if let Some((_, kind)) = REPORT_LABELS.iter().find(|(n, _)| lower.contains(n)) {
+        return LabelClass::Report(*kind, fiscal_period(label));
+    }
+    if IGNORED_LABELS.iter().any(|n| lower.contains(n)) {
+        return LabelClass::Ignored;
+    }
+    LabelClass::Unknown
+}
+
+/// `2026-Q3` or a bare four-digit year found in the label.
+fn fiscal_period(label: &str) -> Option<String> {
+    let mut year = None;
+    for tok in label.split_whitespace() {
+        let b = tok.as_bytes();
+        let digits = |s: &[u8]| s.len() == 4 && s.iter().all(u8::is_ascii_digit);
+        if b.len() == 7 && digits(&b[..4]) && b[4] == b'-' && (b[5] == b'Q' || b[5] == b'q') {
+            if (b'1'..=b'4').contains(&b[6]) {
+                return Some(format!("{}-Q{}", &tok[..4], b[6] as char));
+            }
+        } else if digits(b) && year.is_none() {
+            year = Some(tok.to_string());
+        }
+    }
+    year
+}
+
+fn parse_time(cell: &str) -> Option<NaiveTime> {
+    NaiveTime::parse_from_str(cell.trim(), "%H:%M").ok()
+}
+
+/// Parse the calendar page and return the **upcoming report** rows.
+///
+/// Rows with class `grey-background` are past; rows without it are upcoming.
+/// Non-report events are dropped; unknown upcoming labels are logged at `warn`.
+/// An empty result on a correctly parsed table is valid ("nothing announced").
+pub fn parse_calendar(html: &str, slug: &str) -> Result<Vec<CalendarEntry>, ParseError> {
+    // Selectors are constant literals, so parsing cannot fail.
+    let table_sel = Selector::parse("table.table-calender").expect("valid selector");
+    let row_sel = Selector::parse("tbody tr").expect("valid selector");
+    let cell_sel = Selector::parse("td").expect("valid selector");
+
+    let doc = Html::parse_document(html);
+    let table = doc.select(&table_sel).next().ok_or(ParseError::NoTable)?;
+
+    let mut parsed_rows = 0;
+    let mut upcoming = Vec::new();
+    for row in table.select(&row_sel) {
+        let cells: Vec<String> = row
+            .select(&cell_sel)
+            .map(|c| {
+                c.text()
+                    .flat_map(str::split_whitespace)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        let [date, time, label] = match cells.as_slice() {
+            [d, t, l] => [d, t, l],
+            _ => continue,
+        };
+        let Ok(date) = NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
+            continue;
+        };
+        parsed_rows += 1;
+        if row.value().classes().any(|c| c == "grey-background") {
+            continue;
+        }
+        match classify_label(label) {
+            LabelClass::Report(kind, fiscal_period) => upcoming.push(CalendarEntry {
+                date,
+                time: parse_time(time),
+                label: label.clone(),
+                kind,
+                fiscal_period,
+            }),
+            LabelClass::Ignored => {}
+            LabelClass::Unknown => warn!(slug, label = %label, %date, "unknown MFN calendar label"),
+        }
+    }
+    if parsed_rows == 0 {
+        return Err(ParseError::NoRows);
+    }
+    Ok(upcoming)
+}
+
+/// Polite HTTP client for MFN company pages.
+pub struct MfnClient {
+    http: reqwest::Client,
+    base_url: String,
+    min_interval: Duration,
+    last_request: Option<Instant>,
+}
+
+impl MfnClient {
+    /// `min_interval` is the minimum gap between requests (2 s in production).
+    pub fn new(base_url: impl Into<String>, min_interval: Duration) -> anyhow::Result<Self> {
+        let http = reqwest::Client::builder()
+            .user_agent("nexus-chronicle/nordic-calendar (lasse.alm@gsfleet.io)")
+            .timeout(Duration::from_secs(20))
+            .build()?;
+        Ok(Self {
+            http,
+            base_url: base_url.into(),
+            min_interval,
+            last_request: None,
+        })
+    }
+
+    async fn throttle(&mut self) {
+        if let Some(last) = self.last_request {
+            let elapsed = last.elapsed();
+            if elapsed < self.min_interval {
+                tokio::time::sleep(self.min_interval - elapsed).await;
+            }
+        }
+        self.last_request = Some(Instant::now());
+    }
+
+    /// `<base>/a/<slug>`, built with path segments so the slug cannot inject anything.
+    fn page_url(&self, slug: &str) -> anyhow::Result<reqwest::Url> {
+        let mut url = reqwest::Url::parse(&self.base_url)?;
+        url.path_segments_mut()
+            .map_err(|_| anyhow!("base url cannot be a base"))?
+            .pop_if_empty()
+            .push("a")
+            .push(slug);
+        Ok(url)
+    }
+
+    /// Fetch the company page: one request, plus waits and retries only for
+    /// `429`, honouring `Retry-After`.
+    pub async fn fetch_page(&mut self, slug: &str) -> anyhow::Result<String> {
+        let url = self.page_url(slug)?;
+        for attempt in 1..=MAX_ATTEMPTS {
+            self.throttle().await;
+            let resp = self.http.get(url.clone()).send().await?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(resp.text().await?);
+            }
+            if status.as_u16() == 429 && attempt < MAX_ATTEMPTS {
+                let wait = resp
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .map(Duration::from_secs)
+                    .unwrap_or(DEFAULT_RETRY_AFTER)
+                    .min(MAX_RETRY_AFTER);
+                warn!(slug, ?wait, "MFN returned 429, waiting");
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            return Err(anyhow!("MFN returned {status} for {slug}"));
+        }
+        Err(anyhow!("MFN rate limited {slug}"))
+    }
+}
+
+/// What [`apply_calendar`] did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ApplyOutcome {
+    /// Scheduled rows inserted.
+    pub scheduled: usize,
+    /// Entries that filled the expected fields of an already-released report.
+    pub matched_released: usize,
+}
+
+/// Replace a company's *scheduled* rows from `expected_date >= today`, in one
+/// transaction. Never deletes or changes a released row, except that an
+/// entry matching a released real report whose `expected_date` is NULL (same
+/// ±[`MATCH_WINDOW_DAYS`] window and closest-wins rule as `record_release`)
+/// sets that row's expected fields instead of inserting a scheduled row.
+/// Scheduled rows whose date has passed are left as they are.
+pub async fn apply_calendar(
+    pool: &PgPool,
+    ticker: &str,
+    mic: &str,
+    today: NaiveDate,
+    entries: &[CalendarEntry],
+) -> sqlx::Result<ApplyOutcome> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "DELETE FROM report_releases \
+         WHERE ticker = $1 AND exchange_mic = $2 AND released_at IS NULL AND expected_date >= $3",
+    )
+    .bind(ticker)
+    .bind(mic)
+    .bind(today)
+    .execute(&mut *tx)
+    .await?;
+
+    let mut out = ApplyOutcome::default();
+    for e in entries {
+        let released = sqlx::query(
+            "SELECT id FROM report_releases \
+             WHERE ticker = $1 AND exchange_mic = $2 AND released_at IS NOT NULL \
+               AND report_kind IS NOT NULL AND NOT is_correction AND expected_date IS NULL \
+               AND (released_at AT TIME ZONE 'Europe/Stockholm')::date \
+                   BETWEEN ($3::date - $4::int) AND ($3::date + $4::int) \
+             ORDER BY abs((released_at AT TIME ZONE 'Europe/Stockholm')::date - $3::date), \
+                      released_at \
+             LIMIT 1 FOR UPDATE",
+        )
+        .bind(ticker)
+        .bind(mic)
+        .bind(e.date)
+        .bind(MATCH_WINDOW_DAYS as i32)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(row) = released {
+            let id: i64 = row.get("id");
+            sqlx::query(
+                "UPDATE report_releases SET expected_date = $2, expected_time = $3, \
+                        calendar_label = $4, fiscal_period = $5 WHERE id = $1",
+            )
+            .bind(id)
+            .bind(e.date)
+            .bind(e.time)
+            .bind(&e.label)
+            .bind(&e.fiscal_period)
+            .execute(&mut *tx)
+            .await?;
+            out.matched_released += 1;
+            debug!(ticker, expected_date = %e.date, "calendar entry matched an already released report");
+            continue;
+        }
+        let res = sqlx::query(
+            "INSERT INTO report_releases \
+             (ticker, exchange_mic, expected_date, expected_time, calendar_label, \
+              report_kind, fiscal_period) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",
+        )
+        .bind(ticker)
+        .bind(mic)
+        .bind(e.date)
+        .bind(e.time)
+        .bind(&e.label)
+        .bind(e.kind.as_str())
+        .bind(&e.fiscal_period)
+        .execute(&mut *tx)
+        .await?;
+        out.scheduled += res.rows_affected() as usize;
+    }
+    tx.commit().await?;
+    Ok(out)
+}
+
+/// Result of [`refresh_company`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refresh {
+    /// The company has no `mfn_slug`; nothing was fetched.
+    NoSlug,
+    /// The calendar was fetched and applied.
+    Refreshed(ApplyOutcome),
+}
+
+/// Fetch, parse and apply one company's MFN calendar.
+///
+/// A fetch or parse failure is returned as an error (a [`ParseError`] is the
+/// source for page changes) **after** logging it at `error`; existing rows are
+/// kept. Used by the daily `nordic-calendar` job and by `nordic-reports` after
+/// a calendar announcement.
+pub async fn refresh_company(
+    pool: &PgPool,
+    client: &mut MfnClient,
+    ticker: &str,
+    mic: &str,
+) -> anyhow::Result<Refresh> {
+    let slug: Option<String> = sqlx::query_scalar(
+        "SELECT mfn_slug FROM companies WHERE ticker = $1 AND exchange_mic = $2",
+    )
+    .bind(ticker)
+    .bind(mic)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    let Some(slug) = slug else {
+        return Ok(Refresh::NoSlug);
+    };
+
+    let html = client
+        .fetch_page(&slug)
+        .await
+        .with_context(|| format!("fetching MFN calendar for {ticker}"))?;
+    let entries = match parse_calendar(&html, &slug) {
+        Ok(e) => e,
+        Err(e) => {
+            error!(ticker, slug = %slug, error = %e, "MFN calendar parse failure, keeping existing rows");
+            return Err(anyhow::Error::new(e).context(format!("parsing MFN calendar for {ticker}")));
+        }
+    };
+    let today: NaiveDate =
+        sqlx::query_scalar("SELECT (now() AT TIME ZONE 'Europe/Stockholm')::date")
+            .fetch_one(pool)
+            .await?;
+    let outcome = apply_calendar(pool, ticker, mic, today, &entries).await?;
+    info!(
+        ticker,
+        upcoming = entries.len(),
+        ?outcome,
+        "calendar refreshed"
+    );
+    Ok(Refresh::Refreshed(outcome))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GOMSPACE: &str = include_str!("../../tests/fixtures/mfn_gomspace.html");
+    const HEXAGON: &str = include_str!("../../tests/fixtures/mfn_hexagon.html");
+
+    fn d(s: &str) -> NaiveDate {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn gomspace_upcoming_only() {
+        let rows = parse_calendar(GOMSPACE, "gomspace-group").unwrap();
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.date, d("2027-02-18"));
+        assert_eq!(r.time, Some(NaiveTime::from_hms_opt(8, 30, 0).unwrap()));
+        assert_eq!(r.label, "Bokslutskommuniké 2026");
+        assert_eq!(r.kind, ReportKind::Annual);
+        assert_eq!(r.fiscal_period.as_deref(), Some("2026"));
+    }
+
+    #[test]
+    fn hexagon_large_cap_upcoming_quarters_and_annual() {
+        let rows = parse_calendar(HEXAGON, "hexagon").unwrap();
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| (r.date.to_string(), r.kind, r.fiscal_period.clone().unwrap()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("2027-04-29".into(), ReportKind::Interim, "2027-Q1".into()),
+                ("2027-01-28".into(), ReportKind::Annual, "2026".into()),
+                ("2026-10-23".into(), ReportKind::Interim, "2026-Q3".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn dash_time_is_null_and_non_reports_are_ignored() {
+        let html = page(&[
+            ("", "2027-03-01", "-", "Kvartalsrapport 2027-Q1"),
+            ("", "2027-03-02", "", "Årsstämma"),
+            (
+                "",
+                "2027-03-03",
+                "08:00",
+                "X-dag ordinarie utdelning GOMX 0.00 SEK",
+            ),
+            ("", "2027-03-04", "08:00", "Extra Bolagsstämma 2027"),
+            ("", "2027-03-05", "08:00", "Kapitalmarknadsdag 2027"),
+        ]);
+        let rows = parse_calendar(&html, "x").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].time, None);
+    }
+
+    #[test]
+    fn english_labels_and_kinds() {
+        for (label, kind, period) in [
+            (
+                "Interim report 2027-Q2",
+                ReportKind::Interim,
+                Some("2027-Q2"),
+            ),
+            (
+                "Quarterly Report 2027-Q3",
+                ReportKind::Interim,
+                Some("2027-Q3"),
+            ),
+            ("Half-year report 2027", ReportKind::Interim, Some("2027")),
+            ("Year-end report 2026", ReportKind::Annual, Some("2026")),
+            ("Annual report 2026", ReportKind::Annual, Some("2026")),
+            ("Delårsrapport", ReportKind::Interim, None),
+            (
+                "Halvårsrapport 2027-Q2",
+                ReportKind::Interim,
+                Some("2027-Q2"),
+            ),
+            ("Årsredovisning 2026", ReportKind::Annual, Some("2026")),
+        ] {
+            assert_eq!(
+                classify_label(label),
+                LabelClass::Report(kind, period.map(String::from)),
+                "{label}"
+            );
+        }
+        assert_eq!(
+            classify_label("Annual General Meeting 2027"),
+            LabelClass::Ignored
+        );
+        assert_eq!(
+            classify_label("Webcast för investerare"),
+            LabelClass::Unknown
+        );
+        assert_eq!(classify_label("15-10 2023-Q3"), LabelClass::Unknown);
+    }
+
+    #[test]
+    fn empty_upcoming_list_is_valid() {
+        let html = page(&[(
+            "grey-background",
+            "2026-08-26",
+            "-",
+            "Kvartalsrapport 2026-Q2",
+        )]);
+        assert_eq!(parse_calendar(&html, "x").unwrap(), vec![]);
+    }
+
+    #[test]
+    fn missing_table_or_rows_is_a_parse_failure() {
+        assert_eq!(
+            parse_calendar("<html><body><h1>Redesigned</h1></body></html>", "x"),
+            Err(ParseError::NoTable)
+        );
+        let empty = page(&[]);
+        assert_eq!(parse_calendar(&empty, "x"), Err(ParseError::NoRows));
+        let junk = page(&[("", "not-a-date", "-", "Kvartalsrapport 2027-Q1")]);
+        assert_eq!(parse_calendar(&junk, "x"), Err(ParseError::NoRows));
+    }
+
+    #[test]
+    fn page_url_uses_path_segments() {
+        let c = MfnClient::new("https://mfn.se", Duration::ZERO).unwrap();
+        assert_eq!(
+            c.page_url("gomspace-group").unwrap().as_str(),
+            "https://mfn.se/a/gomspace-group"
+        );
+        assert_eq!(c.page_url("a/../b?x").unwrap().path(), "/a/a%2F..%2Fb%3Fx");
+    }
+
+    fn page(rows: &[(&str, &str, &str, &str)]) -> String {
+        let body: String = rows
+            .iter()
+            .map(|(class, date, time, label)| {
+                format!("<tr class=\"{class}\"><td>{date}</td><td>{time}</td><td>{label}</td></tr>")
+            })
+            .collect();
+        format!(
+            "<html><body><table class=\"table-calender\"><thead><tr><td></td><td>Est. tid*</td><td></td></tr></thead><tbody>{body}</tbody></table></body></html>"
+        )
+    }
+}

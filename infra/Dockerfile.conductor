@@ -60,13 +60,15 @@ COPY conductor/Cargo.toml conductor/Cargo.toml
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src \
       conductor/src conductor/tests/fixtures/fake-claude-tty \
-    && touch model/src/lib.rs alpha/src/lib.rs conductor/src/lib.rs \
+    && touch model/src/lib.rs alpha/src/lib.rs chronicle/src/lib.rs conductor/src/lib.rs \
     && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
         chronicle/src/market.rs \
         chronicle/src/earnings_bin.rs \
         chronicle/src/filings.rs \
         chronicle/src/pdmr.rs \
+        chronicle/src/nordic_reports.rs \
+        chronicle/src/nordic_calendar.rs \
         chronicle/src/saxo_stream.rs \
         signal/src/main.rs \
         signal/src/scanner.rs \
