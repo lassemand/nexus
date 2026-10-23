@@ -1,0 +1,186 @@
+[
+ {
+  "news_id": "f900d8ad-959d-57c2-91e4-ce4a7e747865",
+  "url": "https://mfn.se/cis/a/volvo/volvokoncernen-det-andra-kvartalet-2026-f900d8ad",
+  "author": {
+   "slug": "volvo",
+   "slugs": [
+    "volvo"
+   ],
+   "name": "Volvo",
+   "tickers": [
+    "XSTO:VOLV A",
+    "CAPA:VOLVAs",
+    "XLON:0MHW",
+    "XSTO:VOLV B",
+    "XLON:0HTP"
+   ]
+  },
+  "properties": {
+   "lang": "sv",
+   "tags": [
+    ":regulatory",
+    "sub:report",
+    "sub:report:interim"
+   ]
+  },
+  "content": {
+   "title": "Volvokoncernen - det andra kvartalet 2026",
+   "publish_date": "2026-07-17T05:20:00Z"
+  }
+ },
+ {
+  "news_id": "65c1b68c-875e-578d-acc8-ca05ed0ea99c",
+  "url": "https://mfn.se/cis/a/volvo/volvo-group-the-second-quarter-2026-65c1b68c",
+  "author": {
+   "slug": "volvo",
+   "slugs": [
+    "volvo"
+   ],
+   "name": "Volvo",
+   "tickers": [
+    "XSTO:VOLV A",
+    "CAPA:VOLVAs",
+    "XLON:0MHW",
+    "XSTO:VOLV B",
+    "XLON:0HTP"
+   ]
+  },
+  "properties": {
+   "lang": "en",
+   "tags": [
+    ":regulatory",
+    "sub:report",
+    "sub:report:interim"
+   ]
+  },
+  "content": {
+   "title": "Volvo Group - the second quarter 2026",
+   "publish_date": "2026-07-17T05:20:00Z"
+  }
+ },
+ {
+  "news_id": "9ea74002-69b3-5c4c-b109-0ba9e42f6dc9",
+  "url": "https://mfn.se/cis/a/volvo/ab-volvo-volvokoncernen-publicerar-arsredovisning-for-2025-9ea74002",
+  "author": {
+   "slug": "volvo",
+   "slugs": [
+    "volvo"
+   ],
+   "name": "Volvo",
+   "tickers": [
+    "XSTO:VOLV A",
+    "CAPA:VOLVAs",
+    "XLON:0MHW",
+    "XSTO:VOLV B",
+    "XLON:0HTP"
+   ]
+  },
+  "properties": {
+   "lang": "sv",
+   "tags": [
+    ":regulatory",
+    "sub:report",
+    "sub:report:annual"
+   ]
+  },
+  "content": {
+   "title": "AB Volvo: Volvokoncernen publicerar årsredovisning för 2025",
+   "publish_date": "2026-02-26T14:35:00Z"
+  }
+ },
+ {
+  "news_id": "0b769ef7-f84c-5e5a-91f3-a8d7fa426526",
+  "url": "https://mfn.se/cis/a/volvo/ab-volvo-volvo-group-publishes-annual-report-2025-0b769ef7",
+  "author": {
+   "slug": "volvo",
+   "slugs": [
+    "volvo"
+   ],
+   "name": "Volvo",
+   "tickers": [
+    "XSTO:VOLV A",
+    "CAPA:VOLVAs",
+    "XLON:0MHW",
+    "XSTO:VOLV B",
+    "XLON:0HTP"
+   ]
+  },
+  "properties": {
+   "lang": "en",
+   "tags": [
+    ":regulatory",
+    "sub:report",
+    "sub:report:annual"
+   ]
+  },
+  "content": {
+   "title": "AB Volvo: Volvo Group publishes Annual Report 2025",
+   "publish_date": "2026-02-26T14:35:00Z"
+  }
+ },
+ {
+  "news_id": "0164fead-72ba-57fc-9010-33506d612d64",
+  "url": "https://mfn.se/cis/a/volvo/ab-volvo-volvokoncernen-det-fjarde-kvartalet-och-helaret-2025-0164fead",
+  "author": {
+   "slug": "volvo",
+   "slugs": [
+    "volvo"
+   ],
+   "name": "Volvo",
+   "tickers": [
+    "XSTO:VOLV A",
+    "CAPA:VOLVAs",
+    "XLON:0MHW",
+    "XSTO:VOLV B",
+    "XLON:0HTP"
+   ]
+  },
+  "properties": {
+   "lang": "sv",
+   "tags": [
+    ":regulatory",
+    "sub:report",
+    "sub:report:annual",
+    "sub:report:interim",
+    "sub:report:interim:q4"
+   ]
+  },
+  "content": {
+   "title": "AB Volvo: Volvokoncernen - det fjärde kvartalet och helåret 2025",
+   "publish_date": "2026-01-28T06:20:00Z"
+  }
+ },
+ {
+  "news_id": "d536f041-da4e-50f2-940f-8cde43478518",
+  "url": "https://mfn.se/cis/a/volvo/ab-volvo-volvo-group-the-fourth-quarter-and-full-year-2025-d536f041",
+  "author": {
+   "slug": "volvo",
+   "slugs": [
+    "volvo"
+   ],
+   "name": "Volvo",
+   "tickers": [
+    "XSTO:VOLV A",
+    "CAPA:VOLVAs",
+    "XLON:0MHW",
+    "XSTO:VOLV B",
+    "XLON:0HTP"
+   ]
+  },
+  "properties": {
+   "lang": "en",
+   "tags": [
+    ":regulatory",
+    "sub:report",
+    "sub:report:annual",
+    "sub:report:interim",
+    "sub:report:interim:q4"
+   ]
+  },
+  "content": {
+   "title": "AB Volvo: Volvo Group - the fourth quarter and full year 2025",
+   "publish_date": "2026-01-28T06:20:00Z"
+  }
+ }
+]

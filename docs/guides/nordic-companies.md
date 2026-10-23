@@ -1,69 +1,91 @@
 # Registering a Nordic company
 
-The Nordic report sources identify companies by their own keys, not by ticker,
+The Nordic report sources identify companies by their MFN slug, not by ticker,
 so each company is mapped once by hand in the `companies` table:
 
 | Column | Meaning |
 |---|---|
 | `name` | Display name used by the dashboard, free text, e.g. `GomSpace Group AB (GOMX)` |
 | `mfn_slug` | Slug of the company page on MFN (`https://mfn.se/a/<slug>`). Must match `^[a-z0-9][a-z0-9-]*$` and be unique |
-| `nasdaq_news_company` | Issuer name exactly as the Nasdaq Nordic news feed spells it (byte for byte). Unique |
 
-All three are nullable. The company row (`ticker`, `exchange_mic`) must already exist; these steps never insert.
+Both are nullable. (`nasdaq_news_company`, used while releases came from the
+Nasdaq news API, was dropped in NEX-166.) The company row (`ticker`, `exchange_mic`) must already exist; these steps never insert.
 
 ## Finding the MFN slug
 
 Open the company's page on [mfn.se](https://mfn.se). The slug is the last path
 segment of the URL: `https://mfn.se/a/gomspace-group` → `gomspace-group`.
 
-## Finding the Nasdaq issuer name
-
-Query the news API and copy the `company` field of any item for that company:
-`https://api.news.eu.nasdaq.com/news/query.action` (e.g. `"company": "GomSpace Group AB"`).
-Copy it verbatim, including case and punctuation.
+To check the mapping, open `https://mfn.se/all/a/<slug>.json`: the items'
+`author.tickers` should contain `<exchange_mic>:<ticker>` (e.g. `FNSE:GOMX`);
+otherwise `nordic-reports` logs `mapping may point at the wrong company`.
 
 ## SQL
 
 ```sql
 UPDATE companies
-   SET name                = 'GomSpace Group AB (GOMX)',
-       mfn_slug            = 'gomspace-group',
-       nasdaq_news_company = 'GomSpace Group AB'
+   SET name     = 'GomSpace Group AB (GOMX)',
+       mfn_slug = 'gomspace-group'
  WHERE ticker = 'GOMX' AND exchange_mic = 'FNSE';
 ```
 
 Check that one row was updated (`UPDATE 1`). `UPDATE 0` means the company is not registered yet.
 
-The migration `*_companies_add_nordic_source_mappings.sql` runs this same
-update for GomSpace, and does nothing if the row is absent.
+The migration `*_companies_add_nordic_source_mappings.sql` seeds GomSpace the
+same way (and did nothing if the row was absent).
 
 ## Scheduled and released reports (`report_releases`)
 
 `report_releases` is one table for reports that are **scheduled** and reports
 that have been **released**. A row is scheduled while `released_at` and
-`disclosure_id` are NULL (the `expected_date`, `expected_time`, `fiscal_period`
-and `calendar_label` columns come from the MFN calendar, NEX-161) and becomes
-released when the matching Nasdaq disclosure arrives. Constraints: a row needs
-`released_at` or `expected_date`, and `disclosure_id` is NULL exactly when
-`released_at` is NULL. `expected_date`/`expected_time` are Europe/Stockholm local
-and `expected_time` is only an estimate; `released_at` is the actual UTC instant.
+`mfn_news_id` are NULL (`expected_date`, `expected_time`, `fiscal_period` and
+`calendar_label` come from the MFN calendar) and becomes released when the
+matching MFN news item arrives. A row needs `released_at` or `expected_date`, and
+`mfn_news_id` is NULL exactly when `released_at` is NULL. `expected_date`/
+`expected_time` are Europe/Stockholm local and `expected_time` is only an
+estimate; `released_at` is the actual UTC instant (MFN's `publish_date`, unchanged).
 
 The `nordic-reports` chronicle binary (CronJob in `infra/charts/chronicle/chronicle/`,
 hourly on weekdays 07:00–20:00 plus 22:00, `Europe/Stockholm`) reads every
-`FNSE`/`XSTO` company with a `nasdaq_news_company` and records the exchange's
-disclosures with `nordic::db::record_release`, per item, in one transaction:
+`FNSE`/`XSTO` company with an `mfn_slug`, pages MFN's JSON news feed
+`https://mfn.se/all/a/<slug>.json` newest first (following `next_url`), keeps items
+authored by that slug, and records each with `nordic::db::record_release` in one
+transaction:
 
-1. `disclosure_id` already stored → that row is updated in place (re-runs are idempotent).
-2. A real report (not a correction, not a calendar update) → fills the closest **unreleased** row of the same company whose `expected_date` is within ±7 days of the release's Stockholm date (tie: the earlier date), keeping its expected fields. Logged as `matched scheduled report`.
-3. Otherwise a new row is inserted with the expected fields NULL.
+1. `mfn_news_id` already stored → display fields refreshed in place (re-runs are idempotent; classification is decided at insert).
+2. Same company, instant and `report_kind` already stored (the Swedish/English twin) → no second row; an English item replaces a non-English one.
+3. A real report (not a correction, not a calendar update) → fills the closest **unreleased** row of the same company whose `expected_date` is within ±7 days of the release's Stockholm date (tie: the earlier date), keeping its expected fields. Logged as `matched scheduled report`.
+4. Otherwise a new row is inserted with the expected fields NULL.
 
-Corrections, non-reports and calendar updates never match a scheduled row.
-Unmapped companies are skipped with an info log.
+Incremental runs stop at the first page that has nothing new and whose oldest item
+is more than 14 days older than the newest stored release. `--backfill` (or
+`NORDIC_BACKFILL=1`) pages to the end; at most 100 pages per company. Companies
+without an `mfn_slug` are skipped with an info log. The job exits non-zero if
+any company failed.
 
-- `released_at` is a UTC instant (the request uses `timeZone=UTC`; `company=` matches the issuer name exactly).
-- `report_kind` is `interim` or `annual` for periodic reports and `NULL` for everything else. Rule: category in `Interim report (Q1 and Q3)`, `Half-year financial report`, `Annual financial report`, `Interim information`, and then `Annual financial report` always counts; otherwise the headline needs report wording (`report`, `interim`, `half-year`, `year-end`, `annual`, `rapport`, …) or a quarter mention (`Q1`–`Q4`, `quarter`, `kvartal`) without business-news wording (`order intake`, `guidance`, `contract`, `agreement`, `secures`, `signs`, `market update`).
-- `is_correction` marks `Correction:` / `Rättelse:` headlines (never `report_kind`); the original report's `superseded_by` points at the correction (within 7 days).
-- `calendar_update` marks financial-calendar announcements; companies with newly inserted ones are logged as `calendar_updated`.
+**One-time backfill** (after deploying NEX-166, and for new companies):
+
+```bash
+kubectl --context orbstack -n chronicle create job \
+  --from=cronjob/nordic-reports-backfill nordic-reports-backfill-$(date +%s)
+```
+
+`nordic-reports-backfill` is a suspended CronJob that runs `nordic-reports --backfill`.
+
+**Classification** (`nordic::classify::classify_item`, from MFN tags + title; the title's issuer prefix `"GomSpace A/S: "` is stripped first). In order:
+
+1. Calendar notice (`financial calendar`, `early publication`, `delayed publication`, `postpone`, `brings forward`, `moves up publication`, `new date for`, `tidigarelägger`, `senarelägger`, `flyttar … rapport`, …) → `calendar_update`, never a report, even if tagged.
+2. `Correction:` / `Rättelse:` → `is_correction`, never a report.
+3. Year-end → `annual`: tag `sub:report:interim:q4`, or tags `sub:report:annual` + `sub:report:interim`, or a Q4 / year-end / `full year` title that passes the report test below (a `full year` mention is ignored when the title or tags say Q1–Q3 / half-year).
+4. Tag `sub:report:annual` only → the published annual report *document* → not a release (`report_kind` NULL, row kept).
+5. `interim`: any `sub:report:interim*` tag, or `:regulatory` plus the headline heuristic (report wording, or a quarter mention without business-news wording, and none of the notice words such as `general meeting`, `sustainability`, `invitation`).
+6. Otherwise `report_kind` NULL. MFN's tags are incomplete (GomSpace's year-end reports carry only `:regulatory`), so the heuristic is needed.
+
+`fiscal_period` is `YYYY-Qn` (interim) or `YYYY` (year-end) only when the title has exactly one `20xx` year and the quarter is unambiguous; otherwise NULL.
+
+A report row on the same Stockholm date as an *earlier* report row of the same company (a re-send without "Correction") becomes `is_correction` with `report_kind` NULL, and the earlier row's `superseded_by` points at it; the earliest timestamp is the release the market reacted to. Corrections link the same way within 7 days.
+
+Companies with a newly inserted `calendar_update` are logged (`calendar_updated`) and their MFN calendar is refreshed right away.
 
 ## Upcoming reports (`nordic-calendar`)
 

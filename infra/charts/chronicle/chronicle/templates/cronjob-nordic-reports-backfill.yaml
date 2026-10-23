@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nordic-reports-backfill
+  labels:
+    app: nordic-reports-backfill
+spec:
+  # Never runs on its own: trigger a one-off run with
+  #   kubectl --context orbstack -n chronicle create job \
+  #     --from=cronjob/nordic-reports-backfill nordic-reports-backfill-$(date +%s)
+  # It pages every company's full MFN news history (nordic-reports --backfill).
+  suspend: true
+  schedule: "0 0 1 1 *"
+  timeZone: "Europe/Stockholm"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: nordic-reports-backfill
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: nordic-reports
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/nordic-reports"]
+              args: ["--backfill"]
+              envFrom:
+                - secretRef:
+                    name: chronicle-secret
+              resources:
+                requests:
+                  memory: {{ .Values.resources.requests.memory | quote }}
+                  cpu: {{ .Values.resources.requests.cpu | quote }}
+                limits:
+                  memory: {{ .Values.resources.limits.memory | quote }}
