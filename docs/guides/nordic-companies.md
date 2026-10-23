@@ -7,9 +7,16 @@ so each company is mapped once by hand in the `companies` table:
 |---|---|
 | `name` | Display name used by the dashboard, free text, e.g. `GomSpace Group AB (GOMX)` |
 | `mfn_slug` | Slug of the company page on MFN (`https://mfn.se/a/<slug>`). Must match `^[a-z0-9][a-z0-9-]*$` and be unique |
+| `fi_issuer` | Issuer name exactly as Finansinspektionen's insider register spells it. Used by `pdmr` for PDMR (insider) transactions. Unique |
 
-Both are nullable. (`nasdaq_news_company`, used while releases came from the
-Nasdaq news API, was dropped in NEX-166.) The company row (`ticker`, `exchange_mic`) must already exist; these steps never insert.
+All three are nullable. (`nasdaq_news_company`, used while releases came from the
+Nasdaq news API, was dropped in NEX-166.) The company row itself (`ticker`,
+`exchange_mic`, `currency`) is created from the registration: `nexus register
+GOMX.ST` publishes to `company.tickers`, and `pdmr`, `nordic-reports` and
+`nordic-calendar` copy new registrations into `companies` when they start
+(`chronicle_lib::registry`). After registering, wait for the next
+`nordic-reports` run (hourly on weekdays) or start one by hand, then set the
+mappings below. The mapping steps never insert.
 
 ## Finding the MFN slug
 
@@ -20,12 +27,21 @@ To check the mapping, open `https://mfn.se/all/a/<slug>.json`: the items'
 `author.tickers` should contain `<exchange_mic>:<ticker>` (e.g. `FNSE:GOMX`);
 otherwise `nordic-reports` logs `mapping may point at the wrong company`.
 
+## Finding the FI issuer name
+
+Query FI's issuer autocomplete with part of the company name (not the ticker)
+and copy the current name verbatim:
+`https://marknadssok.fi.se/Publiceringsklient/sv-SE/AutoComplete/H%C3%A4mtaAutoCompleteListaFull?sokfunktion=Insyn&falt=Utgivare&sokterm=GomSpace`
+returns `["GomSpace AB","GomSpace Group AB"]`. Without `fi_issuer`, pdmr searches
+with the ticker, which only works when the ticker is part of the issuer name.
+
 ## SQL
 
 ```sql
 UPDATE companies
-   SET name     = 'GomSpace Group AB (GOMX)',
-       mfn_slug = 'gomspace-group'
+   SET name      = 'GomSpace Group AB (GOMX)',
+       mfn_slug  = 'gomspace-group',
+       fi_issuer = 'GomSpace Group AB'
  WHERE ticker = 'GOMX' AND exchange_mic = 'FNSE';
 ```
 

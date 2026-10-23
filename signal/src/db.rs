@@ -2,7 +2,7 @@ use alpha::country_for_exchange;
 use chrono::{DateTime, NaiveDate, Utc};
 use model::{
     calendar::DynamicCalendar,
-    generated::{unified_insider_transaction, UnifiedInsiderTransaction},
+    generated::{unified_insider_transaction, UnifiedInsiderTransaction, UnifiedTransactionType},
     sector::Sector,
 };
 use sqlx::PgPool;
@@ -268,6 +268,21 @@ pub async fn fetch_bars_after(
         .collect())
 }
 
+/// SEC Form 4 code equivalent to a unified transaction type, for sources
+/// without a raw code (FI). Queries and dashboards classify by
+/// `transaction_code` (`P` buy, `S` sell), so an empty code read as a sell.
+fn sec_code_for(kind: UnifiedTransactionType) -> &'static str {
+    match kind {
+        UnifiedTransactionType::Buy => "P",
+        UnifiedTransactionType::Sell => "S",
+        UnifiedTransactionType::Grant => "A",
+        UnifiedTransactionType::OptionExercise => "M",
+        UnifiedTransactionType::Gift => "G",
+        UnifiedTransactionType::Other => "J",
+        UnifiedTransactionType::Unspecified => "",
+    }
+}
+
 /// Upserts a person record and inserts the filing from a `UnifiedInsiderTransaction`.
 ///
 /// Extracts SEC-specific fields (CIK, transaction code) from `SecDetail` when present.
@@ -295,14 +310,25 @@ pub async fn upsert_insider_filing(
             },
             sec.raw_transaction_code.clone(),
         ),
-        _ => (String::new(), None, String::new()),
+        _ => (
+            String::new(),
+            None,
+            sec_code_for(txn.transaction_type()).to_string(),
+        ),
     };
 
     let mut tx = pool.begin().await?;
 
     let person_id: i64 = match &filer_cik {
+        // No CIK (FI/PDMR): the name is the only identity the source gives.
         None => sqlx::query(
-            "INSERT INTO persons (filer_cik, filer_name) VALUES (NULL, $1) RETURNING id",
+            r#"
+                INSERT INTO persons (filer_cik, filer_name)
+                VALUES (NULL, $1)
+                ON CONFLICT (filer_name) WHERE filer_cik IS NULL
+                DO UPDATE SET updated_at = NOW()
+                RETURNING id
+                "#,
         )
         .bind(&txn.person_name)
         .fetch_one(&mut *tx)
@@ -533,6 +559,59 @@ mod tests {
             }
         }
         Ok(map)
+    }
+
+    fn fi_txn(
+        person: &str,
+        kind: UnifiedTransactionType,
+        volume: f64,
+    ) -> UnifiedInsiderTransaction {
+        UnifiedInsiderTransaction {
+            ticker: "GOMX".into(),
+            exchange_mic: "FNSE".into(),
+            person_name: person.into(),
+            person_role: "CEO".into(),
+            transaction_date: "2026-09-29".into(),
+            published_date: "2026-09-30".into(),
+            transaction_type: kind as i32,
+            volume,
+            price_per_unit: 4.2,
+            currency: "SEK".into(),
+            source_detail: Some(unified_insider_transaction::SourceDetail::Fi(
+                Default::default(),
+            )),
+            ..Default::default()
+        }
+    }
+
+    async fn count(pool: &PgPool, sql: &str) -> i64 {
+        sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn fi_transaction_republished_is_stored_once(pool: PgPool) -> sqlx::Result<()> {
+        let txn = fi_txn("Anna Svensson", UnifiedTransactionType::Buy, 1000.0);
+        upsert_insider_filing(&pool, &txn).await?;
+        upsert_insider_filing(&pool, &txn).await?;
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM persons").await, 1);
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM insider_filings").await,
+            1
+        );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn fi_transactions_get_buy_and_sell_codes(pool: PgPool) -> sqlx::Result<()> {
+        upsert_insider_filing(&pool, &fi_txn("A", UnifiedTransactionType::Buy, 1.0)).await?;
+        upsert_insider_filing(&pool, &fi_txn("B", UnifiedTransactionType::Sell, 2.0)).await?;
+        upsert_insider_filing(&pool, &fi_txn("C", UnifiedTransactionType::Other, 3.0)).await?;
+        let codes: Vec<String> =
+            sqlx::query_scalar("SELECT transaction_code FROM insider_filings ORDER BY shares")
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(codes, ["P", "S", "J"]);
+        Ok(())
     }
 
     #[sqlx::test(migrations = "./migrations")]

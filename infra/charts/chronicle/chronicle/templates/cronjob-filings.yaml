@@ -25,6 +25,8 @@ spec:
               env:
                 - name: LOOKBACK_DAYS
                   value: {{ .Values.filings.lookbackDays | quote }}
+                - name: INSIDER_TRANSACTIONS_TOPIC
+                  value: insider.transactions
               envFrom:
                 - secretRef:
                     name: chronicle-secret

@@ -7,7 +7,9 @@
 /// publish to the shared `insider.transactions` topic using the unified schema.
 ///
 /// Tickers are read from the `companies` Postgres table filtered by
-/// `exchange_mic = 'FNSE'` — no hardcoded tickers.
+/// `exchange_mic = 'FNSE'` — no hardcoded tickers. The table is first synced
+/// from `company.tickers` ([`chronicle_lib::registry`]), and a company's
+/// `fi_issuer` column, when set, is the FI issuer name searched for.
 ///
 /// # Data boundary
 ///
@@ -22,6 +24,7 @@
 mod db;
 mod kafka;
 
+use chronicle_lib::registry;
 use chrono::{Duration, NaiveDate, NaiveDateTime, Utc};
 use clap::Parser;
 use kafka::ChronicleProducer;
@@ -54,8 +57,17 @@ struct Args {
     #[arg(long, env = "KAFKA_BROKERS")]
     kafka_brokers: String,
 
-    #[arg(long, env = "KAFKA_TOPIC", default_value = "insider.transactions")]
+    // Not `KAFKA_TOPIC`: chronicle-secret sets that to `earnings.calendar` for
+    // every chronicle job. Same variable signal consumes with.
+    #[arg(
+        long,
+        env = "INSIDER_TRANSACTIONS_TOPIC",
+        default_value = "insider.transactions"
+    )]
     kafka_topic: String,
+
+    #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = registry::TICKERS_TOPIC)]
+    tickers_topic: String,
 
     #[arg(long, env = "LOOKBACK_DAYS", default_value = "90")]
     lookback_days: i64,
@@ -63,16 +75,17 @@ struct Args {
 
 // ── Registry query ────────────────────────────────────────────────────────
 
-/// Load all FNSE-tagged tickers from the `companies` table.
-async fn load_fnse_tickers(pool: &sqlx::PgPool) -> anyhow::Result<Vec<String>> {
-    let rows =
-        sqlx::query("SELECT ticker FROM companies WHERE exchange_mic = 'FNSE' ORDER BY ticker")
-            .fetch_all(pool)
-            .await?;
+/// Load all FNSE-tagged tickers, with their FI issuer name when mapped.
+async fn load_fnse_companies(pool: &sqlx::PgPool) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let rows = sqlx::query(
+        "SELECT ticker, fi_issuer FROM companies WHERE exchange_mic = 'FNSE' ORDER BY ticker",
+    )
+    .fetch_all(pool)
+    .await?;
 
     Ok(rows
         .into_iter()
-        .map(|r| r.get::<String, _>("ticker"))
+        .map(|r| (r.get("ticker"), r.get("fi_issuer")))
         .collect())
 }
 
@@ -301,8 +314,10 @@ async fn main() {
         .await
         .expect("migrations failed");
 
+    registry::sync_or_warn(&pool, Some(&args.kafka_brokers), &args.tickers_topic).await;
+
     // Load FNSE-tagged tickers from the extended companies registry.
-    let tickers = match load_fnse_tickers(&pool).await {
+    let tickers = match load_fnse_companies(&pool).await {
         Ok(t) => t,
         Err(e) => {
             error!(error = %e, "failed to load FNSE tickers from companies table");
@@ -335,16 +350,24 @@ async fn main() {
     // Pre-MAR data is unavailable — clamp from to 2016-07-03.
     let from = (to - Duration::days(args.lookback_days)).max(mar_start);
 
-    for (i, ticker) in tickers.iter().enumerate() {
+    for (i, (ticker, fi_issuer)) in tickers.iter().enumerate() {
         if i > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
-        // Resolve ticker → FI issuer name.
-        let issuer = match resolve_issuer(&client, ticker).await {
+        // The mapped FI issuer name, else search FI's issuer names with the
+        // ticker (only works where the ticker is part of the name).
+        let resolved = match fi_issuer {
+            Some(name) => Ok(Some(name.clone())),
+            None => resolve_issuer(&client, ticker).await,
+        };
+        let issuer = match resolved {
             Ok(Some(name)) => name,
             Ok(None) => {
-                warn!(ticker, "no FI issuer found for ticker, skipping");
+                warn!(
+                    ticker,
+                    "no FI issuer found for ticker, skipping — set companies.fi_issuer"
+                );
                 continue;
             }
             Err(e) => {
