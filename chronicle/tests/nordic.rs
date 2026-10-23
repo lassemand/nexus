@@ -8,16 +8,18 @@ use chronicle_lib::nordic::calendar::{
     ParseError, Refresh,
 };
 use chronicle_lib::nordic::db::{self, record_release, NewRelease, Recorded};
-use chronicle_lib::nordic::feed::NewsClient;
-use chronicle_lib::nordic::ingest::{ingest_company, process_companies, CompanyOutcome};
+use chronicle_lib::nordic::ingest::process_companies;
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use common::TestDb;
+use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 use std::time::Duration;
-use wiremock::matchers::{method, path};
+use uuid::Uuid;
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const NASDAQ_FIXTURE: &str = include_str!("fixtures/nasdaq_news_gomspace.json");
+const NEWS_GOMSPACE: &str = include_str!("fixtures/mfn_news_gomspace.json");
+const NEWS_VOLVO: &str = include_str!("fixtures/mfn_news_volvo.json");
 const MFN_FIXTURE: &str = include_str!("fixtures/mfn_gomspace.html");
 
 /// Insert a scheduled (unreleased) row; returns its id.
@@ -34,16 +36,22 @@ async fn schedule(pool: &PgPool, date: &str, label: &str) -> i64 {
     .unwrap()
 }
 
-fn release(disclosure_id: i64, released_at: DateTime<Utc>) -> NewRelease<'static> {
+fn uid(n: u128) -> Uuid {
+    Uuid::from_u128(n)
+}
+
+fn release(n: u128, released_at: DateTime<Utc>) -> NewRelease<'static> {
     NewRelease {
         ticker: "GOMX",
         exchange_mic: "FNSE",
-        disclosure_id,
+        mfn_news_id: uid(n),
         released_at,
-        category: "Interim report (Q1 and Q3)",
         report_kind: Some("interim"),
         headline: "Q2 report",
         url: Some("https://example.test/x"),
+        lang: Some("en"),
+        tags: &[],
+        fiscal_period: None,
         is_correction: false,
         calendar_update: false,
     }
@@ -72,7 +80,7 @@ async fn release_matches_scheduled_row_and_keeps_expected_fields() {
     assert_eq!(got, Recorded::Matched("2026-08-27".parse().unwrap()));
     assert_eq!(count(&db.pool).await, 1);
     let row = sqlx::query(
-        "SELECT disclosure_id, released_at, expected_date::text AS d, \
+        "SELECT mfn_news_id, released_at, expected_date::text AS d, \
                     expected_time::text AS t, calendar_label, fiscal_period, report_kind, headline \
              FROM report_releases WHERE id = $1",
     )
@@ -80,7 +88,7 @@ async fn release_matches_scheduled_row_and_keeps_expected_fields() {
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    assert_eq!(row.get::<Option<i64>, _>("disclosure_id"), Some(10));
+    assert_eq!(row.get::<Option<Uuid>, _>("mfn_news_id"), Some(uid(10)));
     assert_eq!(
         row.get::<Option<DateTime<Utc>>, _>("released_at"),
         Some(at(2026, 8, 26, 6))
@@ -123,7 +131,8 @@ async fn closest_scheduled_date_wins_and_ties_pick_earlier() {
         .unwrap();
     assert_eq!(got, Recorded::Matched("2026-08-27".parse().unwrap()));
     let matched: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM report_releases WHERE disclosure_id = 12")
+        sqlx::query_scalar("SELECT id FROM report_releases WHERE mfn_news_id = $1")
+            .bind(uid(12))
             .fetch_one(&db.pool)
             .await
             .unwrap();
@@ -136,11 +145,11 @@ async fn closest_scheduled_date_wins_and_ties_pick_earlier() {
     record_release(&db.pool, &release(13, at(2026, 11, 10, 7)))
         .await
         .unwrap();
-    let matched: i64 =
-        sqlx::query_scalar("SELECT id FROM report_releases WHERE disclosure_id = 13")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
+    let matched: i64 = sqlx::query_scalar("SELECT id FROM report_releases WHERE mfn_news_id = $1")
+        .bind(uid(13))
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
     assert_eq!(matched, early);
     db.drop_db().await;
 }
@@ -254,15 +263,15 @@ async fn check_constraints_reject_invalid_rows() {
             .execute(&db.pool)
             .await;
     assert!(neither.is_err());
-    // disclosure_id without released_at.
+    // mfn_news_id without released_at.
     let disclosure_only = sqlx::query(
-        "INSERT INTO report_releases (ticker, exchange_mic, disclosure_id, expected_date) \
-             VALUES ('GOMX','FNSE',99,'2026-08-27')",
+        "INSERT INTO report_releases (ticker, exchange_mic, mfn_news_id, expected_date) \
+             VALUES ('GOMX','FNSE','00000000-0000-0000-0000-000000000063','2026-08-27')",
     )
     .execute(&db.pool)
     .await;
     assert!(disclosure_only.is_err());
-    // released_at without disclosure_id.
+    // released_at without mfn_news_id.
     let released_only = sqlx::query(
         "INSERT INTO report_releases (ticker, exchange_mic, released_at) \
              VALUES ('GOMX','FNSE', now())",
@@ -280,70 +289,6 @@ async fn check_constraints_reject_invalid_rows() {
     .await;
     assert!(dup.is_err());
     db.drop_db().await;
-}
-
-// ── Fixture classification (no database) ────────────────────────────────────
-
-mod fixture {
-    use chronicle_lib::nordic::classify;
-    use chronicle_lib::nordic::feed::NewsItem;
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    struct Fixture {
-        results: R,
-    }
-    #[derive(Deserialize)]
-    struct R {
-        item: Vec<NewsItem>,
-    }
-
-    fn items() -> Vec<NewsItem> {
-        serde_json::from_str::<Fixture>(super::NASDAQ_FIXTURE)
-            .unwrap()
-            .results
-            .item
-    }
-
-    fn kind(id: i64) -> Option<&'static str> {
-        let items = items();
-        let i = items.iter().find(|i| i.disclosure_id == id).unwrap();
-        classify::report_kind(&i.cns_category, &i.headline).map(|k| k.as_str())
-    }
-
-    #[test]
-    fn gomspace_fixture_classification() {
-        assert_eq!(kind(1460208), Some("interim"));
-        assert_eq!(kind(1440487), Some("interim"));
-        assert_eq!(kind(1430824), None); // order intake news
-        assert_eq!(kind(1413953), None); // market guidance
-        assert_eq!(kind(1421253), Some("annual"));
-        assert_eq!(kind(1385457), Some("interim"));
-        assert_eq!(kind(1385496), None); // its correction
-        assert_eq!(kind(1373582), None); // non-report correction
-        assert_eq!(kind(1312423), Some("interim")); // older category
-        assert_eq!(kind(1307899), None); // market update
-        assert_eq!(kind(1464054), None);
-    }
-
-    #[test]
-    fn gomspace_fixture_flags_and_utc_times() {
-        let items = items();
-        let get = |id| items.iter().find(|i| i.disclosure_id == id).unwrap();
-        assert!(classify::is_correction(&get(1385496).headline));
-        assert!(classify::is_correction(&get(1373582).headline));
-        assert!(classify::is_calendar_update(&get(1340291).headline));
-        assert!(classify::is_calendar_update(&get(1215246).headline));
-        assert!(!classify::is_calendar_update(&get(1464054).headline));
-        assert_eq!(
-            get(1460208).released_at().unwrap().to_rfc3339(),
-            "2026-08-26T06:00:00+00:00"
-        );
-        assert_eq!(
-            get(1421253).released_at().unwrap().to_rfc3339(),
-            "2026-02-19T07:00:25+00:00"
-        );
-    }
 }
 
 // ── MFN client (no database) ────────────────────────────────────────────────
@@ -489,13 +434,13 @@ async fn calendar_entry_matches_an_already_released_report() {
     assert_eq!((out.scheduled, out.matched_released), (0, 1));
     assert_eq!(count(&db.pool).await, 1);
     let row = sqlx::query(
-        "SELECT disclosure_id, expected_date::text AS d, calendar_label, fiscal_period \
+        "SELECT mfn_news_id, expected_date::text AS d, calendar_label, fiscal_period \
          FROM report_releases",
     )
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    assert_eq!(row.get::<Option<i64>, _>("disclosure_id"), Some(40));
+    assert_eq!(row.get::<Option<Uuid>, _>("mfn_news_id"), Some(uid(40)));
     assert_eq!(row.get::<String, _>("d"), "2026-10-23");
     assert_eq!(
         row.get::<String, _>("calendar_label"),
@@ -537,7 +482,7 @@ async fn refresh_never_deletes_or_changes_released_rows() {
 
     let snapshot = |pool: PgPool| async move {
         sqlx::query(
-            "SELECT id, disclosure_id, released_at, expected_date, expected_time, calendar_label, \
+            "SELECT id, mfn_news_id, released_at, expected_date, expected_time, calendar_label, \
                     fiscal_period, report_kind, headline, fetched_at \
              FROM report_releases WHERE released_at IS NOT NULL ORDER BY id",
         )
@@ -549,7 +494,7 @@ async fn refresh_never_deletes_or_changes_released_rows() {
             format!(
                 "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
                 r.get::<i64, _>("id"),
-                r.get::<Option<i64>, _>("disclosure_id"),
+                r.get::<Option<Uuid>, _>("mfn_news_id"),
                 r.get::<Option<DateTime<Utc>>, _>("released_at"),
                 r.get::<Option<NaiveDate>, _>("expected_date"),
                 r.get::<Option<String>, _>("calendar_label"),
@@ -629,106 +574,662 @@ async fn refresh_company_applies_fixture_and_parse_failure_keeps_rows() {
     db.drop_db().await;
 }
 
-// ── nordic-reports run (database) ───────────────────────────────────────────
+// ── MFN feed fixtures: classification (no database) ─────────────────────────
+
+mod fixture {
+    use chronicle_lib::nordic::classify::{classify_item, ReportKind};
+    use serde_json::Value;
+
+    fn find<'a>(items: &'a [Value], date: &str, lang: &str) -> &'a Value {
+        items
+            .iter()
+            .find(|i| {
+                i["content"]["publish_date"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(date)
+                    && i["properties"]["lang"] == lang
+            })
+            .unwrap_or_else(|| panic!("no {lang} item at {date}"))
+    }
+
+    fn classify(item: &Value) -> chronicle_lib::nordic::classify::Classification {
+        let tags: Vec<String> = item["properties"]["tags"]
+            .as_array()
+            .map(|a| a.iter().map(|t| t.as_str().unwrap().to_string()).collect())
+            .unwrap_or_default();
+        classify_item(&tags, item["content"]["title"].as_str().unwrap())
+    }
+
+    /// (publish_date prefix, kind, correction, calendar, fiscal_period)
+    #[test]
+    fn gomspace_items() {
+        let items: Vec<Value> = serde_json::from_str(super::NEWS_GOMSPACE).unwrap();
+        let rows = [
+            (
+                "2026-08-26T06:00",
+                Some(ReportKind::Interim),
+                false,
+                false,
+                None,
+            ),
+            ("2026-05-28", None, false, false, None), // AGM held
+            ("2026-04-28", None, false, false, None), // AGM notice
+            (
+                "2026-02-19T07:00:25",
+                Some(ReportKind::Annual),
+                false,
+                false,
+                None,
+            ), // untagged Q4
+            ("2025-08-27T07:23:05", None, true, false, None), // correction
+            (
+                "2025-08-27T06:00",
+                Some(ReportKind::Interim),
+                false,
+                false,
+                None,
+            ),
+            ("2025-02-03", None, false, true, None), // financial calendar
+            ("2024-01-18", None, false, true, None), // early publication
+            ("2019-03-29", None, false, false, None), // annual report document
+            (
+                "2019-02-28T07:30",
+                Some(ReportKind::Annual),
+                false,
+                false,
+                Some("2018"),
+            ), // re-send (SQL flags it)
+            (
+                "2019-02-28T07:02",
+                Some(ReportKind::Annual),
+                false,
+                false,
+                Some("2018"),
+            ),
+        ];
+        for (date, kind, corr, cal, fp) in rows {
+            let c = classify(find(&items, date, "en"));
+            assert_eq!(c.report_kind, kind, "{date} kind");
+            assert_eq!(c.is_correction, corr, "{date} correction");
+            assert_eq!(c.calendar_update, cal, "{date} calendar");
+            assert_eq!(c.fiscal_period.as_deref(), fp, "{date} fiscal period");
+        }
+    }
+
+    #[test]
+    fn volvo_items_in_both_languages() {
+        let items: Vec<Value> = serde_json::from_str(super::NEWS_VOLVO).unwrap();
+        for lang in ["sv", "en"] {
+            let q2 = classify(find(&items, "2026-07-17", lang));
+            assert_eq!(q2.report_kind, Some(ReportKind::Interim), "{lang}");
+            assert_eq!(q2.fiscal_period.as_deref(), Some("2026-Q2"), "{lang}");
+            let q4 = classify(find(&items, "2026-01-28", lang));
+            assert_eq!(q4.report_kind, Some(ReportKind::Annual), "{lang}");
+            assert_eq!(q4.fiscal_period.as_deref(), Some("2025"), "{lang}");
+            let doc = classify(find(&items, "2026-02-26", lang));
+            assert_eq!(doc.report_kind, None, "{lang} annual report document");
+        }
+    }
+}
+
+// ── nordic-reports against a mocked MFN feed (database) ─────────────────────
+
+const GOMSPACE_REPORTS: [(&str, &str, &str); 4] = [
+    ("2019-02-28T07:02:00Z", "annual", "en"),
+    ("2025-08-27T06:00:00Z", "interim", "en"),
+    ("2026-02-19T07:00:25Z", "annual", "en"),
+    ("2026-08-26T06:00:00Z", "interim", "en"),
+];
+
+fn news_items(fixture: &str) -> Vec<Value> {
+    serde_json::from_str(fixture).unwrap()
+}
+
+/// Serve `items` as a paged feed for `slug`; `next_url` points back at the mock.
+async fn serve_feed(server: &MockServer, slug: &str, items: &[Value], per_page: usize) {
+    let pages: Vec<&[Value]> = items.chunks(per_page).collect();
+    for (n, page) in pages.iter().enumerate() {
+        let next = (n + 1 < pages.len()).then(|| {
+            format!(
+                "{}/all/a/{slug}.json?limit=48&offset={}",
+                server.uri(),
+                (n + 1) * per_page
+            )
+        });
+        Mock::given(method("GET"))
+            .and(path(format!("/all/a/{slug}.json")))
+            .and(query_param("offset", (n * per_page).to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "version": "https://www.mfn.se/feed/version/1",
+                "items": page,
+                "next_url": next,
+            })))
+            .mount(server)
+            .await;
+    }
+}
+
+async fn serve_calendar(server: &MockServer, slug: &str) {
+    Mock::given(method("GET"))
+        .and(path(format!("/a/{slug}")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(MFN_FIXTURE))
+        .mount(server)
+        .await;
+}
+
+async fn requests_to(server: &MockServer, prefix: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().starts_with(prefix))
+        .count()
+}
+
+async fn run(
+    db: &TestDb,
+    server: &MockServer,
+    backfill: bool,
+) -> chronicle_lib::nordic::ingest::RunSummary {
+    let companies = db::load_companies(&db.pool, &["FNSE", "XSTO"])
+        .await
+        .unwrap();
+    let mut feed = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
+    let mut cal = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
+    process_companies(&db.pool, &mut feed, &mut cal, &companies, backfill).await
+}
+
+async fn report_rows(pool: &PgPool, ticker: &str) -> Vec<(String, String, String)> {
+    sqlx::query_as(
+        "SELECT to_char(released_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
+                report_kind, lang \
+         FROM report_releases WHERE ticker = $1 AND report_kind IS NOT NULL ORDER BY released_at",
+    )
+    .bind(ticker)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// Everything except `fetched_at`, for before/after comparisons.
+async fn snapshot(pool: &PgPool) -> Vec<String> {
+    sqlx::query(
+        "SELECT id, mfn_news_id, released_at, expected_date, report_kind, headline, lang, tags, \
+                is_correction, calendar_update, superseded_by, fiscal_period \
+         FROM report_releases ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+    .iter()
+    .map(|r| {
+        format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            r.get::<i64, _>("id"),
+            r.get::<Option<Uuid>, _>("mfn_news_id"),
+            r.get::<Option<DateTime<Utc>>, _>("released_at"),
+            r.get::<Option<NaiveDate>, _>("expected_date"),
+            r.get::<Option<String>, _>("report_kind"),
+            r.get::<Option<String>, _>("headline"),
+            r.get::<Option<String>, _>("lang"),
+            r.get::<Vec<String>, _>("tags"),
+            r.get::<bool, _>("is_correction"),
+            r.get::<bool, _>("calendar_update"),
+            r.get::<Option<i64>, _>("superseded_by"),
+            r.get::<Option<String>, _>("fiscal_period"),
+        )
+    })
+    .collect()
+}
+
+fn decoy() -> Value {
+    json!({
+        "news_id": "11111111-1111-4111-8111-111111111111",
+        "url": "https://mfn.se/cis/a/other-co/x",
+        "author": {"slug": "other-co", "slugs": ["other-co"], "name": "Other", "tickers": ["XSTO:OTHR"]},
+        "properties": {"lang": "en", "tags": [":regulatory", "sub:report", "sub:report:interim"]},
+        "content": {"title": "Other Co: Q2 report", "publish_date": "2026-08-26T06:00:00Z"}
+    })
+}
 
 #[tokio::test]
-async fn ingest_is_idempotent_and_links_corrections() {
+async fn first_run_inserts_expected_rows_second_run_is_a_noop() {
+    let Some(db) = TestDb::create().await else {
+        return;
+    };
+    let server = MockServer::start().await;
+    let mut items = news_items(NEWS_GOMSPACE);
+    items.insert(2, decoy()); // another issuer's item is never stored
+    serve_feed(&server, "gomspace-group", &items, 4).await;
+    serve_calendar(&server, "gomspace-group").await;
+
+    let first = run(&db, &server, false).await;
+    assert_eq!((first.attempted, first.failed), (1, 0));
+    assert!(first.is_success());
+    assert_eq!(first.calendar_updated, vec!["GOMX"]);
+    assert_eq!(first.calendars_refreshed, vec!["GOMX"]);
+    assert_eq!(requests_to(&server, "/all/").await, 3); // first run reads every page
+    assert_eq!(requests_to(&server, "/a/").await, 1);
+
+    let rows: Vec<_> = GOMSPACE_REPORTS
+        .iter()
+        .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+        .collect();
+    assert_eq!(report_rows(&db.pool, "GOMX").await, rows);
+    // 11 fixture items; the scheduled row comes from the calendar refresh.
+    let released: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM report_releases WHERE released_at IS NOT NULL")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(released, 11);
+    // Re-sends and corrections are flagged, never counted, and linked from the originals.
+    let corrections: Vec<String> = sqlx::query_scalar(
+        "SELECT to_char(released_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
+         FROM report_releases WHERE is_correction ORDER BY released_at",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        corrections,
+        vec!["2019-02-28T07:30:00Z", "2025-08-27T07:23:05Z"]
+    );
+    let linked: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM report_releases o JOIN report_releases c ON c.id = o.superseded_by \
+         WHERE c.is_correction AND o.report_kind IS NOT NULL",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(linked, 2);
+    let calendar: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM report_releases WHERE calendar_update")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(calendar, 2);
+
+    // Second run: no change, paging stops after the first page, no calendar fetch.
+    let before = snapshot(&db.pool).await;
+    let second = run(&db, &server, false).await;
+    assert!(second.is_success());
+    assert!(second.calendar_updated.is_empty() && second.calendars_refreshed.is_empty());
+    assert_eq!(requests_to(&server, "/all/").await, 3 + 1);
+    assert_eq!(requests_to(&server, "/a/").await, 1);
+    assert_eq!(snapshot(&db.pool).await, before);
+
+    // --backfill pages to the end again and is still a no-op.
+    run(&db, &server, true).await;
+    assert_eq!(requests_to(&server, "/all/").await, 3 + 1 + 3);
+    assert_eq!(snapshot(&db.pool).await, before);
+    db.drop_db().await;
+}
+
+#[tokio::test]
+async fn language_pair_yields_one_english_row_whichever_order() {
+    for reverse in [false, true] {
+        let Some(db) = TestDb::create().await else {
+            return;
+        };
+        db.add_company("VOLV B", "XSTO", "volvo").await;
+        let server = MockServer::start().await;
+        let mut items = news_items(NEWS_VOLVO);
+        items.sort_by_key(|i| {
+            (
+                i["content"]["publish_date"].as_str().unwrap().to_string(),
+                i["properties"]["lang"] == "en",
+            )
+        });
+        if reverse {
+            items.reverse();
+        }
+        serve_feed(&server, "volvo", &items, 100).await;
+        // GOMX is also registered; give it an empty feed.
+        Mock::given(method("GET"))
+            .and(path("/all/a/gomspace-group.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": null})))
+            .mount(&server)
+            .await;
+
+        for _ in 0..2 {
+            let summary = run(&db, &server, false).await;
+            assert!(summary.is_success());
+            assert_eq!(
+                report_rows(&db.pool, "VOLV B").await,
+                vec![
+                    ("2026-01-28T06:20:00Z".into(), "annual".into(), "en".into()),
+                    ("2026-07-17T05:20:00Z".into(), "interim".into(), "en".into()),
+                ],
+                "reverse={reverse}"
+            );
+            // 2 report rows + the annual-report document in both languages.
+            assert_eq!(count(&db.pool).await, 4, "reverse={reverse}");
+        }
+        let doc_kinds: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM report_releases WHERE report_kind IS NULL AND NOT is_correction",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(doc_kinds, 2);
+        db.drop_db().await;
+    }
+}
+
+#[tokio::test]
+async fn rate_limited_request_is_retried() {
     let Some(db) = TestDb::create().await else {
         return;
     };
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(NASDAQ_FIXTURE))
+        .and(path("/all/a/gomspace-group.json"))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+        .up_to_n_times(1)
         .mount(&server)
         .await;
-    let mut client =
-        NewsClient::new(server.uri(), Duration::ZERO, Duration::from_millis(1)).unwrap();
-    let company = &db::load_companies(&db.pool, &["FNSE"]).await.unwrap()[0];
+    serve_feed(&server, "gomspace-group", &news_items(NEWS_GOMSPACE), 100).await;
+    serve_calendar(&server, "gomspace-group").await;
 
-    let first = ingest_company(&db.pool, &mut client, company, "GomSpace Group AB")
-        .await
-        .unwrap();
-    assert_eq!(first.inserted, 17);
-    assert_eq!(first.new_calendar_disclosures.len(), 2);
-    let second = ingest_company(&db.pool, &mut client, company, "GomSpace Group AB")
-        .await
-        .unwrap();
-    assert_eq!(second, CompanyOutcome::default());
-
-    let counted: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM report_releases WHERE report_kind IS NOT NULL AND NOT is_correction",
-    )
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
-    assert_eq!(counted, 9);
-    let row = sqlx::query(
-        "SELECT o.superseded_by, c.id AS cid, c.report_kind, c.is_correction \
-         FROM report_releases o, report_releases c \
-         WHERE o.disclosure_id = 1385457 AND c.disclosure_id = 1385496",
-    )
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        row.get::<Option<i64>, _>("superseded_by"),
-        Some(row.get("cid"))
-    );
-    assert_eq!(row.get::<Option<String>, _>("report_kind"), None);
-    assert!(row.get::<bool, _>("is_correction"));
+    let started = std::time::Instant::now();
+    let summary = run(&db, &server, false).await;
+    assert!(summary.is_success());
+    assert!(started.elapsed() >= Duration::from_secs(1));
+    assert_eq!(requests_to(&server, "/all/").await, 2);
+    assert_eq!(report_rows(&db.pool, "GOMX").await.len(), 4);
     db.drop_db().await;
 }
 
 #[tokio::test]
-async fn calendar_announcement_triggers_exactly_one_mfn_fetch() {
+async fn a_failing_company_does_not_stop_the_others_but_fails_the_run() {
     let Some(db) = TestDb::create().await else {
         return;
     };
-    let nasdaq = MockServer::start().await;
+    db.add_company("VOLV B", "XSTO", "volvo").await;
+    let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(NASDAQ_FIXTURE))
-        .mount(&nasdaq)
+        .and(path("/all/a/gomspace-group.json"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
         .await;
-    let mfn = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/a/gomspace-group"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(MFN_FIXTURE))
-        .mount(&mfn)
-        .await;
+    serve_feed(&server, "volvo", &news_items(NEWS_VOLVO), 100).await;
 
-    let mut news = NewsClient::new(nasdaq.uri(), Duration::ZERO, Duration::from_millis(1)).unwrap();
-    let mut client = MfnClient::new(mfn.uri(), Duration::ZERO).unwrap();
-    let companies = db::load_companies(&db.pool, &["FNSE", "XSTO"])
+    let summary = run(&db, &server, false).await;
+    assert_eq!((summary.attempted, summary.failed), (2, 1));
+    assert!(!summary.is_success());
+    assert_eq!(report_rows(&db.pool, "VOLV B").await.len(), 2);
+    assert!(report_rows(&db.pool, "GOMX").await.is_empty());
+    db.drop_db().await;
+}
+
+#[tokio::test]
+async fn ingest_attaches_to_a_scheduled_row() {
+    let Some(db) = TestDb::create().await else {
+        return;
+    };
+    let id = schedule(&db.pool, "2026-08-25", "Kvartalsrapport 2026-Q2").await;
+    let server = MockServer::start().await;
+    serve_feed(&server, "gomspace-group", &news_items(NEWS_GOMSPACE), 100).await;
+    serve_calendar(&server, "gomspace-group").await;
+    run(&db, &server, false).await;
+
+    let row = sqlx::query(
+        "SELECT released_at, report_kind, expected_date::text AS d, calendar_label, fiscal_period \
+         FROM report_releases WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        row.get::<Option<DateTime<Utc>>, _>("released_at"),
+        Some(at(2026, 8, 26, 6))
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("report_kind").as_deref(),
+        Some("interim")
+    );
+    assert_eq!(row.get::<String, _>("d"), "2026-08-25");
+    assert_eq!(
+        row.get::<String, _>("calendar_label"),
+        "Kvartalsrapport 2026-Q2"
+    );
+    // The calendar's period (here "Q2") wins over the classifier's guess; never overwritten.
+    assert_eq!(row.get::<String, _>("fiscal_period"), "Q2");
+    db.drop_db().await;
+}
+
+#[tokio::test]
+async fn same_day_resends_become_corrections_idempotently() {
+    let Some(db) = TestDb::create().await else {
+        return;
+    };
+    let first = release(70, at(2026, 8, 26, 6));
+    let mut resend = release(71, at(2026, 8, 26, 8));
+    resend.headline = "Q2 report (re-sent)";
+    let next_day = release(72, at(2026, 8, 27, 6));
+    for r in [&first, &resend, &next_day] {
+        assert_eq!(
+            record_release(&db.pool, r).await.unwrap(),
+            Recorded::Inserted
+        );
+    }
+    for _ in 0..2 {
+        db::flag_resends(&db.pool, "GOMX", "FNSE").await.unwrap();
+        db::link_corrections(&db.pool, "GOMX", "FNSE")
+            .await
+            .unwrap();
+        let rows: Vec<(String, bool, Option<String>, bool)> = sqlx::query_as(
+            "SELECT headline, is_correction, report_kind, superseded_by IS NOT NULL \
+             FROM report_releases ORDER BY released_at",
+        )
+        .fetch_all(&db.pool)
         .await
         .unwrap();
-
-    // The feed holds two new "updates its financial calendar" items → one fetch.
-    let first = process_companies(&db.pool, &mut news, &mut client, &companies).await;
-    assert_eq!((first.attempted, first.failed), (1, 0));
-    assert_eq!(first.calendars_refreshed, vec!["GOMX"]);
-    assert_eq!(mfn.received_requests().await.unwrap().len(), 1);
+        assert_eq!(
+            rows,
+            vec![
+                ("Q2 report".into(), false, Some("interim".into()), true),
+                ("Q2 report (re-sent)".into(), true, None, false),
+                ("Q2 report".into(), false, Some("interim".into()), false),
+            ]
+        );
+    }
+    // Re-serving the re-sent item doesn't resurrect it as a report.
     assert_eq!(
-        scheduled_labels(&db.pool).await,
-        vec!["Bokslutskommuniké 2026"]
+        record_release(&db.pool, &resend).await.unwrap(),
+        Recorded::Updated
     );
+    let kind: Option<String> =
+        sqlx::query_scalar("SELECT report_kind FROM report_releases WHERE mfn_news_id = $1")
+            .bind(uid(71))
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(kind, None);
+    db.drop_db().await;
+}
 
-    // Same feed again: nothing newly inserted, so no MFN request.
-    let second = process_companies(&db.pool, &mut news, &mut client, &companies).await;
-    assert!(second.calendars_refreshed.is_empty());
-    assert_eq!(mfn.received_requests().await.unwrap().len(), 1);
+// ── Migration from the Nasdaq-era schema (database) ─────────────────────────
 
-    // A failing refresh doesn't fail the run.
-    sqlx::query("DELETE FROM report_releases")
+#[tokio::test]
+async fn migration_replaces_nasdaq_rows_and_keeps_calendar_data() {
+    let Some(db) = TestDb::create_empty().await else {
+        return;
+    };
+    const NEW_VERSION: i64 = 20261023000000;
+    let mut partial = sqlx::migrate!("./migrations");
+    partial.migrations = partial
+        .migrations
+        .iter()
+        .filter(|m| m.version < NEW_VERSION)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    partial.run(&db.pool).await.unwrap();
+
+    sqlx::query(
+        "INSERT INTO companies (ticker, sector, exchange_mic, currency, mfn_slug, nasdaq_news_company) \
+         VALUES ('GOMX','Technology','FNSE','SEK','gomspace-group','GomSpace Group AB')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    // Old schema: disclosure_id / category.
+    let released = "INSERT INTO report_releases (ticker, exchange_mic, disclosure_id, released_at, \
+         category, report_kind, headline, url, is_correction, expected_date, expected_time, \
+         calendar_label, fiscal_period) \
+         VALUES ('GOMX','FNSE',$1,$2,'Interim report (Q1 and Q3)',$3,'headline','http://u',$4,$5,$6,$7,$8) \
+         RETURNING id";
+    let plain: i64 = sqlx::query_scalar(released)
+        .bind(1_i64)
+        .bind(at(2025, 8, 27, 6))
+        .bind("interim")
+        .bind(false)
+        .bind(None::<NaiveDate>)
+        .bind(None::<chrono::NaiveTime>)
+        .bind(None::<&str>)
+        .bind(None::<&str>)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let correction: i64 = sqlx::query_scalar(released)
+        .bind(2_i64)
+        .bind(at(2025, 8, 27, 7))
+        .bind(None::<&str>)
+        .bind(true)
+        .bind(None::<NaiveDate>)
+        .bind(None::<chrono::NaiveTime>)
+        .bind(None::<&str>)
+        .bind(None::<&str>)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE report_releases SET superseded_by = $1 WHERE id = $2")
+        .bind(correction)
+        .bind(plain)
         .execute(&db.pool)
         .await
         .unwrap();
-    mfn.reset().await;
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(500))
-        .mount(&mfn)
-        .await;
-    let third = process_companies(&db.pool, &mut news, &mut client, &companies).await;
-    assert!(third.is_success());
-    assert!(third.calendars_refreshed.is_empty());
+    let with_calendar: i64 = sqlx::query_scalar(released)
+        .bind(3_i64)
+        .bind(at(2026, 8, 26, 6))
+        .bind("interim")
+        .bind(false)
+        .bind(Some(day("2026-08-27")))
+        .bind(Some(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap()))
+        .bind(Some("Kvartalsrapport 2026-Q2"))
+        .bind(Some("2026-Q2"))
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let scheduled: i64 = sqlx::query_scalar(
+        "INSERT INTO report_releases (ticker, exchange_mic, expected_date, expected_time, \
+         calendar_label, report_kind, fiscal_period) \
+         VALUES ('GOMX','FNSE','2027-02-18','08:30','Bokslutskommuniké 2026','annual','2026') RETURNING id",
+    )
+    .fetch_one(&db.pool).await.unwrap();
+    // Would collide with `with_calendar` once that row is a scheduled row again.
+    let collider: i64 = sqlx::query_scalar(
+        "INSERT INTO report_releases (ticker, exchange_mic, expected_date, calendar_label, report_kind) \
+         VALUES ('GOMX','FNSE','2026-08-27','Kvartalsrapport 2026-Q2','interim') RETURNING id",
+    )
+    .fetch_one(&db.pool).await.unwrap();
+
+    sqlx::migrate!("./migrations").run(&db.pool).await.unwrap();
+
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM report_releases ORDER BY id")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(ids, vec![with_calendar, scheduled]);
+    assert!(!ids.contains(&plain) && !ids.contains(&correction) && !ids.contains(&collider));
+
+    let row = sqlx::query(
+        "SELECT released_at, mfn_news_id, expected_date::text AS d, expected_time::text AS t, \
+                calendar_label, fiscal_period, report_kind, headline, url, tags, superseded_by \
+         FROM report_releases WHERE id = $1",
+    )
+    .bind(with_calendar)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(row.get::<Option<DateTime<Utc>>, _>("released_at"), None);
+    assert_eq!(row.get::<Option<Uuid>, _>("mfn_news_id"), None);
+    assert_eq!(row.get::<String, _>("d"), "2026-08-27");
+    assert_eq!(row.get::<String, _>("t"), "08:00:00");
+    assert_eq!(
+        row.get::<String, _>("calendar_label"),
+        "Kvartalsrapport 2026-Q2"
+    );
+    assert_eq!(row.get::<String, _>("fiscal_period"), "2026-Q2");
+    assert_eq!(
+        row.get::<Option<String>, _>("report_kind").as_deref(),
+        Some("interim")
+    );
+    assert_eq!(row.get::<Option<String>, _>("headline"), None);
+    assert_eq!(row.get::<Option<String>, _>("url"), None);
+    assert!(row.get::<Vec<String>, _>("tags").is_empty());
+
+    let sched = sqlx::query(
+        "SELECT expected_date::text AS d, expected_time::text AS t, calendar_label, report_kind, \
+                fiscal_period, released_at FROM report_releases WHERE id = $1",
+    )
+    .bind(scheduled)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(sched.get::<String, _>("d"), "2027-02-18");
+    assert_eq!(sched.get::<String, _>("t"), "08:30:00");
+    assert_eq!(
+        sched.get::<String, _>("calendar_label"),
+        "Bokslutskommuniké 2026"
+    );
+    assert_eq!(sched.get::<String, _>("report_kind"), "annual");
+    assert_eq!(sched.get::<String, _>("fiscal_period"), "2026");
+
+    // New shape: columns, constraints and the companies mapping column are gone/added.
+    let cols: Vec<String> = sqlx::query_scalar(
+        "SELECT table_name || '.' || column_name FROM information_schema.columns \
+         WHERE table_name IN ('report_releases','companies') AND column_name IN \
+         ('disclosure_id','category','nasdaq_news_company','mfn_news_id','lang','tags')",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    let mut cols = cols;
+    cols.sort();
+    assert_eq!(
+        cols,
+        vec![
+            "report_releases.lang",
+            "report_releases.mfn_news_id",
+            "report_releases.tags"
+        ]
+    );
+    // CHECK: an MFN id requires a release instant.
+    let bad = sqlx::query(
+        "INSERT INTO report_releases (ticker, exchange_mic, mfn_news_id, expected_date) \
+         VALUES ('GOMX','FNSE','00000000-0000-0000-0000-000000000001','2026-09-01')",
+    )
+    .execute(&db.pool)
+    .await;
+    assert!(bad.is_err());
+    // One row per actual release.
+    let insert = "INSERT INTO report_releases (ticker, exchange_mic, mfn_news_id, released_at, report_kind) \
+                  VALUES ('GOMX','FNSE',$1,'2026-05-07T06:00:00Z','interim')";
+    sqlx::query(insert)
+        .bind(uid(1))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(sqlx::query(insert)
+        .bind(uid(2))
+        .execute(&db.pool)
+        .await
+        .is_err());
     db.drop_db().await;
 }

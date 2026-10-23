@@ -1,283 +1,209 @@
-//! Client for the Nasdaq Nordic company-news API.
+//! Client for MFN's JSON news feed, `https://mfn.se/all/a/<slug>.json`.
 //!
-//! The request asks for `timeZone=UTC`, so `releaseTime` is already an instant
-//! in UTC and no Stockholm DST handling is needed (verified against MFN:
-//! 2026-09-18 08:00 local == 06:00Z, and 2026-04-01 13:30 local == 11:30Z).
-//! `company=` filters by exact issuer name; a partial name returns nothing.
+//! Note: MFN's `robots.txt` disallows `*.json`; fetching these URLs was
+//! explicitly approved by the repository owner (2026-10-21). Load is one
+//! request per company per hourly run (a handful on the first page set) and a
+//! single full paging pass per company for `--backfill`.
+//!
+//! `publish_date` is RFC 3339 UTC and is used as-is; session classification
+//! happens later in SQL, in Europe/Stockholm.
 
+use super::calendar::MfnClient;
 use anyhow::{anyhow, Context};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use std::time::Duration;
-use tokio::time::Instant;
-use tracing::warn;
+use uuid::Uuid;
 
-/// Production endpoint.
-pub const NASDAQ_NEWS_URL: &str = "https://api.news.eu.nasdaq.com/news/query.action";
-/// Page size requested from the API.
-pub const PAGE_SIZE: usize = 200;
+/// Page size requested on the first page; later pages follow `next_url`.
+pub const PAGE_SIZE: usize = 48;
 
-const MAX_ATTEMPTS: u32 = 4;
+#[derive(Debug, Deserialize)]
+struct RawFeed {
+    #[serde(default)]
+    items: Option<Vec<RawItem>>,
+    #[serde(default)]
+    next_url: Option<String>,
+}
 
-/// One news item as returned by the API (only the fields we use).
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize)]
+struct RawItem {
+    news_id: Uuid,
+    #[serde(default)]
+    url: Option<String>,
+    author: RawAuthor,
+    #[serde(default)]
+    properties: RawProperties,
+    content: RawContent,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawAuthor {
+    #[serde(default)]
+    slug: String,
+    #[serde(default)]
+    slugs: Option<Vec<String>>,
+    #[serde(default)]
+    tickers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawProperties {
+    #[serde(default)]
+    lang: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawContent {
+    #[serde(default)]
+    title: String,
+    publish_date: String,
+}
+
+/// One news item, reduced to the fields we use.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewsItem {
-    pub disclosure_id: i64,
-    pub headline: String,
-    #[serde(default)]
-    pub cns_category: String,
-    pub message_url: Option<String>,
-    /// `yyyy-MM-dd HH:mm:ss` in UTC (we request `timeZone=UTC`).
-    pub release_time: String,
-    #[serde(default)]
-    pub company: String,
+    /// Stable MFN item id.
+    pub news_id: Uuid,
+    /// Public URL of the item.
+    pub url: Option<String>,
+    /// `sv` / `en`, when known.
+    pub lang: Option<String>,
+    /// MFN tags, e.g. `sub:report:interim`.
+    pub tags: Vec<String>,
+    /// Title, including the issuer prefix.
+    pub title: String,
+    /// Publication instant (UTC).
+    pub published_at: DateTime<Utc>,
+    /// `author.slug`.
+    pub author_slug: String,
+    /// `author.slugs`.
+    pub author_slugs: Vec<String>,
+    /// `author.tickers`, e.g. `FNSE:GOMX`.
+    pub author_tickers: Vec<String>,
 }
 
 impl NewsItem {
-    /// Parse `releaseTime` as a UTC instant.
-    pub fn released_at(&self) -> anyhow::Result<DateTime<Utc>> {
-        let naive = NaiveDateTime::parse_from_str(&self.release_time, "%Y-%m-%d %H:%M:%S")
-            .with_context(|| format!("bad releaseTime {:?}", self.release_time))?;
-        Ok(naive.and_utc())
+    /// True if the item was authored by the company with this MFN slug.
+    pub fn is_authored_by(&self, slug: &str) -> bool {
+        self.author_slug == slug || self.author_slugs.iter().any(|s| s == slug)
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct Results {
-    #[serde(default)]
-    item: Vec<NewsItem>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Response {
-    results: Results,
-    #[serde(default)]
-    count: usize,
-}
-
-/// One page of results.
+/// One page of the feed.
 #[derive(Debug)]
-pub struct Page {
+pub struct FeedPage {
+    /// Items, newest first. Items with an unparseable date are dropped (and
+    /// counted in `skipped`).
     pub items: Vec<NewsItem>,
-    /// Total number of items available for the query.
-    pub total: usize,
+    /// Items that could not be parsed.
+    pub skipped: usize,
+    /// URL of the next page, if any.
+    pub next_url: Option<reqwest::Url>,
 }
 
-/// Rate-limited, retrying HTTP client for the news API.
-pub struct NewsClient {
-    http: reqwest::Client,
-    base_url: String,
-    min_interval: Duration,
-    backoff_base: Duration,
-    last_request: Option<Instant>,
+/// The first page URL: `<base>/all/a/<slug>.json?limit=48&offset=0`.
+pub fn first_page_url(base: &reqwest::Url, slug: &str) -> anyhow::Result<reqwest::Url> {
+    let mut url = base.clone();
+    url.path_segments_mut()
+        .map_err(|_| anyhow!("base url cannot be a base"))?
+        .pop_if_empty()
+        .push("all")
+        .push("a")
+        .push(&format!("{slug}.json"));
+    url.query_pairs_mut()
+        .append_pair("limit", &PAGE_SIZE.to_string())
+        .append_pair("offset", "0");
+    Ok(url)
 }
 
-impl NewsClient {
-    /// Build a client. `min_interval` is the minimum gap between requests and
-    /// `backoff_base` the first retry delay (doubled per attempt).
-    pub fn new(
-        base_url: impl Into<String>,
-        min_interval: Duration,
-        backoff_base: Duration,
-    ) -> anyhow::Result<Self> {
-        let http = reqwest::Client::builder()
-            .user_agent("nexus-chronicle/nordic-reports (lasse.alm@gsfleet.io)")
-            .timeout(Duration::from_secs(30))
-            .build()?;
-        Ok(Self {
-            http,
-            base_url: base_url.into(),
-            min_interval,
-            backoff_base,
-            last_request: None,
-        })
-    }
+fn same_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
 
-    async fn throttle(&mut self) {
-        if let Some(last) = self.last_request {
-            let elapsed = last.elapsed();
-            if elapsed < self.min_interval {
-                tokio::time::sleep(self.min_interval - elapsed).await;
-            }
+/// Fetch and parse one feed page. `next_url` must stay on the client's origin.
+pub async fn fetch_feed_page(
+    client: &mut MfnClient,
+    url: reqwest::Url,
+) -> anyhow::Result<FeedPage> {
+    let base = client.base()?;
+    let body = client.get_text(url.clone()).await?;
+    let raw: RawFeed =
+        serde_json::from_str(&body).with_context(|| format!("decoding MFN feed {}", url.path()))?;
+
+    let mut items = Vec::new();
+    let mut skipped = 0;
+    for r in raw.items.unwrap_or_default() {
+        match DateTime::parse_from_rfc3339(&r.content.publish_date) {
+            Ok(t) => items.push(NewsItem {
+                news_id: r.news_id,
+                url: r.url,
+                lang: r.properties.lang,
+                tags: r.properties.tags.unwrap_or_default(),
+                title: r.content.title,
+                published_at: t.with_timezone(&Utc),
+                author_slug: r.author.slug,
+                author_slugs: r.author.slugs.unwrap_or_default(),
+                author_tickers: r.author.tickers.unwrap_or_default(),
+            }),
+            Err(_) => skipped += 1,
         }
-        self.last_request = Some(Instant::now());
     }
-
-    /// Fetch one page (newest first) of news for the exact issuer name.
-    /// Retries 5xx, 429 and transport errors with exponential backoff.
-    pub async fn fetch_page(&mut self, company: &str, start: usize) -> anyhow::Result<Page> {
-        let query = [
-            ("type", "json"),
-            ("showCompany", "true"),
-            ("countResults", "true"),
-            ("globalGroup", "exchangeNotice"),
-            ("globalName", "NordicAllMarkets"),
-            ("displayLanguage", "en"),
-            ("language", "en"),
-            ("timeZone", "UTC"),
-            ("dateMask", "yyyy-MM-dd HH:mm:ss"),
-            ("dir", "DESC"),
-            ("company", company),
-        ];
-        let limit = PAGE_SIZE.to_string();
-        let start_s = start.to_string();
-
-        let mut delay = self.backoff_base;
-        for attempt in 1..=MAX_ATTEMPTS {
-            self.throttle().await;
-            let result = self
-                .http
-                .get(&self.base_url)
-                .query(&query)
-                .query(&[("limit", limit.as_str()), ("start", start_s.as_str())])
-                .send()
-                .await;
-            let retryable = match result {
-                Ok(resp) if resp.status().is_success() => {
-                    let body: Response = resp.json().await.context("decoding news response")?;
-                    return Ok(Page {
-                        items: body.results.item,
-                        total: body.count,
-                    });
-                }
-                Ok(resp) => {
-                    let s = resp.status();
-                    if !(s.is_server_error() || s.as_u16() == 429) {
-                        return Err(anyhow!("news API returned {s}"));
-                    }
-                    format!("status {s}")
-                }
-                Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => e.to_string(),
-                Err(e) => return Err(e.into()),
-            };
-            if attempt == MAX_ATTEMPTS {
-                return Err(anyhow!(
-                    "news API failed after {attempt} attempts: {retryable}"
-                ));
+    let next_url = match raw.next_url.filter(|u| !u.is_empty()) {
+        Some(u) => {
+            let next = reqwest::Url::parse(&u).context("bad next_url")?;
+            if !same_origin(&base, &next) {
+                return Err(anyhow!("next_url {next} is not on {base}"));
             }
-            warn!(attempt, error = %retryable, "news API request failed, retrying");
-            tokio::time::sleep(delay).await;
-            delay *= 2;
+            Some(next)
         }
-        unreachable!("loop returns on the last attempt")
-    }
+        None => None,
+    };
+    Ok(FeedPage {
+        items,
+        skipped,
+        next_url,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{method, query_param};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn item(release_time: &str) -> NewsItem {
-        NewsItem {
-            disclosure_id: 1,
-            headline: String::new(),
-            cns_category: String::new(),
-            message_url: None,
-            release_time: release_time.into(),
-            company: String::new(),
-        }
+    #[test]
+    fn first_page_url_uses_path_segments() {
+        let base = reqwest::Url::parse("https://mfn.se").unwrap();
+        assert_eq!(
+            first_page_url(&base, "gomspace-group").unwrap().as_str(),
+            "https://mfn.se/all/a/gomspace-group.json?limit=48&offset=0"
+        );
+        assert_eq!(
+            first_page_url(&base, "a/../b").unwrap().path(),
+            "/all/a/a%2F..%2Fb.json"
+        );
     }
 
     #[test]
-    fn release_time_is_utc_in_winter_and_summer() {
-        // UTC is taken verbatim: no +1 / +2 shift is applied by us.
-        let w = item("2026-02-19 07:00:25").released_at().unwrap();
-        assert_eq!(w.to_rfc3339(), "2026-02-19T07:00:25+00:00");
-        let s = item("2026-08-26 06:00:00").released_at().unwrap();
-        assert_eq!(s.to_rfc3339(), "2026-08-26T06:00:00+00:00");
-    }
-
-    #[test]
-    fn dst_transition_hours_stay_distinct_instants() {
-        // The repeated local hour on 2026-10-25 (02:30 CEST and 02:30 CET) is
-        // 00:30Z and 01:30Z in UTC: unambiguous, no earliest-instant guess needed.
-        let a = item("2026-10-25 00:30:00").released_at().unwrap();
-        let b = item("2026-10-25 01:30:00").released_at().unwrap();
-        assert_eq!((b - a).num_minutes(), 60);
-        // Spring-forward gap day 2026-03-29 parses fine as well.
-        assert!(item("2026-03-29 01:30:00").released_at().is_ok());
-    }
-
-    #[test]
-    fn bad_release_time_errors() {
-        assert!(item("26/08/2026").released_at().is_err());
-    }
-
-    fn client(url: String) -> NewsClient {
-        NewsClient::new(url, Duration::ZERO, Duration::from_millis(1)).unwrap()
-    }
-
-    #[tokio::test]
-    async fn fetches_and_parses_fixture() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(query_param("company", "GomSpace Group AB"))
-            .and(query_param("timeZone", "UTC"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(include_str!(
-                "../../tests/fixtures/nasdaq_news_gomspace.json"
-            )))
-            .mount(&server)
-            .await;
-        let mut c = client(server.uri());
-        let page = c.fetch_page("GomSpace Group AB", 0).await.unwrap();
-        assert_eq!(page.total, page.items.len());
-        assert!(page.items.len() > 5);
-    }
-
-    #[tokio::test]
-    async fn retries_5xx_then_succeeds() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(503))
-            .up_to_n_times(2)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(r#"{"results":{"item":[]},"count":0}"#),
-            )
-            .mount(&server)
-            .await;
-        let page = client(server.uri()).fetch_page("X", 0).await.unwrap();
-        assert!(page.items.is_empty());
-    }
-
-    #[tokio::test]
-    async fn gives_up_after_max_attempts_and_does_not_retry_4xx() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(MAX_ATTEMPTS as u64)
-            .mount(&server)
-            .await;
-        assert!(client(server.uri()).fetch_page("X", 0).await.is_err());
-
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(404))
-            .expect(1)
-            .mount(&server)
-            .await;
-        assert!(client(server.uri()).fetch_page("X", 0).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn requests_are_spaced_by_min_interval() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(r#"{"results":{"item":[]},"count":0}"#),
-            )
-            .mount(&server)
-            .await;
-        let mut c =
-            NewsClient::new(server.uri(), Duration::from_millis(300), Duration::ZERO).unwrap();
-        let t = Instant::now();
-        c.fetch_page("X", 0).await.unwrap();
-        c.fetch_page("X", 200).await.unwrap();
-        assert!(t.elapsed() >= Duration::from_millis(300));
+    fn authorship_uses_slug_or_slugs() {
+        let mut i = NewsItem {
+            news_id: Uuid::nil(),
+            url: None,
+            lang: None,
+            tags: vec![],
+            title: String::new(),
+            published_at: Utc::now(),
+            author_slug: "volvo".into(),
+            author_slugs: vec!["volvo".into(), "volvo-group".into()],
+            author_tickers: vec![],
+        };
+        assert!(i.is_authored_by("volvo"));
+        assert!(i.is_authored_by("volvo-group"));
+        assert!(!i.is_authored_by("hexagon"));
+        i.author_slug = "other".into();
+        i.author_slugs.clear();
+        assert!(!i.is_authored_by("volvo"));
     }
 }

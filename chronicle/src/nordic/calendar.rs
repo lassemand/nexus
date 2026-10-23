@@ -6,7 +6,7 @@
 //! when the company has just announced a calendar change.
 //!
 //! Upcoming reports are written into `report_releases` as *scheduled* rows
-//! (`released_at` / `disclosure_id` NULL). Released rows are never deleted.
+//! (`released_at` / `mfn_news_id` NULL). Released rows are never deleted.
 
 use super::classify::ReportKind;
 use super::db::MATCH_WINDOW_DAYS;
@@ -223,10 +223,22 @@ impl MfnClient {
         Ok(url)
     }
 
+    /// The base URL (`https://mfn.se` in production).
+    pub fn base(&self) -> anyhow::Result<reqwest::Url> {
+        Ok(reqwest::Url::parse(&self.base_url)?)
+    }
+
     /// Fetch the company page: one request, plus waits and retries only for
     /// `429`, honouring `Retry-After`.
     pub async fn fetch_page(&mut self, slug: &str) -> anyhow::Result<String> {
         let url = self.page_url(slug)?;
+        self.get_text(url).await
+    }
+
+    /// GET a URL politely: spaced by `min_interval`, 20 s timeout, and on `429`
+    /// waits `Retry-After` (capped at 120 s) before retrying. Any other
+    /// non-success status is an error.
+    pub async fn get_text(&mut self, url: reqwest::Url) -> anyhow::Result<String> {
         for attempt in 1..=MAX_ATTEMPTS {
             self.throttle().await;
             let resp = self.http.get(url.clone()).send().await?;
@@ -243,13 +255,13 @@ impl MfnClient {
                     .map(Duration::from_secs)
                     .unwrap_or(DEFAULT_RETRY_AFTER)
                     .min(MAX_RETRY_AFTER);
-                warn!(slug, ?wait, "MFN returned 429, waiting");
+                warn!(path = url.path(), ?wait, "MFN returned 429, waiting");
                 tokio::time::sleep(wait).await;
                 continue;
             }
-            return Err(anyhow!("MFN returned {status} for {slug}"));
+            return Err(anyhow!("MFN returned {status} for {}", url.path()));
         }
-        Err(anyhow!("MFN rate limited {slug}"))
+        Err(anyhow!("MFN rate limited {}", url.path()))
     }
 }
 
