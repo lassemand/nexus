@@ -63,7 +63,7 @@ pub async fn ingest_company(
     backfill: bool,
 ) -> anyhow::Result<CompanyOutcome> {
     let mut outcome = CompanyOutcome::default();
-    let newest = db::newest_released_at(pool, &company.ticker, &company.exchange_mic).await?;
+    let newest = db::newest_occurred_at(pool, &company.ticker, &company.exchange_mic).await?;
     let mic_prefix = format!("{}:", company.exchange_mic);
     let mut checked_tickers = false;
     let mut url = first_page_url(&feed.base()?, slug)?;
@@ -99,7 +99,7 @@ pub async fn ingest_company(
                 ticker: &company.ticker,
                 exchange_mic: &company.exchange_mic,
                 mfn_news_id: item.news_id,
-                released_at: item.published_at,
+                occurred_at: item.published_at,
                 report_kind: c.report_kind.map(|k| k.as_str()),
                 headline: &item.title,
                 url: item.url.as_deref(),

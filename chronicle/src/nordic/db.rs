@@ -20,7 +20,7 @@ pub struct NewRelease<'a> {
     pub ticker: &'a str,
     pub exchange_mic: &'a str,
     pub mfn_news_id: Uuid,
-    pub released_at: DateTime<Utc>,
+    pub occurred_at: DateTime<Utc>,
     pub report_kind: Option<&'static str>,
     pub headline: &'a str,
     pub url: Option<&'a str>,
@@ -52,13 +52,13 @@ pub async fn load_companies(pool: &PgPool, mics: &[&str]) -> sqlx::Result<Vec<Co
 }
 
 /// Newest stored release instant for a company, if any.
-pub async fn newest_released_at(
+pub async fn newest_occurred_at(
     pool: &PgPool,
     ticker: &str,
     mic: &str,
 ) -> sqlx::Result<Option<DateTime<Utc>>> {
     sqlx::query_scalar(
-        "SELECT max(released_at) FROM report_releases WHERE ticker = $1 AND exchange_mic = $2",
+        "SELECT max(occurred_at) FROM report_releases WHERE ticker = $1 AND exchange_mic = $2",
     )
     .bind(ticker)
     .bind(mic)
@@ -99,7 +99,7 @@ pub const MATCH_WINDOW_DAYS: i64 = 7;
 ///    (the sv/en twin) → no second row; an English item replaces a stored
 ///    non-English one (`mfn_news_id`, `headline`, `url`, `lang`, `tags`).
 /// 3. A real report (`report_kind` set; never a correction or calendar update)
-///    → fill the closest unreleased row of the same company whose
+///    → fill the closest scheduled row of the same company whose
 ///    `expected_date` is within ±[`MATCH_WINDOW_DAYS`] of the release's
 ///    Europe/Stockholm date (ties: the earlier date), keeping its expected fields.
 /// 4. Otherwise insert a new row.
@@ -128,12 +128,12 @@ pub async fn record_release(pool: &PgPool, r: &NewRelease<'_>) -> sqlx::Result<R
     if is_report {
         let twin = sqlx::query(
             "SELECT id, lang FROM report_releases \
-             WHERE ticker = $1 AND exchange_mic = $2 AND released_at = $3 AND report_kind = $4 \
+             WHERE ticker = $1 AND exchange_mic = $2 AND occurred_at = $3 AND report_kind = $4 \
              FOR UPDATE",
         )
         .bind(r.ticker)
         .bind(r.exchange_mic)
-        .bind(r.released_at)
+        .bind(r.occurred_at)
         .bind(r.report_kind)
         .fetch_optional(&mut *tx)
         .await?;
@@ -160,7 +160,7 @@ pub async fn record_release(pool: &PgPool, r: &NewRelease<'_>) -> sqlx::Result<R
 
         let candidate = sqlx::query(
             "SELECT id, expected_date FROM report_releases \
-             WHERE ticker = $1 AND exchange_mic = $2 AND released_at IS NULL \
+             WHERE ticker = $1 AND exchange_mic = $2 AND occurred_at IS NULL \
                AND expected_date BETWEEN \
                    (($3::timestamptz AT TIME ZONE 'Europe/Stockholm')::date - $4::int) AND \
                    (($3::timestamptz AT TIME ZONE 'Europe/Stockholm')::date + $4::int) \
@@ -170,7 +170,7 @@ pub async fn record_release(pool: &PgPool, r: &NewRelease<'_>) -> sqlx::Result<R
         )
         .bind(r.ticker)
         .bind(r.exchange_mic)
-        .bind(r.released_at)
+        .bind(r.occurred_at)
         .bind(MATCH_WINDOW_DAYS as i32)
         .fetch_optional(&mut *tx)
         .await?;
@@ -178,14 +178,14 @@ pub async fn record_release(pool: &PgPool, r: &NewRelease<'_>) -> sqlx::Result<R
             let id: i64 = row.get("id");
             let expected: NaiveDate = row.get("expected_date");
             sqlx::query(
-                "UPDATE report_releases SET mfn_news_id = $2, released_at = $3, \
+                "UPDATE report_releases SET mfn_news_id = $2, occurred_at = $3, \
                         report_kind = $4, headline = $5, url = $6, lang = $7, tags = $8, \
                         fiscal_period = COALESCE(fiscal_period, $9), fetched_at = now() \
                  WHERE id = $1",
             )
             .bind(id)
             .bind(r.mfn_news_id)
-            .bind(r.released_at)
+            .bind(r.occurred_at)
             .bind(r.report_kind)
             .bind(r.headline)
             .bind(r.url)
@@ -198,7 +198,7 @@ pub async fn record_release(pool: &PgPool, r: &NewRelease<'_>) -> sqlx::Result<R
             info!(
                 ticker = r.ticker,
                 expected_date = %expected,
-                released_at = %r.released_at,
+                occurred_at = %r.occurred_at,
                 "matched scheduled report"
             );
             return Ok(Recorded::Matched(expected));
@@ -207,7 +207,7 @@ pub async fn record_release(pool: &PgPool, r: &NewRelease<'_>) -> sqlx::Result<R
 
     let inserted = sqlx::query(
         "INSERT INTO report_releases \
-         (ticker, exchange_mic, mfn_news_id, released_at, report_kind, headline, url, lang, \
+         (ticker, exchange_mic, mfn_news_id, occurred_at, report_kind, headline, url, lang, \
           tags, fiscal_period, is_correction, calendar_update) \
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
          ON CONFLICT DO NOTHING",
@@ -215,7 +215,7 @@ pub async fn record_release(pool: &PgPool, r: &NewRelease<'_>) -> sqlx::Result<R
     .bind(r.ticker)
     .bind(r.exchange_mic)
     .bind(r.mfn_news_id)
-    .bind(r.released_at)
+    .bind(r.occurred_at)
     .bind(r.report_kind)
     .bind(r.headline)
     .bind(r.url)
@@ -243,15 +243,15 @@ pub async fn record_release(pool: &PgPool, r: &NewRelease<'_>) -> sqlx::Result<R
 pub async fn flag_resends(pool: &PgPool, ticker: &str, mic: &str) -> sqlx::Result<u64> {
     let res = sqlx::query(
         "UPDATE report_releases r SET is_correction = true, report_kind = NULL \
-         WHERE r.ticker = $1 AND r.exchange_mic = $2 AND r.released_at IS NOT NULL \
+         WHERE r.ticker = $1 AND r.exchange_mic = $2 AND r.occurred_at IS NOT NULL \
            AND r.report_kind IS NOT NULL AND NOT r.is_correction \
            AND EXISTS ( \
                SELECT 1 FROM report_releases e \
                WHERE e.ticker = r.ticker AND e.exchange_mic = r.exchange_mic \
                  AND e.report_kind IS NOT NULL AND NOT e.is_correction \
-                 AND e.released_at < r.released_at \
-                 AND (e.released_at AT TIME ZONE 'Europe/Stockholm')::date \
-                     = (r.released_at AT TIME ZONE 'Europe/Stockholm')::date)",
+                 AND e.occurred_at < r.occurred_at \
+                 AND (e.occurred_at AT TIME ZONE 'Europe/Stockholm')::date \
+                     = (r.occurred_at AT TIME ZONE 'Europe/Stockholm')::date)",
     )
     .bind(ticker)
     .bind(mic)
@@ -271,11 +271,11 @@ pub async fn link_corrections(pool: &PgPool, ticker: &str, mic: &str) -> sqlx::R
              JOIN report_releases c2 \
                ON c2.ticker = o2.ticker AND c2.exchange_mic = o2.exchange_mic \
               AND c2.is_correction \
-              AND c2.released_at > o2.released_at \
-              AND c2.released_at <= o2.released_at + interval '7 days' \
+              AND c2.occurred_at > o2.occurred_at \
+              AND c2.occurred_at <= o2.occurred_at + interval '7 days' \
              WHERE o2.ticker = $1 AND o2.exchange_mic = $2 \
                AND o2.report_kind IS NOT NULL AND NOT o2.is_correction \
-             ORDER BY o2.id, c2.released_at DESC \
+             ORDER BY o2.id, c2.occurred_at DESC \
          ) c \
          WHERE o.id = c.original_id AND o.superseded_by IS DISTINCT FROM c.id",
     )

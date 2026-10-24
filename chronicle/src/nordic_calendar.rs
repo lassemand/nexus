@@ -2,7 +2,7 @@
 ///
 /// For every company with `companies.mfn_slug`, fetches the public MFN company
 /// page (HTML only; MFN's JSON/RSS feeds are not used) and replaces the
-/// company's scheduled (unreleased, future) rows in `report_releases`.
+/// company's scheduled future rows in `report_releases`.
 /// A page that cannot be parsed keeps the existing rows and makes the job exit
 /// non-zero so the failure is noticed.
 use chronicle_lib::nordic::calendar::{refresh_company, MfnClient, Refresh, MFN_BASE_URL};

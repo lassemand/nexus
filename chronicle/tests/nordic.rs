@@ -22,7 +22,7 @@ const NEWS_GOMSPACE: &str = include_str!("fixtures/mfn_news_gomspace.json");
 const NEWS_VOLVO: &str = include_str!("fixtures/mfn_news_volvo.json");
 const MFN_FIXTURE: &str = include_str!("fixtures/mfn_gomspace.html");
 
-/// Insert a scheduled (unreleased) row; returns its id.
+/// Insert a scheduled row; returns its id.
 async fn schedule(pool: &PgPool, date: &str, label: &str) -> i64 {
     sqlx::query_scalar(
         "INSERT INTO report_releases \
@@ -40,12 +40,12 @@ fn uid(n: u128) -> Uuid {
     Uuid::from_u128(n)
 }
 
-fn release(n: u128, released_at: DateTime<Utc>) -> NewRelease<'static> {
+fn release(n: u128, occurred_at: DateTime<Utc>) -> NewRelease<'static> {
     NewRelease {
         ticker: "GOMX",
         exchange_mic: "FNSE",
         mfn_news_id: uid(n),
-        released_at,
+        occurred_at,
         report_kind: Some("interim"),
         headline: "Q2 report",
         url: Some("https://example.test/x"),
@@ -80,7 +80,7 @@ async fn release_matches_scheduled_row_and_keeps_expected_fields() {
     assert_eq!(got, Recorded::Matched("2026-08-27".parse().unwrap()));
     assert_eq!(count(&db.pool).await, 1);
     let row = sqlx::query(
-        "SELECT mfn_news_id, released_at, expected_date::text AS d, \
+        "SELECT mfn_news_id, occurred_at, expected_date::text AS d, \
                     expected_time::text AS t, calendar_label, fiscal_period, report_kind, headline \
              FROM report_releases WHERE id = $1",
     )
@@ -90,7 +90,7 @@ async fn release_matches_scheduled_row_and_keeps_expected_fields() {
     .unwrap();
     assert_eq!(row.get::<Option<Uuid>, _>("mfn_news_id"), Some(uid(10)));
     assert_eq!(
-        row.get::<Option<DateTime<Utc>>, _>("released_at"),
+        row.get::<Option<DateTime<Utc>>, _>("occurred_at"),
         Some(at(2026, 8, 26, 6))
     );
     assert_eq!(row.get::<String, _>("d"), "2026-08-27");
@@ -215,12 +215,12 @@ async fn corrections_non_reports_and_calendar_updates_never_match() {
             Recorded::Inserted
         );
     }
-    let unreleased: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM report_releases WHERE released_at IS NULL")
+    let scheduled: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM report_releases WHERE occurred_at IS NULL")
             .fetch_one(&db.pool)
             .await
             .unwrap();
-    assert_eq!(unreleased, 1);
+    assert_eq!(scheduled, 1);
     db.drop_db().await;
 }
 
@@ -263,7 +263,7 @@ async fn check_constraints_reject_invalid_rows() {
             .execute(&db.pool)
             .await;
     assert!(neither.is_err());
-    // mfn_news_id without released_at.
+    // mfn_news_id without occurred_at.
     let disclosure_only = sqlx::query(
         "INSERT INTO report_releases (ticker, exchange_mic, mfn_news_id, expected_date) \
              VALUES ('GOMX','FNSE','00000000-0000-0000-0000-000000000063','2026-08-27')",
@@ -271,14 +271,14 @@ async fn check_constraints_reject_invalid_rows() {
     .execute(&db.pool)
     .await;
     assert!(disclosure_only.is_err());
-    // released_at without mfn_news_id.
-    let released_only = sqlx::query(
-        "INSERT INTO report_releases (ticker, exchange_mic, released_at) \
+    // occurred_at without mfn_news_id.
+    let occurred_only = sqlx::query(
+        "INSERT INTO report_releases (ticker, exchange_mic, occurred_at) \
              VALUES ('GOMX','FNSE', now())",
     )
     .execute(&db.pool)
     .await;
-    assert!(released_only.is_err());
+    assert!(occurred_only.is_err());
     // Duplicate scheduled row is rejected by the partial unique index.
     schedule(&db.pool, "2026-08-27", "dup").await;
     let dup = sqlx::query(
@@ -355,7 +355,7 @@ fn day(s: &str) -> NaiveDate {
 
 async fn scheduled_labels(pool: &PgPool) -> Vec<String> {
     sqlx::query_scalar(
-        "SELECT calendar_label FROM report_releases WHERE released_at IS NULL ORDER BY expected_date",
+        "SELECT calendar_label FROM report_releases WHERE occurred_at IS NULL ORDER BY expected_date",
     )
     .fetch_all(pool)
     .await
@@ -378,7 +378,7 @@ async fn calendar_replaces_only_future_scheduled_rows() {
     )
     .await
     .unwrap();
-    assert_eq!((out.scheduled, out.matched_released), (1, 0));
+    assert_eq!((out.scheduled, out.matched_occurred), (1, 0));
     assert_eq!(
         scheduled_labels(&db.pool).await,
         vec!["past, never seen", "Bokslutskommuniké 2026"]
@@ -412,11 +412,11 @@ async fn calendar_replaces_only_future_scheduled_rows() {
 }
 
 #[tokio::test]
-async fn calendar_entry_matches_an_already_released_report() {
+async fn calendar_entry_matches_an_already_occurred_report() {
     let Some(db) = TestDb::create().await else {
         return;
     };
-    // Released 08:00 local (06:00Z) on the calendar date; MFN still lists it as upcoming.
+    // Occurred 08:00 local (06:00Z) on the calendar date; MFN still lists it as upcoming.
     let rel = release(40, at(2026, 10, 23, 6));
     assert_eq!(
         record_release(&db.pool, &rel).await.unwrap(),
@@ -431,7 +431,7 @@ async fn calendar_entry_matches_an_already_released_report() {
     )
     .await
     .unwrap();
-    assert_eq!((out.scheduled, out.matched_released), (0, 1));
+    assert_eq!((out.scheduled, out.matched_occurred), (0, 1));
     assert_eq!(count(&db.pool).await, 1);
     let row = sqlx::query(
         "SELECT mfn_news_id, expected_date::text AS d, calendar_label, fiscal_period \
@@ -461,30 +461,30 @@ async fn calendar_entry_matches_an_already_released_report() {
     )
     .await
     .unwrap();
-    assert_eq!((out.scheduled, out.matched_released), (2, 0));
+    assert_eq!((out.scheduled, out.matched_occurred), (2, 0));
     db.drop_db().await;
 }
 
 #[tokio::test]
-async fn refresh_never_deletes_or_changes_released_rows() {
+async fn refresh_never_deletes_or_changes_occurred_rows() {
     let Some(db) = TestDb::create().await else {
         return;
     };
-    // Released row that already carries expected fields from an earlier match.
+    // Occurred row that already carries expected fields from an earlier match.
     schedule(&db.pool, "2026-08-27", "Kvartalsrapport 2026-Q2").await;
     record_release(&db.pool, &release(50, at(2026, 8, 26, 6)))
         .await
         .unwrap();
-    // Released row far from anything the calendar will list, no expected fields.
+    // Occurred row far from anything the calendar will list, no expected fields.
     record_release(&db.pool, &release(51, at(2026, 2, 19, 7)))
         .await
         .unwrap();
 
     let snapshot = |pool: PgPool| async move {
         sqlx::query(
-            "SELECT id, mfn_news_id, released_at, expected_date, expected_time, calendar_label, \
+            "SELECT id, mfn_news_id, occurred_at, expected_date, expected_time, calendar_label, \
                     fiscal_period, report_kind, headline, fetched_at \
-             FROM report_releases WHERE released_at IS NOT NULL ORDER BY id",
+             FROM report_releases WHERE occurred_at IS NOT NULL ORDER BY id",
         )
         .fetch_all(&pool)
         .await
@@ -495,7 +495,7 @@ async fn refresh_never_deletes_or_changes_released_rows() {
                 "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
                 r.get::<i64, _>("id"),
                 r.get::<Option<Uuid>, _>("mfn_news_id"),
-                r.get::<Option<DateTime<Utc>>, _>("released_at"),
+                r.get::<Option<DateTime<Utc>>, _>("occurred_at"),
                 r.get::<Option<NaiveDate>, _>("expected_date"),
                 r.get::<Option<String>, _>("calendar_label"),
                 r.get::<Option<String>, _>("fiscal_period"),
@@ -743,10 +743,10 @@ async fn run(
 
 async fn report_rows(pool: &PgPool, ticker: &str) -> Vec<(String, String, String)> {
     sqlx::query_as(
-        "SELECT to_char(released_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
+        "SELECT to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
                 report_kind, lang \
          FROM report_releases \
-         WHERE ticker = $1 AND report_kind IS NOT NULL AND released_at IS NOT NULL ORDER BY released_at",
+         WHERE ticker = $1 AND report_kind IS NOT NULL AND occurred_at IS NOT NULL ORDER BY occurred_at",
     )
     .bind(ticker)
     .fetch_all(pool)
@@ -757,7 +757,7 @@ async fn report_rows(pool: &PgPool, ticker: &str) -> Vec<(String, String, String
 /// Everything except `fetched_at`, for before/after comparisons.
 async fn snapshot(pool: &PgPool) -> Vec<String> {
     sqlx::query(
-        "SELECT id, mfn_news_id, released_at, expected_date, report_kind, headline, lang, tags, \
+        "SELECT id, mfn_news_id, occurred_at, expected_date, report_kind, headline, lang, tags, \
                 is_correction, calendar_update, superseded_by, fiscal_period \
          FROM report_releases ORDER BY id",
     )
@@ -770,7 +770,7 @@ async fn snapshot(pool: &PgPool) -> Vec<String> {
             "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
             r.get::<i64, _>("id"),
             r.get::<Option<Uuid>, _>("mfn_news_id"),
-            r.get::<Option<DateTime<Utc>>, _>("released_at"),
+            r.get::<Option<DateTime<Utc>>, _>("occurred_at"),
             r.get::<Option<NaiveDate>, _>("expected_date"),
             r.get::<Option<String>, _>("report_kind"),
             r.get::<Option<String>, _>("headline"),
@@ -820,16 +820,16 @@ async fn first_run_inserts_expected_rows_second_run_is_a_noop() {
         .collect();
     assert_eq!(report_rows(&db.pool, "GOMX").await, rows);
     // 11 fixture items; the scheduled row comes from the calendar refresh.
-    let released: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM report_releases WHERE released_at IS NOT NULL")
+    let occurred: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM report_releases WHERE occurred_at IS NOT NULL")
             .fetch_one(&db.pool)
             .await
             .unwrap();
-    assert_eq!(released, 11);
+    assert_eq!(occurred, 11);
     // Re-sends and corrections are flagged, never counted, and linked from the originals.
     let corrections: Vec<String> = sqlx::query_scalar(
-        "SELECT to_char(released_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
-         FROM report_releases WHERE is_correction ORDER BY released_at",
+        "SELECT to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
+         FROM report_releases WHERE is_correction ORDER BY occurred_at",
     )
     .fetch_all(&db.pool)
     .await
@@ -978,7 +978,7 @@ async fn ingest_attaches_to_a_scheduled_row() {
     run(&db, &server, false).await;
 
     let row = sqlx::query(
-        "SELECT released_at, report_kind, expected_date::text AS d, calendar_label, fiscal_period \
+        "SELECT occurred_at, report_kind, expected_date::text AS d, calendar_label, fiscal_period \
          FROM report_releases WHERE id = $1",
     )
     .bind(id)
@@ -986,7 +986,7 @@ async fn ingest_attaches_to_a_scheduled_row() {
     .await
     .unwrap();
     assert_eq!(
-        row.get::<Option<DateTime<Utc>>, _>("released_at"),
+        row.get::<Option<DateTime<Utc>>, _>("occurred_at"),
         Some(at(2026, 8, 26, 6))
     );
     assert_eq!(
@@ -1025,7 +1025,7 @@ async fn same_day_resends_become_corrections_idempotently() {
             .unwrap();
         let rows: Vec<(String, bool, Option<String>, bool)> = sqlx::query_as(
             "SELECT headline, is_correction, report_kind, superseded_by IS NOT NULL \
-             FROM report_releases ORDER BY released_at",
+             FROM report_releases ORDER BY occurred_at",
         )
         .fetch_all(&db.pool)
         .await
@@ -1080,12 +1080,12 @@ async fn migration_replaces_nasdaq_rows_and_keeps_calendar_data() {
     .await
     .unwrap();
     // Old schema: disclosure_id / category.
-    let released = "INSERT INTO report_releases (ticker, exchange_mic, disclosure_id, released_at, \
+    let occurred = "INSERT INTO report_releases (ticker, exchange_mic, disclosure_id, released_at, \
          category, report_kind, headline, url, is_correction, expected_date, expected_time, \
          calendar_label, fiscal_period) \
          VALUES ('GOMX','FNSE',$1,$2,'Interim report (Q1 and Q3)',$3,'headline','http://u',$4,$5,$6,$7,$8) \
          RETURNING id";
-    let plain: i64 = sqlx::query_scalar(released)
+    let plain: i64 = sqlx::query_scalar(occurred)
         .bind(1_i64)
         .bind(at(2025, 8, 27, 6))
         .bind("interim")
@@ -1097,7 +1097,7 @@ async fn migration_replaces_nasdaq_rows_and_keeps_calendar_data() {
         .fetch_one(&db.pool)
         .await
         .unwrap();
-    let correction: i64 = sqlx::query_scalar(released)
+    let correction: i64 = sqlx::query_scalar(occurred)
         .bind(2_i64)
         .bind(at(2025, 8, 27, 7))
         .bind(None::<&str>)
@@ -1115,7 +1115,7 @@ async fn migration_replaces_nasdaq_rows_and_keeps_calendar_data() {
         .execute(&db.pool)
         .await
         .unwrap();
-    let with_calendar: i64 = sqlx::query_scalar(released)
+    let with_calendar: i64 = sqlx::query_scalar(occurred)
         .bind(3_i64)
         .bind(at(2026, 8, 26, 6))
         .bind("interim")
@@ -1150,7 +1150,7 @@ async fn migration_replaces_nasdaq_rows_and_keeps_calendar_data() {
     assert!(!ids.contains(&plain) && !ids.contains(&correction) && !ids.contains(&collider));
 
     let row = sqlx::query(
-        "SELECT released_at, mfn_news_id, expected_date::text AS d, expected_time::text AS t, \
+        "SELECT occurred_at, mfn_news_id, expected_date::text AS d, expected_time::text AS t, \
                 calendar_label, fiscal_period, report_kind, headline, url, tags, superseded_by \
          FROM report_releases WHERE id = $1",
     )
@@ -1158,7 +1158,7 @@ async fn migration_replaces_nasdaq_rows_and_keeps_calendar_data() {
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    assert_eq!(row.get::<Option<DateTime<Utc>>, _>("released_at"), None);
+    assert_eq!(row.get::<Option<DateTime<Utc>>, _>("occurred_at"), None);
     assert_eq!(row.get::<Option<Uuid>, _>("mfn_news_id"), None);
     assert_eq!(row.get::<String, _>("d"), "2026-08-27");
     assert_eq!(row.get::<String, _>("t"), "08:00:00");
@@ -1177,7 +1177,7 @@ async fn migration_replaces_nasdaq_rows_and_keeps_calendar_data() {
 
     let sched = sqlx::query(
         "SELECT expected_date::text AS d, expected_time::text AS t, calendar_label, report_kind, \
-                fiscal_period, released_at FROM report_releases WHERE id = $1",
+                fiscal_period, occurred_at FROM report_releases WHERE id = $1",
     )
     .bind(scheduled)
     .fetch_one(&db.pool)
@@ -1220,7 +1220,7 @@ async fn migration_replaces_nasdaq_rows_and_keeps_calendar_data() {
     .await;
     assert!(bad.is_err());
     // One row per actual release.
-    let insert = "INSERT INTO report_releases (ticker, exchange_mic, mfn_news_id, released_at, report_kind) \
+    let insert = "INSERT INTO report_releases (ticker, exchange_mic, mfn_news_id, occurred_at, report_kind) \
                   VALUES ('GOMX','FNSE',$1,'2026-05-07T06:00:00Z','interim')";
     sqlx::query(insert)
         .bind(uid(1))
