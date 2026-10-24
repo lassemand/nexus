@@ -50,16 +50,16 @@ Check that one row was updated (`UPDATE 1`). `UPDATE 0` means the company is not
 The migration `*_companies_add_nordic_source_mappings.sql` seeds GomSpace the
 same way (and did nothing if the row was absent).
 
-## Scheduled and released reports (`report_releases`)
+## Scheduled and occurred reports (`report_releases`)
 
 `report_releases` is one table for reports that are **scheduled** and reports
-that have been **released**. A row is scheduled while `released_at` and
+that have **occurred**. A row is scheduled while `occurred_at` and
 `mfn_news_id` are NULL (`expected_date`, `expected_time`, `fiscal_period` and
-`calendar_label` come from the MFN calendar) and becomes released when the
-matching MFN news item arrives. A row needs `released_at` or `expected_date`, and
-`mfn_news_id` is NULL exactly when `released_at` is NULL. `expected_date`/
+`calendar_label` come from the MFN calendar) and has occurred once the
+matching MFN news item arrives. A row needs `occurred_at` or `expected_date`, and
+`mfn_news_id` is NULL exactly when `occurred_at` is NULL. `expected_date`/
 `expected_time` are Europe/Stockholm local and `expected_time` is only an
-estimate; `released_at` is the actual UTC instant (MFN's `publish_date`, unchanged).
+estimate; `occurred_at` is the actual UTC instant (MFN's `publish_date`, unchanged).
 
 The `nordic-reports` chronicle binary (CronJob in `infra/charts/chronicle/chronicle/`,
 hourly on weekdays 07:00–20:00 plus 22:00, `Europe/Stockholm`) reads every
@@ -70,7 +70,7 @@ transaction:
 
 1. `mfn_news_id` already stored → display fields refreshed in place (re-runs are idempotent; classification is decided at insert).
 2. Same company, instant and `report_kind` already stored (the Swedish/English twin) → no second row; an English item replaces a non-English one.
-3. A real report (not a correction, not a calendar update) → fills the closest **unreleased** row of the same company whose `expected_date` is within ±7 days of the release's Stockholm date (tie: the earlier date), keeping its expected fields. Logged as `matched scheduled report`.
+3. A real report (not a correction, not a calendar update) → fills the closest **scheduled** row of the same company whose `expected_date` is within ±7 days of the release's Stockholm date (tie: the earlier date), keeping its expected fields. Logged as `matched scheduled report`.
 4. Otherwise a new row is inserted with the expected fields NULL.
 
 Incremental runs stop at the first page that has nothing new and whose oldest item
@@ -116,5 +116,5 @@ change (log: `calendar refreshed after announcement`).
 
 - Rows without `grey-background` are upcoming. Report labels (`Kvartalsrapport`, `Delårsrapport`, `Halvårsrapport`, `Bokslutskommuniké`, `Årsredovisning`, `Interim report`, `Quarterly report`, `Half-year report`, `Year-end report`, `Annual report`) become scheduled `report_releases` rows with `report_kind`, `fiscal_period` (`2026-Q3` / `2026`), `calendar_label` (original text) and `expected_date`. `expected_time` is MFN's **estimate** (the previous report's time) and NULL when MFN shows `-`; the dashboard should label it as estimated.
 - Non-report events (AGM, ex-dividend date, capital markets day, …) are ignored; unknown upcoming labels are logged at `warn` with the slug.
-- Per company, in one transaction: scheduled rows with `expected_date >= today` (Stockholm) are deleted and re-inserted, so a moved date disappears. Released rows are never deleted or overwritten. A calendar entry that matches an already released report (±7 days, closest wins, released row has no `expected_date` yet) fills that row's expected fields instead of inserting. Scheduled rows whose date has passed without a release stay ("expected, not seen").
+- Per company, in one transaction: scheduled rows with `expected_date >= today` (Stockholm) are deleted and re-inserted, so a moved date disappears. Occurred rows are never deleted or overwritten. A calendar entry that matches an already occurred report (±7 days, closest wins, occurred row has no `expected_date` yet) fills that row's expected fields instead of inserting. Scheduled rows whose date has passed without a release stay ("expected, not seen").
 - **Parse failures keep the data:** a missing table or no parseable row is logged at `error`, existing rows are kept and the job exits non-zero (Job shows as failed). An empty upcoming list on a parsed table is valid and clears future scheduled rows.

@@ -6,7 +6,7 @@
 //! when the company has just announced a calendar change.
 //!
 //! Upcoming reports are written into `report_releases` as *scheduled* rows
-//! (`released_at` / `mfn_news_id` NULL). Released rows are never deleted.
+//! (`occurred_at` / `mfn_news_id` NULL). Occurred rows are never deleted.
 
 use super::classify::ReportKind;
 use super::db::MATCH_WINDOW_DAYS;
@@ -270,13 +270,13 @@ impl MfnClient {
 pub struct ApplyOutcome {
     /// Scheduled rows inserted.
     pub scheduled: usize,
-    /// Entries that filled the expected fields of an already-released report.
-    pub matched_released: usize,
+    /// Entries that filled the expected fields of an already-occurred report.
+    pub matched_occurred: usize,
 }
 
 /// Replace a company's *scheduled* rows from `expected_date >= today`, in one
-/// transaction. Never deletes or changes a released row, except that an
-/// entry matching a released real report whose `expected_date` is NULL (same
+/// transaction. Never deletes or changes an occurred row, except that an
+/// entry matching an occurred real report whose `expected_date` is NULL (same
 /// ±[`MATCH_WINDOW_DAYS`] window and closest-wins rule as `record_release`)
 /// sets that row's expected fields instead of inserting a scheduled row.
 /// Scheduled rows whose date has passed are left as they are.
@@ -290,7 +290,7 @@ pub async fn apply_calendar(
     let mut tx = pool.begin().await?;
     sqlx::query(
         "DELETE FROM report_releases \
-         WHERE ticker = $1 AND exchange_mic = $2 AND released_at IS NULL AND expected_date >= $3",
+         WHERE ticker = $1 AND exchange_mic = $2 AND occurred_at IS NULL AND expected_date >= $3",
     )
     .bind(ticker)
     .bind(mic)
@@ -300,14 +300,14 @@ pub async fn apply_calendar(
 
     let mut out = ApplyOutcome::default();
     for e in entries {
-        let released = sqlx::query(
+        let occurred = sqlx::query(
             "SELECT id FROM report_releases \
-             WHERE ticker = $1 AND exchange_mic = $2 AND released_at IS NOT NULL \
+             WHERE ticker = $1 AND exchange_mic = $2 AND occurred_at IS NOT NULL \
                AND report_kind IS NOT NULL AND NOT is_correction AND expected_date IS NULL \
-               AND (released_at AT TIME ZONE 'Europe/Stockholm')::date \
+               AND (occurred_at AT TIME ZONE 'Europe/Stockholm')::date \
                    BETWEEN ($3::date - $4::int) AND ($3::date + $4::int) \
-             ORDER BY abs((released_at AT TIME ZONE 'Europe/Stockholm')::date - $3::date), \
-                      released_at \
+             ORDER BY abs((occurred_at AT TIME ZONE 'Europe/Stockholm')::date - $3::date), \
+                      occurred_at \
              LIMIT 1 FOR UPDATE",
         )
         .bind(ticker)
@@ -316,7 +316,7 @@ pub async fn apply_calendar(
         .bind(MATCH_WINDOW_DAYS as i32)
         .fetch_optional(&mut *tx)
         .await?;
-        if let Some(row) = released {
+        if let Some(row) = occurred {
             let id: i64 = row.get("id");
             sqlx::query(
                 "UPDATE report_releases SET expected_date = $2, expected_time = $3, \
@@ -329,8 +329,8 @@ pub async fn apply_calendar(
             .bind(&e.fiscal_period)
             .execute(&mut *tx)
             .await?;
-            out.matched_released += 1;
-            debug!(ticker, expected_date = %e.date, "calendar entry matched an already released report");
+            out.matched_occurred += 1;
+            debug!(ticker, expected_date = %e.date, "calendar entry matched an already occurred report");
             continue;
         }
         let res = sqlx::query(

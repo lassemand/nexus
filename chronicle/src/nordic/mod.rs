@@ -1,4 +1,4 @@
-//! Nordic report ingestion: released reports from the Nasdaq Nordic news feed
+//! Nordic report ingestion: past reports from the Nasdaq Nordic news feed
 //! (NEX-160) and scheduled reports from the MFN calendar (NEX-161), both stored
 //! in `report_releases`.
 pub mod calendar;
