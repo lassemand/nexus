@@ -103,6 +103,19 @@ A report row on the same Stockholm date as an *earlier* report row of the same c
 
 Companies with a newly inserted `calendar_update` are logged (`calendar_updated`) and their MFN calendar is refreshed right away.
 
+## Special events (`special.events` → `special_events`)
+
+Every periodic report (`report_kind` set, not a correction) is also published
+as a `SpecialEvent` on `special.events`, so it appears with the other special
+events in signal's `backtest.special_events` and in the dashboard's Event Log.
+`nordic-reports` and `nordic-calendar` do this at the end of each run
+(`chronicle_lib::nordic::events::sync`):
+
+- The event's `source_key` is `report:<report_releases.id>`; signal upserts by it, so a moved date moves the event and a release flips `scheduled` to false.
+- `event_type` is `quarterly report` or `annual report`; `occurred_at` is the release instant, or the expected time (Stockholm) while scheduled.
+- `published_report_events` records what was last sent. Only new or changed reports are published; a report whose row is gone (a calendar refresh replaced it) is published with `removed = true` and signal deletes it.
+- A failed publish is logged and retried on the next run; delivery is at-least-once and the consumer idempotent. Without `KAFKA_BROKERS` nothing is published.
+
 ## Upcoming reports (`nordic-calendar`)
 
 The `nordic-calendar` binary (daily CronJob, 06:30 `Europe/Stockholm`) reads

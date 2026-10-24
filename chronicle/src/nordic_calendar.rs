@@ -6,6 +6,7 @@
 /// A page that cannot be parsed keeps the existing rows and makes the job exit
 /// non-zero so the failure is noticed.
 use chronicle_lib::nordic::calendar::{refresh_company, MfnClient, Refresh, MFN_BASE_URL};
+use chronicle_lib::nordic::events;
 use chronicle_lib::registry;
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
@@ -30,6 +31,10 @@ struct Args {
 
     #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = registry::TICKERS_TOPIC)]
     tickers_topic: String,
+
+    /// Where reports are published as special events (signal stores them).
+    #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = events::SPECIAL_EVENTS_TOPIC)]
+    special_events_topic: String,
 }
 
 #[tokio::main]
@@ -74,5 +79,11 @@ async fn run(args: Args) -> anyhow::Result<bool> {
         }
     }
     info!(companies = companies.len(), failed, "nordic-calendar done");
+    events::sync_or_log(
+        &pool,
+        args.kafka_brokers.as_deref(),
+        &args.special_events_topic,
+    )
+    .await;
     Ok(failed == 0)
 }

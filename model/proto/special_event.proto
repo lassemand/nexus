@@ -6,4 +6,15 @@ message SpecialEvent {
   string event_type           = 2;  // e.g. "earnings"
   int64  occurred_at_unix_secs = 3;
   string description          = 4;  // empty string if unavailable
+
+  // Producer-chosen identity for events that change after publication (e.g.
+  // "report:42" for a Nordic report). Empty for append-only events such as
+  // earnings: those are deduplicated on (ticker, event_type, occurred_at).
+  // With a key, the consumer upserts by key, so a moved date moves the event.
+  string source_key           = 5;
+  // Expected but not happened yet; occurred_at is the expected time.
+  bool   scheduled            = 6;
+  // The keyed event no longer exists and must be deleted. Only meaningful
+  // with source_key; the other fields are ignored.
+  bool   removed              = 7;
 }

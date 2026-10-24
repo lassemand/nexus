@@ -23,9 +23,9 @@ data:
           "id": 2,
           "type": "table",
           "title": "Event Log",
-          "description": "Special events, plus Nordic quarterly and annual reports: status upcoming (always listed, even past the end of the time range), occurred (past reports and events), or expected, not seen (scheduled reports that never appeared). Report times without a release are MFN estimates.",
+          "description": "Special events, including Nordic quarterly and annual reports. Status: upcoming (always listed, even past the end of the time range), occurred, or expected, not seen (scheduled but never appeared). Times of upcoming reports are MFN estimates.",
           "gridPos": { "x": 0, "y": 0, "w": 24, "h": 14 },
-          "datasource": { "type": "datasource", "uid": "-- Mixed --" },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
           "fieldConfig": {
             "defaults": {},
             "overrides": [
@@ -50,19 +50,12 @@ data:
           "options": {
             "sortBy": [{ "displayName": "time", "desc": true }]
           },
-          "transformations": [{ "id": "merge", "options": {} }],
           "targets": [
             {
               "refId": "A",
               "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
               "format": "table",
-              "rawSql": "SELECT occurred_at AS time, ticker, event_type, 'occurred' AS status, description\nFROM special_events\nWHERE $__timeFilter(occurred_at)"
-            },
-            {
-              "refId": "B",
-              "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-chronicle" },
-              "format": "table",
-              "rawSql": "-- Nordic periodic reports: upcoming (always shown, past the range end),\n-- occurred, and scheduled-but-not-seen. expected_date/expected_time are\n-- Europe/Stockholm local, and expected_time is MFN's estimate.\nSELECT\n  COALESCE(r.occurred_at,\n           (r.expected_date + COALESCE(r.expected_time, TIME '00:00')) AT TIME ZONE 'Europe/Stockholm') AS time,\n  r.ticker,\n  CASE r.report_kind WHEN 'annual' THEN 'annual report' ELSE 'quarterly report' END AS event_type,\n  CASE\n    WHEN r.occurred_at IS NOT NULL THEN 'occurred'\n    WHEN r.expected_date >= (NOW() AT TIME ZONE 'Europe/Stockholm')::date THEN 'upcoming'\n    ELSE 'expected, not seen'\n  END AS status,\n  concat_ws(' · ',\n    r.fiscal_period,\n    COALESCE(r.headline, r.calendar_label),\n    CASE WHEN r.occurred_at IS NULL AND r.expected_time IS NOT NULL\n         THEN 'time ' || to_char(r.expected_time, 'HH24:MI') || ' (estimated)' END) AS description\nFROM report_releases r\nWHERE r.report_kind IS NOT NULL\n  AND NOT r.is_correction\n  AND (\n    (r.occurred_at IS NULL AND r.expected_date >= (NOW() AT TIME ZONE 'Europe/Stockholm')::date)\n    OR $__timeFilter(COALESCE(r.occurred_at, r.expected_date::timestamptz))\n  )"
+              "rawSql": "SELECT occurred_at AS time, ticker, event_type,\n  CASE\n    WHEN NOT scheduled THEN 'occurred'\n    WHEN (occurred_at AT TIME ZONE 'Europe/Stockholm')::date >= (NOW() AT TIME ZONE 'Europe/Stockholm')::date THEN 'upcoming'\n    ELSE 'expected, not seen'\n  END AS status,\n  description\nFROM special_events\n-- Upcoming events are always listed, even past the end of the time range.\nWHERE (scheduled AND (occurred_at AT TIME ZONE 'Europe/Stockholm')::date >= (NOW() AT TIME ZONE 'Europe/Stockholm')::date)\n   OR $__timeFilter(occurred_at)"
             }
           ]
         },

@@ -6,9 +6,10 @@ use alpha::{CompanyProvider, PolygonSectorProvider, YahooPriceProvider};
 use chrono::DateTime;
 use clap::Parser;
 use db::{
-    fetch_bars_after, fetch_bars_before, fetch_unlabeled_events_needing_bar, insert_event_signal,
-    insert_trade_result, is_registered, label_event_truth, upsert_bar, upsert_company,
-    upsert_insider_filing, upsert_special_event,
+    delete_keyed_special_event, fetch_bars_after, fetch_bars_before,
+    fetch_unlabeled_events_needing_bar, insert_event_signal, insert_trade_result, is_registered,
+    label_event_truth, upsert_bar, upsert_company, upsert_insider_filing,
+    upsert_keyed_special_event, upsert_special_event, KeyedSpecialEvent,
 };
 use features::{compute_post_event_ar, compute_pre_event_features};
 use model::{
@@ -274,6 +275,18 @@ async fn main() {
                         }
                     };
 
+                    if event.removed && !event.source_key.is_empty() {
+                        match delete_keyed_special_event(&pool, &event.source_key).await {
+                            Ok(()) => {
+                                info!(source_key = %event.source_key, "special event removed")
+                            }
+                            Err(e) => warn!(source_key = %event.source_key, error = %e,
+                                            "failed to remove special event"),
+                        }
+                        consumer.commit_message(&msg, CommitMode::Async).ok();
+                        continue;
+                    }
+
                     let Some(occurred_at) =
                         DateTime::from_timestamp(event.occurred_at_unix_secs, 0)
                     else {
@@ -292,15 +305,30 @@ async fn main() {
                         Some(event.description.as_str())
                     };
 
-                    if let Err(e) = upsert_special_event(
-                        &pool,
-                        &event.ticker,
-                        &event.event_type,
-                        occurred_at,
-                        description,
-                    )
-                    .await
-                    {
+                    let stored = if event.source_key.is_empty() {
+                        upsert_special_event(
+                            &pool,
+                            &event.ticker,
+                            &event.event_type,
+                            occurred_at,
+                            description,
+                        )
+                        .await
+                    } else {
+                        upsert_keyed_special_event(
+                            &pool,
+                            &KeyedSpecialEvent {
+                                source_key: &event.source_key,
+                                ticker: &event.ticker,
+                                event_type: &event.event_type,
+                                occurred_at,
+                                description,
+                                scheduled: event.scheduled,
+                            },
+                        )
+                        .await
+                    };
+                    if let Err(e) = stored {
                         warn!(ticker = %event.ticker, error = %e, "failed to persist special event");
                     } else {
                         info!(

@@ -25,6 +25,11 @@ grafana:
   datasources:
     datasources.yaml:
       apiVersion: 1
+      # Nexus Chronicle served the Event Log's report query until reports were
+      # published as special events (NEX-171). Drop the provisioned copy.
+      deleteDatasources:
+        - name: Nexus Chronicle
+          orgId: 1
       datasources:
         - name: Prometheus
           uid: nexus-prometheus
@@ -42,21 +47,6 @@ grafana:
             password: ${GF_DATABASE_PASSWORD}
           jsonData:
             database: backtest
-            sslmode: require
-            timescaledb: false
-          editable: false
-
-        # chronicle's database: Nordic report calendar and releases
-        # (report_releases), read by the Special Events Event Log.
-        - name: Nexus Chronicle
-          uid: nexus-chronicle
-          type: grafana-postgresql-datasource
-          url: nexus-postgres.nexus.svc.cluster.local:5432
-          user: nexus
-          secureJsonData:
-            password: ${GF_DATABASE_PASSWORD}
-          jsonData:
-            database: chronicle
             sslmode: require
             timescaledb: false
           editable: false

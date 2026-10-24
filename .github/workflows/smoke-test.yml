@@ -43,4 +43,4 @@ jobs:
       - name: Run Nordic DB tests
         env:
           TEST_DATABASE_URL: postgres://nexus:nexus@localhost:5432/chronicle
-        run: cargo test -p chronicle --test nordic
+        run: cargo test -p chronicle --test nordic --test nordic_events
