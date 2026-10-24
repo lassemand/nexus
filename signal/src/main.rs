@@ -116,26 +116,21 @@ async fn handle_ticker_registration<P: CompanyProvider>(
           "ticker registered and sector persisted");
 }
 
-/// Sector used when no provider covers the listing. Same value the Polygon
-/// provider falls back to when a ticker has no SIC code.
-const FALLBACK_SECTOR: Sector = Sector::Industrials;
-
 /// Returns the sector for `asset`, asking `provider` only for US listings.
 ///
 /// Polygon covers US venues only: asking it about e.g. `GOMX` on `FNSE` is a
-/// 404, which used to drop the whole registration. Other markets get
-/// [`FALLBACK_SECTOR`] so the company is still registered.
+/// 404, which used to drop the whole registration. Other markets have no
+/// sector source, so their sector is `None` (stored as NULL).
 async fn resolve_sector<P: CompanyProvider>(
     provider: &P,
     asset: &Asset,
-) -> Result<Sector, P::Error> {
+) -> Result<Option<Sector>, P::Error> {
     if !mic::is_us(&asset.exchange_mic) {
-        warn!(ticker = %asset.ticker, exchange_mic = %asset.exchange_mic,
-              sector = FALLBACK_SECTOR.slug(),
-              "no sector source for this exchange, using the fallback sector");
-        return Ok(FALLBACK_SECTOR);
+        info!(ticker = %asset.ticker, exchange_mic = %asset.exchange_mic,
+              "no sector source for this exchange, sector left empty");
+        return Ok(None);
     }
-    provider.sector(asset).await
+    provider.sector(asset).await.map(Some)
 }
 
 #[tokio::main]
@@ -479,12 +474,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nordic_listing_skips_the_provider_and_uses_the_fallback() {
+    async fn nordic_listing_skips_the_provider_and_has_no_sector() {
         let p = provider();
         let sector = resolve_sector(&p, &Asset::with_mic("GOMX", mic::FNSE))
             .await
             .unwrap();
-        assert_eq!(sector, FALLBACK_SECTOR);
+        assert_eq!(sector, None);
         assert_eq!(p.calls.load(Ordering::SeqCst), 0);
     }
 
@@ -494,7 +489,7 @@ mod tests {
         let sector = resolve_sector(&p, &Asset::with_mic("AAPL", mic::XNAS))
             .await
             .unwrap();
-        assert_eq!(sector, Sector::Technology);
+        assert_eq!(sector, Some(Sector::Technology));
         assert_eq!(p.calls.load(Ordering::SeqCst), 1);
     }
 }
