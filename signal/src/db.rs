@@ -67,7 +67,7 @@ pub async fn upsert_special_event(
         r#"
         INSERT INTO special_events (ticker, event_type, occurred_at, description)
         VALUES ($1, $2, $3, $4)
-        ON CONFLICT (ticker, event_type, occurred_at) DO NOTHING
+        ON CONFLICT (ticker, exchange_mic, event_type, occurred_at) WHERE status = 'occurred' DO NOTHING
         "#,
     )
     .bind(ticker)

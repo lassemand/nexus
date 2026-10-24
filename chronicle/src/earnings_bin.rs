@@ -185,6 +185,7 @@ async fn main() {
                         event_type: "earnings".to_string(),
                         occurred_at_unix_secs: announced_at_unix_secs,
                         description,
+                        ..Default::default()
                     };
                     if let Err(e) = producer
                         .publish_special_event(&args.special_events_topic, &special)

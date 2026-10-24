@@ -1,5 +1,6 @@
 mod db;
 mod features;
+mod reports;
 mod strategy;
 
 use alpha::{CompanyProvider, PolygonSectorProvider, YahooPriceProvider};
@@ -24,6 +25,7 @@ use rdkafka::{
     ClientConfig, Message as KafkaMessage,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 #[derive(Parser)]
@@ -115,6 +117,9 @@ async fn handle_ticker_registration<P: CompanyProvider>(
     info!(ticker = %ticker, exchange_mic = %exchange_mic, currency = %currency,
           "ticker registered and sector persisted");
 }
+
+/// Longest wait between retries of a failed Nordic report store.
+const MAX_STORE_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Returns the sector for `asset`, asking `provider` only for US listings.
 ///
@@ -274,41 +279,76 @@ async fn main() {
                         }
                     };
 
-                    let Some(occurred_at) =
-                        DateTime::from_timestamp(event.occurred_at_unix_secs, 0)
-                    else {
-                        warn!(
-                            ticker = %event.ticker,
-                            secs = event.occurred_at_unix_secs,
-                            "invalid occurred_at timestamp, skipping"
-                        );
-                        consumer.commit_message(&msg, CommitMode::Async).ok();
-                        continue;
-                    };
-
-                    let description = if event.description.is_empty() {
-                        None
+                    if event.source == reports::SOURCE_MFN {
+                        let message = match reports::parse(&event) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                warn!(ticker = %event.ticker, event_type = %event.event_type,
+                                      error = %e, "invalid Nordic report event, skipping");
+                                consumer.commit_message(&msg, CommitMode::Async).ok();
+                                continue;
+                            }
+                        };
+                        // Nordic reports exist only here and the producer won't
+                        // resend them, so a DB error must not lose the event:
+                        // retry with backoff and only then fall through to the
+                        // commit. This blocks the consumer, which keeps each
+                        // company's events in order.
+                        let mut backoff = Duration::from_secs(1);
+                        loop {
+                            match reports::handle(&pool, &message).await {
+                                Ok(outcome) => {
+                                    info!(ticker = %event.ticker, event_type = %event.event_type,
+                                          source_id = %event.source_id, %outcome,
+                                          "Nordic report event stored");
+                                    break;
+                                }
+                                Err(e) => {
+                                    error!(ticker = %event.ticker, event_type = %event.event_type,
+                                           error = %e, retry_in = ?backoff,
+                                           "failed to store Nordic report event, retrying");
+                                    tokio::time::sleep(backoff).await;
+                                    backoff = (backoff * 2).min(MAX_STORE_BACKOFF);
+                                }
+                            }
+                        }
                     } else {
-                        Some(event.description.as_str())
-                    };
+                        let Some(occurred_at) =
+                            DateTime::from_timestamp(event.occurred_at_unix_secs, 0)
+                        else {
+                            warn!(
+                                ticker = %event.ticker,
+                                secs = event.occurred_at_unix_secs,
+                                "invalid occurred_at timestamp, skipping"
+                            );
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
+                        };
 
-                    if let Err(e) = upsert_special_event(
-                        &pool,
-                        &event.ticker,
-                        &event.event_type,
-                        occurred_at,
-                        description,
-                    )
-                    .await
-                    {
-                        warn!(ticker = %event.ticker, error = %e, "failed to persist special event");
-                    } else {
-                        info!(
-                            ticker = %event.ticker,
-                            event_type = %event.event_type,
-                            occurred_at = %occurred_at,
-                            "special event persisted"
-                        );
+                        let description = if event.description.is_empty() {
+                            None
+                        } else {
+                            Some(event.description.as_str())
+                        };
+
+                        if let Err(e) = upsert_special_event(
+                            &pool,
+                            &event.ticker,
+                            &event.event_type,
+                            occurred_at,
+                            description,
+                        )
+                        .await
+                        {
+                            warn!(ticker = %event.ticker, error = %e, "failed to persist special event");
+                        } else {
+                            info!(
+                                ticker = %event.ticker,
+                                event_type = %event.event_type,
+                                occurred_at = %occurred_at,
+                                "special event persisted"
+                            );
+                        }
                     }
                 } else if topic == args.market_bars_topic {
                     let event = match MarketEvent::decode(payload) {
