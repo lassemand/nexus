@@ -21,9 +21,10 @@ pub struct PolygonEarningsProvider {
 /// Errors produced by [`PolygonEarningsProvider`].
 #[derive(Debug, thiserror::Error)]
 pub enum PolygonEarningsError {
-    /// An underlying HTTP transport error.
+    /// An underlying HTTP transport error. Built through `From`, which strips
+    /// the request URL so the `apiKey` query parameter never reaches a log.
     #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
     /// The Polygon API returned HTTP 429 (rate limited).
     #[error("polygon rate limited (429)")]
     RateLimited,
@@ -33,6 +34,12 @@ pub enum PolygonEarningsError {
     /// A date string from the API could not be parsed.
     #[error("failed to parse date: {0}")]
     DateParse(String),
+}
+
+impl From<reqwest::Error> for PolygonEarningsError {
+    fn from(e: reqwest::Error) -> Self {
+        Self::Http(e.without_url())
+    }
 }
 
 // ---------- Serde response shapes ----------
@@ -116,7 +123,7 @@ async fn fetch_page(
         .query(&[("apiKey", api_key)])
         .send()
         .await
-        .map_err(PolygonEarningsError::Http)?;
+        .map_err(PolygonEarningsError::from)?;
 
     let status = response.status();
 
@@ -135,7 +142,7 @@ async fn fetch_page(
         });
     }
 
-    response.json().await.map_err(PolygonEarningsError::Http)
+    response.json().await.map_err(PolygonEarningsError::from)
 }
 
 // ---------- EarningsProvider impl ----------
@@ -266,6 +273,21 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(body))
             .mount(server)
             .await;
+    }
+
+    #[tokio::test]
+    async fn http_errors_do_not_carry_the_api_key() {
+        // A refused connection is a transport error, which carries the request
+        // URL — and with it the `apiKey` query parameter — unless stripped.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let err = PolygonEarningsProvider::with_base_url("s3cr3t-key", base)
+            .quarterly_earnings(&Asset::new("AAPL"), from())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PolygonEarningsError::Http(_)), "{err:?}");
+        assert!(!format!("{err} {err:?}").contains("s3cr3t-key"), "{err:?}");
     }
 
     #[tokio::test]

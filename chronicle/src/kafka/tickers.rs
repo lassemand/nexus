@@ -5,7 +5,7 @@ use rdkafka::{
     ClientConfig, Message as KafkaMessage, Offset, TopicPartitionList,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     time::{Duration, Instant},
 };
 use tracing::{info, warn};
@@ -88,79 +88,4 @@ pub fn load_tickers(brokers: &str, topic: &str) -> Vec<String> {
         topic, "loaded tickers from kafka topic"
     );
     result
-}
-
-/// Reads all `TickerRegistration` messages from the `company.tickers` topic
-/// and returns the full registrations keyed by ticker symbol.
-///
-/// Unlike [`load_tickers`], this preserves `exchange_mic` so callers can
-/// filter by exchange (e.g. only FNSE-listed instruments).
-/// The latest registration wins when the same ticker appears more than once.
-// Used by the pdmr binary — not all binaries use it.
-#[allow(dead_code)]
-pub fn load_ticker_registrations(
-    brokers: &str,
-    topic: &str,
-) -> HashMap<String, TickerRegistration> {
-    let group_id = format!("chronicle-load-registrations-{}", std::process::id());
-
-    let consumer: BaseConsumer = ClientConfig::new()
-        .set("bootstrap.servers", brokers)
-        .set("group.id", &group_id)
-        .set("auto.offset.reset", "earliest")
-        .set("enable.auto.commit", "false")
-        .create()
-        .expect("failed to create ticker-registration loader consumer");
-
-    let mut tpl = TopicPartitionList::new();
-    tpl.add_partition_offset(topic, 0, Offset::Beginning)
-        .expect("failed to set partition offset");
-    consumer
-        .assign(&tpl)
-        .expect("failed to assign topic partition");
-
-    let (_, high) = consumer
-        .fetch_watermarks(topic, 0, Duration::from_secs(5))
-        .unwrap_or((0, 0));
-
-    if high == 0 {
-        info!(topic, "no ticker registrations found in topic");
-        return HashMap::new();
-    }
-
-    let mut registrations: HashMap<String, TickerRegistration> = HashMap::new();
-    let idle_timeout = Duration::from_secs(3);
-    let mut last_message = Instant::now();
-
-    loop {
-        if registrations.len() as i64 >= high {
-            break;
-        }
-        if last_message.elapsed() > idle_timeout {
-            break;
-        }
-
-        match consumer.poll(Duration::from_millis(200)) {
-            Some(Ok(msg)) => {
-                last_message = Instant::now();
-                let Some(payload) = msg.payload() else {
-                    continue;
-                };
-                match TickerRegistration::decode(payload) {
-                    Ok(r) => {
-                        registrations.insert(r.ticker.to_uppercase(), r);
-                    }
-                    Err(e) => warn!("malformed TickerRegistration, skipping: {e}"),
-                }
-            }
-            Some(Err(e)) => warn!("kafka poll error: {e}"),
-            None => {}
-        }
-    }
-
-    info!(
-        count = registrations.len(),
-        topic, "loaded ticker registrations from kafka topic"
-    );
-    registrations
 }

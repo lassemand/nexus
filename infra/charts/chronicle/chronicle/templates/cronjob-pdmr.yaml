@@ -26,8 +26,11 @@ spec:
               imagePullPolicy: IfNotPresent
               command: ["/usr/local/bin/pdmr"]
               env:
-                - name: KAFKA_TOPIC
-                  value: insider.transactions.nordic
+                # Same topic as the SEC filings job: signal consumes
+                # insider.transactions. Set explicitly so a value in
+                # chronicle-secret can never redirect it.
+                - name: INSIDER_TRANSACTIONS_TOPIC
+                  value: insider.transactions
               envFrom:
                 - secretRef:
                     name: chronicle-secret

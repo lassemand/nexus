@@ -6,6 +6,7 @@
 /// A page that cannot be parsed keeps the existing rows and makes the job exit
 /// non-zero so the failure is noticed.
 use chronicle_lib::nordic::calendar::{refresh_company, MfnClient, Refresh, MFN_BASE_URL};
+use chronicle_lib::registry;
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
@@ -21,6 +22,14 @@ struct Args {
 
     #[arg(long, env = "MFN_BASE_URL", default_value = MFN_BASE_URL)]
     mfn_base_url: String,
+
+    /// Brokers for the `company.tickers` sync; without it the companies table
+    /// is used as it is.
+    #[arg(long, env = "KAFKA_BROKERS")]
+    kafka_brokers: Option<String>,
+
+    #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = registry::TICKERS_TOPIC)]
+    tickers_topic: String,
 }
 
 #[tokio::main]
@@ -44,6 +53,7 @@ async fn run(args: Args) -> anyhow::Result<bool> {
         .connect(&args.database_url)
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
+    registry::sync_or_warn(&pool, args.kafka_brokers.as_deref(), &args.tickers_topic).await;
 
     let companies = sqlx::query(
         "SELECT ticker, exchange_mic FROM companies WHERE mfn_slug IS NOT NULL ORDER BY ticker",

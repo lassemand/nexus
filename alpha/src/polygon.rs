@@ -20,10 +20,19 @@ pub struct PolygonBarProvider {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PolygonError {
+    /// Transport or status error. Built through `From`, which strips the
+    /// request URL: Polygon authenticates with an `apiKey` query parameter, so
+    /// the URL would put the key into every logged error.
     #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
     #[error("polygon returned status {status}: {message}")]
     Api { status: String, message: String },
+}
+
+impl From<reqwest::Error> for PolygonError {
+    fn from(e: reqwest::Error) -> Self {
+        Self::Http(e.without_url())
+    }
 }
 
 #[derive(Deserialize)]

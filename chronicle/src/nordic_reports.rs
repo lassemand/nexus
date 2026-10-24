@@ -15,6 +15,7 @@
 use chronicle_lib::nordic::calendar::{MfnClient, MFN_BASE_URL};
 use chronicle_lib::nordic::db;
 use chronicle_lib::nordic::ingest::process_companies;
+use chronicle_lib::registry;
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
 use std::process::ExitCode;
@@ -36,6 +37,14 @@ struct Args {
     /// Page every company's feed to the end instead of stopping when caught up.
     #[arg(long, env = "NORDIC_BACKFILL")]
     backfill: bool,
+
+    /// Brokers for the `company.tickers` sync; without it the companies table
+    /// is used as it is.
+    #[arg(long, env = "KAFKA_BROKERS")]
+    kafka_brokers: Option<String>,
+
+    #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = registry::TICKERS_TOPIC)]
+    tickers_topic: String,
 }
 
 #[tokio::main]
@@ -59,6 +68,7 @@ async fn run(args: Args) -> anyhow::Result<bool> {
         .connect(&args.database_url)
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
+    registry::sync_or_warn(&pool, args.kafka_brokers.as_deref(), &args.tickers_topic).await;
 
     let companies = db::load_companies(&pool, SE_MICS).await?;
     let mut feed = MfnClient::new(args.mfn_base_url.clone(), Duration::from_secs(1))?;

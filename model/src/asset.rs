@@ -58,6 +58,12 @@ pub mod mic {
             .map(|(_, mic)| *mic)
     }
 
+    /// Whether `exchange_mic` is a US venue. Polygon only covers US listings,
+    /// so callers use this to avoid Polygon lookups for other markets.
+    pub fn is_us(exchange_mic: &str) -> bool {
+        matches!(exchange_mic, XNAS | XNYS | "XASE" | "ARCX" | "XBTS")
+    }
+
     /// Returns the ISO 4217 currency code for the primary trading currency of
     /// the given exchange MIC. Providers should use this to populate
     /// `Bar.currency` rather than hardcoding a currency string.

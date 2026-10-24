@@ -16,6 +16,7 @@ use model::{
     generated::{
         EarningsEvent, MarketEvent, SpecialEvent, TickerRegistration, UnifiedInsiderTransaction,
     },
+    sector::Sector,
 };
 use prost::Message;
 use rdkafka::{
@@ -65,13 +66,13 @@ struct Args {
 ///
 /// - Decodes the message; logs a warning and returns on malformed bytes.
 /// - Normalises the ticker to uppercase.
-/// - Fetches the GICS sector from Polygon (SIC-based); logs an error and
-///   returns on API failure, but the caller should still commit the offset.
+/// - Resolves the sector with [`resolve_sector`]; logs an error and returns
+///   on API failure, but the caller should still commit the offset.
 /// - On success, persists the mapping to Postgres.
-async fn handle_ticker_registration(
+async fn handle_ticker_registration<P: CompanyProvider>(
     payload: &[u8],
     pool: &PgPool,
-    sector_provider: &PolygonSectorProvider,
+    sector_provider: &P,
 ) {
     let msg = match TickerRegistration::decode(payload) {
         Ok(m) => m,
@@ -97,7 +98,7 @@ async fn handle_ticker_registration(
 
     let asset = Asset::with_mic(&ticker, &exchange_mic);
 
-    let sector = match sector_provider.sector(&asset).await {
+    let sector = match resolve_sector(sector_provider, &asset).await {
         Ok(s) => s,
         Err(e) => {
             error!(ticker = %ticker, exchange_mic = %exchange_mic, error = %e,
@@ -113,6 +114,23 @@ async fn handle_ticker_registration(
 
     info!(ticker = %ticker, exchange_mic = %exchange_mic, currency = %currency,
           "ticker registered and sector persisted");
+}
+
+/// Returns the sector for `asset`, asking `provider` only for US listings.
+///
+/// Polygon covers US venues only: asking it about e.g. `GOMX` on `FNSE` is a
+/// 404, which used to drop the whole registration. Other markets have no
+/// sector source, so their sector is `None` (stored as NULL).
+async fn resolve_sector<P: CompanyProvider>(
+    provider: &P,
+    asset: &Asset,
+) -> Result<Option<Sector>, P::Error> {
+    if !mic::is_us(&asset.exchange_mic) {
+        info!(ticker = %asset.ticker, exchange_mic = %asset.exchange_mic,
+              "no sector source for this exchange, sector left empty");
+        return Ok(None);
+    }
+    provider.sector(asset).await.map(Some)
 }
 
 #[tokio::main]
@@ -423,5 +441,55 @@ async fn main() {
                 consumer.commit_message(&msg, CommitMode::Async).ok();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingProvider {
+        calls: AtomicUsize,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("unexpected lookup")]
+    struct Never;
+
+    #[async_trait::async_trait]
+    impl CompanyProvider for CountingProvider {
+        type Error = Never;
+
+        async fn sector(&self, _asset: &Asset) -> Result<Sector, Never> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Sector::Technology)
+        }
+    }
+
+    fn provider() -> CountingProvider {
+        CountingProvider {
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    #[tokio::test]
+    async fn nordic_listing_skips_the_provider_and_has_no_sector() {
+        let p = provider();
+        let sector = resolve_sector(&p, &Asset::with_mic("GOMX", mic::FNSE))
+            .await
+            .unwrap();
+        assert_eq!(sector, None);
+        assert_eq!(p.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn us_listing_asks_the_provider() {
+        let p = provider();
+        let sector = resolve_sector(&p, &Asset::with_mic("AAPL", mic::XNAS))
+            .await
+            .unwrap();
+        assert_eq!(sector, Some(Sector::Technology));
+        assert_eq!(p.calls.load(Ordering::SeqCst), 1);
     }
 }

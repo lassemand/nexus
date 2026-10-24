@@ -21,7 +21,14 @@ struct Args {
     #[arg(long, env = "KAFKA_BROKERS")]
     kafka_brokers: String,
 
-    #[arg(long, env = "KAFKA_TOPIC", default_value = "insider.transactions")]
+    // Not `KAFKA_TOPIC`: chronicle-secret sets that to `earnings.calendar` for
+    // every chronicle job, which sent SEC insider transactions there instead of
+    // to the topic signal consumes. Same variable signal uses.
+    #[arg(
+        long,
+        env = "INSIDER_TRANSACTIONS_TOPIC",
+        default_value = "insider.transactions"
+    )]
     kafka_topic: String,
 
     #[arg(long, env = "LOOKBACK_DAYS", default_value = "90")]
