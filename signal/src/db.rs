@@ -67,7 +67,7 @@ pub async fn upsert_special_event(
         r#"
         INSERT INTO special_events (ticker, event_type, occurred_at, description)
         VALUES ($1, $2, $3, $4)
-        ON CONFLICT (ticker, event_type, occurred_at) WHERE source_key IS NULL DO NOTHING
+        ON CONFLICT (ticker, exchange_mic, event_type, occurred_at) WHERE status = 'occurred' DO NOTHING
         "#,
     )
     .bind(ticker)
@@ -76,55 +76,6 @@ pub async fn upsert_special_event(
     .bind(description)
     .execute(pool)
     .await?;
-    Ok(())
-}
-
-/// A special event with a producer-chosen identity, which may change after
-/// it was first published (date moved, scheduled → occurred).
-pub struct KeyedSpecialEvent<'a> {
-    pub source_key: &'a str,
-    pub ticker: &'a str,
-    pub event_type: &'a str,
-    pub occurred_at: DateTime<Utc>,
-    pub description: Option<&'a str>,
-    pub scheduled: bool,
-}
-
-/// Inserts a keyed special event, or replaces the stored one with the same
-/// `source_key`. Idempotent under at-least-once delivery.
-pub async fn upsert_keyed_special_event(
-    pool: &PgPool,
-    e: &KeyedSpecialEvent<'_>,
-) -> sqlx::Result<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO special_events (source_key, ticker, event_type, occurred_at, description, scheduled)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO UPDATE SET
-            ticker      = EXCLUDED.ticker,
-            event_type  = EXCLUDED.event_type,
-            occurred_at = EXCLUDED.occurred_at,
-            description = EXCLUDED.description,
-            scheduled   = EXCLUDED.scheduled
-        "#,
-    )
-    .bind(e.source_key)
-    .bind(e.ticker)
-    .bind(e.event_type)
-    .bind(e.occurred_at)
-    .bind(e.description)
-    .bind(e.scheduled)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Deletes the keyed special event `source_key`; a no-op if it is not stored.
-pub async fn delete_keyed_special_event(pool: &PgPool, source_key: &str) -> sqlx::Result<()> {
-    sqlx::query("DELETE FROM special_events WHERE source_key = $1")
-        .bind(source_key)
-        .execute(pool)
-        .await?;
     Ok(())
 }
 
@@ -612,51 +563,6 @@ mod tests {
             }
         }
         Ok(map)
-    }
-
-    fn report(key: &str, day: u32, scheduled: bool) -> KeyedSpecialEvent<'_> {
-        KeyedSpecialEvent {
-            source_key: key,
-            ticker: "GOMX",
-            event_type: "quarterly report",
-            occurred_at: DateTime::parse_from_rfc3339(&format!("2026-11-{day:02}T06:30:00Z"))
-                .unwrap()
-                .with_timezone(&Utc),
-            description: Some("2026-Q3"),
-            scheduled,
-        }
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn keyed_event_moves_flips_and_is_removed(pool: PgPool) -> sqlx::Result<()> {
-        upsert_keyed_special_event(&pool, &report("report:1", 12, true)).await?;
-        upsert_keyed_special_event(&pool, &report("report:1", 12, true)).await?;
-        // MFN moves the date, then the report comes out.
-        upsert_keyed_special_event(&pool, &report("report:1", 14, true)).await?;
-        upsert_keyed_special_event(&pool, &report("report:1", 14, false)).await?;
-        let rows: Vec<(DateTime<Utc>, bool)> =
-            sqlx::query_as("SELECT occurred_at, scheduled FROM special_events")
-                .fetch_all(&pool)
-                .await?;
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0.to_rfc3339(), "2026-11-14T06:30:00+00:00");
-        assert!(!rows[0].1);
-
-        delete_keyed_special_event(&pool, "report:1").await?;
-        delete_keyed_special_event(&pool, "report:1").await?;
-        assert_eq!(count(&pool, "SELECT COUNT(*) FROM special_events").await, 0);
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn keyed_and_keyless_events_do_not_collide(pool: PgPool) -> sqlx::Result<()> {
-        let r = report("report:1", 12, false);
-        upsert_special_event(&pool, r.ticker, r.event_type, r.occurred_at, None).await?;
-        upsert_special_event(&pool, r.ticker, r.event_type, r.occurred_at, None).await?;
-        upsert_keyed_special_event(&pool, &r).await?;
-        upsert_keyed_special_event(&pool, &report("report:2", 12, false)).await?;
-        assert_eq!(count(&pool, "SELECT COUNT(*) FROM special_events").await, 3);
-        Ok(())
     }
 
     #[sqlx::test(migrations = "./migrations")]

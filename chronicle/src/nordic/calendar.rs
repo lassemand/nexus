@@ -5,15 +5,16 @@
 //! used): once a day per company, plus at most once per `nordic-reports` run
 //! when the company has just announced a calendar change.
 //!
-//! Upcoming reports are written into `report_releases` as *scheduled* rows
-//! (`occurred_at` / `mfn_news_id` NULL). Occurred rows are never deleted.
+//! Upcoming reports are published as one `report_calendar` snapshot per
+//! company ([`refresh_company`]); signal turns them into scheduled rows.
 
 use super::classify::ReportKind;
-use super::db::MATCH_WINDOW_DAYS;
+use super::db::{self, Company};
+use super::events::{calendar_event, calendar_hash, publish, EventSink};
 use anyhow::{anyhow, Context};
-use chrono::{NaiveDate, NaiveTime};
+use chrono::{NaiveDate, NaiveTime, Utc};
 use scraper::{Html, Selector};
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::time::Instant;
@@ -265,151 +266,64 @@ impl MfnClient {
     }
 }
 
-/// What [`apply_calendar`] did.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct ApplyOutcome {
-    /// Scheduled rows inserted.
-    pub scheduled: usize,
-    /// Entries that filled the expected fields of an already-occurred report.
-    pub matched_occurred: usize,
-}
-
-/// Replace a company's *scheduled* rows from `expected_date >= today`, in one
-/// transaction. Never deletes or changes an occurred row, except that an
-/// entry matching an occurred real report whose `expected_date` is NULL (same
-/// ±[`MATCH_WINDOW_DAYS`] window and closest-wins rule as `record_release`)
-/// sets that row's expected fields instead of inserting a scheduled row.
-/// Scheduled rows whose date has passed are left as they are.
-pub async fn apply_calendar(
-    pool: &PgPool,
-    ticker: &str,
-    mic: &str,
-    today: NaiveDate,
-    entries: &[CalendarEntry],
-) -> sqlx::Result<ApplyOutcome> {
-    let mut tx = pool.begin().await?;
-    sqlx::query(
-        "DELETE FROM report_releases \
-         WHERE ticker = $1 AND exchange_mic = $2 AND occurred_at IS NULL AND expected_date >= $3",
-    )
-    .bind(ticker)
-    .bind(mic)
-    .bind(today)
-    .execute(&mut *tx)
-    .await?;
-
-    let mut out = ApplyOutcome::default();
-    for e in entries {
-        let occurred = sqlx::query(
-            "SELECT id FROM report_releases \
-             WHERE ticker = $1 AND exchange_mic = $2 AND occurred_at IS NOT NULL \
-               AND report_kind IS NOT NULL AND NOT is_correction AND expected_date IS NULL \
-               AND (occurred_at AT TIME ZONE 'Europe/Stockholm')::date \
-                   BETWEEN ($3::date - $4::int) AND ($3::date + $4::int) \
-             ORDER BY abs((occurred_at AT TIME ZONE 'Europe/Stockholm')::date - $3::date), \
-                      occurred_at \
-             LIMIT 1 FOR UPDATE",
-        )
-        .bind(ticker)
-        .bind(mic)
-        .bind(e.date)
-        .bind(MATCH_WINDOW_DAYS as i32)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some(row) = occurred {
-            let id: i64 = row.get("id");
-            sqlx::query(
-                "UPDATE report_releases SET expected_date = $2, expected_time = $3, \
-                        calendar_label = $4, fiscal_period = $5 WHERE id = $1",
-            )
-            .bind(id)
-            .bind(e.date)
-            .bind(e.time)
-            .bind(&e.label)
-            .bind(&e.fiscal_period)
-            .execute(&mut *tx)
-            .await?;
-            out.matched_occurred += 1;
-            debug!(ticker, expected_date = %e.date, "calendar entry matched an already occurred report");
-            continue;
-        }
-        let res = sqlx::query(
-            "INSERT INTO report_releases \
-             (ticker, exchange_mic, expected_date, expected_time, calendar_label, \
-              report_kind, fiscal_period) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",
-        )
-        .bind(ticker)
-        .bind(mic)
-        .bind(e.date)
-        .bind(e.time)
-        .bind(&e.label)
-        .bind(e.kind.as_str())
-        .bind(&e.fiscal_period)
-        .execute(&mut *tx)
-        .await?;
-        out.scheduled += res.rows_affected() as usize;
-    }
-    tx.commit().await?;
-    Ok(out)
-}
-
 /// Result of [`refresh_company`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refresh {
     /// The company has no `mfn_slug`; nothing was fetched.
     NoSlug,
-    /// The calendar was fetched and applied.
-    Refreshed(ApplyOutcome),
+    /// The calendar is the same as the last snapshot published; not re-sent.
+    Unchanged,
+    /// A snapshot with this many upcoming reports was published.
+    Published(usize),
 }
 
-/// Fetch, parse and apply one company's MFN calendar.
+/// Fetch and parse one company's MFN calendar and publish it as a
+/// `report_calendar` snapshot, unless it equals the last snapshot published
+/// (`mfn_ingest_state.calendar_hash`) and `force` is off. The hash is stored
+/// only after the broker acknowledged the snapshot.
 ///
 /// A fetch or parse failure is returned as an error (a [`ParseError`] is the
-/// source for page changes) **after** logging it at `error`; existing rows are
-/// kept. Used by the daily `nordic-calendar` job and by `nordic-reports` after
-/// a calendar announcement.
+/// source for page changes) **after** logging it at `error`; nothing is
+/// published and the stored hash is kept. Used by the daily `nordic-calendar`
+/// job and by `nordic-reports` after a calendar announcement.
 pub async fn refresh_company(
     pool: &PgPool,
     client: &mut MfnClient,
-    ticker: &str,
-    mic: &str,
+    sink: &dyn EventSink,
+    company: &Company,
+    force: bool,
 ) -> anyhow::Result<Refresh> {
-    let slug: Option<String> = sqlx::query_scalar(
-        "SELECT mfn_slug FROM companies WHERE ticker = $1 AND exchange_mic = $2",
-    )
-    .bind(ticker)
-    .bind(mic)
-    .fetch_optional(pool)
-    .await?
-    .flatten();
-    let Some(slug) = slug else {
+    let Some(slug) = company.mfn_slug.as_deref() else {
         return Ok(Refresh::NoSlug);
     };
-
+    let ticker = company.ticker.as_str();
     let html = client
-        .fetch_page(&slug)
+        .fetch_page(slug)
         .await
         .with_context(|| format!("fetching MFN calendar for {ticker}"))?;
-    let entries = match parse_calendar(&html, &slug) {
+    let entries = match parse_calendar(&html, slug) {
         Ok(e) => e,
         Err(e) => {
-            error!(ticker, slug = %slug, error = %e, "MFN calendar parse failure, keeping existing rows");
+            error!(ticker, slug, error = %e, "MFN calendar parse failure, nothing published");
             return Err(anyhow::Error::new(e).context(format!("parsing MFN calendar for {ticker}")));
         }
     };
-    let today: NaiveDate =
-        sqlx::query_scalar("SELECT (now() AT TIME ZONE 'Europe/Stockholm')::date")
-            .fetch_one(pool)
-            .await?;
-    let outcome = apply_calendar(pool, ticker, mic, today, &entries).await?;
-    info!(
-        ticker,
-        upcoming = entries.len(),
-        ?outcome,
-        "calendar refreshed"
-    );
-    Ok(Refresh::Refreshed(outcome))
+
+    let hash = calendar_hash(&entries);
+    let state = db::load_state(pool, ticker, &company.exchange_mic).await?;
+    if !force && state.calendar_hash.as_deref() == Some(hash.as_str()) {
+        debug!(ticker, "calendar unchanged, not re-published");
+        return Ok(Refresh::Unchanged);
+    }
+    publish(
+        sink,
+        company,
+        &calendar_event(company, Utc::now(), &entries),
+    )
+    .await?;
+    db::set_calendar_hash(pool, ticker, &company.exchange_mic, &hash).await?;
+    info!(ticker, upcoming = entries.len(), "calendar published");
+    Ok(Refresh::Published(entries.len()))
 }
 
 #[cfg(test)]

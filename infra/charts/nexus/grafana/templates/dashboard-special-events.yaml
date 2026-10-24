@@ -23,7 +23,7 @@ data:
           "id": 2,
           "type": "table",
           "title": "Event Log",
-          "description": "Special events, including Nordic quarterly and annual reports. Status: upcoming (always listed, even past the end of the time range), occurred, or expected, not seen (scheduled but never appeared). Times of upcoming reports are MFN estimates.",
+          "description": "Special events, including Nordic quarterly and annual reports and their corrections, newest first. Status: upcoming (always listed, even past the end of the time range), occurred, or expected, not seen (scheduled but never appeared). Times of upcoming reports are MFN estimates; when shows only a date if no time was announced.",
           "gridPos": { "x": 0, "y": 0, "w": 24, "h": 14 },
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
           "fieldConfig": {
@@ -47,15 +47,13 @@ data:
               }
             ]
           },
-          "options": {
-            "sortBy": [{ "displayName": "time", "desc": true }]
-          },
+          "options": {},
           "targets": [
             {
               "refId": "A",
               "datasource": { "type": "grafana-postgresql-datasource", "uid": "nexus-postgres" },
               "format": "table",
-              "rawSql": "SELECT occurred_at AS time, ticker, event_type,\n  CASE\n    WHEN NOT scheduled THEN 'occurred'\n    WHEN (occurred_at AT TIME ZONE 'Europe/Stockholm')::date >= (NOW() AT TIME ZONE 'Europe/Stockholm')::date THEN 'upcoming'\n    ELSE 'expected, not seen'\n  END AS status,\n  description\nFROM special_events\n-- Upcoming events are always listed, even past the end of the time range.\nWHERE (scheduled AND (occurred_at AT TIME ZONE 'Europe/Stockholm')::date >= (NOW() AT TIME ZONE 'Europe/Stockholm')::date)\n   OR $__timeFilter(occurred_at)"
+              "rawSql": "-- Upcoming reports are always listed, even past the end of the time range.\n-- expected_date/expected_time are Europe/Stockholm local; the time is MFN's estimate.\nSELECT\n  CASE WHEN status = 'scheduled' AND expected_time IS NULL\n       THEN to_char(expected_date, 'YYYY-MM-DD')\n       ELSE to_char(occurred_at AT TIME ZONE 'Europe/Stockholm', 'YYYY-MM-DD HH24:MI')\n  END AS \"when\",\n  ticker,\n  event_type,\n  CASE\n    WHEN status = 'occurred' THEN 'occurred'\n    WHEN expected_date >= (NOW() AT TIME ZONE 'Europe/Stockholm')::date THEN 'upcoming'\n    ELSE 'expected, not seen'\n  END AS status,\n  concat_ws(' \u00b7 ',\n    fiscal_period,\n    description,\n    CASE WHEN status = 'scheduled'\n         THEN CASE WHEN expected_time IS NULL THEN 'time not announced' ELSE 'time estimated' END\n    END) AS description\nFROM special_events\nWHERE (status = 'scheduled' AND expected_date >= (NOW() AT TIME ZONE 'Europe/Stockholm')::date)\n   OR $__timeFilter(occurred_at)\nORDER BY occurred_at DESC"
             }
           ]
         },

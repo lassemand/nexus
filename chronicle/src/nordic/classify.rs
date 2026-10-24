@@ -95,7 +95,7 @@ pub enum ReportKind {
 }
 
 impl ReportKind {
-    /// Value stored in `report_releases.report_kind`.
+    /// Value published as `SpecialEvent.report_kind`.
     pub fn as_str(self) -> &'static str {
         match self {
             ReportKind::Interim => "interim",
