@@ -167,6 +167,14 @@ const RESOLVE_BACKOFF_MAX: Duration = Duration::from_secs(15 * 60);
 /// First and longest wait before re-running a daily-bar sweep that failed,
 /// instead of waiting for the next day's 18:30 run.
 const SWEEP_RETRY_START: Duration = Duration::from_secs(15 * 60);
+
+/// First and longest wait before reconnecting a stream that ended soon after
+/// it connected (e.g. Saxo rejecting the subscription on a weekend). Without
+/// it the loop reconnected several times a second.
+const RECONNECT_BACKOFF_START: Duration = Duration::from_secs(5);
+const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(10 * 60);
+/// A stream that stayed up this long resets the reconnect backoff.
+const STREAM_HEALTHY_AFTER: Duration = Duration::from_secs(5 * 60);
 const SWEEP_RETRY_MAX: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// After a failure: how long to wait now (`current`, or Saxo's hint when that
@@ -844,6 +852,8 @@ async fn main() -> anyhow::Result<()> {
     let mut current_tickers = tickers;
     let mut stream_opt: Option<SaxoBarStream> = None;
     let mut resolve_backoff = RESOLVE_BACKOFF_START;
+    let mut reconnect_backoff = RECONNECT_BACKOFF_START;
+    let mut connected_at: Option<std::time::Instant> = None;
 
     loop {
         if *shutdown_rx.borrow() {
@@ -919,11 +929,14 @@ async fn main() -> anyhow::Result<()> {
                     info!("Saxo WebSocket stream connected");
                     gauge!("saxo_ws_connected").set(1.0_f64);
                     ws_connected.store(true, Ordering::Relaxed);
+                    connected_at = Some(std::time::Instant::now());
                     stream_opt = Some(s);
                 }
                 Err(e) => {
-                    error!(error = %e, "failed to connect Saxo stream — will retry");
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    let (wait, next) = backoff_step(reconnect_backoff, RECONNECT_BACKOFF_MAX, None);
+                    reconnect_backoff = next;
+                    error!(error = %e, retry_in = ?wait, "failed to connect Saxo stream — will retry");
+                    tokio::time::sleep(wait).await;
                     continue;
                 }
             }
@@ -947,10 +960,24 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 Ok(None) => {
-                    warn!("Saxo bar stream ended — will reconnect");
                     gauge!("saxo_ws_connected").set(0.0_f64);
                     ws_connected.store(false, Ordering::Relaxed);
                     stream_opt = None;
+                    let lived = connected_at.take().map(|t| t.elapsed()).unwrap_or_default();
+                    if lived >= STREAM_HEALTHY_AFTER {
+                        reconnect_backoff = RECONNECT_BACKOFF_START;
+                        warn!(lived = ?lived, "Saxo bar stream ended — reconnecting");
+                    } else {
+                        let (wait, next) =
+                            backoff_step(reconnect_backoff, RECONNECT_BACKOFF_MAX, None);
+                        reconnect_backoff = next;
+                        warn!(lived = ?lived, retry_in = ?wait, "Saxo bar stream ended soon after connecting — backing off");
+                        let mut shutdown = shutdown_rx.clone();
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {}
+                            _ = shutdown.changed() => {}
+                        }
+                    }
                 }
                 Err(_) => {}
             }
@@ -993,6 +1020,19 @@ mod backoff_tests {
             Some(Duration::from_secs(5)),
         );
         assert_eq!(wait.as_secs(), 120);
+    }
+
+    #[test]
+    fn a_stream_that_keeps_ending_reconnects_ever_more_slowly() {
+        let mut current = RECONNECT_BACKOFF_START;
+        let mut waits = Vec::new();
+        for _ in 0..9 {
+            let (wait, next) = backoff_step(current, RECONNECT_BACKOFF_MAX, None);
+            waits.push(wait.as_secs());
+            current = next;
+        }
+        assert_eq!(waits, [5, 10, 20, 40, 80, 160, 320, 600, 600]);
+        assert!(STREAM_HEALTHY_AFTER > RECONNECT_BACKOFF_START);
     }
 
     #[test]
