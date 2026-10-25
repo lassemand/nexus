@@ -121,14 +121,6 @@ pub async fn store(pool: &PgPool, bar: &Parsed) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Hook called after bars for an instrument were stored.
-///
-/// NEX-163 replaces the body with `refresh_report_reactions` for this
-/// instrument; that function does not exist yet, so this is a deliberate no-op.
-pub async fn after_bars_stored(_pool: &PgPool, _ticker: &str, _exchange_mic: &str) {
-    // TODO(NEX-163): call refresh_report_reactions(pool, ticker, exchange_mic).
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
