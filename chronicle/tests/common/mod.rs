@@ -64,7 +64,7 @@ impl TestDb {
     /// Drop the database.
     pub async fn drop_db(mut self) {
         self.pool.close().await;
-        sqlx::query(&format!("DROP DATABASE {}", self.name))
+        sqlx::query(&format!("DROP DATABASE {} WITH (FORCE)", self.name))
             .execute(&mut self.admin)
             .await
             .unwrap();
