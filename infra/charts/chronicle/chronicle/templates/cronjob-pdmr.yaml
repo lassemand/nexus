@@ -26,6 +26,8 @@ spec:
               imagePullPolicy: IfNotPresent
               command: ["/usr/local/bin/pdmr"]
               env:
+                - name: RUST_LOG
+                  value: {{ .Values.logLevel | quote }}
                 # Same topic as the SEC filings job: signal consumes
                 # insider.transactions. Set explicitly so a value in
                 # chronicle-secret can never redirect it.

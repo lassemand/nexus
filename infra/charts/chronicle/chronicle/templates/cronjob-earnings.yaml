@@ -22,6 +22,9 @@ spec:
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
               imagePullPolicy: IfNotPresent
               command: ["/usr/local/bin/earnings"]
+              env:
+                - name: RUST_LOG
+                  value: {{ .Values.logLevel | quote }}
               envFrom:
                 - secretRef:
                     name: chronicle-secret

@@ -30,6 +30,9 @@ spec:
               imagePullPolicy: IfNotPresent
               command: ["/usr/local/bin/nordic-reports"]
               args: ["--backfill"]
+              env:
+                - name: RUST_LOG
+                  value: {{ .Values.logLevel | quote }}
               envFrom:
                 - secretRef:
                     name: chronicle-secret
