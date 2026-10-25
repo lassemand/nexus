@@ -1,0 +1,98 @@
+{
+  "version": "https://www.mfn.se/feed/version/1",
+  "title": "",
+  "items": [
+    {
+      "news_id": "5e343aa5-f961-55a9-a00e-a94cf5d4d401",
+      "group_id": "75d1bedb-a4e6-4e3e-8bba-0b2b65911163",
+      "url": "https://mfn.se/cis/a/gomspace-group/q2-financial-reporting-confirms-a-strong-first-half-of-2026-30-growth-positive-ebit-reinforced-balance-sheet-and-guidance-maintained-5e343aa5",
+      "author": {
+        "entity_id": "dc200d29-ebff-425c-81ce-6eafb6738f23",
+        "slug": "gomspace-group",
+        "slugs": [
+          "gomspace-group"
+        ],
+        "name": "GomSpace Group",
+        "isins": [
+          "SE0008348304"
+        ],
+        "leis": [
+          "213800ES6SHKK5QTN734"
+        ],
+        "local_refs": [
+          "SE:559026-1888"
+        ],
+        "tickers": [
+          "FNSE:GOMX",
+          "XLON:0GE8"
+        ]
+      },
+      "subjects": [
+        {
+          "entity_id": "dc200d29-ebff-425c-81ce-6eafb6738f23",
+          "slug": "gomspace-group",
+          "slugs": [
+            "gomspace-group"
+          ],
+          "name": "GomSpace Group",
+          "isins": [
+            "SE0008348304"
+          ],
+          "leis": [
+            "213800ES6SHKK5QTN734"
+          ],
+          "local_refs": [
+            "SE:559026-1888"
+          ],
+          "tickers": [
+            "FNSE:GOMX",
+            "XLON:0GE8"
+          ]
+        }
+      ],
+      "properties": {
+        "lang": "en",
+        "tags": [
+          ":regulatory",
+          "sub:report",
+          "sub:report:interim"
+        ],
+        "type": "ir",
+        "scopes": [
+          "SE",
+          "GB"
+        ]
+      },
+      "content": {
+        "title": "Q2 Financial Reporting Confirms a Strong First Half of 2026: 30% Growth, Positive EBIT, Reinforced Balance Sheet and Guidance Maintained",
+        "slug": "q2-financial-reporting-confirms-a-strong-first-half-of-2026-30-growth-positive-ebit-reinforced-balance-sheet-and-guidance-maintained-5e343aa5",
+        "publish_date": "2026-08-26T06:00:00Z",
+        "preamble": "(trimmed)",
+        "html": "(trimmed)",
+        "text": "(trimmed)",
+        "attachments": [
+          {
+            "file_title": "PDF",
+            "content_type": "application/pdf",
+            "url": "https://mb.cision.com/Main/14387/4387803/4233165.pdf",
+            "tags": []
+          },
+          {
+            "file_title": "PDF",
+            "content_type": "application/pdf",
+            "url": "https://mb.cision.com/Public/14387/4387803/97a3f2b12ac5c47e.pdf",
+            "tags": []
+          },
+          {
+            "file_title": "File",
+            "content_type": "image/jpeg",
+            "url": "https://mb.cision.com/Public/14387/4387803/bad4c5e5291284ac_100x100ar.jpg",
+            "tags": []
+          }
+        ]
+      },
+      "extensions": {},
+      "source": "cis"
+    }
+  ]
+}

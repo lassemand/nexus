@@ -144,3 +144,26 @@ text when there is no price), the move per report, and how its releases were tim
 against the Stockholm session. The panels ignore the time picker and always show the
 company's whole history. A company appears in the dropdown once it has an MFN report
 event; the display name comes from `companies.name` (`name` in the registry).
+
+## Live listener (`nordic-live`)
+
+A Deployment (`infra/charts/chronicle/chronicle/templates/deployment-nordic-live.yaml`, 1 replica, `Recreate`) that
+connects to MFN's **unofficial** WebSocket `wss://mfn.se/all/s/nordic.json` and **logs** every new item from a company
+with an `mfn_slug` the moment it is published. It writes nothing and publishes nothing: the `nordic-reports` poll stays
+the only writer and covers anything missed while the socket is down (the stream has no replay, and the server closes it
+every 300 s with code 3000, which is a fast reconnect).
+
+```bash
+kubectl --context orbstack -n chronicle logs deploy/nordic-live -f
+```
+
+- Each new relevant item is one structured log event with `event` = `report_released` (a results release) or
+  `company_news`, plus `news_id`, `ticker`, `exchange_mic`, `publish_date`, `received_at`, `latency_ms`, `lang`, `tags`,
+  `source`, `report_kind`, `is_correction`, `calendar_update`, `title`, `url` and `attachment_urls` (the PDFs). Classification
+  is the same code as the poll (`chronicle_lib::nordic::classify`).
+- Every 10 minutes: `nordic-live: N items seen, M relevant`. Registered companies are reloaded every 10 minutes.
+- `already ingested by poll`: the item is already in signal's `special_events` (`source = 'mfn'`, `source_id` = the MFN
+  news id), checked through `SIGNAL_DATABASE_URL` (read-only). If that lookup fails, the item is logged anyway.
+- Reconnects: close code 3000 at once (debug log); anything else backs off 10 ms doubling to 30 s (reset after 60 s up);
+  15 minutes without a message or ping drops the connection and reconnects.
+- Env: `MFN_WS_URL`, `DATABASE_URL`, `SIGNAL_DATABASE_URL` (optional), `RUST_LOG`, `LOG_FORMAT` (`json` default or `text`).

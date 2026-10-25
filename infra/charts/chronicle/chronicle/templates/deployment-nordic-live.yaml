@@ -1,0 +1,47 @@
+# Live MFN listener (NEX-170): logs Nordic releases the moment they are published.
+# Logging only: it writes nothing; the hourly nordic-reports poll stays the only
+# writer and the fallback for anything missed while the socket is down.
+#   kubectl --context orbstack -n chronicle logs deploy/nordic-live -f
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nordic-live
+  labels:
+    app: nordic-live
+spec:
+  replicas: 1
+  # One listener at a time: a second would log every item twice.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nordic-live
+  template:
+    metadata:
+      labels:
+        app: nordic-live
+    spec:
+      containers:
+        - name: nordic-live
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/nordic-live"]
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.nordicLive.logLevel | quote }}
+          envFrom:
+            # DATABASE_URL: chronicle's database (the registered companies).
+            - secretRef:
+                name: chronicle-secret
+            # SIGNAL_DATABASE_URL: signal's database, for the poll's
+            # "already ingested" check. Optional: without it every relevant item
+            # is logged as new.
+            - secretRef:
+                name: nordic-live-secret
+                optional: true
+          resources:
+            requests:
+              memory: {{ .Values.resources.requests.memory | quote }}
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+            limits:
+              memory: {{ .Values.resources.limits.memory | quote }}

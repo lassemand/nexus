@@ -8,6 +8,9 @@ schedules:
   filings: "0 6 * * 1-5"
   nordicReports: "0 22 * * *"
   nordicCalendar: "30 6 * * *"
+nordicLive:
+  # RUST_LOG for the live listener (info logs every new relevant item).
+  logLevel: "info"
 filings:
   lookbackDays: "90"
 resources:

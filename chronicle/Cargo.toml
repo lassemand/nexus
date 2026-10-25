@@ -34,6 +34,10 @@ name = "nordic-reports"
 path = "src/nordic_reports.rs"
 
 [[bin]]
+name = "nordic-live"
+path = "src/nordic_live.rs"
+
+[[bin]]
 name = "nordic-calendar"
 path = "src/nordic_calendar.rs"
 
@@ -55,7 +59,7 @@ chrono = "0.4"
 prost = "0.13"
 thiserror = "1"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
 quick-xml = { version = "0.37", features = ["serialize"] }
@@ -66,6 +70,8 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
 scraper = "0.29.0"
 uuid = { version = "1.29.0", features = ["serde"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
 
 [dev-dependencies]
 # In-process mock HTTP server for the PR smoke test (chronicle/tests/smoke_test.rs) —

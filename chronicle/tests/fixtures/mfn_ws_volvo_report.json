@@ -1,0 +1,105 @@
+{
+  "version": "https://www.mfn.se/feed/version/1",
+  "items": [
+    {
+      "news_id": "65c1b68c-875e-578d-acc8-ca05ed0ea99c",
+      "group_id": "b7ca2b04-1e4a-4ec3-bded-5765febc6d74",
+      "url": "https://mfn.se/cis/a/volvo/volvo-group-the-second-quarter-2026-65c1b68c",
+      "author": {
+        "entity_id": "df018f2d-d36c-41d6-92b1-9b255c56ce79",
+        "slug": "volvo",
+        "slugs": [
+          "volvo"
+        ],
+        "name": "Volvo",
+        "isins": [
+          "SE0000115446",
+          "SE0000115420"
+        ],
+        "leis": [
+          "549300HGV012CNC8JD22"
+        ],
+        "local_refs": [
+          "SE:556012-5790"
+        ],
+        "tickers": [
+          "XSTO:VOLV A",
+          "CAPA:VOLVAs",
+          "XLON:0MHW",
+          "XSTO:VOLV B",
+          "XLON:0HTP"
+        ]
+      },
+      "subjects": [
+        {
+          "entity_id": "df018f2d-d36c-41d6-92b1-9b255c56ce79",
+          "slug": "volvo",
+          "slugs": [
+            "volvo"
+          ],
+          "name": "Volvo",
+          "isins": [
+            "SE0000115446",
+            "SE0000115420"
+          ],
+          "leis": [
+            "549300HGV012CNC8JD22"
+          ],
+          "local_refs": [
+            "SE:556012-5790"
+          ],
+          "tickers": [
+            "XSTO:VOLV A",
+            "CAPA:VOLVAs",
+            "XLON:0MHW",
+            "XSTO:VOLV B",
+            "XLON:0HTP"
+          ]
+        }
+      ],
+      "properties": {
+        "lang": "en",
+        "tags": [
+          ":regulatory",
+          "sub:report",
+          "sub:report:interim"
+        ],
+        "type": "ir",
+        "scopes": [
+          "SE",
+          "GB"
+        ]
+      },
+      "content": {
+        "title": "Volvo Group - the second quarter 2026",
+        "slug": "volvo-group-the-second-quarter-2026-65c1b68c",
+        "publish_date": "2026-07-17T05:20:00Z",
+        "preamble": "(trimmed)",
+        "html": "(trimmed)",
+        "text": "(trimmed)",
+        "attachments": [
+          {
+            "file_title": "PDF",
+            "content_type": "application/pdf",
+            "url": "https://mb.cision.com/Main/39/4375280/4197349.pdf",
+            "tags": []
+          },
+          {
+            "file_title": "PDF",
+            "content_type": "application/pdf",
+            "url": "https://mb.cision.com/Public/39/4375280/8beb187b0c192716.pdf",
+            "tags": []
+          },
+          {
+            "file_title": "File",
+            "content_type": "image/png",
+            "url": "https://mb.cision.com/Public/39/4375280/b85b67e04a54594b_100x100ar.png",
+            "tags": []
+          }
+        ]
+      },
+      "extensions": {},
+      "source": "cis"
+    }
+  ]
+}
