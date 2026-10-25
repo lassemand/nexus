@@ -3,15 +3,15 @@
 NEX-165. A wrong percentage looks exactly like a right one, so the pipeline was checked against sources
 that do not come from our own database.
 
-## Status: part A done, part B needs access to signal's database
+## Status: done (part A and part B)
 
 | | What | Status |
 |---|---|---|
 | A | The **logic** (session rule, reaction and base day, holiday calendar, corrections, re-sends, moves) replayed on all 38 real GomSpace reports with **independent prices and an independent trading calendar** | **Done**, no mismatch. Results below |
-| B | The **production data**: `special_events` / `daily_bars` in the `backtest` database compared with the independent closes | **Not done.** The environment this was prepared in cannot read `backtest`. Run query [Q1](#q1-production-vs-independent-run-this-on-backtest) and paste the result into a PR comment |
+| B | The **production data**: `special_events` / `daily_bars` in the `backtest` database compared with the independent closes | **Done** 2026-10-26 on production (0.2.3). Dates 38 of 38; closes identical for 30, a constant adjustment factor for the 8 before 2018-11-16; moves agree for all 38. See [B](#b-production-vs-independent) |
 
-Nothing in the "ours" columns was invented. Part A uses the independent prices *as* the price input, so it says
-nothing about whether Saxo's stored closes are right. That is exactly what Q1 checks.
+Part A uses the independent prices *as* the price input, so it says nothing about whether Saxo's stored closes are
+right. Part B checks exactly that, against the production database.
 
 ## Sources
 
@@ -114,8 +114,9 @@ set. The market-moving release is always the earliest one, and no correction is 
 
 ## A3. Are Saxo's daily bars split-adjusted?
 
-**Unknown.** Saxo's reference documentation does not say, and `/chart/v1` is unavailable on SIM (NEX-162, ADR-0001), so
-it could not be tested without live credentials.
+**No: Saxo returns unadjusted traded closes** (established in [B](#b-production-vs-independent), on production data
+from the live chart API `v3`; NEX-183). The text below was written before production data was available and is kept
+for the reasoning about why moves still agree.
 
 About the *independent* series: Yahoo lists no split or dividend event for GOMX.ST. Whether its history is nevertheless
 adjusted for older share issues **could not be established from the data alone**. What is visible: the first bar
@@ -128,13 +129,63 @@ A constant close ratio with agreeing moves means an adjustment difference, not a
 (|move| > 40 %) is the safety net for an issue that falls exactly between two compared days. Look at the 2016 to about
 2020 rows first.
 
+## B. Production vs independent
+
+Run on 2026-10-26 against `backtest` on 0.2.3, after `saxo-stream` had published 2,605 GOMX daily bars from Saxo's live
+chart API `v3` (2016-06-16 to 2026-10-23; Yahoo has 2,606 for the same range). All 38 reports had
+`data_status = ok`. Query [Q1](#q1-production-vs-independent-run-this-on-backtest), unchanged.
+
+| | Result |
+|---|---|
+| Reaction day and base day (`dates_ok`) | **38 of 38** match the independent calendar |
+| Closes, reports from 2019-02-28 on (30) | **Identical** to Yahoo (difference 0.00 %, Saxo has more decimals) |
+| Closes, the 8 reports from 2016-08-22 to 2018-11-06 | Both base and reaction close **exactly 33.86 % higher** than Yahoo (ratio 1.3386) |
+| Move % | **Agrees for all 38**, to 3-4 decimals (largest difference 0.0015 points, from Yahoo's rounding to 4 decimals) |
+
+The 8 older rows (`closes_ok = false`):
+
+| Released (Stockholm) | Saxo base | Yahoo base | Saxo reaction | Yahoo reaction | Saxo move | Yahoo move |
+|---|---|---|---|---|---|---|
+| 2016-08-22 17:04 | 25.2773 | 18.8836 | 23.3154 | 17.4180 | -7.7612 % | -7.7612 % |
+| 2017-02-28 08:00 | 26.2582 | 19.6164 | 26.4091 | 19.7291 | +0.5747 % | +0.5745 % |
+| 2017-05-31 08:00 | 44.1409 | 32.9758 | 45.4613 | 33.9623 | +2.9914 % | +2.9916 % |
+| 2017-08-31 08:00 | 46.4045 | 34.6669 | 45.6500 | 34.1032 | -1.6260 % | -1.6260 % |
+| 2017-11-27 08:00 | 79.2272 | 59.1874 | 80.9249 | 60.4557 | +2.1428 % | +2.1429 % |
+| 2018-05-24 08:00 | 47.9136 | 35.7943 | 51.3091 | 38.3309 | +7.0866 % | +7.0866 % |
+| 2018-08-31 08:00 | 31.5400 | 23.5622 | 29.9932 | 22.4067 | -4.9043 % | -4.9040 % |
+| 2018-11-06 08:00 | 24.3341 | 18.1790 | 22.5232 | 16.8261 | -7.4418 % | -7.4421 % |
+
+**Where the factor comes from.** Comparing the daily closes around the change, the ratio is 1.3386 up to
+2018-11-15 and 1.0000 from 2018-11-16:
+
+| Date | Saxo close | Yahoo close | Saxo / Yahoo |
+|---|---|---|---|
+| 2018-11-15 | 17.5809 | 13.1340 | 1.3386 |
+| 2018-11-16 | 15.0004 | 15.0004 | 1.0000 |
+
+Saxo falls 14.7 % that day, as traded prices do on an ex-date; Yahoo rises 14.2 %, because it divides every close
+before 2018-11-16 by 1.3386. So **Saxo's bars are unadjusted traded closes, and Yahoo's history is adjusted for a
+corporate action effective 2018-11-16.** Which action it was (a share issue, presumably) was not checked against an
+announcement. No GomSpace report has its base day before and its reaction day on or after 2018-11-16, so no move is
+affected.
+
+**Sanity checks on production** (the queries of A2, on `backtest`): S1 look-ahead **0**; S2a corrections counted as
+reports **0**; S2b one correction without an original report, the 2025-06-25 contract notice (F1); S3 `needs_review`
+**0**; S4 `ok` = **38**; S5 largest moves 2025-05-07 +22.7273, 2025-08-27 +11.2054, 2024-10-31 +8.7883,
+2023-08-22 -8.3650, 2019-11-29 -8.0181. Identical to the replay (S5's last digit differs by rounding).
+
 ## Findings
 
 - **F1 (follow-up issue, minor).** chronicle publishes *any* item whose title starts with "Correction:" as a
   `report_correction`, also when it corrects a non-report (2025-06-25, the 19.5 MEUR contract). The row has no original
   report and is excluded from the dashboard and from reactions, so it does no harm, but it breaks the invariant that
   every `report_correction` links to a report. Not patched here (verification only).
-- **F2.** Whether Yahoo's and Saxo's series are adjusted the same way is unknown (A3). Needs the production comparison.
+- **F2 (resolved).** Saxo's daily bars are **not** adjusted for corporate actions; Yahoo's are (B). A report's move %
+  is unaffected unless its base day and reaction day straddle an ex-date.
+- **F5 (follow-up issue).** Because Saxo's closes are unadjusted, a report whose base day is before an ex-date and whose
+  reaction day is on or after it would show the mechanical ex-date drop as part of its move (GOMX: -14.7 % on
+  2018-11-16, below the 40 % `needs_review` threshold, so it would pass unflagged). No GomSpace report does, but the
+  reaction code should either adjust for, or flag, a corporate action between the two days.
 - **F3.** GomSpace has no real after-close, weekend, holiday or half-day report, so those rules are verified by unit
   tests only. Repeat this check for a company that has them.
 - **F4.** Prices around 2023-05-26 are round numbers (1.5000 to 1.4250, a move of exactly -5.0000 %): a thin stock with
@@ -147,9 +198,9 @@ A constant close ratio with agreeing moves means an adjustment difference, not a
 | At least 8 reports, with an annual report, 2025-08-27 and the oldest | 12 in the table, 38 in the full check |
 | Reaction date matches the session rule (independent calendar) | **Pass**, 38 of 38 |
 | Base date is the previous trading day | **Pass**, 38 of 38 |
-| Closes match an independent source within 0.5 % | **Pending production data** (Q1). Closing-auction vs last-trade differences and the adjustment question (A3) are the expected sources of any mismatch |
-| No look-ahead (S1), no corrections counted as reports (S2a), `needs_review` explained (S3), counts per status (S4) | Pass on the replay; **pending** on `backtest` |
-| Saxo split adjustment documented | Documented as unknown (A3) |
+| Closes match an independent source within 0.5 % | **Pass for 30 of 38** (identical). The other 8 differ by a constant factor of 1.3386 from Yahoo's adjustment for the 2018-11-16 corporate action; their moves agree, so this is an adjustment difference, not a pipeline error (B) |
+| No look-ahead (S1), no corrections counted as reports (S2a), `needs_review` explained (S3), counts per status (S4) | **Pass** on the replay and on `backtest` |
+| Saxo split adjustment documented | **Documented**: unadjusted (A3, B) |
 
 ## Q1: production vs independent (run this on `backtest`)
 
