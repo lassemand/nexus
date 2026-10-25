@@ -29,6 +29,8 @@ struct RawFeed {
 struct RawItem {
     news_id: Uuid,
     #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
     url: Option<String>,
     author: RawAuthor,
     #[serde(default)]
@@ -55,9 +57,19 @@ struct RawProperties {
 }
 
 #[derive(Debug, Deserialize)]
+struct RawAttachment {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    content_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RawContent {
     #[serde(default)]
     title: String,
+    #[serde(default)]
+    attachments: Option<Vec<RawAttachment>>,
     publish_date: String,
 }
 
@@ -82,6 +94,10 @@ pub struct NewsItem {
     pub author_slugs: Vec<String>,
     /// `author.tickers`, e.g. `FNSE:GOMX`.
     pub author_tickers: Vec<String>,
+    /// MFN's `source` (for example `cis`, `one`), when present.
+    pub source: Option<String>,
+    /// Links to the item's PDF attachments (`content.attachments[].url`).
+    pub attachment_urls: Vec<String>,
 }
 
 impl NewsItem {
@@ -101,6 +117,73 @@ pub struct FeedPage {
     pub skipped: usize,
     /// URL of the next page, if any.
     pub next_url: Option<reqwest::Url>,
+}
+
+fn is_pdf(a: &RawAttachment) -> bool {
+    match (&a.content_type, &a.url) {
+        (Some(t), _) => t.eq_ignore_ascii_case("application/pdf"),
+        (None, Some(u)) => u.to_ascii_lowercase().ends_with(".pdf"),
+        _ => false,
+    }
+}
+
+/// Converts a raw item; `None` if its `publish_date` is not RFC 3339.
+fn into_news_item(r: RawItem) -> Option<NewsItem> {
+    let published_at = DateTime::parse_from_rfc3339(&r.content.publish_date)
+        .ok()?
+        .with_timezone(&Utc);
+    let attachment_urls = r
+        .content
+        .attachments
+        .unwrap_or_default()
+        .iter()
+        .filter(|a| is_pdf(a))
+        .filter_map(|a| a.url.clone())
+        .collect();
+    Some(NewsItem {
+        news_id: r.news_id,
+        url: r.url,
+        lang: r.properties.lang,
+        tags: r.properties.tags.unwrap_or_default(),
+        title: r.content.title,
+        published_at,
+        author_slug: r.author.slug,
+        author_slugs: r.author.slugs.unwrap_or_default(),
+        author_tickers: r.author.tickers.unwrap_or_default(),
+        source: r.source,
+        attachment_urls,
+    })
+}
+
+/// Items of a JSON Feed document (a polling page or one WebSocket message),
+/// parsed one by one: an item without `news_id` or with a bad `publish_date` is
+/// reported in `bad_items` and does not stop its siblings. Fails only if the
+/// whole document is not JSON of the expected shape.
+pub fn parse_document(body: &str) -> Result<ParsedDocument, serde_json::Error> {
+    #[derive(Deserialize)]
+    struct Doc {
+        #[serde(default)]
+        items: Option<Vec<serde_json::Value>>,
+    }
+    let doc: Doc = serde_json::from_str(body)?;
+    let mut parsed = ParsedDocument::default();
+    for raw in doc.items.unwrap_or_default() {
+        match serde_json::from_value::<RawItem>(raw).map(into_news_item) {
+            Ok(Some(item)) => parsed.items.push(item),
+            Ok(None) => parsed.bad_items.push("bad publish_date".to_string()),
+            Err(e) => parsed.bad_items.push(e.to_string()),
+        }
+    }
+    Ok(parsed)
+}
+
+/// Result of [`parse_document`].
+#[derive(Debug, Default)]
+pub struct ParsedDocument {
+    /// Items that parsed.
+    pub items: Vec<NewsItem>,
+    /// One message per item that did not.
+    pub bad_items: Vec<String>,
 }
 
 /// The first page URL: `<base>/all/a/<slug>.json?limit=48&offset=0`.
@@ -137,19 +220,9 @@ pub async fn fetch_feed_page(
     let mut items = Vec::new();
     let mut skipped = 0;
     for r in raw.items.unwrap_or_default() {
-        match DateTime::parse_from_rfc3339(&r.content.publish_date) {
-            Ok(t) => items.push(NewsItem {
-                news_id: r.news_id,
-                url: r.url,
-                lang: r.properties.lang,
-                tags: r.properties.tags.unwrap_or_default(),
-                title: r.content.title,
-                published_at: t.with_timezone(&Utc),
-                author_slug: r.author.slug,
-                author_slugs: r.author.slugs.unwrap_or_default(),
-                author_tickers: r.author.tickers.unwrap_or_default(),
-            }),
-            Err(_) => skipped += 1,
+        match into_news_item(r) {
+            Some(item) => items.push(item),
+            None => skipped += 1,
         }
     }
     let next_url = match raw.next_url.filter(|u| !u.is_empty()) {
@@ -198,6 +271,8 @@ mod tests {
             author_slug: "volvo".into(),
             author_slugs: vec!["volvo".into(), "volvo-group".into()],
             author_tickers: vec![],
+            source: None,
+            attachment_urls: vec![],
         };
         assert!(i.is_authored_by("volvo"));
         assert!(i.is_authored_by("volvo-group"));

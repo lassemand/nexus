@@ -47,6 +47,7 @@ RUN mkdir -p \
         chronicle/src/pdmr.rs \
         chronicle/src/nordic_reports.rs \
         chronicle/src/nordic_calendar.rs \
+        chronicle/src/nordic_live.rs \
         chronicle/src/saxo_stream.rs \
         signal/src/main.rs \
         signal/src/scanner.rs \
@@ -97,6 +98,7 @@ COPY --from=builder /build/target/release/filings     /usr/local/bin/filings
 COPY --from=builder /build/target/release/pdmr        /usr/local/bin/pdmr
 COPY --from=builder /build/target/release/nordic-reports /usr/local/bin/nordic-reports
 COPY --from=builder /build/target/release/nordic-calendar /usr/local/bin/nordic-calendar
+COPY --from=builder /build/target/release/nordic-live /usr/local/bin/nordic-live
 COPY --from=builder /build/target/release/saxo_stream /usr/local/bin/saxo_stream
 COPY --from=builder /build/target/release/signal      /usr/local/bin/signal
 COPY --from=builder /build/target/release/insight     /usr/local/bin/insight

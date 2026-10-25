@@ -69,6 +69,7 @@ RUN mkdir -p \
         chronicle/src/pdmr.rs \
         chronicle/src/nordic_reports.rs \
         chronicle/src/nordic_calendar.rs \
+        chronicle/src/nordic_live.rs \
         chronicle/src/saxo_stream.rs \
         signal/src/main.rs \
         signal/src/scanner.rs \
