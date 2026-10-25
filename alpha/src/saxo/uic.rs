@@ -16,15 +16,30 @@
 /// [`UicResolverError::CfdOnly`] — the caller must not proceed with that
 /// ticker.
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum UicResolverError {
+    /// The request did not get an HTTP response (connect, TLS, timeout, body).
     #[error("HTTP error resolving Uic for {ticker}: {source}")]
     Http {
         ticker: String,
         #[source]
         source: reqwest::Error,
+    },
+    /// Saxo answered with a non-2xx status. `rate_limit` holds the
+    /// `Retry-After` and `X-RateLimit-*` headers, for the log.
+    #[error(
+        "Saxo returned {status} resolving Uic for {ticker} (rate limit headers: {rate_limit:?})"
+    )]
+    Status {
+        ticker: String,
+        status: reqwest::StatusCode,
+        retry_after: Option<Duration>,
+        rate_limit: Vec<(String, String)>,
     },
     #[error("no Stock instrument found for ticker {0} on Saxo (got CFD-only or no results)")]
     CfdOnly(String),
@@ -32,8 +47,19 @@ pub enum UicResolverError {
     NotFound(String),
 }
 
+impl UicResolverError {
+    /// How long Saxo asked us to wait, if it said (`Retry-After`, or the
+    /// longest `X-RateLimit-*-Reset`).
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            UicResolverError::Status { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+}
+
 /// A successfully resolved Saxo instrument identifier.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedUic {
     /// Saxo's internal numeric instrument identifier.
     pub uic: u64,
@@ -62,9 +88,31 @@ struct InstrumentListResponse {
 }
 
 /// Resolves tickers to Saxo `Uic` values via the reference data API.
+///
+/// Successful resolutions are cached for the resolver's lifetime: a Uic never
+/// changes, and every lookup counts against Saxo's request limits. Share one
+/// resolver between all users in a process.
 pub struct UicResolver {
     client: reqwest::Client,
     api_base: String,
+    cache: Mutex<HashMap<String, ResolvedUic>>,
+}
+
+/// `Retry-After` (seconds), or else the longest `X-RateLimit-*-Reset`.
+fn wait_hint(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let secs = |v: &reqwest::header::HeaderValue| v.to_str().ok()?.trim().parse::<u64>().ok();
+    if let Some(s) = headers.get(reqwest::header::RETRY_AFTER).and_then(secs) {
+        return Some(Duration::from_secs(s));
+    }
+    headers
+        .iter()
+        .filter(|(k, _)| {
+            let k = k.as_str();
+            k.starts_with("x-ratelimit-") && k.ends_with("-reset")
+        })
+        .filter_map(|(_, v)| secs(v))
+        .max()
+        .map(Duration::from_secs)
 }
 
 impl UicResolver {
@@ -72,140 +120,123 @@ impl UicResolver {
         Self {
             client,
             api_base: api_base.into(),
+            cache: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Resolve a ticker symbol to its `Stock` Uic on Saxo.
-    ///
-    /// Fails with [`UicResolverError::CfdOnly`] if the ticker exists on Saxo
-    /// but only as a `CfdOnStock` — never silently accepts a CFD.
-    pub async fn resolve(
+    async fn search(
         &self,
         ticker: &str,
+        asset_type: &str,
         access_token: &str,
-    ) -> Result<ResolvedUic, UicResolverError> {
+    ) -> Result<InstrumentListResponse, UicResolverError> {
         let url = format!(
-            "{}/ref/v1/instruments?Keywords={}&AssetTypes=Stock",
-            self.api_base, ticker
+            "{}/ref/v1/instruments?Keywords={}&AssetTypes={}",
+            self.api_base, ticker, asset_type
         );
-
-        let resp: InstrumentListResponse = self
+        let http = |source| UicResolverError::Http {
+            ticker: ticker.to_string(),
+            source,
+        };
+        let resp = self
             .client
             .get(&url)
             .bearer_auth(access_token)
             .send()
             .await
-            .map_err(|e| UicResolverError::Http {
+            .map_err(http)?;
+        let status = resp.status();
+        if !status.is_success() {
+            let headers = resp.headers();
+            let rate_limit = headers
+                .iter()
+                .filter(|(k, _)| {
+                    let k = k.as_str();
+                    k == "retry-after" || k.starts_with("x-ratelimit-")
+                })
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("?").to_string()))
+                .collect();
+            return Err(UicResolverError::Status {
                 ticker: ticker.to_string(),
-                source: e,
-            })?
-            .error_for_status()
-            .map_err(|e| UicResolverError::Http {
-                ticker: ticker.to_string(),
-                source: e,
-            })?
-            .json()
-            .await
-            .map_err(|e| UicResolverError::Http {
-                ticker: ticker.to_string(),
-                source: e,
-            })?;
+                status,
+                retry_after: wait_hint(headers),
+                rate_limit,
+            });
+        }
+        resp.json().await.map_err(http)
+    }
 
-        // Find the first result where AssetType is exactly "Stock".
-        let stock = resp
-            .data
-            .into_iter()
-            .find(|i| i.asset_type == "Stock")
-            .ok_or_else(|| {
-                // Distinguish "found but only CFD" from "nothing at all"
-                // by first trying a CFD-only search.
-                UicResolverError::NotFound(ticker.to_string())
-            })?;
+    fn cached(&self, ticker: &str) -> Option<ResolvedUic> {
+        self.cache
+            .lock()
+            .unwrap()
+            .get(&ticker.to_uppercase())
+            .cloned()
+    }
 
-        Ok(ResolvedUic {
+    fn remember(&self, resolved: &ResolvedUic) {
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(resolved.ticker.clone(), resolved.clone());
+    }
+
+    fn to_resolved(ticker: &str, stock: InstrumentSummary) -> ResolvedUic {
+        ResolvedUic {
             uic: stock.uic,
             ticker: ticker.to_uppercase(),
             exchange_id: stock.exchange_id,
             currency: stock.currency_code,
-        })
+        }
     }
 
-    /// Resolve a ticker, explicitly confirming no CFD exists with the same
-    /// symbol. If a Stock is found, returns it. If only a CfdOnStock exists,
-    /// returns [`UicResolverError::CfdOnly`].
+    /// Resolve a ticker symbol to its `Stock` Uic on Saxo (cached).
+    pub async fn resolve(
+        &self,
+        ticker: &str,
+        access_token: &str,
+    ) -> Result<ResolvedUic, UicResolverError> {
+        if let Some(hit) = self.cached(ticker) {
+            return Ok(hit);
+        }
+        let stock = self
+            .search(ticker, "Stock", access_token)
+            .await?
+            .data
+            .into_iter()
+            .find(|i| i.asset_type == "Stock")
+            .ok_or_else(|| UicResolverError::NotFound(ticker.to_string()))?;
+        let resolved = Self::to_resolved(ticker, stock);
+        self.remember(&resolved);
+        Ok(resolved)
+    }
+
+    /// Resolve a ticker (cached), explicitly confirming no CFD exists with the
+    /// same symbol. If a Stock is found, returns it. If only a CfdOnStock
+    /// exists, returns [`UicResolverError::CfdOnly`].
     pub async fn resolve_with_cfd_check(
         &self,
         ticker: &str,
         access_token: &str,
     ) -> Result<ResolvedUic, UicResolverError> {
-        // First try Stock.
-        let stock_url = format!(
-            "{}/ref/v1/instruments?Keywords={}&AssetTypes=Stock",
-            self.api_base, ticker
-        );
-        let stock_resp: InstrumentListResponse = self
-            .client
-            .get(&stock_url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|e| UicResolverError::Http {
-                ticker: ticker.to_string(),
-                source: e,
-            })?
-            .error_for_status()
-            .map_err(|e| UicResolverError::Http {
-                ticker: ticker.to_string(),
-                source: e,
-            })?
-            .json()
-            .await
-            .map_err(|e| UicResolverError::Http {
-                ticker: ticker.to_string(),
-                source: e,
-            })?;
-
-        if let Some(stock) = stock_resp
+        if let Some(hit) = self.cached(ticker) {
+            return Ok(hit);
+        }
+        let stock = self
+            .search(ticker, "Stock", access_token)
+            .await?
             .data
             .into_iter()
-            .find(|i| i.asset_type == "Stock")
-        {
-            return Ok(ResolvedUic {
-                uic: stock.uic,
-                ticker: ticker.to_uppercase(),
-                exchange_id: stock.exchange_id,
-                currency: stock.currency_code,
-            });
+            .find(|i| i.asset_type == "Stock");
+        if let Some(stock) = stock {
+            let resolved = Self::to_resolved(ticker, stock);
+            self.remember(&resolved);
+            return Ok(resolved);
         }
 
         // Stock not found — check if a CFD exists to give a better error.
-        let cfd_url = format!(
-            "{}/ref/v1/instruments?Keywords={}&AssetTypes=CfdOnStock",
-            self.api_base, ticker
-        );
-        let cfd_resp: InstrumentListResponse = self
-            .client
-            .get(&cfd_url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|e| UicResolverError::Http {
-                ticker: ticker.to_string(),
-                source: e,
-            })?
-            .error_for_status()
-            .map_err(|e| UicResolverError::Http {
-                ticker: ticker.to_string(),
-                source: e,
-            })?
-            .json()
-            .await
-            .map_err(|e| UicResolverError::Http {
-                ticker: ticker.to_string(),
-                source: e,
-            })?;
-
-        if cfd_resp.data.iter().any(|i| i.asset_type == "CfdOnStock") {
+        let cfd = self.search(ticker, "CfdOnStock", access_token).await?;
+        if cfd.data.iter().any(|i| i.asset_type == "CfdOnStock") {
             Err(UicResolverError::CfdOnly(ticker.to_string()))
         } else {
             Err(UicResolverError::NotFound(ticker.to_string()))
@@ -283,5 +314,78 @@ mod tests {
             .find(|i| i.asset_type == "Stock");
         assert!(resolved.is_some());
         assert_eq!(resolved.unwrap().uic, 4769462);
+    }
+
+    mod http {
+        use super::super::*;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const GOMX: &str = r#"{"Data":[{"Identifier":4769462,"AssetType":"Stock","ExchangeId":"SSE_FN-SE","CurrencyCode":"SEK"}]}"#;
+
+        #[tokio::test]
+        async fn a_resolved_uic_is_cached() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/ref/v1/instruments"))
+                .and(query_param("AssetTypes", "Stock"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(GOMX))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let first = r.resolve_with_cfd_check("GOMX", "t").await.unwrap();
+            let again = r.resolve_with_cfd_check("gomx", "t").await.unwrap();
+            assert_eq!(first, again);
+            assert_eq!((first.uic, first.currency.as_str()), (4769462, "SEK"));
+            assert_eq!(r.resolve("GOMX", "t").await.unwrap(), first);
+            // `expect(1)` is verified when the server drops.
+        }
+
+        #[tokio::test]
+        async fn a_429_carries_retry_after_and_the_rate_limit_headers() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(429)
+                        .insert_header("Retry-After", "30")
+                        .insert_header("X-RateLimit-Session-Remaining", "0")
+                        .insert_header("X-RateLimit-Session-Reset", "45"),
+                )
+                .mount(&server)
+                .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let err = r.resolve_with_cfd_check("GOMX", "t").await.unwrap_err();
+            assert_eq!(err.retry_after(), Some(Duration::from_secs(30)));
+            let UicResolverError::Status {
+                status, rate_limit, ..
+            } = &err
+            else {
+                panic!("{err:?}")
+            };
+            assert_eq!(status.as_u16(), 429);
+            assert!(rate_limit
+                .iter()
+                .any(|(k, v)| k == "x-ratelimit-session-remaining" && v == "0"));
+            // A failure is not cached: the next call asks again.
+            assert!(r.resolve_with_cfd_check("GOMX", "t").await.is_err());
+            assert_eq!(server.received_requests().await.unwrap().len(), 2);
+        }
+
+        #[tokio::test]
+        async fn without_retry_after_the_longest_reset_is_used() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(429)
+                        .insert_header("X-RateLimit-Session-Reset", "12")
+                        .insert_header("X-RateLimit-AppDay-Reset", "3600"),
+                )
+                .mount(&server)
+                .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let err = r.resolve_with_cfd_check("GOMX", "t").await.unwrap_err();
+            assert_eq!(err.retry_after(), Some(Duration::from_secs(3600)));
+        }
     }
 }
