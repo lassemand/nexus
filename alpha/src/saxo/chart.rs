@@ -60,6 +60,19 @@ pub enum ChartError {
     Url(#[from] url::ParseError),
 }
 
+impl ChartError {
+    /// Whether retrying can help. A 4xx other than 408/429, an undecodable
+    /// body (reported as 422) or a bad URL give the same result every time.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            ChartError::Http(e) => super::is_transient_reqwest(e),
+            ChartError::Status(s) => super::is_transient_status(*s),
+            ChartError::RateLimited(_) => true,
+            ChartError::Url(_) => false,
+        }
+    }
+}
+
 /// One daily bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DailyBarRow {
@@ -195,7 +208,9 @@ impl ChartClient {
     }
 
     /// Up to `count` (≤ 1200) daily bars ending at `up_to` (inclusive), oldest
-    /// first. `429` is retried after `Retry-After`.
+    /// first. Transient failures (no response, 408, 429, 5xx) are retried up to
+    /// `MAX_ATTEMPTS` times, after `Retry-After` when given, else after 1 s,
+    /// 2 s, 4 s. Any other status fails at once.
     pub async fn fetch_up_to(
         &mut self,
         uic: u64,
@@ -219,12 +234,23 @@ impl ChartClient {
             self.throttle().await;
             // Read the stream's current token; never refresh it.
             let access_token = self.token.lock().unwrap().access_token.clone();
-            let resp = self
+            let backoff = Duration::from_secs(1 << (attempt - 1));
+            let resp = match self
                 .http
                 .get(url.clone())
                 .bearer_auth(access_token)
                 .send()
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                // No response at all: worth another try.
+                Err(e) if attempt < MAX_ATTEMPTS => {
+                    warn!(uic, error = %e, ?backoff, "Saxo chart request failed, retrying");
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
             let status = resp.status();
             if status.is_success() {
                 let body = resp.text().await?;
@@ -233,23 +259,30 @@ impl ChartClient {
                     ChartError::Status(reqwest::StatusCode::UNPROCESSABLE_ENTITY)
                 });
             }
-            if status.as_u16() == 429 {
-                if attempt == MAX_ATTEMPTS {
-                    return Err(ChartError::RateLimited(attempt));
-                }
-                let wait = resp
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.trim().parse::<u64>().ok())
-                    .map(Duration::from_secs)
-                    .unwrap_or(DEFAULT_RETRY_AFTER)
-                    .min(MAX_RETRY_AFTER);
-                warn!(uic, ?wait, "Saxo chart API returned 429, waiting");
-                tokio::time::sleep(wait).await;
-                continue;
+            if !super::is_transient_status(status) {
+                return Err(ChartError::Status(status));
             }
-            return Err(ChartError::Status(status));
+            if attempt == MAX_ATTEMPTS {
+                return Err(if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    ChartError::RateLimited(attempt)
+                } else {
+                    ChartError::Status(status)
+                });
+            }
+            let retry_after = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .map(Duration::from_secs);
+            let wait = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                retry_after.unwrap_or(DEFAULT_RETRY_AFTER)
+            } else {
+                retry_after.unwrap_or(backoff)
+            }
+            .min(MAX_RETRY_AFTER);
+            warn!(uic, %status, ?wait, "Saxo chart API returned a transient error, waiting");
+            tokio::time::sleep(wait).await;
         }
         Err(ChartError::RateLimited(MAX_ATTEMPTS))
     }
@@ -397,6 +430,56 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ChartError::Status(s) if s.as_u16() == 404));
+        assert!(!err.is_transient());
+    }
+
+    #[tokio::test]
+    async fn a_server_error_is_retried_and_a_bad_request_is_not() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503).insert_header("Retry-After", "0"))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"Data":[]}"#))
+            .mount(&server)
+            .await;
+        assert!(client(&server)
+            .fetch_up_to(1, at(2026, 8, 26), 10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(400))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let err = client(&server)
+            .fetch_up_to(1, at(2026, 8, 26), 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ChartError::Status(s) if s.as_u16() == 400));
+        assert!(!err.is_transient());
+    }
+
+    #[tokio::test]
+    async fn a_server_error_that_persists_is_reported_as_transient() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(502).insert_header("Retry-After", "0"))
+            .expect(u64::from(MAX_ATTEMPTS))
+            .mount(&server)
+            .await;
+        let err = client(&server)
+            .fetch_up_to(1, at(2026, 8, 26), 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ChartError::Status(s) if s.as_u16() == 502));
+        assert!(err.is_transient());
     }
 
     #[tokio::test]
