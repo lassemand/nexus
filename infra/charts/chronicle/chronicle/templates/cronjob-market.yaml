@@ -28,6 +28,8 @@ spec:
                     --from="$(date -d yesterday +%Y-%m-%d)" \
                     --to="$(date +%Y-%m-%d)"
               env:
+                - name: RUST_LOG
+                  value: {{ .Values.logLevel | quote }}
                 - name: KAFKA_TOPIC
                   value: market.bars
               envFrom:

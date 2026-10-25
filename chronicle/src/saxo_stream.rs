@@ -217,7 +217,8 @@ async fn daily_bars_sweep(
         {
             failures += 1;
             counter!("saxo_daily_bars_failures_total").increment(1);
-            error!(ticker, error = %e, "daily bars: sync failed");
+            // `{:#}`: the whole anyhow chain, not only the outermost context.
+            error!(ticker, error = format!("{e:#}"), "daily bars: sync failed");
         }
     }
     if failures == 0 && !tickers.is_empty() {

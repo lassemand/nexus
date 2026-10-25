@@ -45,6 +45,9 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 10
             failureThreshold: 2
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
           envFrom:
             - secretRef:
                 name: chronicle-secret

@@ -23,6 +23,8 @@ spec:
               imagePullPolicy: IfNotPresent
               command: ["/usr/local/bin/filings"]
               env:
+                - name: RUST_LOG
+                  value: {{ .Values.logLevel | quote }}
                 - name: LOOKBACK_DAYS
                   value: {{ .Values.filings.lookbackDays | quote }}
                 - name: INSIDER_TRANSACTIONS_TOPIC
