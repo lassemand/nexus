@@ -16,10 +16,11 @@ mod db;
 mod kafka;
 
 use alpha::saxo::{
-    RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken, SharedToken, TokenStore,
-    UicResolver,
+    ChartClient, RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken, SharedToken,
+    TokenStore, UicResolver,
 };
 use anyhow::Context;
+use chronicle_lib::daily_bars::{self, BarSink, Instrument};
 use chrono::Utc;
 use clap::Parser;
 use kafka::ChronicleProducer;
@@ -84,6 +85,14 @@ struct Args {
 
     #[arg(long, env = "BAR_WINDOW_SECS", default_value = "60")]
     bar_window_secs: i64,
+
+    /// Topic for official daily bars (stored by signal in `daily_bars`).
+    #[arg(long, env = "DAILY_BARS_TOPIC", default_value = "market.daily_bars")]
+    daily_bars_topic: String,
+
+    /// Saxo chart API version used for daily bars.
+    #[arg(long, env = "SAXO_CHART_VERSION", default_value = "v1")]
+    saxo_chart_version: String,
 }
 
 const SAXO_TOKEN_SOURCE: &str = "saxo";
@@ -123,6 +132,130 @@ impl TokenStore for PgTokenStore {
 
         if let Err(e) = result {
             error!(error = %e, "failed to persist rotated refresh token to oauth_tokens");
+        }
+    }
+}
+
+/// Publishes daily bars to Kafka; `publish` returns once the broker acked.
+struct KafkaBarSink {
+    producer: Arc<ChronicleProducer>,
+    topic: String,
+}
+
+#[async_trait::async_trait]
+impl BarSink for KafkaBarSink {
+    async fn publish(&self, bar: &model::generated::DailyBar) -> Result<(), String> {
+        self.producer
+            .publish_daily_bar(&self.topic, bar)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Local time (Europe/Stockholm) of the daily refresh, after the 17:30 close.
+const DAILY_BARS_HOUR: u32 = 18;
+const DAILY_BARS_MINUTE: u32 = 30;
+/// Minimum gap between chart requests (they share Saxo's per-session limits
+/// with the WebSocket stream).
+const CHART_MIN_INTERVAL: Duration = Duration::from_secs(1);
+
+/// One pass over every registered FNSE ticker. Returns the number of failed
+/// tickers; failures are logged and counted and never propagate.
+async fn daily_bars_sweep(
+    pool: &sqlx::PgPool,
+    resolver: &UicResolver,
+    client: &mut ChartClient,
+    sink: &dyn BarSink,
+    shared_token: &SharedToken,
+) -> usize {
+    let tickers = match load_fnse_tickers(pool).await {
+        Ok(t) => t,
+        Err(e) => {
+            error!(error = %e, "daily bars: failed to load FNSE tickers");
+            counter!("saxo_daily_bars_failures_total").increment(1);
+            return 1;
+        }
+    };
+    let mut failures = 0;
+    for ticker in &tickers {
+        let access_token = shared_token.lock().unwrap().access_token.clone();
+        let resolved = match resolver.resolve_with_cfd_check(ticker, &access_token).await {
+            Ok(r) => r,
+            Err(e) => {
+                failures += 1;
+                counter!("saxo_daily_bars_failures_total").increment(1);
+                error!(ticker, error = %e, "daily bars: Uic resolution failed");
+                continue;
+            }
+        };
+        let instrument = Instrument {
+            ticker: ticker.clone(),
+            exchange_mic: model::asset::mic::FNSE.to_string(),
+            uic: resolved.uic,
+            currency: resolved.currency,
+        };
+        if let Err(e) =
+            daily_bars::sync_instrument(pool, client, sink, &instrument, Utc::now()).await
+        {
+            failures += 1;
+            counter!("saxo_daily_bars_failures_total").increment(1);
+            error!(ticker, error = %e, "daily bars: sync failed");
+        }
+    }
+    if failures == 0 && !tickers.is_empty() {
+        gauge!("saxo_daily_bars_last_success_timestamp").set(Utc::now().timestamp() as f64);
+    }
+    failures
+}
+
+/// Runs the daily-bar sync on startup and then every day at 18:30 Stockholm
+/// time. Independent of the WebSocket loop: each sweep is its own task, so even
+/// a panic can only end that sweep.
+async fn run_daily_bars(
+    pool: sqlx::PgPool,
+    http: reqwest::Client,
+    api_base: String,
+    chart_version: String,
+    shared_token: SharedToken,
+    sink: Arc<KafkaBarSink>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    loop {
+        let sweep = {
+            let (pool, http, api_base, chart_version, shared_token, sink) = (
+                pool.clone(),
+                http.clone(),
+                api_base.clone(),
+                chart_version.clone(),
+                shared_token.clone(),
+                sink.clone(),
+            );
+            tokio::spawn(async move {
+                let resolver = UicResolver::new(http.clone(), &api_base);
+                let mut client =
+                    ChartClient::new(http, &api_base, shared_token.clone(), CHART_MIN_INTERVAL)
+                        .with_version(chart_version);
+                daily_bars_sweep(&pool, &resolver, &mut client, sink.as_ref(), &shared_token).await
+            })
+        };
+        match sweep.await {
+            Ok(0) => info!("daily bars sweep finished"),
+            Ok(n) => warn!(failed = n, "daily bars sweep finished with failures"),
+            Err(e) => {
+                counter!("saxo_daily_bars_failures_total").increment(1);
+                error!(error = %e, "daily bars sweep task died");
+            }
+        }
+
+        let next =
+            model::stockholm::next_stockholm_time(Utc::now(), DAILY_BARS_HOUR, DAILY_BARS_MINUTE);
+        let wait = (next - Utc::now())
+            .to_std()
+            .unwrap_or(Duration::from_secs(60));
+        info!(next = %next, "next daily bars sweep scheduled");
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = shutdown.changed() => return,
         }
     }
 }
@@ -415,8 +548,9 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("migrations failed")?;
 
-    let producer =
-        ChronicleProducer::new(&args.kafka_brokers).context("failed to create Kafka producer")?;
+    let producer = Arc::new(
+        ChronicleProducer::new(&args.kafka_brokers).context("failed to create Kafka producer")?,
+    );
 
     let prometheus_handle = PrometheusBuilder::new()
         .install_recorder()
@@ -430,6 +564,15 @@ async fn main() -> anyhow::Result<()> {
     describe_counter!(
         "saxo_refresh_token_failures_total",
         "Total number of Saxo token refresh failures since startup."
+    );
+    describe_gauge!(
+        "saxo_daily_bars_last_success_timestamp",
+        "Unix time of the last daily-bar sweep in which every FNSE ticker \
+         was fetched and published. Alert on staleness."
+    );
+    describe_counter!(
+        "saxo_daily_bars_failures_total",
+        "Daily-bar sync failures (Uic resolution, chart fetch, publish) since startup."
     );
     describe_gauge!(
         "saxo_ws_connected",
@@ -626,6 +769,19 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+
+    tokio::spawn(run_daily_bars(
+        pool.clone(),
+        http.clone(),
+        args.saxo_api_base.clone(),
+        args.saxo_chart_version.clone(),
+        shared_token.clone(),
+        Arc::new(KafkaBarSink {
+            producer: producer.clone(),
+            topic: args.daily_bars_topic.clone(),
+        }),
+        shutdown_rx.clone(),
+    ));
 
     let mut refresh_ticker = interval(Duration::from_secs(args.ticker_refresh_interval_secs));
     refresh_ticker.tick().await;

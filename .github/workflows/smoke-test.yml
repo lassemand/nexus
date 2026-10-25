@@ -44,3 +44,7 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://nexus:nexus@localhost:5432/chronicle
         run: cargo test -p chronicle --test nordic
+      - name: Run daily-bar sync tests
+        env:
+          TEST_DATABASE_URL: postgres://nexus:nexus@localhost:5432/chronicle
+        run: cargo test -p chronicle --test daily_bars

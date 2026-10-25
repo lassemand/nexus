@@ -55,12 +55,14 @@
 ///    the heartbeat timeout is suppressed — no reconnect loop during weekend/holiday.
 pub mod aggregator;
 pub mod auth;
+pub mod chart;
 pub mod stream;
 pub mod uic;
 pub mod validation;
 
 pub use aggregator::BarAggregator;
 pub use auth::{RotatedToken, SaxoAuth, SaxoToken, SharedToken, TokenStore};
+pub use chart::{ChartClient, ChartError, DailyBarRow};
 pub use stream::{SaxoBarStream, SaxoConfig};
 pub use uic::{ResolvedUic, UicResolver, UicResolverError};
 pub use validation::{

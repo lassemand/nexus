@@ -1,0 +1,24 @@
+syntax = "proto3";
+package nexus;
+
+// One official daily OHLCV bar for an instrument.
+//
+// Prices are DECIMAL STRINGS (e.g. "12.345678"), never doubles: they feed
+// percentage returns and must survive the wire and the database exactly.
+message DailyBar {
+  string ticker = 1;
+  // ISO 10383 MIC of the listing exchange, e.g. "FNSE".
+  string exchange_mic = 2;
+  // Exchange-local trading date, YYYY-MM-DD.
+  string date = 3;
+  string open = 4;
+  string high = 5;
+  string low = 6;
+  string close = 7;
+  uint64 volume = 8;
+  // ISO 4217 currency of the prices.
+  string currency = 9;
+  // Where the bar came from, e.g. "saxo".
+  string source = 10;
+  int64 fetched_at_unix_secs = 11;
+}

@@ -53,6 +53,25 @@ spec:
   config:
     retention.ms: "604800000"   # 7 days
 ---
+# Official daily bars for Nordic instruments (saxo-stream -> signal `daily_bars`).
+# Keyed "{ticker}:{exchange_mic}". 7 days is enough: signal upserts, and
+# saxo-stream re-publishes history when its backfill state is deleted.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: market-daily-bars
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  topicName: market.daily_bars
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"   # 7 days
+---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:

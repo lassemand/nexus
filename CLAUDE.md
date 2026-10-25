@@ -30,7 +30,13 @@ Polygon ────► market ────► market.bars       (MarketEvent)
 | Market | Source | Notes |
 |---|---|---|
 | US equities (XNAS/XNYS) | Polygon API | Used by `chronicle/market` and `alpha::PolygonBarProvider` |
-| Nordic/First North (FNSE) | Saxo Bank OpenAPI | Planned — see `docs/adr/0001-saxo-openapi-nordic-data-source.md` |
+| Nordic/First North (FNSE) | Saxo Bank OpenAPI | Minute bars from `saxo-stream`; official daily bars below. See `docs/adr/0001-saxo-openapi-nordic-data-source.md` |
+
+### Nordic daily prices
+
+`signal.daily_bars` (`ticker, exchange_mic, date`, `NUMERIC(20,6)` OHLC, volume) is the **source of truth for Nordic daily prices**. It is fed by `market.daily_bars` (`DailyBar` protobuf, prices as decimal strings), which `saxo-stream` publishes from Saxo's chart API (`/chart/v1/charts`, `Horizon=1440`): a full backfill to 2015-01-01 per ticker on first sight, then the last 10 weekdays again on startup and daily at 18:30 Europe/Stockholm (signal upserts, so corrections overwrite). It runs inside `saxo-stream` because Saxo refresh tokens rotate on use; the chart client only reads the stream's access token and never authenticates. Progress is kept in chronicle's `saxo_daily_bars_state` (delete a row to re-backfill that ticker). The bar date is the Europe/Stockholm date of Saxo's sample `Time`. Days Saxo omits are absent, never filled forward. Metrics: `saxo_daily_bars_last_success_timestamp`, `saxo_daily_bars_failures_total`.
+
+Known limitations: `bars` (fed by `market.bars`) holds only the **last minute bar** of each day for FNSE tickers, so its OHLC and volume are not daily values; use `daily_bars`. It is **unverified** whether Saxo's daily samples are adjusted for splits and share issues (the docs are silent and `/chart/v1` is unavailable on SIM): treat them as unadjusted.
 
 ## Commands
 

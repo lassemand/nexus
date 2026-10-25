@@ -1,3 +1,4 @@
+mod daily_bars;
 mod db;
 mod features;
 mod reports;
@@ -15,7 +16,8 @@ use features::{compute_post_event_ar, compute_pre_event_features};
 use model::{
     asset::{mic, Asset},
     generated::{
-        EarningsEvent, MarketEvent, SpecialEvent, TickerRegistration, UnifiedInsiderTransaction,
+        DailyBar, EarningsEvent, MarketEvent, SpecialEvent, TickerRegistration,
+        UnifiedInsiderTransaction,
     },
     sector::Sector,
 };
@@ -54,6 +56,10 @@ struct Args {
 
     #[arg(long, env = "MARKET_BARS_TOPIC", default_value = "market.bars")]
     market_bars_topic: String,
+
+    /// Official daily bars from saxo-stream (stored in `daily_bars`).
+    #[arg(long, env = "DAILY_BARS_TOPIC", default_value = "market.daily_bars")]
+    daily_bars_topic: String,
 
     #[arg(
         long,
@@ -173,6 +179,7 @@ async fn main() {
             args.special_events_topic.as_str(),
             args.market_bars_topic.as_str(),
             args.insider_transactions_topic.as_str(),
+            args.daily_bars_topic.as_str(),
         ])
         .expect("failed to subscribe");
 
@@ -449,6 +456,35 @@ async fn main() {
                                 }
                             }
                         }
+                    }
+                } else if topic == args.daily_bars_topic {
+                    let message = match DailyBar::decode(payload) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            warn!("malformed DailyBar protobuf, skipping: {e}");
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
+                        }
+                    };
+                    let bar = match daily_bars::parse(&message) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            warn!(ticker = %message.ticker, date = %message.date, error = %e,
+                                  "invalid daily bar, skipping");
+                            consumer.commit_message(&msg, CommitMode::Async).ok();
+                            continue;
+                        }
+                    };
+                    // Same pattern as the other bar topics: a DB error is logged and the
+                    // offset committed. saxo-stream republishes the last ten trading days
+                    // every day, so a dropped bar heals itself.
+                    if let Err(e) = daily_bars::store(&pool, &bar).await {
+                        warn!(ticker = %bar.ticker, date = %bar.date, error = %e,
+                              "failed to persist daily bar");
+                    } else {
+                        debug!(ticker = %bar.ticker, mic = %bar.exchange_mic, date = %bar.date,
+                               "daily bar persisted");
+                        daily_bars::after_bars_stored(&pool, &bar.ticker, &bar.exchange_mic).await;
                     }
                 } else if topic == args.insider_transactions_topic {
                     let txn = match UnifiedInsiderTransaction::decode(payload) {
