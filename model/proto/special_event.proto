@@ -1,9 +1,47 @@
 syntax = "proto3";
 package nexus;
 
+// A company event: US earnings (legacy producers) or a Nordic periodic report.
+//
+// event_type values:
+//   "earnings"          US earnings (legacy producers; source = "").
+//   "quarterly_report"  Nordic interim report (report_kind = "interim").
+//   "annual_report"     Nordic year-end report (report_kind = "annual").
+//   "report_correction" correction (or same-day re-send) of a report.
+//   "report_calendar"   snapshot of a company's upcoming reports, in `calendar`;
+//                       not stored as a row itself.
+//
+// Producers key Kafka messages by "{ticker}:{exchange_mic}" so one company's
+// events stay in order on one partition.
 message SpecialEvent {
   string ticker               = 1;
-  string event_type           = 2;  // e.g. "earnings"
+  string event_type           = 2;
   int64  occurred_at_unix_secs = 3;
-  string description          = 4;  // empty string if unavailable
+  string description          = 4;  // headline (MFN title); "" if unavailable
+
+  string exchange_mic   = 5;   // ISO 10383 MIC; "" = legacy producer (US)
+  string source         = 6;   // "mfn" for Nordic reports; "" = legacy
+  string source_id      = 7;   // MFN news_id (UUID string) for released items
+  string url            = 8;
+  string lang           = 9;   // "en", "sv", ...
+  repeated string tags  = 10;  // MFN tags as given
+  string report_kind    = 11;  // "interim" | "annual" | ""
+  string fiscal_period  = 12;  // "2026-Q3", "2026" or ""
+  bool   is_correction  = 13;
+  string company_name   = 14;  // display name from companies.name, "" if unknown
+  ReportCalendar calendar = 15; // only when event_type == "report_calendar"
+}
+
+// A company's upcoming reports as listed on its MFN page at fetched_at.
+message ReportCalendar {
+  int64 fetched_at_unix_secs = 1;
+  repeated ScheduledReport entries = 2;
+}
+
+message ScheduledReport {
+  string expected_date  = 1;   // YYYY-MM-DD, Europe/Stockholm local
+  string expected_time  = 2;   // HH:MM local, "" if unknown (an estimate)
+  string calendar_label = 3;   // original label, e.g. "Bokslutskommuniké 2026"
+  string report_kind    = 4;   // "interim" | "annual"
+  string fiscal_period  = 5;
 }

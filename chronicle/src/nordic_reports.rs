@@ -1,19 +1,19 @@
-/// Nordic report-release ingestion binary (NEX-160, NEX-166).
+/// Nordic report-release publisher (NEX-160, NEX-166, NEX-171).
 ///
 /// For every Swedish-calendar company (`FNSE`, `XSTO`) with a
 /// `companies.mfn_slug`, pages through MFN's JSON news feed
 /// (`https://mfn.se/all/a/<slug>.json`, fetched despite `robots.txt` with the
-/// owner's approval) and records each item in `report_releases` (see
-/// `chronicle_lib::nordic::db::record_release`): exact release instant,
-/// interim/annual classification, corrections and financial-calendar
-/// announcements. Reports fill matching scheduled rows from the MFN calendar.
+/// owner's approval), classifies each item and publishes reports and
+/// corrections as `SpecialEvent`s on `special.events`; signal stores them.
+/// chronicle keeps only its read position (`mfn_ingest_state`).
 ///
-/// Incremental by default; `--backfill` pages to the end of each feed.
-/// Companies that just announced a calendar change get their MFN calendar
-/// refreshed at the end of the run (NEX-161). Exits non-zero if any company
+/// Incremental from the feed cursor by default; `--backfill` pages to the end
+/// of each feed. Companies that announced a calendar change get their MFN
+/// calendar refreshed at the end of the run. Exits non-zero if any company
 /// failed.
 use chronicle_lib::nordic::calendar::{MfnClient, MFN_BASE_URL};
 use chronicle_lib::nordic::db;
+use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
 use chronicle_lib::nordic::ingest::process_companies;
 use chronicle_lib::registry;
 use clap::Parser;
@@ -26,7 +26,7 @@ use tracing::{error, info};
 const SE_MICS: &[&str] = &["FNSE", "XSTO"];
 
 #[derive(Parser)]
-#[command(about = "Ingest past Nordic report releases from the Nasdaq Nordic company-news API")]
+#[command(about = "Publish Nordic report releases from MFN's news feed as special events")]
 struct Args {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
@@ -34,17 +34,19 @@ struct Args {
     #[arg(long, env = "MFN_BASE_URL", default_value = MFN_BASE_URL)]
     mfn_base_url: String,
 
-    /// Page every company's feed to the end instead of stopping when caught up.
+    /// Page every company's feed to the end, ignoring the stored cursor.
     #[arg(long, env = "NORDIC_BACKFILL")]
     backfill: bool,
 
-    /// Brokers for the `company.tickers` sync; without it the companies table
-    /// is used as it is.
     #[arg(long, env = "KAFKA_BROKERS")]
-    kafka_brokers: Option<String>,
+    kafka_brokers: String,
 
     #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = registry::TICKERS_TOPIC)]
     tickers_topic: String,
+
+    /// Topic signal consumes special events from.
+    #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = SPECIAL_EVENTS_TOPIC)]
+    special_events_topic: String,
 }
 
 #[tokio::main]
@@ -68,14 +70,22 @@ async fn run(args: Args) -> anyhow::Result<bool> {
         .connect(&args.database_url)
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
-    registry::sync_or_warn(&pool, args.kafka_brokers.as_deref(), &args.tickers_topic).await;
+    registry::sync_or_warn(&pool, Some(&args.kafka_brokers), &args.tickers_topic).await;
 
+    let sink = KafkaSink::new(&args.kafka_brokers, &args.special_events_topic)?;
     let companies = db::load_companies(&pool, SE_MICS).await?;
     let mut feed = MfnClient::new(args.mfn_base_url.clone(), Duration::from_secs(1))?;
     let mut calendar = MfnClient::new(args.mfn_base_url, Duration::from_secs(2))?;
 
-    let summary =
-        process_companies(&pool, &mut feed, &mut calendar, &companies, args.backfill).await;
+    let summary = process_companies(
+        &pool,
+        &mut feed,
+        &mut calendar,
+        &sink,
+        &companies,
+        args.backfill,
+    )
+    .await;
     info!(
         attempted = summary.attempted,
         failed = summary.failed,
