@@ -68,3 +68,22 @@ spec:
   replicas: 1
   config:
     retention.ms: "-1"          # retain indefinitely — MAR insider disclosures are sparse and historically significant
+---
+# Was auto-created by the broker; declared so its retention is explicit. The
+# topic is only a transport: signal stores every event in special_events, and
+# Nordic history can be rebuilt from MFN (nordic-reports --backfill).
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: special-events
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  topicName: special.events
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"   # 7 days
