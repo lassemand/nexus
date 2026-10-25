@@ -28,7 +28,7 @@ use metrics::{counter, describe_counter, describe_gauge, gauge};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::OwnedWriteHalf;
@@ -159,6 +159,24 @@ const DAILY_BARS_MINUTE: u32 = 30;
 /// with the WebSocket stream).
 const CHART_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
+/// First and longest wait between Uic resolution attempts in the stream loop.
+/// Retrying every few seconds made Saxo answer 429 for as long as it went on.
+const RESOLVE_BACKOFF_START: Duration = Duration::from_secs(30);
+const RESOLVE_BACKOFF_MAX: Duration = Duration::from_secs(15 * 60);
+
+/// First and longest wait before re-running a daily-bar sweep that failed,
+/// instead of waiting for the next day's 18:30 run.
+const SWEEP_RETRY_START: Duration = Duration::from_secs(15 * 60);
+const SWEEP_RETRY_MAX: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// After a failure: how long to wait now (`current`, or Saxo's hint when that
+/// is longer), and the backoff to use after the next failure (doubled, capped
+/// at `max`).
+fn backoff_step(current: Duration, max: Duration, hint: Option<Duration>) -> (Duration, Duration) {
+    let wait = hint.map_or(current, |h| h.max(current));
+    (wait, (current * 2).min(max))
+}
+
 /// One pass over every registered FNSE ticker. Returns the number of failed
 /// tickers; failures are logged and counted and never propagate.
 async fn daily_bars_sweep(
@@ -211,48 +229,69 @@ async fn daily_bars_sweep(
 /// Runs the daily-bar sync on startup and then every day at 18:30 Stockholm
 /// time. Independent of the WebSocket loop: each sweep is its own task, so even
 /// a panic can only end that sweep.
+#[allow(clippy::too_many_arguments)]
 async fn run_daily_bars(
     pool: sqlx::PgPool,
     http: reqwest::Client,
+    resolver: Arc<UicResolver>,
     api_base: String,
     chart_version: String,
     shared_token: SharedToken,
     sink: Arc<KafkaBarSink>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let mut retry = SWEEP_RETRY_START;
     loop {
         let sweep = {
-            let (pool, http, api_base, chart_version, shared_token, sink) = (
+            let (pool, http, api_base, chart_version, shared_token, sink, resolver) = (
                 pool.clone(),
                 http.clone(),
                 api_base.clone(),
                 chart_version.clone(),
                 shared_token.clone(),
                 sink.clone(),
+                resolver.clone(),
             );
             tokio::spawn(async move {
-                let resolver = UicResolver::new(http.clone(), &api_base);
                 let mut client =
                     ChartClient::new(http, &api_base, shared_token.clone(), CHART_MIN_INTERVAL)
                         .with_version(chart_version);
                 daily_bars_sweep(&pool, &resolver, &mut client, sink.as_ref(), &shared_token).await
             })
         };
-        match sweep.await {
-            Ok(0) => info!("daily bars sweep finished"),
-            Ok(n) => warn!(failed = n, "daily bars sweep finished with failures"),
+        let ok = match sweep.await {
+            Ok(0) => {
+                info!("daily bars sweep finished");
+                true
+            }
+            Ok(n) => {
+                warn!(failed = n, "daily bars sweep finished with failures");
+                false
+            }
             Err(e) => {
                 counter!("saxo_daily_bars_failures_total").increment(1);
                 error!(error = %e, "daily bars sweep task died");
+                false
             }
-        }
+        };
 
-        let next =
-            model::stockholm::next_stockholm_time(Utc::now(), DAILY_BARS_HOUR, DAILY_BARS_MINUTE);
-        let wait = (next - Utc::now())
-            .to_std()
-            .unwrap_or(Duration::from_secs(60));
-        info!(next = %next, "next daily bars sweep scheduled");
+        let wait = if ok {
+            retry = SWEEP_RETRY_START;
+            let next = model::stockholm::next_stockholm_time(
+                Utc::now(),
+                DAILY_BARS_HOUR,
+                DAILY_BARS_MINUTE,
+            );
+            info!(next = %next, "next daily bars sweep scheduled");
+            (next - Utc::now())
+                .to_std()
+                .unwrap_or(Duration::from_secs(60))
+        } else {
+            let (wait, next_retry) = backoff_step(retry, SWEEP_RETRY_MAX, None);
+            retry = next_retry;
+            info!(retry_in = ?wait, "daily bars sweep had failures, retrying");
+            wait
+        };
         tokio::select! {
             _ = tokio::time::sleep(wait) => {}
             _ = shutdown.changed() => return,
@@ -634,7 +673,10 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .context("failed to build HTTP client")?;
 
-    let uic_resolver = UicResolver::new(http.clone(), &args.saxo_api_base);
+    // One resolver for the stream loop and the daily-bar sweep: it caches Uics.
+    let uic_resolver = Arc::new(UicResolver::new(http.clone(), &args.saxo_api_base));
+    // Whether a WebSocket stream is up, for the token refresher.
+    let ws_connected = Arc::new(AtomicBool::new(false));
 
     let config = SaxoConfig {
         api_base: args.saxo_api_base.clone(),
@@ -724,6 +766,7 @@ async fn main() -> anyhow::Result<()> {
         let context_id = config.context_id.clone();
         let threshold_secs = config.token_refresh_threshold_secs;
         let token_expires_at_unix = token_expires_at_unix.clone();
+        let ws_connected = ws_connected.clone();
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(30));
             loop {
@@ -747,19 +790,28 @@ async fn main() -> anyhow::Result<()> {
                             Ordering::Relaxed,
                         );
 
-                        if let Err(e) = saxo_auth
-                            .refresh_on_stream(
-                                &streaming_base,
-                                &context_id,
-                                &rotated.access_token.access_token,
-                            )
-                            .await
-                        {
-                            error!(error = %e, "failed to reauthorize WebSocket after token rotation");
+                        // Install the new access token first: REST calls (Uic
+                        // lookups, daily bars) need it whether or not a
+                        // stream is up. Without a stream there is nothing to
+                        // reauthorize, and skipping the install here used to
+                        // leave every call on an expired token.
+                        let access_token = rotated.access_token.access_token.clone();
+                        *shared_token.lock().unwrap() = rotated.access_token;
+                        if !ws_connected.load(Ordering::Relaxed) {
+                            info!("Saxo access token rotated (no stream to reauthorize)");
                             continue;
                         }
-                        *shared_token.lock().unwrap() = rotated.access_token;
-                        info!("Saxo access token rotated and WebSocket reauthorized");
+                        match saxo_auth
+                            .refresh_on_stream(&streaming_base, &context_id, &access_token)
+                            .await
+                        {
+                            Ok(()) => info!("Saxo access token rotated and WebSocket reauthorized"),
+                            // The stream keeps the old token until Saxo drops it;
+                            // it then reconnects with the new one.
+                            Err(e) => {
+                                error!(error = %e, "failed to reauthorize WebSocket after token rotation")
+                            }
+                        }
                     }
                     Err(e) => {
                         counter!("saxo_refresh_token_failures_total").increment(1);
@@ -773,6 +825,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(run_daily_bars(
         pool.clone(),
         http.clone(),
+        uic_resolver.clone(),
         args.saxo_api_base.clone(),
         args.saxo_chart_version.clone(),
         shared_token.clone(),
@@ -789,6 +842,7 @@ async fn main() -> anyhow::Result<()> {
     info!("starting Saxo stream ingestion loop");
     let mut current_tickers = tickers;
     let mut stream_opt: Option<SaxoBarStream> = None;
+    let mut resolve_backoff = RESOLVE_BACKOFF_START;
 
     loop {
         if *shutdown_rx.borrow() {
@@ -809,6 +863,7 @@ async fn main() -> anyhow::Result<()> {
                     );
                     current_tickers = new_tickers;
                     stream_opt = None;
+                    ws_connected.store(false, Ordering::Relaxed);
                 }
                 Ok(_) => {}
                 Err(e) => warn!(error = %e, "failed to refresh ticker list"),
@@ -821,6 +876,7 @@ async fn main() -> anyhow::Result<()> {
             let access_token_snapshot = shared_token.lock().unwrap().access_token.clone();
 
             let mut resolved = Vec::new();
+            let mut hint: Option<Duration> = None;
             for ticker in &current_tickers {
                 match uic_resolver
                     .resolve_with_cfd_check(ticker, &access_token_snapshot)
@@ -831,16 +887,24 @@ async fn main() -> anyhow::Result<()> {
                         resolved.push(uic);
                     }
                     Err(e) => {
+                        hint = hint.max(e.retry_after());
                         error!(ticker, error = %e, "Uic resolution failed — skipping ticker");
                     }
                 }
             }
 
             if resolved.is_empty() {
-                warn!("no Uics resolved — will retry on next refresh");
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                let (wait, next) = backoff_step(resolve_backoff, RESOLVE_BACKOFF_MAX, hint);
+                resolve_backoff = next;
+                warn!(retry_in = ?wait, "no Uics resolved — backing off");
+                let mut shutdown = shutdown_rx.clone();
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = shutdown.changed() => {}
+                }
                 continue;
             }
+            resolve_backoff = RESOLVE_BACKOFF_START;
 
             match SaxoBarStream::connect(
                 config.clone(),
@@ -853,6 +917,7 @@ async fn main() -> anyhow::Result<()> {
                 Ok(s) => {
                     info!("Saxo WebSocket stream connected");
                     gauge!("saxo_ws_connected").set(1.0_f64);
+                    ws_connected.store(true, Ordering::Relaxed);
                     stream_opt = Some(s);
                 }
                 Err(e) => {
@@ -883,6 +948,7 @@ async fn main() -> anyhow::Result<()> {
                 Ok(None) => {
                     warn!("Saxo bar stream ended — will reconnect");
                     gauge!("saxo_ws_connected").set(0.0_f64);
+                    ws_connected.store(false, Ordering::Relaxed);
                     stream_opt = None;
                 }
                 Err(_) => {}
@@ -894,6 +960,47 @@ async fn main() -> anyhow::Result<()> {
 
     info!("saxo_stream shut down cleanly");
     Ok(())
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_to_the_cap() {
+        let mut current = RESOLVE_BACKOFF_START;
+        let mut waits = Vec::new();
+        for _ in 0..8 {
+            let (wait, next) = backoff_step(current, RESOLVE_BACKOFF_MAX, None);
+            waits.push(wait.as_secs());
+            current = next;
+        }
+        assert_eq!(waits, [30, 60, 120, 240, 480, 900, 900, 900]);
+    }
+
+    #[test]
+    fn a_longer_saxo_hint_wins_but_never_shortens_the_wait() {
+        let (wait, _) = backoff_step(
+            Duration::from_secs(30),
+            RESOLVE_BACKOFF_MAX,
+            Some(Duration::from_secs(3600)),
+        );
+        assert_eq!(wait.as_secs(), 3600);
+        let (wait, _) = backoff_step(
+            Duration::from_secs(120),
+            RESOLVE_BACKOFF_MAX,
+            Some(Duration::from_secs(5)),
+        );
+        assert_eq!(wait.as_secs(), 120);
+    }
+
+    #[test]
+    fn a_failed_sweep_is_retried_the_same_day() {
+        let (wait, next) = backoff_step(SWEEP_RETRY_START, SWEEP_RETRY_MAX, None);
+        assert_eq!((wait.as_secs(), next.as_secs()), (15 * 60, 30 * 60));
+        let (wait, _) = backoff_step(SWEEP_RETRY_MAX, SWEEP_RETRY_MAX, None);
+        assert_eq!(wait, SWEEP_RETRY_MAX);
+    }
 }
 
 #[cfg(test)]
