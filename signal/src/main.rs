@@ -1,6 +1,7 @@
 mod daily_bars;
 mod db;
 mod features;
+mod reactions;
 mod reports;
 mod strategy;
 
@@ -194,8 +195,24 @@ async fn main() {
         "signal consumer started"
     );
 
+    // Catch-up for reports stored while prices were missing (NEX-163).
+    if let Err(e) = reactions::refresh_all(&pool).await {
+        warn!(error = %e, "report reaction catch-up sweep failed");
+    }
+    // Daily bars arrive in bursts (a backfill is thousands of messages): recompute
+    // an instrument's report reactions once the burst is over.
+    let mut reaction_queue =
+        reactions::ReactionQueue::new(Duration::from_secs(2), Duration::from_secs(30));
+
     loop {
-        match consumer.recv().await {
+        if reaction_queue.is_due(std::time::Instant::now()) {
+            reactions::flush(&pool, &mut reaction_queue).await;
+        }
+        let received = match tokio::time::timeout(Duration::from_secs(1), consumer.recv()).await {
+            Ok(r) => r,
+            Err(_) => continue, // idle: lets a pending flush happen
+        };
+        match received {
             Err(e) => error!("kafka recv error: {e}"),
             Ok(msg) => {
                 let topic = msg.topic();
@@ -484,7 +501,12 @@ async fn main() {
                     } else {
                         debug!(ticker = %bar.ticker, mic = %bar.exchange_mic, date = %bar.date,
                                "daily bar persisted");
-                        daily_bars::after_bars_stored(&pool, &bar.ticker, &bar.exchange_mic).await;
+                        reaction_queue.add(
+                            &bar.ticker,
+                            &bar.exchange_mic,
+                            bar.date,
+                            std::time::Instant::now(),
+                        );
                     }
                 } else if topic == args.insider_transactions_topic {
                     let txn = match UnifiedInsiderTransaction::decode(payload) {

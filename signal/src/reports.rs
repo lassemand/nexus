@@ -561,6 +561,15 @@ pub async fn handle(pool: &PgPool, m: &Message<'_>) -> sqlx::Result<String> {
     match m {
         Message::Release(r) => {
             let recorded = record_report_release(pool, r).await?;
+            // The release may be new, moved, or have turned another report into a
+            // correction: recompute the company's reactions (NEX-163). A failure
+            // here is repaired by the next bar, report or the startup sweep and
+            // must not make the consumer re-store the event.
+            if let Err(e) =
+                crate::reactions::refresh_report_reactions(pool, r.ticker, r.exchange_mic).await
+            {
+                tracing::warn!(ticker = r.ticker, error = %e, "failed to refresh report reactions");
+            }
             Ok(format!("{recorded:?}"))
         }
         Message::Calendar(c) => {
