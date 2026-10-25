@@ -11,6 +11,10 @@ schedules:
 # RUST_LOG for every chronicle workload. Needed: with tracing-subscriber's
 # env-filter feature, an unset RUST_LOG means errors only.
 logLevel: "info"
+saxo:
+  # Saxo chart API version for daily bars (SAXO_CHART_VERSION). v1 answered
+  # 404 for GOMX on the live gateway (NEX-183).
+  chartVersion: "v3"
 nordicLive:
   # RUST_LOG for the live listener (info logs every new relevant item).
   logLevel: "info"
