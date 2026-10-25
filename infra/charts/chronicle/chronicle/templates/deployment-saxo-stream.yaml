@@ -48,6 +48,8 @@ spec:
           env:
             - name: RUST_LOG
               value: {{ .Values.logLevel | quote }}
+            - name: SAXO_CHART_VERSION
+              value: {{ .Values.saxo.chartVersion | quote }}
           envFrom:
             - secretRef:
                 name: chronicle-secret

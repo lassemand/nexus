@@ -260,6 +260,10 @@ impl ChartClient {
                 });
             }
             if !super::is_transient_status(status) {
+                // Saxo explains a 4xx in the body (`ErrorCode`, `Message`).
+                let body = resp.text().await.unwrap_or_default();
+                let body: String = body.chars().take(300).collect();
+                warn!(uic, %status, body = %body, url = %url.path(), "Saxo chart API rejected the request");
                 return Err(ChartError::Status(status));
             }
             if attempt == MAX_ATTEMPTS {
