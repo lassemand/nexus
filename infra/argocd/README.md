@@ -482,7 +482,7 @@ Grafana (`infra/charts/nexus/grafana/`) loads dashboards from ConfigMaps labelle
 | Folder | Source | Updated by |
 |---|---|---|
 | Kubernetes | kube-prometheus-stack's kubernetes-mixin dashboards, rendered by `infra/charts/nexus/prometheus/` (annotation set under `grafana.sidecar.dashboards.annotations`) | bumping the kube-prometheus-stack version |
-| Nexus | Special Events, Saxo Token Health: `infra/charts/nexus/grafana/templates/dashboard-*.yaml` | editing those templates |
+| Nexus | Special Events, Saxo Token Health, Nordic Reports: `infra/charts/nexus/grafana/templates/dashboard-*.yaml` | editing those templates |
 
 Dashboards are code (`allowUiUpdates: false`, `defaultDashboardsEditable: false`):
 UI edits do not stick. The node panels describe the OrbStack Linux VM, not
