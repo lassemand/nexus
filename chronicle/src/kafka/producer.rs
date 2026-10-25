@@ -1,6 +1,8 @@
 use model::{
     bar::Bar,
-    generated::{InsiderTransaction, MarketEvent, SpecialEvent, UnifiedInsiderTransaction},
+    generated::{
+        DailyBar, InsiderTransaction, MarketEvent, SpecialEvent, UnifiedInsiderTransaction,
+    },
     insider::transaction_id,
 };
 use prost::Message;
@@ -99,6 +101,17 @@ impl ChronicleProducer {
         };
         let key = transaction_id(source, &txn.ticker, &txn.person_name, &txn.transaction_date);
         self.publish(topic, &key, &txn).await
+    }
+
+    /// Publishes a `DailyBar` to `topic`, keyed `"{ticker}:{exchange_mic}"`.
+    #[allow(dead_code)]
+    pub async fn publish_daily_bar(
+        &self,
+        topic: &str,
+        bar: &DailyBar,
+    ) -> Result<(), ProducerError> {
+        let key = format!("{}:{}", bar.ticker, bar.exchange_mic);
+        self.publish(topic, &key, bar).await
     }
 
     /// Publishes a `SpecialEvent` to `topic`, keyed by ticker.

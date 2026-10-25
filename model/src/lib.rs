@@ -4,9 +4,37 @@ pub mod calendar;
 pub mod insider;
 pub mod price;
 pub mod sector;
+pub mod stockholm;
 
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/nexus.rs"));
+}
+
+#[cfg(test)]
+mod daily_bar_tests {
+    use super::generated::DailyBar;
+    use prost::Message;
+
+    #[test]
+    fn decimal_strings_round_trip_exactly() {
+        let bar = DailyBar {
+            ticker: "GOMX".into(),
+            exchange_mic: "FNSE".into(),
+            date: "2026-08-26".into(),
+            open: "12.345678".into(),
+            high: "13.000001".into(),
+            low: "12.000000".into(),
+            close: "12.345678".into(),
+            volume: 1_234_567,
+            currency: "SEK".into(),
+            source: "saxo".into(),
+            fetched_at_unix_secs: 1_790_000_000,
+        };
+        let decoded = DailyBar::decode(bar.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded, bar);
+        assert_eq!(decoded.close, "12.345678");
+        assert_eq!(decoded.high, "13.000001");
+    }
 }
 
 #[cfg(test)]

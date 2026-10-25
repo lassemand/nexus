@@ -3,6 +3,7 @@ fn main() {
         &[
             "proto/company.proto",
             "proto/market.proto",
+            "proto/daily_bar.proto",
             "proto/earnings.proto",
             "proto/ticker.proto",
             "proto/special_event.proto",
