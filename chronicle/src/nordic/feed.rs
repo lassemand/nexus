@@ -2,7 +2,7 @@
 //!
 //! Note: MFN's `robots.txt` disallows `*.json`; fetching these URLs was
 //! explicitly approved by the repository owner (2026-10-21). Load is one
-//! request per company per hourly run (a handful on the first page set) and a
+//! request per company per daily run (a handful on the first page set) and a
 //! single full paging pass per company for `--backfill`.
 //!
 //! `publish_date` is RFC 3339 UTC and is used as-is; session classification

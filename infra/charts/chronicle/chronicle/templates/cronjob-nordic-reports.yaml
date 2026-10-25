@@ -5,9 +5,10 @@ metadata:
   labels:
     app: nordic-reports
 spec:
-  # Hourly 07:00-20:00 on weekdays plus 22:00, Stockholm time. Incremental runs
-  # stop at the first known disclosure_id, so hourly runs cost ~1 request per
-  # company and pick up calendar changes quickly.
+  # Daily at 22:00 Stockholm time, after the day's releases (Nordic issuers
+  # publish mostly 07:00-08:30). Reports don't change often; the release
+  # instant comes from MFN's publish_date, not from when the run sees it.
+  # Incremental runs read back to the feed cursor (~1 request per company).
   schedule: {{ .Values.schedules.nordicReports | quote }}
   timeZone: "Europe/Stockholm"
   concurrencyPolicy: Forbid

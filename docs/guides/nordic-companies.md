@@ -15,7 +15,7 @@ Nasdaq news API, was dropped in NEX-166.) The company row itself (`ticker`,
 GOMX.ST` publishes to `company.tickers`, and `pdmr`, `nordic-reports` and
 `nordic-calendar` copy new registrations into `companies` when they start
 (`chronicle_lib::registry`). After registering, wait for the next
-`nordic-reports` run (hourly on weekdays) or start one by hand, then set the
+`nordic-reports` run (daily at 22:00) or start one by hand, then set the
 mappings below. The mapping steps never insert.
 
 ## Finding the MFN slug
@@ -86,7 +86,7 @@ committed, so no report event is lost.
 ## Released reports (`nordic-reports`)
 
 The `nordic-reports` chronicle binary (CronJob in `infra/charts/chronicle/chronicle/`,
-hourly on weekdays 07:00–20:00 plus 22:00, `Europe/Stockholm`) reads every
+daily at 22:00 `Europe/Stockholm`) reads every
 `FNSE`/`XSTO` company with an `mfn_slug`, pages MFN's JSON news feed
 `https://mfn.se/all/a/<slug>.json` newest first (following `next_url`), keeps
 items authored by that slug, classifies them and publishes reports and
