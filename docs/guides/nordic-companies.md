@@ -15,7 +15,7 @@ Nasdaq news API, was dropped in NEX-166.) The company row itself (`ticker`,
 GOMX.ST` publishes to `company.tickers`, and `pdmr`, `nordic-reports` and
 `nordic-calendar` copy new registrations into `companies` when they start
 (`chronicle_lib::registry`). After registering, wait for the next
-`nordic-reports` run (hourly on weekdays) or start one by hand, then set the
+`nordic-reports` run (daily at 22:00) or start one by hand, then set the
 mappings below. The mapping steps never insert.
 
 ## Finding the MFN slug
@@ -50,58 +50,53 @@ Check that one row was updated (`UPDATE 1`). `UPDATE 0` means the company is not
 The migration `*_companies_add_nordic_source_mappings.sql` seeds GomSpace the
 same way (and did nothing if the row was absent).
 
-## Scheduled and released reports (`report_releases`)
+## Where reports are stored (`special_events`)
 
-`report_releases` is one table for reports that are **scheduled** and reports
-that have been **released**. A row is scheduled while `released_at` and
-`mfn_news_id` are NULL (`expected_date`, `expected_time`, `fiscal_period` and
-`calendar_label` come from the MFN calendar) and becomes released when the
-matching MFN news item arrives. A row needs `released_at` or `expected_date`, and
-`mfn_news_id` is NULL exactly when `released_at` is NULL. `expected_date`/
-`expected_time` are Europe/Stockholm local and `expected_time` is only an
-estimate; `released_at` is the actual UTC instant (MFN's `publish_date`, unchanged).
+Nordic reports are stored **only by signal**, in `backtest.special_events`, with
+the other special events; every dashboard reads them from there. chronicle
+fetches, classifies and publishes `SpecialEvent`s on `special.events`, keyed
+`"{ticker}:{exchange_mic}"` so one company's messages stay in order. chronicle
+keeps only its read position, `mfn_ingest_state` (feed cursor, calendar hash).
+
+| `event_type` | What | Notes |
+|---|---|---|
+| `quarterly_report` | Interim report (`report_kind = interim`) | |
+| `annual_report` | Year-end report (`report_kind = annual`) | |
+| `report_correction` | `Correction:` / `Rättelse:` items, and same-day re-sends | signal links the report to its latest correction within 7 days (`superseded_by`) |
+| `report_calendar` | Snapshot of a company's upcoming reports | not a row itself; applied to `status = 'scheduled'` rows |
+
+`status` is `scheduled` (from the calendar; `occurred_at` is the expected
+instant, `expected_date`/`expected_time` are Europe/Stockholm local and the time
+is MFN's estimate) or `occurred` (released; `occurred_at` is MFN's
+`publish_date`, UTC). `description` is the MFN headline, or the calendar label
+for scheduled rows.
+
+signal's rules (`signal/src/reports.rs`):
+
+1. An MFN item (`(source, source_id)` = `("mfn", news_id)`) is stored once; re-deliveries refresh its display fields.
+2. The sv/en twin of a release (same company, instant and type) is merged into one row; English wins.
+3. A report (not a correction) fills the closest **scheduled** row of the company whose `expected_date` is within ±7 days of the release's Stockholm date (tie: the earlier date), keeping the expected fields.
+4. Otherwise a new `occurred` row.
+5. A report on the same Stockholm date as an earlier report of the company becomes a `report_correction`; the earliest instant is the release the market reacted to.
+6. A calendar snapshot (ignored if older than one already applied) replaces the company's scheduled rows with `expected_date >= today`; an entry matching an occurred report without expected fields (±7 days) fills them instead. Past scheduled rows stay ("expected, not seen"). An empty snapshot clears the future ones.
+
+A database error in signal is retried with backoff before the offset is
+committed, so no report event is lost.
+
+## Released reports (`nordic-reports`)
 
 The `nordic-reports` chronicle binary (CronJob in `infra/charts/chronicle/chronicle/`,
-hourly on weekdays 07:00–20:00 plus 22:00, `Europe/Stockholm`) reads every
+daily at 22:00 `Europe/Stockholm`) reads every
 `FNSE`/`XSTO` company with an `mfn_slug`, pages MFN's JSON news feed
-`https://mfn.se/all/a/<slug>.json` newest first (following `next_url`), keeps items
-authored by that slug, and records each with `nordic::db::record_release` in one
-transaction:
+`https://mfn.se/all/a/<slug>.json` newest first (following `next_url`), keeps
+items authored by that slug, classifies them and publishes reports and
+corrections. Other items (business news, calendar notices, report documents)
+are not published.
 
-1. `mfn_news_id` already stored → display fields refreshed in place (re-runs are idempotent; classification is decided at insert).
-2. Same company, instant and `report_kind` already stored (the Swedish/English twin) → no second row; an English item replaces a non-English one.
-3. A real report (not a correction, not a calendar update) → fills the closest **unreleased** row of the same company whose `expected_date` is within ±7 days of the release's Stockholm date (tie: the earlier date), keeping its expected fields. Logged as `matched scheduled report`.
-4. Otherwise a new row is inserted with the expected fields NULL.
-
-Incremental runs stop at the first page that has nothing new and whose oldest item
-is more than 14 days older than the newest stored release. `--backfill` (or
-`NORDIC_BACKFILL=1`) pages to the end; at most 100 pages per company. Companies
-without an `mfn_slug` are skipped with an info log. The job exits non-zero if
-any company failed.
-
-**One-time backfill** (after deploying NEX-166, and for new companies):
-
-```bash
-kubectl --context orbstack -n chronicle create job \
-  --from=cronjob/nordic-reports-backfill nordic-reports-backfill-$(date +%s)
-```
-
-`nordic-reports-backfill` is a suspended CronJob that runs `nordic-reports --backfill`.
-
-**Classification** (`nordic::classify::classify_item`, from MFN tags + title; the title's issuer prefix `"GomSpace A/S: "` is stripped first). In order:
-
-1. Calendar notice (`financial calendar`, `early publication`, `delayed publication`, `postpone`, `brings forward`, `moves up publication`, `new date for`, `tidigarelägger`, `senarelägger`, `flyttar … rapport`, …) → `calendar_update`, never a report, even if tagged.
-2. `Correction:` / `Rättelse:` → `is_correction`, never a report.
-3. Year-end → `annual`: tag `sub:report:interim:q4`, or tags `sub:report:annual` + `sub:report:interim`, or a Q4 / year-end / `full year` title that passes the report test below (a `full year` mention is ignored when the title or tags say Q1–Q3 / half-year).
-4. Tag `sub:report:annual` only → the published annual report *document* → not a release (`report_kind` NULL, row kept).
-5. `interim`: any `sub:report:interim*` tag, or `:regulatory` plus the headline heuristic (report wording, or a quarter mention without business-news wording, and none of the notice words such as `general meeting`, `sustainability`, `invitation`).
-6. Otherwise `report_kind` NULL. MFN's tags are incomplete (GomSpace's year-end reports carry only `:regulatory`), so the heuristic is needed.
-
-`fiscal_period` is `YYYY-Qn` (interim) or `YYYY` (year-end) only when the title has exactly one `20xx` year and the quarter is unambiguous; otherwise NULL.
-
-A report row on the same Stockholm date as an *earlier* report row of the same company (a re-send without "Correction") becomes `is_correction` with `report_kind` NULL, and the earlier row's `superseded_by` points at it; the earliest timestamp is the release the market reacted to. Corrections link the same way within 7 days.
-
-Companies with a newly inserted `calendar_update` are logged (`calendar_updated`) and their MFN calendar is refreshed right away.
+- Incremental: paging stops once a page reaches items older than `feed_cursor − 1 day` (the overlap catches items MFN lists late; re-sends are harmless). A company with no cursor, or `--backfill`, pages to the end.
+- The cursor moves to the newest published item's `publish_date` only after every message for the company was acknowledged by Kafka; a failed publish leaves it, and the next run re-sends.
+- A calendar notice newer than the cursor at the start of the run triggers that company's calendar refresh at the end of the run.
+- `report_kind` is `interim` or `annual` for periodic reports. Rule: category tags `sub:report:interim*` / `sub:report:annual` decide; otherwise the headline needs report wording (`report`, `interim`, `half-year`, `year-end`, `annual`, `rapport`, …) or a quarter mention (`Q1`–`Q4`, `quarter`, `kvartal`) without business-news wording (`order intake`, `guidance`, `contract`, `agreement`, `secures`, `signs`, `market update`).
 
 ## Upcoming reports (`nordic-calendar`)
 
@@ -110,11 +105,30 @@ every company with an `mfn_slug`, fetches the public HTML page
 `https://mfn.se/a/<mfn_slug>` and parses its "Kalender" table
 (`table.table-calender`). Only the HTML page is used (MFN's `robots.txt`
 disallows the JSON/RSS/XML feeds): one request per company per day, at least 2 s
-apart, 20 s timeout, `429` honours `Retry-After`. `nordic-reports` also calls the
-same `refresh_company` once for a company that has just announced a calendar
-change (log: `calendar refreshed after announcement`).
+apart, 20 s timeout, `429` honours `Retry-After`.
 
-- Rows without `grey-background` are upcoming. Report labels (`Kvartalsrapport`, `Delårsrapport`, `Halvårsrapport`, `Bokslutskommuniké`, `Årsredovisning`, `Interim report`, `Quarterly report`, `Half-year report`, `Year-end report`, `Annual report`) become scheduled `report_releases` rows with `report_kind`, `fiscal_period` (`2026-Q3` / `2026`), `calendar_label` (original text) and `expected_date`. `expected_time` is MFN's **estimate** (the previous report's time) and NULL when MFN shows `-`; the dashboard should label it as estimated.
-- Non-report events (AGM, ex-dividend date, capital markets day, …) are ignored; unknown upcoming labels are logged at `warn` with the slug.
-- Per company, in one transaction: scheduled rows with `expected_date >= today` (Stockholm) are deleted and re-inserted, so a moved date disappears. Released rows are never deleted or overwritten. A calendar entry that matches an already released report (±7 days, closest wins, released row has no `expected_date` yet) fills that row's expected fields instead of inserting. Scheduled rows whose date has passed without a release stay ("expected, not seen").
-- **Parse failures keep the data:** a missing table or no parseable row is logged at `error`, existing rows are kept and the job exits non-zero (Job shows as failed). An empty upcoming list on a parsed table is valid and clears future scheduled rows.
+- Rows without `grey-background` are upcoming. Report labels (`Kvartalsrapport`, `Delårsrapport`, `Halvårsrapport`, `Bokslutskommuniké`, `Årsredovisning`, `Interim report`, `Quarterly report`, `Half-year report`, `Year-end report`, `Annual report`) become entries with `report_kind`, `fiscal_period` (`2026-Q3` / `2026`), `calendar_label` (original text), `expected_date` and the estimated `expected_time` (empty when MFN shows `-`). Non-report events (AGM, ex-dividend date, …) are ignored; unknown upcoming labels are logged at `warn`.
+- The parsed calendar is published as one `report_calendar` snapshot (possibly empty), **unless** its hash equals `mfn_ingest_state.calendar_hash` (the last snapshot published); `--force` publishes regardless. The hash is stored after Kafka acknowledged the snapshot.
+- **A parse failure publishes nothing** and keeps the stored hash; it is logged at `error` and the job exits non-zero.
+
+## After deploying NEX-171
+
+chronicle's migration drops `report_releases`; the history is rebuilt in
+signal from MFN. Once signal and chronicle run the new image:
+
+```bash
+kubectl --context orbstack -n chronicle create job nordic-backfill --from=cronjob/nordic-reports \
+  --dry-run=client -o json | jq '.spec.template.spec.containers[0].env += [{"name":"NORDIC_BACKFILL","value":"true"}]' \
+  | kubectl --context orbstack apply -f -
+kubectl --context orbstack -n chronicle create job nordic-calendar-now --from=cronjob/nordic-calendar
+```
+
+Check in `backtest`:
+
+```sql
+SELECT ticker, event_type, status, count(*), min(occurred_at), max(occurred_at)
+FROM special_events
+WHERE source = 'mfn'
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3;
+```
