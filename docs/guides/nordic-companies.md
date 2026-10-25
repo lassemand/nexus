@@ -132,3 +132,15 @@ WHERE source = 'mfn'
 GROUP BY 1, 2, 3
 ORDER BY 1, 2, 3;
 ```
+
+## Nordic Reports dashboard
+
+Grafana → folder **Nexus** → **Nordic Reports** (`uid nexus-nordic-reports`, template
+`infra/charts/nexus/grafana/templates/dashboard-nordic-reports.yaml`). It reads only
+`special_events` (datasource `nexus-postgres`): pick a company, see its upcoming dates
+(`status = 'scheduled'`, the time is MFN's estimate or "not announced"), its past
+reports with the share-price move on the reaction day (`move_pct`, or the `data_status`
+text when there is no price), the move per report, and how its releases were timed
+against the Stockholm session. The panels ignore the time picker and always show the
+company's whole history. A company appears in the dropdown once it has an MFN report
+event; the display name comes from `companies.name` (`name` in the registry).
