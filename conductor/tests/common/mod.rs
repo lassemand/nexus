@@ -31,6 +31,33 @@ use serde::Deserialize;
 use sqlx::PgPool;
 use tempfile::TempDir;
 
+/// Writes an executable script without this process ever holding a write
+/// descriptor to it: a `sh` child writes it. With `std::fs::write`, a fork on
+/// another test thread can inherit that descriptor and keep it open until the
+/// forked child execs, and executing the script in that window fails with
+/// ETXTBSY ("Text file busy"). Renaming doesn't help: the inherited
+/// descriptor is on the same inode.
+pub fn write_executable(path: &Path, contents: &str) {
+    use std::io::Write;
+    let mut child = Command::new("sh")
+        .args(["-c", r#"cat > "$0" && chmod 755 "$0""#])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn sh to write the script");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(contents.as_bytes())
+        .expect("write the script");
+    assert!(
+        child.wait().expect("wait for sh").success(),
+        "writing {} failed",
+        path.display()
+    );
+}
+
 /// One line from the fake claude's log.
 #[derive(Debug, Deserialize)]
 pub struct FakeRun {
@@ -640,13 +667,7 @@ impl Harness {
             ignore = if ignore_term { 1 } else { 0 },
             fixture = shell_quote(&fixture.to_string_lossy()),
         );
-        std::fs::write(&wrapper, script).expect("write wrapper");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod wrapper");
-        }
+        write_executable(&wrapper, &script);
         self.config.claude_bin = wrapper.to_string_lossy().to_string();
         // Dispatched turns run on the fake tmux; the wrapper above only serves
         // `sessions attach`, which still launches claude itself.

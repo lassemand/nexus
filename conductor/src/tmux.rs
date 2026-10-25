@@ -376,23 +376,47 @@ impl SessionRuntime for TmuxRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     /// A stand-in `tmux` that appends its arguments, one per line, to `log`,
     /// then runs `body`.
+    /// Writes an executable script without this process ever holding a write
+    /// descriptor to it: a `sh` child writes it. With `std::fs::write`, a fork on
+    /// another test thread can inherit that descriptor and keep it open until the
+    /// forked child execs, and executing the script in that window fails with
+    /// ETXTBSY ("Text file busy"). Renaming doesn't help: the inherited
+    /// descriptor is on the same inode.
+    fn write_executable(path: &Path, contents: &str) {
+        use std::io::Write;
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", r#"cat > "$0" && chmod 755 "$0""#])
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn sh to write the script");
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(contents.as_bytes())
+            .expect("write the script");
+        assert!(
+            child.wait().expect("wait for sh").success(),
+            "writing {} failed",
+            path.display()
+        );
+    }
+
     fn fake_tmux(dir: &Path, body: &str) -> (TmuxRuntime, std::path::PathBuf) {
         let log = dir.join("calls.log");
         let script = dir.join("tmux");
-        std::fs::write(
+        write_executable(
             &script,
-            format!(
+            &format!(
                 "#!/bin/sh\nprintf '%s\\n' \"CALL $*\" >> '{}'\nif [ \"$3\" = load-buffer ]; then cat >> '{}'.stdin; fi\n{body}\n",
                 log.display(),
                 log.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         (TmuxRuntime::new(script.to_string_lossy(), "sock"), log)
     }
 

@@ -260,12 +260,7 @@ impl TtyHarness {
         // Written beside and renamed over, so a session starting right now
         // never reads half a script.
         let tmp = self.wrapper.with_extension("tmp");
-        std::fs::write(&tmp, script).expect("write wrapper");
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod wrapper");
-        }
+        super::write_executable(&tmp, &script);
         std::fs::rename(&tmp, &self.wrapper).expect("install wrapper");
     }
 
