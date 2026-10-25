@@ -48,6 +48,16 @@ pub enum UicResolverError {
 }
 
 impl UicResolverError {
+    /// Whether retrying can help. "Not found", "CFD only" and a 4xx other
+    /// than 408/429 give the same answer every time.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            UicResolverError::Http { source, .. } => super::is_transient_reqwest(source),
+            UicResolverError::Status { status, .. } => super::is_transient_status(*status),
+            UicResolverError::CfdOnly(_) | UicResolverError::NotFound(_) => false,
+        }
+    }
+
     /// How long Saxo asked us to wait, if it said (`Retry-After`, or the
     /// longest `X-RateLimit-*-Reset`).
     pub fn retry_after(&self) -> Option<Duration> {
@@ -386,6 +396,29 @@ mod tests {
             let r = UicResolver::new(reqwest::Client::new(), server.uri());
             let err = r.resolve_with_cfd_check("GOMX", "t").await.unwrap_err();
             assert_eq!(err.retry_after(), Some(Duration::from_secs(3600)));
+        }
+
+        #[tokio::test]
+        async fn rate_limits_and_server_errors_are_transient_other_4xx_are_not() {
+            for (code, transient) in [
+                (429, true),
+                (503, true),
+                (408, true),
+                (400, false),
+                (401, false),
+                (404, false),
+            ] {
+                let server = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .respond_with(ResponseTemplate::new(code))
+                    .mount(&server)
+                    .await;
+                let r = UicResolver::new(reqwest::Client::new(), server.uri());
+                let err = r.resolve_with_cfd_check("GOMX", "t").await.unwrap_err();
+                assert_eq!(err.is_transient(), transient, "{code}");
+            }
+            assert!(!UicResolverError::NotFound("X".into()).is_transient());
+            assert!(!UicResolverError::CfdOnly("X".into()).is_transient());
         }
     }
 }

@@ -16,8 +16,8 @@ mod db;
 mod kafka;
 
 use alpha::saxo::{
-    ChartClient, RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken, SharedToken,
-    TokenStore, UicResolver,
+    ChartClient, ChartError, RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken,
+    SharedToken, TokenStore, UicResolver, UicResolverError,
 };
 use anyhow::Context;
 use chronicle_lib::daily_bars::{self, BarSink, Instrument};
@@ -167,7 +167,68 @@ const RESOLVE_BACKOFF_MAX: Duration = Duration::from_secs(15 * 60);
 /// First and longest wait before re-running a daily-bar sweep that failed,
 /// instead of waiting for the next day's 18:30 run.
 const SWEEP_RETRY_START: Duration = Duration::from_secs(15 * 60);
+
+/// First and longest wait before reconnecting a stream that ended soon after
+/// it connected (e.g. Saxo rejecting the subscription on a weekend). Without
+/// it the loop reconnected several times a second.
+const RECONNECT_BACKOFF_START: Duration = Duration::from_secs(5);
+const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(10 * 60);
+/// A stream that stayed up this long resets the reconnect backoff.
+const STREAM_HEALTHY_AFTER: Duration = Duration::from_secs(5 * 60);
 const SWEEP_RETRY_MAX: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// The price stream is opened only on weekdays between these Stockholm times
+/// (Nasdaq Stockholm trades 09:00-17:30, with auctions around both). Outside
+/// them Saxo rejects the subscription (400), and reconnecting is pointless.
+const STREAM_OPENS: (u32, u32) = (8, 30);
+const STREAM_CLOSES: (u32, u32) = (18, 0);
+
+fn is_weekday(d: chrono::NaiveDate) -> bool {
+    use chrono::Datelike;
+    !matches!(d.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun)
+}
+
+/// Whether `now` is inside the price stream's window.
+fn stream_window_open(now: chrono::DateTime<Utc>) -> bool {
+    let local = now + chrono::Duration::hours(model::stockholm::stockholm_offset_hours(now));
+    let t = local.time();
+    let at = |(h, m)| chrono::NaiveTime::from_hms_opt(h, m, 0).expect("valid time");
+    is_weekday(local.date_naive()) && t >= at(STREAM_OPENS) && t < at(STREAM_CLOSES)
+}
+
+/// The next instant the price stream's window opens, after `now`.
+fn next_stream_window(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    let mut after = now;
+    loop {
+        let open = model::stockholm::next_stockholm_time(after, STREAM_OPENS.0, STREAM_OPENS.1);
+        if is_weekday(model::stockholm::stockholm_date(open)) {
+            return open;
+        }
+        after = open;
+    }
+}
+
+/// Uic lookups that failed for good, per ticker: `None` until the ticker list
+/// changes, `Some(token)` (401/403) until the access token is no longer `token`.
+type BlockedTickers = std::collections::HashMap<String, Option<String>>;
+
+fn is_blocked(blocked: &BlockedTickers, ticker: &str, token: &str) -> bool {
+    match blocked.get(ticker) {
+        None => false,
+        Some(None) => true,
+        Some(Some(failed_with)) => failed_with == token,
+    }
+}
+
+/// How long a permanent Uic failure blocks `ticker`, if it does.
+fn block_for(e: &UicResolverError, token: &str) -> Option<Option<String>> {
+    if e.is_transient() {
+        return None;
+    }
+    let auth = matches!(e, UicResolverError::Status { status, .. }
+        if *status == reqwest::StatusCode::UNAUTHORIZED || *status == reqwest::StatusCode::FORBIDDEN);
+    Some(auth.then(|| token.to_string()))
+}
 
 /// After a failure: how long to wait now (`current`, or Saxo's hint when that
 /// is longer), and the backoff to use after the next failure (doubled, capped
@@ -177,32 +238,52 @@ fn backoff_step(current: Duration, max: Duration, hint: Option<Duration>) -> (Du
     (wait, (current * 2).min(max))
 }
 
-/// One pass over every registered FNSE ticker. Returns the number of failed
-/// tickers; failures are logged and counted and never propagate.
+/// Failed tickers of one sweep, and how many of those failures can go away on
+/// a later try.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct SweepResult {
+    failures: usize,
+    transient: usize,
+}
+
+/// Whether a daily-bar sync failure can go away on its own. A chart error
+/// says so itself; anything else (database, Kafka) is treated as transient.
+fn is_transient_failure(e: &anyhow::Error) -> bool {
+    e.chain()
+        .find_map(|c| c.downcast_ref::<ChartError>())
+        .is_none_or(ChartError::is_transient)
+}
+
+/// One pass over every registered FNSE ticker. Failures are logged and
+/// counted and never propagate.
 async fn daily_bars_sweep(
     pool: &sqlx::PgPool,
     resolver: &UicResolver,
     client: &mut ChartClient,
     sink: &dyn BarSink,
     shared_token: &SharedToken,
-) -> usize {
+) -> SweepResult {
     let tickers = match load_fnse_tickers(pool).await {
         Ok(t) => t,
         Err(e) => {
             error!(error = %e, "daily bars: failed to load FNSE tickers");
             counter!("saxo_daily_bars_failures_total").increment(1);
-            return 1;
+            return SweepResult {
+                failures: 1,
+                transient: 1,
+            };
         }
     };
-    let mut failures = 0;
+    let mut out = SweepResult::default();
     for ticker in &tickers {
         let access_token = shared_token.lock().unwrap().access_token.clone();
         let resolved = match resolver.resolve_with_cfd_check(ticker, &access_token).await {
             Ok(r) => r,
             Err(e) => {
-                failures += 1;
+                out.failures += 1;
+                out.transient += usize::from(e.is_transient());
                 counter!("saxo_daily_bars_failures_total").increment(1);
-                error!(ticker, error = %e, "daily bars: Uic resolution failed");
+                error!(ticker, error = %e, transient = e.is_transient(), "daily bars: Uic resolution failed");
                 continue;
             }
         };
@@ -215,16 +296,23 @@ async fn daily_bars_sweep(
         if let Err(e) =
             daily_bars::sync_instrument(pool, client, sink, &instrument, Utc::now()).await
         {
-            failures += 1;
+            let transient = is_transient_failure(&e);
+            out.failures += 1;
+            out.transient += usize::from(transient);
             counter!("saxo_daily_bars_failures_total").increment(1);
             // `{:#}`: the whole anyhow chain, not only the outermost context.
-            error!(ticker, error = format!("{e:#}"), "daily bars: sync failed");
+            error!(
+                ticker,
+                error = format!("{e:#}"),
+                transient,
+                "daily bars: sync failed"
+            );
         }
     }
-    if failures == 0 && !tickers.is_empty() {
+    if out.failures == 0 && !tickers.is_empty() {
         gauge!("saxo_daily_bars_last_success_timestamp").set(Utc::now().timestamp() as f64);
     }
-    failures
+    out
 }
 
 /// Runs the daily-bar sync on startup and then every day at 18:30 Stockholm
@@ -260,23 +348,36 @@ async fn run_daily_bars(
                 daily_bars_sweep(&pool, &resolver, &mut client, sink.as_ref(), &shared_token).await
             })
         };
-        let ok = match sweep.await {
-            Ok(0) => {
+        // Retry early only if a failure may go away; permanent failures (a 4xx,
+        // an unknown instrument) wait for the next scheduled run.
+        let retry_early = match sweep.await {
+            Ok(r) if r.failures == 0 => {
                 info!("daily bars sweep finished");
+                false
+            }
+            Ok(r) if r.transient > 0 => {
+                warn!(
+                    failed = r.failures,
+                    transient = r.transient,
+                    "daily bars sweep finished with failures"
+                );
                 true
             }
-            Ok(n) => {
-                warn!(failed = n, "daily bars sweep finished with failures");
+            Ok(r) => {
+                error!(
+                    failed = r.failures,
+                    "daily bars sweep failed permanently, next try at the scheduled run"
+                );
                 false
             }
             Err(e) => {
                 counter!("saxo_daily_bars_failures_total").increment(1);
                 error!(error = %e, "daily bars sweep task died");
-                false
+                true
             }
         };
 
-        let wait = if ok {
+        let wait = if !retry_early {
             retry = SWEEP_RETRY_START;
             let next = model::stockholm::next_stockholm_time(
                 Utc::now(),
@@ -770,8 +871,13 @@ async fn main() -> anyhow::Result<()> {
         let ws_connected = ws_connected.clone();
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(30));
+            // After a permanent refresh failure, try again only this often.
+            let mut retry_at: Option<std::time::Instant> = None;
             loop {
                 ticker.tick().await;
+                if retry_at.is_some_and(|t| std::time::Instant::now() < t) {
+                    continue;
+                }
 
                 let needs_refresh = shared_token
                     .lock()
@@ -783,6 +889,7 @@ async fn main() -> anyhow::Result<()> {
 
                 match saxo_auth.refresh().await {
                     Ok(rotated) => {
+                        retry_at = None;
                         // Record the new expiry regardless of whether
                         // WebSocket reauth below succeeds — it drives both
                         // /health and the seconds-remaining metric.
@@ -814,9 +921,15 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    Err(e) => {
+                    Err(e) if e.is_transient() => {
                         counter!("saxo_refresh_token_failures_total").increment(1);
                         error!(error = %e, "Saxo token refresh failed — will retry next tick");
+                    }
+                    Err(e) => {
+                        counter!("saxo_refresh_token_failures_total").increment(1);
+                        retry_at = Some(std::time::Instant::now() + Duration::from_secs(10 * 60));
+                        error!(error = %e,
+                               "Saxo rejected the token refresh — register a new token (nexus saxo auth); retrying every 10 min");
                     }
                 }
             }
@@ -844,6 +957,9 @@ async fn main() -> anyhow::Result<()> {
     let mut current_tickers = tickers;
     let mut stream_opt: Option<SaxoBarStream> = None;
     let mut resolve_backoff = RESOLVE_BACKOFF_START;
+    let mut reconnect_backoff = RECONNECT_BACKOFF_START;
+    let mut blocked = BlockedTickers::new();
+    let mut connected_at: Option<std::time::Instant> = None;
 
     loop {
         if *shutdown_rx.borrow() {
@@ -865,6 +981,7 @@ async fn main() -> anyhow::Result<()> {
                     current_tickers = new_tickers;
                     stream_opt = None;
                     ws_connected.store(false, Ordering::Relaxed);
+                    blocked.clear();
                 }
                 Ok(_) => {}
                 Err(e) => warn!(error = %e, "failed to refresh ticker list"),
@@ -874,11 +991,31 @@ async fn main() -> anyhow::Result<()> {
         if stream_opt.is_none() && !current_tickers.is_empty() {
             gauge!("saxo_ws_connected").set(0.0_f64);
 
+            let now = Utc::now();
+            if !stream_window_open(now) {
+                let opens = next_stream_window(now);
+                // Wake at least every 10 min to pick up ticker changes and shutdown.
+                let wait = (opens - now)
+                    .to_std()
+                    .unwrap_or_default()
+                    .min(Duration::from_secs(10 * 60));
+                info!(opens = %opens, "outside trading hours, price stream not opened");
+                let mut shutdown = shutdown_rx.clone();
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = shutdown.changed() => {}
+                }
+                continue;
+            }
+
             let access_token_snapshot = shared_token.lock().unwrap().access_token.clone();
 
             let mut resolved = Vec::new();
             let mut hint: Option<Duration> = None;
             for ticker in &current_tickers {
+                if is_blocked(&blocked, ticker, &access_token_snapshot) {
+                    continue;
+                }
                 match uic_resolver
                     .resolve_with_cfd_check(ticker, &access_token_snapshot)
                     .await
@@ -889,7 +1026,13 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Err(e) => {
                         hint = hint.max(e.retry_after());
-                        error!(ticker, error = %e, "Uic resolution failed — skipping ticker");
+                        if let Some(until) = block_for(&e, &access_token_snapshot) {
+                            error!(ticker, error = %e,
+                                   "Uic resolution failed permanently — not retried until the ticker list or token changes");
+                            blocked.insert(ticker.clone(), until);
+                        } else {
+                            error!(ticker, error = %e, "Uic resolution failed — skipping ticker");
+                        }
                     }
                 }
             }
@@ -919,11 +1062,14 @@ async fn main() -> anyhow::Result<()> {
                     info!("Saxo WebSocket stream connected");
                     gauge!("saxo_ws_connected").set(1.0_f64);
                     ws_connected.store(true, Ordering::Relaxed);
+                    connected_at = Some(std::time::Instant::now());
                     stream_opt = Some(s);
                 }
                 Err(e) => {
-                    error!(error = %e, "failed to connect Saxo stream — will retry");
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    let (wait, next) = backoff_step(reconnect_backoff, RECONNECT_BACKOFF_MAX, None);
+                    reconnect_backoff = next;
+                    error!(error = %e, retry_in = ?wait, "failed to connect Saxo stream — will retry");
+                    tokio::time::sleep(wait).await;
                     continue;
                 }
             }
@@ -947,10 +1093,24 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 Ok(None) => {
-                    warn!("Saxo bar stream ended — will reconnect");
                     gauge!("saxo_ws_connected").set(0.0_f64);
                     ws_connected.store(false, Ordering::Relaxed);
                     stream_opt = None;
+                    let lived = connected_at.take().map(|t| t.elapsed()).unwrap_or_default();
+                    if lived >= STREAM_HEALTHY_AFTER {
+                        reconnect_backoff = RECONNECT_BACKOFF_START;
+                        warn!(lived = ?lived, "Saxo bar stream ended — reconnecting");
+                    } else {
+                        let (wait, next) =
+                            backoff_step(reconnect_backoff, RECONNECT_BACKOFF_MAX, None);
+                        reconnect_backoff = next;
+                        warn!(lived = ?lived, retry_in = ?wait, "Saxo bar stream ended soon after connecting — backing off");
+                        let mut shutdown = shutdown_rx.clone();
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {}
+                            _ = shutdown.changed() => {}
+                        }
+                    }
                 }
                 Err(_) => {}
             }
@@ -966,6 +1126,91 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod backoff_tests {
     use super::*;
+    use chrono::TimeZone;
+
+    fn utc(y: i32, m: u32, d: u32, h: u32, min: u32) -> chrono::DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, m, d, h, min, 0).unwrap()
+    }
+
+    #[test]
+    fn the_stream_window_is_weekdays_0830_to_1800_stockholm() {
+        // Wednesday 2026-10-21, CEST (UTC+2).
+        assert!(!stream_window_open(utc(2026, 10, 21, 6, 29)));
+        assert!(stream_window_open(utc(2026, 10, 21, 6, 30)));
+        assert!(stream_window_open(utc(2026, 10, 21, 15, 59)));
+        assert!(!stream_window_open(utc(2026, 10, 21, 16, 0)));
+        // Saturday and Sunday.
+        assert!(!stream_window_open(utc(2026, 10, 24, 10, 0)));
+        assert!(!stream_window_open(utc(2026, 10, 25, 10, 0)));
+        // Monday 2026-10-26 after the clock change, CET (UTC+1).
+        assert!(stream_window_open(utc(2026, 10, 26, 7, 30)));
+        assert!(!stream_window_open(utc(2026, 10, 26, 7, 29)));
+    }
+
+    #[test]
+    fn the_next_window_skips_the_weekend() {
+        // Saturday → Monday 08:30 CET.
+        assert_eq!(
+            next_stream_window(utc(2026, 10, 24, 10, 0)),
+            utc(2026, 10, 26, 7, 30)
+        );
+        // Friday evening → Monday.
+        assert_eq!(
+            next_stream_window(utc(2026, 10, 23, 17, 0)),
+            utc(2026, 10, 26, 7, 30)
+        );
+        // Wednesday 07:00 CEST → same day 08:30 CEST.
+        assert_eq!(
+            next_stream_window(utc(2026, 10, 21, 5, 0)),
+            utc(2026, 10, 21, 6, 30)
+        );
+    }
+
+    fn status(code: u16) -> UicResolverError {
+        UicResolverError::Status {
+            ticker: "GOMX".into(),
+            status: reqwest::StatusCode::from_u16(code).unwrap(),
+            retry_after: None,
+            rate_limit: vec![],
+        }
+    }
+
+    #[test]
+    fn permanent_uic_failures_block_until_something_changes() {
+        let mut blocked = BlockedTickers::new();
+        assert_eq!(block_for(&status(429), "t1"), None, "rate limit is retried");
+        assert_eq!(
+            block_for(&status(503), "t1"),
+            None,
+            "server error is retried"
+        );
+        blocked.insert("GOMX".into(), block_for(&status(404), "t1").unwrap());
+        blocked.insert("VOLV".into(), block_for(&status(401), "t1").unwrap());
+        assert!(is_blocked(&blocked, "GOMX", "t1"));
+        assert!(
+            is_blocked(&blocked, "GOMX", "t2"),
+            "a 404 isn't fixed by a new token"
+        );
+        assert!(is_blocked(&blocked, "VOLV", "t1"));
+        assert!(
+            !is_blocked(&blocked, "VOLV", "t2"),
+            "a new token lifts a 401"
+        );
+        assert!(!is_blocked(&blocked, "OTHER", "t1"));
+        assert!(block_for(&UicResolverError::NotFound("X".into()), "t").is_some());
+    }
+
+    #[test]
+    fn chart_failures_are_classified_through_the_anyhow_chain() {
+        let bad_request = anyhow::Error::new(ChartError::Status(reqwest::StatusCode::BAD_REQUEST))
+            .context("chart request for GOMX");
+        assert!(!is_transient_failure(&bad_request));
+        let unavailable =
+            anyhow::Error::new(ChartError::Status(reqwest::StatusCode::SERVICE_UNAVAILABLE))
+                .context("chart request for GOMX");
+        assert!(is_transient_failure(&unavailable));
+        assert!(is_transient_failure(&anyhow::anyhow!("kafka down")));
+    }
 
     #[test]
     fn backoff_doubles_to_the_cap() {
@@ -993,6 +1238,19 @@ mod backoff_tests {
             Some(Duration::from_secs(5)),
         );
         assert_eq!(wait.as_secs(), 120);
+    }
+
+    #[test]
+    fn a_stream_that_keeps_ending_reconnects_ever_more_slowly() {
+        let mut current = RECONNECT_BACKOFF_START;
+        let mut waits = Vec::new();
+        for _ in 0..9 {
+            let (wait, next) = backoff_step(current, RECONNECT_BACKOFF_MAX, None);
+            waits.push(wait.as_secs());
+            current = next;
+        }
+        assert_eq!(waits, [5, 10, 20, 40, 80, 160, 320, 600, 600]);
+        assert!(STREAM_HEALTHY_AFTER > RECONNECT_BACKOFF_START);
     }
 
     #[test]

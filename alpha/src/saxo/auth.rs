@@ -27,6 +27,17 @@ pub enum AuthError {
     InvalidUrl(#[from] url::ParseError),
 }
 
+impl AuthError {
+    /// Whether retrying can help. A rejected refresh token (400/401) stays
+    /// rejected until someone registers a new one.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            AuthError::Http(e) => super::is_transient_reqwest(e),
+            AuthError::MissingToken | AuthError::InvalidUrl(_) => false,
+        }
+    }
+}
+
 /// A Saxo Bank OAuth2 access token with its expiry time.
 #[derive(Debug, Clone)]
 pub struct SaxoToken {

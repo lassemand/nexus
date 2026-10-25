@@ -60,6 +60,22 @@ pub mod stream;
 pub mod uic;
 pub mod validation;
 
+/// Whether a Saxo response status can succeed on a later try: request
+/// timeout, rate limit or a server error. Every other 4xx (bad request,
+/// unauthorized, not found, …) gives the same answer again, so it is not
+/// retried.
+pub fn is_transient_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+/// Whether a failed request can succeed on a later try: no response at all
+/// (connect, TLS, timeout), or a transient status.
+pub fn is_transient_reqwest(e: &reqwest::Error) -> bool {
+    e.status().is_none_or(is_transient_status)
+}
+
 pub use aggregator::BarAggregator;
 pub use auth::{RotatedToken, SaxoAuth, SaxoToken, SharedToken, TokenStore};
 pub use chart::{ChartClient, ChartError, DailyBarRow};
