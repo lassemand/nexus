@@ -27,6 +27,48 @@ To check the mapping, open `https://mfn.se/all/a/<slug>.json`: the items'
 `author.tickers` should contain `<exchange_mic>:<ticker>` (e.g. `FNSE:GOMX`);
 otherwise `nordic-reports` logs `mapping may point at the wrong company`.
 
+## Danish companies
+
+Danish listings (Nasdaq Copenhagen `XCSE`, First North Denmark `FNDK`) are
+registered the same way:
+
+```bash
+nexus register NOVO-B.CO
+```
+
+The ISIN is the one identifier MFN, Saxo and Yahoo share whatever they call the
+ticker. It is not given at registration: `nordic-reports` reads it from MFN's
+`author.isins` the first time it fetches a company's feed (so after `mfn_slug`
+is set) and stores it in `companies.isin` when that is empty. It is never
+overwritten, and when MFN lists several valid ISINs (several share classes) none
+is stored; set it by hand then.
+
+- Yahoo reports Copenhagen as `CPH` for both markets, so a First North Denmark
+  company needs `--mic FNDK`. Likewise `--mic XSTO` for a Stockholm main-market
+  share (`STO` alone gives `FNSE`). The MIC must be in the same country as
+  Yahoo's exchange; `--mic FNDK` on a `.ST` symbol is an error.
+- MFN slug: `https://mfn.se/a/novo-nordisk` → `novo-nordisk`.
+- MFN spells the ticker `XCSE:NOVO B` (space) while the registry has `NOVO-B`
+  (hyphen). This is expected: the registry keeps the Yahoo spelling, and other
+  sources map through `mfn_slug` and `isin`.
+- Check the ISIN at `https://mfn.se/all/a/<slug>.json` → `author.isins`.
+- Set the mappings by hand for later companies:
+
+```sql
+UPDATE companies
+   SET name     = 'Novo Nordisk A/S (NOVO B)',
+       mfn_slug = 'novo-nordisk',
+       isin     = 'DK0062498333'
+ WHERE ticker = 'NOVO-B' AND exchange_mic = 'XCSE';
+```
+
+`UPDATE 0` means the company is not registered yet. The migration
+`*_companies_isin.sql` seeds Novo Nordisk and GomSpace (`SE0008348304`) this
+way and does nothing if the row is absent.
+
+**Danish insider trades are not covered**: there is no FI-style register for
+them, deliberately deferred.
+
 ## Finding the FI issuer name
 
 Query FI's issuer autocomplete with part of the company name (not the ticker)

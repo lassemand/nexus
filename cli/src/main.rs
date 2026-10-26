@@ -42,6 +42,12 @@ enum Commands {
         #[arg(required = true)]
         tickers: Vec<String>,
 
+        /// Override the MIC Yahoo implies, e.g. `FNDK` for First North Denmark
+        /// or `XSTO` for a Stockholm main-market share. Must be a known MIC in
+        /// the same country as Yahoo's exchange.
+        #[arg(long)]
+        mic: Option<String>,
+
         /// Kafka broker addresses.
         #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:9092")]
         brokers: String,
@@ -241,9 +247,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Register {
             tickers,
+            mic,
             brokers,
             topic,
-        } => cmd_register(tickers, brokers, topic).await,
+        } => cmd_register(tickers, mic, brokers, topic).await,
 
         Commands::Calendar {
             action:
@@ -326,6 +333,11 @@ struct ResolvedTicker {
     currency: String,
 }
 
+/// Suffix-stripped, uppercase ticker (`NOVO-B.CO` → `NOVO-B`).
+fn canonical_ticker(input: &str) -> String {
+    input.split('.').next().unwrap_or(input).to_uppercase()
+}
+
 /// Validate a ticker against Yahoo Finance and resolve its exchange MIC and currency.
 ///
 /// Accepts Yahoo-style exchange suffixes (e.g. `GOMX.ST`) as a lookup hint;
@@ -337,6 +349,7 @@ struct ResolvedTicker {
 async fn validate_and_resolve(
     client: &reqwest::Client,
     input: &str,
+    mic_override: Option<&str>,
 ) -> Result<Option<ResolvedTicker>> {
     use model::asset::mic;
 
@@ -381,6 +394,9 @@ async fn validate_and_resolve(
         }
     };
 
+    let exchange_mic = mic::apply_override(&exchange_mic, mic_override)
+        .map_err(|e| anyhow::anyhow!("{input}: {e}"))?;
+
     let currency = match result.meta.currency.filter(|c| !c.is_empty()) {
         Some(c) => c,
         None => mic::currency(&exchange_mic)
@@ -391,7 +407,7 @@ async fn validate_and_resolve(
     };
 
     // Strip Yahoo exchange suffix (e.g. ".ST") to get the canonical ticker.
-    let canonical = input.split('.').next().unwrap_or(input).to_uppercase();
+    let canonical = canonical_ticker(input);
 
     Ok(Some(ResolvedTicker {
         canonical,
@@ -402,7 +418,12 @@ async fn validate_and_resolve(
 
 /// Validate each ticker against Yahoo Finance (resolving exchange + currency
 /// automatically), then publish `TickerRegistration` protobuf messages to Kafka.
-async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> Result<()> {
+async fn cmd_register(
+    tickers: Vec<String>,
+    mic_override: Option<String>,
+    brokers: String,
+    topic: String,
+) -> Result<()> {
     let http = reqwest::Client::new();
 
     // Resolve all tickers concurrently.
@@ -411,8 +432,9 @@ async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> R
         .map(|raw| {
             let input = raw.clone();
             let http = http.clone();
+            let mic_override = mic_override.clone();
             async move {
-                match validate_and_resolve(&http, &input).await {
+                match validate_and_resolve(&http, &input, mic_override.as_deref()).await {
                     Ok(Some(resolved)) => Ok::<_, anyhow::Error>(Some(resolved)),
                     Ok(None) => {
                         eprintln!("✗ {input} — not found on Yahoo Finance");
@@ -559,6 +581,24 @@ mod tests {
         let encoded = original.encode_to_vec();
         let decoded = TickerRegistration::decode(encoded.as_slice()).unwrap();
         assert_eq!(decoded.ticker.to_uppercase(), "AAPL");
+    }
+
+    #[test]
+    fn novo_b_resolves_to_xcse_dkk_and_fndk_with_override() {
+        assert_eq!(super::canonical_ticker("NOVO-B.CO"), "NOVO-B");
+        let yahoo = mic::mic_for_yahoo_exchange("CPH").unwrap();
+        let plain = mic::apply_override(yahoo, None).unwrap();
+        assert_eq!(plain, "XCSE");
+        assert_eq!(mic::currency(&plain), Some("DKK"));
+        let fndk = mic::apply_override(yahoo, Some("FNDK")).unwrap();
+        assert_eq!(fndk, "FNDK");
+        assert_eq!(mic::currency(&fndk), Some("DKK"));
+    }
+
+    #[test]
+    fn fndk_override_on_a_stockholm_symbol_is_an_error() {
+        let yahoo = mic::mic_for_yahoo_exchange("STO").unwrap();
+        assert!(mic::apply_override(yahoo, Some("FNDK")).is_err());
     }
 
     #[test]

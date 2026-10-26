@@ -2,6 +2,7 @@ pub mod asset;
 pub mod bar;
 pub mod calendar;
 pub mod insider;
+pub mod isin;
 pub mod price;
 pub mod sector;
 pub mod stockholm;

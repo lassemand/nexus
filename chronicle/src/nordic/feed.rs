@@ -46,6 +46,8 @@ struct RawAuthor {
     slugs: Option<Vec<String>>,
     #[serde(default)]
     tickers: Option<Vec<String>>,
+    #[serde(default)]
+    isins: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -94,6 +96,8 @@ pub struct NewsItem {
     pub author_slugs: Vec<String>,
     /// `author.tickers`, e.g. `FNSE:GOMX`.
     pub author_tickers: Vec<String>,
+    /// `author.isins`.
+    pub author_isins: Vec<String>,
     /// MFN's `source` (for example `cis`, `one`), when present.
     pub source: Option<String>,
     /// Links to the item's PDF attachments (`content.attachments[].url`).
@@ -150,6 +154,7 @@ fn into_news_item(r: RawItem) -> Option<NewsItem> {
         author_slug: r.author.slug,
         author_slugs: r.author.slugs.unwrap_or_default(),
         author_tickers: r.author.tickers.unwrap_or_default(),
+        author_isins: r.author.isins.unwrap_or_default(),
         source: r.source,
         attachment_urls,
     })
@@ -271,6 +276,7 @@ mod tests {
             author_slug: "volvo".into(),
             author_slugs: vec!["volvo".into(), "volvo-group".into()],
             author_tickers: vec![],
+            author_isins: vec![],
             source: None,
             attachment_urls: vec![],
         };
