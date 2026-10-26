@@ -171,7 +171,7 @@ async fn page_back(
 
     for _ in 0..MAX_PAGES {
         let rows = client
-            .fetch_up_to(inst.uic, cursor, count)
+            .fetch_up_to(inst.uic, &inst.exchange_mic, cursor, count)
             .await
             .map_err(|e: ChartError| anyhow!(e))
             .with_context(|| format!("chart request for {}", inst.ticker))?;

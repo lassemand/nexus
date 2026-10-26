@@ -16,12 +16,13 @@ mod db;
 mod kafka;
 
 use alpha::saxo::{
-    ChartClient, ChartError, RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken,
-    SharedToken, TokenStore, UicResolver, UicResolverError,
+    AccessObserver, ChartClient, ChartError, DataAccess, InstrumentQuery, MarketCalendar,
+    RotatedToken, SaxoAuth, SaxoBarStream, SaxoConfig, SaxoToken, SharedToken, TokenStore,
+    UicResolver, UicResolverError,
 };
 use anyhow::Context;
 use chronicle_lib::daily_bars::{self, BarSink, Instrument};
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use clap::Parser;
 use kafka::ChronicleProducer;
 use metrics::{counter, describe_counter, describe_gauge, gauge};
@@ -89,6 +90,21 @@ struct Args {
     /// Topic for official daily bars (stored by signal in `daily_bars`).
     #[arg(long, env = "DAILY_BARS_TOPIC", default_value = "market.daily_bars")]
     daily_bars_topic: String,
+
+    /// MICs of the registered companies to stream and sync (comma separated).
+    #[arg(
+        long,
+        env = "SAXO_MICS",
+        value_delimiter = ',',
+        default_value = "FNSE,XSTO,XCSE,FNDK"
+    )]
+    saxo_mics: Vec<String>,
+
+    /// Overrides of the built-in Saxo ExchangeIds, `MIC=ExchangeId` comma
+    /// separated (e.g. `XCSE=CSE,FNDK=CSE_FN-DK`), for when the built-in table
+    /// (`alpha::saxo::exchange_ids`) does not match `GET /ref/v1/exchanges`.
+    #[arg(long, env = "SAXO_EXCHANGE_IDS", value_delimiter = ',')]
+    saxo_exchange_ids: Vec<String>,
 
     /// Saxo chart API version used for daily bars.
     #[arg(long, env = "SAXO_CHART_VERSION", default_value = "v1")]
@@ -254,7 +270,7 @@ fn is_transient_failure(e: &anyhow::Error) -> bool {
         .is_none_or(ChartError::is_transient)
 }
 
-/// One pass over every registered FNSE ticker. Failures are logged and
+/// One pass over every registered Nordic instrument. Failures are logged and
 /// counted and never propagate.
 async fn daily_bars_sweep(
     pool: &sqlx::PgPool,
@@ -262,11 +278,12 @@ async fn daily_bars_sweep(
     client: &mut ChartClient,
     sink: &dyn BarSink,
     shared_token: &SharedToken,
+    mics: &[String],
 ) -> SweepResult {
-    let tickers = match load_fnse_tickers(pool).await {
+    let tickers = match load_saxo_instruments(pool, mics).await {
         Ok(t) => t,
         Err(e) => {
-            error!(error = %e, "daily bars: failed to load FNSE tickers");
+            error!(error = %e, "daily bars: failed to load Nordic instruments");
             counter!("saxo_daily_bars_failures_total").increment(1);
             return SweepResult {
                 failures: 1,
@@ -275,22 +292,28 @@ async fn daily_bars_sweep(
         }
     };
     let mut out = SweepResult::default();
-    for ticker in &tickers {
+    for inst in &tickers {
+        let ticker = &inst.ticker;
         let access_token = shared_token.lock().unwrap().access_token.clone();
-        let resolved = match resolver.resolve_with_cfd_check(ticker, &access_token).await {
+        let resolved = match resolver
+            .resolve_with_cfd_check(&inst.query(), &access_token)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 out.failures += 1;
                 out.transient += usize::from(e.is_transient());
                 counter!("saxo_daily_bars_failures_total").increment(1);
-                error!(ticker, error = %e, transient = e.is_transient(), "daily bars: Uic resolution failed");
+                error!(ticker, exchange_mic = %inst.exchange_mic, error = %e,
+                       transient = e.is_transient(), "daily bars: Uic resolution failed");
                 continue;
             }
         };
         let instrument = Instrument {
             ticker: ticker.clone(),
-            exchange_mic: model::asset::mic::FNSE.to_string(),
+            exchange_mic: inst.exchange_mic.clone(),
             uic: resolved.uic,
+            // Saxo's currency, which is what the prices are quoted in.
             currency: resolved.currency,
         };
         if let Err(e) =
@@ -303,6 +326,7 @@ async fn daily_bars_sweep(
             // `{:#}`: the whole anyhow chain, not only the outermost context.
             error!(
                 ticker,
+                exchange_mic = %inst.exchange_mic,
                 error = format!("{e:#}"),
                 transient,
                 "daily bars: sync failed"
@@ -327,12 +351,13 @@ async fn run_daily_bars(
     chart_version: String,
     shared_token: SharedToken,
     sink: Arc<KafkaBarSink>,
+    mics: Vec<String>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut retry = SWEEP_RETRY_START;
     loop {
         let sweep = {
-            let (pool, http, api_base, chart_version, shared_token, sink, resolver) = (
+            let (pool, http, api_base, chart_version, shared_token, sink, resolver, mics) = (
                 pool.clone(),
                 http.clone(),
                 api_base.clone(),
@@ -340,12 +365,21 @@ async fn run_daily_bars(
                 shared_token.clone(),
                 sink.clone(),
                 resolver.clone(),
+                mics.clone(),
             );
             tokio::spawn(async move {
                 let mut client =
                     ChartClient::new(http, &api_base, shared_token.clone(), CHART_MIN_INTERVAL)
                         .with_version(chart_version);
-                daily_bars_sweep(&pool, &resolver, &mut client, sink.as_ref(), &shared_token).await
+                daily_bars_sweep(
+                    &pool,
+                    &resolver,
+                    &mut client,
+                    sink.as_ref(),
+                    &shared_token,
+                    &mics,
+                )
+                .await
             })
         };
         // Retry early only if a failure may go away; permanent failures (a 4xx,
@@ -401,12 +435,113 @@ async fn run_daily_bars(
     }
 }
 
-async fn load_fnse_tickers(pool: &sqlx::PgPool) -> anyhow::Result<Vec<String>> {
-    let rows =
-        sqlx::query("SELECT ticker FROM companies WHERE exchange_mic = 'FNSE' ORDER BY ticker")
-            .fetch_all(pool)
-            .await?;
-    Ok(rows.into_iter().map(|r| r.get("ticker")).collect())
+/// A registered company to stream and sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SaxoInstrument {
+    ticker: String,
+    exchange_mic: String,
+    isin: Option<String>,
+    currency: String,
+}
+
+impl SaxoInstrument {
+    /// Key of the blocked-instrument map and of logs: `ticker` alone is not
+    /// unique across exchanges.
+    fn key(&self) -> String {
+        format!("{}:{}", self.ticker, self.exchange_mic)
+    }
+
+    fn query(&self) -> InstrumentQuery<'_> {
+        InstrumentQuery {
+            ticker: &self.ticker,
+            exchange_mic: &self.exchange_mic,
+            isin: self.isin.as_deref(),
+            registry_currency: Some(&self.currency),
+        }
+    }
+}
+
+/// Every registered company on one of `mics`, ordered by MIC then ticker.
+async fn load_saxo_instruments(
+    pool: &sqlx::PgPool,
+    mics: &[String],
+) -> anyhow::Result<Vec<SaxoInstrument>> {
+    let rows = sqlx::query(
+        "SELECT ticker, exchange_mic, isin, currency FROM companies \
+         WHERE exchange_mic = ANY($1) ORDER BY exchange_mic, ticker",
+    )
+    .bind(mics)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SaxoInstrument {
+            ticker: r.get("ticker"),
+            exchange_mic: r.get("exchange_mic"),
+            isin: r.get("isin"),
+            currency: r.get("currency"),
+        })
+        .collect())
+}
+
+/// Instrument count per MIC, in `mics` order, for the start-up log.
+fn count_per_mic<'a>(mics: &'a [String], list: &[SaxoInstrument]) -> Vec<(&'a str, usize)> {
+    mics.iter()
+        .map(|m| {
+            (
+                m.as_str(),
+                list.iter().filter(|i| &i.exchange_mic == m).count(),
+            )
+        })
+        .collect()
+}
+
+/// Parses `MIC=ExchangeId` pairs.
+fn parse_exchange_overrides(
+    pairs: &[String],
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    pairs
+        .iter()
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| {
+            let (mic, id) = p
+                .split_once('=')
+                .with_context(|| format!("SAXO_EXCHANGE_IDS entry '{p}' is not MIC=ExchangeId"))?;
+            Ok((mic.trim().to_string(), id.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Warns and exports `saxo_instrument_data_access` as an instrument's
+/// entitlement is seen. One warning per instrument and state, however many
+/// times the stream reconnects.
+struct MetricsAccessObserver {
+    warned: Mutex<std::collections::HashSet<(String, String, DataAccess)>>,
+}
+
+impl AccessObserver for MetricsAccessObserver {
+    fn observe(&self, ticker: &str, exchange_mic: &str, state: DataAccess) {
+        for s in DataAccess::ALL {
+            gauge!("saxo_instrument_data_access",
+                "ticker" => ticker.to_string(),
+                "exchange_mic" => exchange_mic.to_string(),
+                "state" => s.as_str())
+            .set(if s == state { 1.0 } else { 0.0 });
+        }
+        let first = self.warned.lock().unwrap().insert((
+            ticker.to_string(),
+            exchange_mic.to_string(),
+            state,
+        ));
+        if first {
+            warn!(
+                ticker,
+                exchange_mic,
+                state = state.as_str(),
+                "Saxo market data for this instrument"
+            );
+        }
+    }
 }
 
 // `expires_at_unix == 0` means no confirmed-valid token exists yet (first
@@ -708,7 +843,7 @@ async fn main() -> anyhow::Result<()> {
     );
     describe_gauge!(
         "saxo_daily_bars_last_success_timestamp",
-        "Unix time of the last daily-bar sweep in which every FNSE ticker \
+        "Unix time of the last daily-bar sweep in which every Nordic instrument \
          was fetched and published. Alert on staleness."
     );
     describe_counter!(
@@ -716,9 +851,14 @@ async fn main() -> anyhow::Result<()> {
         "Daily-bar sync failures (Uic resolution, chart fetch, publish) since startup."
     );
     describe_gauge!(
+        "saxo_instrument_data_access",
+        "Saxo market-data entitlement per instrument: 1 for the current state \
+         (realtime, delayed or no_access), 0 for the others."
+    );
+    describe_gauge!(
         "saxo_ws_connected",
         "Whether the Saxo WebSocket bar stream is currently connected \
-         (0 also when no FNSE tickers are registered — informational only, \
+         (0 also when no Nordic instruments are registered — informational only, \
          does not affect /health)."
     );
 
@@ -759,15 +899,26 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let tickers = load_fnse_tickers(&pool).await.unwrap_or_default();
+    let saxo_mics: Vec<String> = args
+        .saxo_mics
+        .iter()
+        .map(|m| m.trim().to_uppercase())
+        .filter(|m| !m.is_empty())
+        .collect();
+    let tickers = load_saxo_instruments(&pool, &saxo_mics)
+        .await
+        .unwrap_or_default();
     if tickers.is_empty() {
         warn!(
-            "no FNSE tickers registered — register via: nexus register GOMX.ST\n\
+            mics = ?saxo_mics,
+            "no Nordic instruments registered — register via: nexus register GOMX.ST\n\
              will poll every {} seconds",
             args.ticker_refresh_interval_secs
         );
     } else {
-        info!(count = tickers.len(), tickers = ?tickers, "loaded FNSE tickers");
+        info!(count = tickers.len(), per_mic = ?count_per_mic(&saxo_mics, &tickers),
+              tickers = ?tickers.iter().map(SaxoInstrument::key).collect::<Vec<_>>(),
+              "loaded Nordic instruments");
     }
 
     let http = reqwest::Client::builder()
@@ -776,7 +927,26 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to build HTTP client")?;
 
     // One resolver for the stream loop and the daily-bar sweep: it caches Uics.
-    let uic_resolver = Arc::new(UicResolver::new(http.clone(), &args.saxo_api_base));
+    let uic_resolver = Arc::new(
+        UicResolver::new(http.clone(), &args.saxo_api_base)
+            .with_exchange_ids(parse_exchange_overrides(&args.saxo_exchange_ids)?),
+    );
+    let access_observer: Arc<dyn AccessObserver> = Arc::new(MetricsAccessObserver {
+        warned: Mutex::new(Default::default()),
+    });
+    // Closures for the "is any subscribed exchange open" checks; weekdays only
+    // for a country or year that cannot be loaded.
+    let market_calendar = {
+        let year = Utc::now().year();
+        Arc::new(
+            MarketCalendar::load(
+                &alpha::CalendarProvider::new(),
+                &saxo_mics,
+                &[year, year + 1],
+            )
+            .await,
+        )
+    };
     // Whether a WebSocket stream is up, for the token refresher.
     let ws_connected = Arc::new(AtomicBool::new(false));
 
@@ -947,6 +1117,7 @@ async fn main() -> anyhow::Result<()> {
             producer: producer.clone(),
             topic: args.daily_bars_topic.clone(),
         }),
+        saxo_mics.clone(),
         shutdown_rx.clone(),
     ));
 
@@ -971,7 +1142,7 @@ async fn main() -> anyhow::Result<()> {
             .await
             .is_ok()
         {
-            match load_fnse_tickers(&pool).await {
+            match load_saxo_instruments(&pool, &saxo_mics).await {
                 Ok(new_tickers) if new_tickers != current_tickers => {
                     info!(
                         old_count = current_tickers.len(),
@@ -992,7 +1163,8 @@ async fn main() -> anyhow::Result<()> {
             gauge!("saxo_ws_connected").set(0.0_f64);
 
             let now = Utc::now();
-            if !stream_window_open(now) {
+            let mics_now = || current_tickers.iter().map(|i| i.exchange_mic.as_str());
+            if !(stream_window_open(now) && market_calendar.any_open_at(mics_now(), now)) {
                 let opens = next_stream_window(now);
                 // Wake at least every 10 min to pick up ticker changes and shutdown.
                 let wait = (opens - now)
@@ -1012,16 +1184,19 @@ async fn main() -> anyhow::Result<()> {
 
             let mut resolved = Vec::new();
             let mut hint: Option<Duration> = None;
-            for ticker in &current_tickers {
-                if is_blocked(&blocked, ticker, &access_token_snapshot) {
+            for inst in &current_tickers {
+                let (ticker, key) = (&inst.ticker, inst.key());
+                if is_blocked(&blocked, &key, &access_token_snapshot) {
                     continue;
                 }
                 match uic_resolver
-                    .resolve_with_cfd_check(ticker, &access_token_snapshot)
+                    .resolve_with_cfd_check(&inst.query(), &access_token_snapshot)
                     .await
                 {
                     Ok(uic) => {
-                        info!(ticker, uic = uic.uic, "resolved Uic");
+                        info!(ticker, exchange_mic = %uic.exchange_mic, uic = uic.uic,
+                              exchange_id = %uic.exchange_id, currency = %uic.currency,
+                              symbol = %uic.symbol, "resolved Uic");
                         resolved.push(uic);
                     }
                     Err(e) => {
@@ -1029,7 +1204,7 @@ async fn main() -> anyhow::Result<()> {
                         if let Some(until) = block_for(&e, &access_token_snapshot) {
                             error!(ticker, error = %e,
                                    "Uic resolution failed permanently — not retried until the ticker list or token changes");
-                            blocked.insert(ticker.clone(), until);
+                            blocked.insert(key, until);
                         } else {
                             error!(ticker, error = %e, "Uic resolution failed — skipping ticker");
                         }
@@ -1055,6 +1230,8 @@ async fn main() -> anyhow::Result<()> {
                 shared_token.clone(),
                 resolved,
                 http.clone(),
+                market_calendar.clone(),
+                access_observer.clone(),
             )
             .await
             {
@@ -1198,6 +1375,38 @@ mod backoff_tests {
         );
         assert!(!is_blocked(&blocked, "OTHER", "t1"));
         assert!(block_for(&UicResolverError::NotFound("X".into()), "t").is_some());
+    }
+
+    #[test]
+    fn instruments_are_keyed_by_ticker_and_mic_and_counted_per_mic() {
+        let inst = |t: &str, m: &str| SaxoInstrument {
+            ticker: t.into(),
+            exchange_mic: m.into(),
+            isin: None,
+            currency: "SEK".into(),
+        };
+        let list = vec![
+            inst("ABC", "XSTO"),
+            inst("ABC", "XCSE"),
+            inst("NOVO-B", "XCSE"),
+        ];
+        assert_ne!(list[0].key(), list[1].key());
+        let mics: Vec<String> = ["FNSE", "XSTO", "XCSE", "FNDK"].map(String::from).to_vec();
+        assert_eq!(
+            count_per_mic(&mics, &list),
+            vec![("FNSE", 0), ("XSTO", 1), ("XCSE", 2), ("FNDK", 0)]
+        );
+        assert_eq!(list[2].query().isin, None);
+    }
+
+    #[test]
+    fn exchange_id_overrides_are_parsed() {
+        let got =
+            parse_exchange_overrides(&["XCSE=CSE".into(), " FNDK = CSE_FN-DK ".into()]).unwrap();
+        assert_eq!(got["XCSE"], "CSE");
+        assert_eq!(got["FNDK"], "CSE_FN-DK");
+        assert!(parse_exchange_overrides(&["XCSE".into()]).is_err());
+        assert!(parse_exchange_overrides(&[]).unwrap().is_empty());
     }
 
     #[test]

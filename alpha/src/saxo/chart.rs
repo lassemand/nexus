@@ -15,9 +15,10 @@
 //!
 //! # Dates
 //!
-//! A sample's `Time` is an instant. The trading date is its **Europe/Stockholm**
-//! calendar date (not the UTC date): a bar stamped `2026-01-15T23:00:00Z` is the
-//! 16th in Stockholm.
+//! A sample's `Time` is an instant. The trading date is its calendar date in the
+//! **exchange's own time zone** ([`model::exchange`], never a hard-coded city):
+//! a bar stamped `2026-01-15T23:00:00Z` is the 16th in Stockholm and in
+//! Copenhagen alike.
 //!
 //! # Unverified against the live API
 //!
@@ -28,7 +29,7 @@
 
 use super::auth::SharedToken;
 use chrono::{DateTime, NaiveDate, Utc};
-use model::stockholm::stockholm_date;
+use model::exchange::local_date;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -58,6 +59,8 @@ pub enum ChartError {
     RateLimited(u32),
     #[error("invalid chart URL: {0}")]
     Url(#[from] url::ParseError),
+    #[error("no time zone known for exchange {0}")]
+    UnknownExchange(String),
 }
 
 impl ChartError {
@@ -68,7 +71,7 @@ impl ChartError {
             ChartError::Http(e) => super::is_transient_reqwest(e),
             ChartError::Status(s) => super::is_transient_status(*s),
             ChartError::RateLimited(_) => true,
-            ChartError::Url(_) => false,
+            ChartError::Url(_) | ChartError::UnknownExchange(_) => false,
         }
     }
 }
@@ -76,7 +79,7 @@ impl ChartError {
 /// One daily bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DailyBarRow {
-    /// Exchange-local (Europe/Stockholm) trading date.
+    /// Trading date in the exchange's own time zone.
     pub date: NaiveDate,
     /// The sample's `Time` as returned by Saxo.
     pub time: DateTime<Utc>,
@@ -113,7 +116,7 @@ fn decimal(raw: &Option<Box<RawValue>>) -> Option<Decimal> {
 }
 
 impl RawSample {
-    fn into_row(self) -> Option<DailyBarRow> {
+    fn into_row(self, exchange_mic: &str) -> Option<DailyBarRow> {
         let time = DateTime::parse_from_rfc3339(&self.time)
             .ok()?
             .with_timezone(&Utc);
@@ -128,7 +131,7 @@ impl RawSample {
             }
         };
         Some(DailyBarRow {
-            date: stockholm_date(time),
+            date: local_date(exchange_mic, time)?,
             time,
             open: decimal(&self.open)?,
             high: decimal(&self.high)?,
@@ -142,14 +145,17 @@ impl RawSample {
 /// Parses a chart response body into bars, oldest first. Samples that cannot be
 /// read (missing or non-numeric price, bad time) are skipped with a warning.
 /// Days Saxo omits are simply absent: nothing is ever filled forward.
-pub fn parse_daily_bars(body: &str) -> Result<Vec<DailyBarRow>, serde_json::Error> {
+pub fn parse_daily_bars(
+    body: &str,
+    exchange_mic: &str,
+) -> Result<Vec<DailyBarRow>, serde_json::Error> {
     let resp: ChartResponse = serde_json::from_str(body)?;
     let mut rows: Vec<DailyBarRow> = resp
         .data
         .into_iter()
         .filter_map(|s| {
             let time = s.time.clone();
-            let row = s.into_row();
+            let row = s.into_row(exchange_mic);
             if row.is_none() {
                 warn!(time, "skipping unreadable chart sample");
             }
@@ -208,15 +214,19 @@ impl ChartClient {
     }
 
     /// Up to `count` (≤ 1200) daily bars ending at `up_to` (inclusive), oldest
-    /// first. Transient failures (no response, 408, 429, 5xx) are retried up to
+    /// first, dated in `exchange_mic`'s time zone. Transient failures (no response, 408, 429, 5xx) are retried up to
     /// `MAX_ATTEMPTS` times, after `Retry-After` when given, else after 1 s,
     /// 2 s, 4 s. Any other status fails at once.
     pub async fn fetch_up_to(
         &mut self,
         uic: u64,
+        exchange_mic: &str,
         up_to: DateTime<Utc>,
         count: u32,
     ) -> Result<Vec<DailyBarRow>, ChartError> {
+        if model::exchange::timezone(exchange_mic).is_none() {
+            return Err(ChartError::UnknownExchange(exchange_mic.to_string()));
+        }
         let mut url = url::Url::parse(&format!(
             "{}/chart/{}/charts",
             self.api_base.trim_end_matches('/'),
@@ -254,7 +264,7 @@ impl ChartClient {
             let status = resp.status();
             if status.is_success() {
                 let body = resp.text().await?;
-                return parse_daily_bars(&body).map_err(|e| {
+                return parse_daily_bars(&body, exchange_mic).map_err(|e| {
                     warn!(error = %e, "undecodable chart response");
                     ChartError::Status(reqwest::StatusCode::UNPROCESSABLE_ENTITY)
                 });
@@ -325,7 +335,7 @@ mod tests {
     fn prices_keep_every_digit_without_float_round_trip() {
         let body = r#"{"Data":[{"Time":"2026-08-26T00:00:00.000000Z","Open":12.345678,
             "High":13.000001,"Low":12.0,"Close":12.345678,"Volume":1234567.0}]}"#;
-        let rows = parse_daily_bars(body).unwrap();
+        let rows = parse_daily_bars(body, "FNSE").unwrap();
         assert_eq!(rows[0].close.to_string(), "12.345678");
         assert_eq!(rows[0].high.to_string(), "13.000001");
         assert_eq!(rows[0].low.to_string(), "12.0");
@@ -333,7 +343,7 @@ mod tests {
         // 0.1 + 0.2 style values that an f64 would corrupt.
         let body = r#"{"Data":[{"Time":"2026-08-26T00:00:00Z","Open":0.30000000000000004,
             "High":1,"Low":1,"Close":1e-5,"Volume":0}]}"#;
-        let rows = parse_daily_bars(body).unwrap();
+        let rows = parse_daily_bars(body, "FNSE").unwrap();
         assert_eq!(rows[0].open.to_string(), "0.30000000000000004");
         assert_eq!(rows[0].close.to_string(), "0.00001");
         assert_eq!(rows[0].volume, 0);
@@ -346,7 +356,7 @@ mod tests {
           {"Time":"2026-01-15T00:00:00Z","Open":1,"High":1,"Low":1,"Close":1,"Volume":1},
           {"Time":"2026-07-15T22:00:00Z","Open":1,"High":1,"Low":1,"Close":1,"Volume":1},
           {"Time":"2026-07-15T00:00:00Z","Open":1,"High":1,"Low":1,"Close":1,"Volume":1}]}"#;
-        let dates: Vec<String> = parse_daily_bars(body)
+        let dates: Vec<String> = parse_daily_bars(body, "FNSE")
             .unwrap()
             .iter()
             .map(|r| r.date.to_string())
@@ -359,18 +369,47 @@ mod tests {
     }
 
     #[test]
+    fn danish_bars_are_dated_in_the_danish_zone() {
+        let body = r#"{"Data":[
+          {"Time":"2026-01-15T23:00:00Z","Open":1,"High":1,"Low":1,"Close":1,"Volume":1},
+          {"Time":"2026-07-15T22:00:00Z","Open":1,"High":1,"Low":1,"Close":1,"Volume":1}]}"#;
+        for mic in ["XCSE", "FNDK"] {
+            let dates: Vec<String> = parse_daily_bars(body, mic)
+                .unwrap()
+                .iter()
+                .map(|r| r.date.to_string())
+                .collect();
+            assert_eq!(dates, vec!["2026-01-16", "2026-07-16"], "{mic}");
+        }
+        // A venue without a known zone yields no bars rather than a guessed date.
+        assert!(parse_daily_bars(body, "XNAS").unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_exchange_is_refused_before_any_request() {
+        let server = MockServer::start().await;
+        let err = client(&server)
+            .fetch_up_to(1, "XNAS", at(2026, 8, 26), 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ChartError::UnknownExchange(_)));
+        assert!(!err.is_transient());
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[test]
     fn missing_days_are_not_filled_and_bad_samples_are_skipped() {
         let body = r#"{"Data":[
           {"Time":"2026-08-24T00:00:00Z","Open":1,"High":2,"Low":1,"Close":2,"Volume":10},
           {"Time":"2026-08-26T00:00:00Z","Open":2,"High":3,"Low":2,"Close":3,"Volume":0},
           {"Time":"2026-08-27T00:00:00Z","Open":2,"High":3,"Low":2,"Volume":5},
           {"Time":"garbage","Open":2,"High":3,"Low":2,"Close":3,"Volume":5}]}"#;
-        let rows = parse_daily_bars(body).unwrap();
+        let rows = parse_daily_bars(body, "FNSE").unwrap();
         let dates: Vec<String> = rows.iter().map(|r| r.date.to_string()).collect();
         assert_eq!(dates, vec!["2026-08-24", "2026-08-26"]); // the 25th is absent, not filled
         assert_eq!(rows[1].volume, 0); // zero-volume bar kept as is
-        assert_eq!(parse_daily_bars(r#"{"Data":[]}"#).unwrap(), vec![]);
-        assert_eq!(parse_daily_bars("{}").unwrap(), vec![]);
+        assert_eq!(parse_daily_bars(r#"{"Data":[]}"#, "FNSE").unwrap(), vec![]);
+        assert_eq!(parse_daily_bars("{}", "FNSE").unwrap(), vec![]);
     }
 
     #[tokio::test]
@@ -392,7 +431,10 @@ mod tests {
             .mount(&server)
             .await;
         let mut c = client(&server);
-        let rows = c.fetch_up_to(4711, at(2026, 8, 26), 5000).await.unwrap(); // count clamped
+        let rows = c
+            .fetch_up_to(4711, "FNSE", at(2026, 8, 26), 5000)
+            .await
+            .unwrap(); // count clamped
         assert_eq!(rows.len(), 1);
         let token_calls = server
             .received_requests()
@@ -418,7 +460,7 @@ mod tests {
             .await;
         let mut c = client(&server);
         assert!(c
-            .fetch_up_to(1, at(2026, 8, 26), 10)
+            .fetch_up_to(1, "FNSE", at(2026, 8, 26), 10)
             .await
             .unwrap()
             .is_empty());
@@ -430,7 +472,7 @@ mod tests {
             .mount(&server)
             .await;
         let err = client(&server)
-            .fetch_up_to(1, at(2026, 8, 26), 10)
+            .fetch_up_to(1, "FNSE", at(2026, 8, 26), 10)
             .await
             .unwrap_err();
         assert!(matches!(err, ChartError::Status(s) if s.as_u16() == 404));
@@ -450,7 +492,7 @@ mod tests {
             .mount(&server)
             .await;
         assert!(client(&server)
-            .fetch_up_to(1, at(2026, 8, 26), 10)
+            .fetch_up_to(1, "FNSE", at(2026, 8, 26), 10)
             .await
             .unwrap()
             .is_empty());
@@ -463,7 +505,7 @@ mod tests {
             .mount(&server)
             .await;
         let err = client(&server)
-            .fetch_up_to(1, at(2026, 8, 26), 10)
+            .fetch_up_to(1, "FNSE", at(2026, 8, 26), 10)
             .await
             .unwrap_err();
         assert!(matches!(err, ChartError::Status(s) if s.as_u16() == 400));
@@ -479,7 +521,7 @@ mod tests {
             .mount(&server)
             .await;
         let err = client(&server)
-            .fetch_up_to(1, at(2026, 8, 26), 10)
+            .fetch_up_to(1, "FNSE", at(2026, 8, 26), 10)
             .await
             .unwrap_err();
         assert!(matches!(err, ChartError::Status(s) if s.as_u16() == 502));
@@ -496,6 +538,6 @@ mod tests {
             .mount(&server)
             .await;
         let mut c = client(&server).with_version("v3");
-        c.fetch_up_to(1, at(2026, 8, 26), 10).await.unwrap();
+        c.fetch_up_to(1, "FNSE", at(2026, 8, 26), 10).await.unwrap();
     }
 }

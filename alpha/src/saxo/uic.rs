@@ -1,7 +1,11 @@
 /// Saxo Bank Uic (instrument identifier) resolution.
 ///
-/// Resolves a Nordic ticker symbol to Saxo's internal `Uic` via the
-/// `/ref/v1/instruments` endpoint, **strictly filtering to `AssetType=Stock`**.
+/// Resolves a Nordic listing to Saxo's internal `Uic` via the
+/// `/ref/v1/instruments` endpoint, **strictly filtering to `AssetType=Stock`**
+/// and to the **expected exchange** (see [`exchange_ids`]). The ISIN is searched
+/// when the registry has one; otherwise the ticker text is, in the registry's
+/// spelling and with `-` replaced by a space (`NOVO-B` → `NOVO B`). More than
+/// one candidate on the expected exchange is an error, never a guess.
 ///
 /// # CFD rejection
 ///
@@ -45,6 +49,16 @@ pub enum UicResolverError {
     CfdOnly(String),
     #[error("no instrument found for ticker {0}")]
     NotFound(String),
+    /// Several stocks on the expected exchange match; picking one could track
+    /// the wrong share class.
+    #[error("ambiguous: {ticker} matches several stocks on its exchange: {symbols:?}")]
+    Ambiguous {
+        ticker: String,
+        symbols: Vec<String>,
+    },
+    /// No Saxo `ExchangeId` is configured for this MIC.
+    #[error("no Saxo ExchangeId known for MIC {0}")]
+    UnknownExchange(String),
 }
 
 impl UicResolverError {
@@ -54,7 +68,10 @@ impl UicResolverError {
         match self {
             UicResolverError::Http { source, .. } => super::is_transient_reqwest(source),
             UicResolverError::Status { status, .. } => super::is_transient_status(*status),
-            UicResolverError::CfdOnly(_) | UicResolverError::NotFound(_) => false,
+            UicResolverError::CfdOnly(_)
+            | UicResolverError::NotFound(_)
+            | UicResolverError::Ambiguous { .. }
+            | UicResolverError::UnknownExchange(_) => false,
         }
     }
 
@@ -68,17 +85,73 @@ impl UicResolverError {
     }
 }
 
+/// Saxo `ExchangeId` for each MIC we stream.
+///
+/// **Unverified against the live API**: confirm with `GET /ref/v1/exchanges`
+/// (list, then `GET /ref/v1/exchanges/{ExchangeId}` for the `Mic` of each) and
+/// correct here. `SSE_FN-SE` (First North Stockholm) is the value seen on
+/// GOMX; the others follow Saxo's naming and must be checked. Deployments can
+/// override entries without a rebuild, see [`UicResolver::with_exchange_ids`].
+pub mod exchange_ids {
+    /// `(MIC, Saxo ExchangeId)`.
+    pub const SAXO_EXCHANGE_IDS: &[(&str, &str)] = &[
+        ("FNSE", "SSE_FN-SE"),
+        ("XSTO", "SSE"),
+        ("XCSE", "CSE"),
+        ("FNDK", "CSE_FN-DK"),
+    ];
+
+    /// The built-in ExchangeId for `mic`.
+    pub fn default_for(mic: &str) -> Option<&'static str> {
+        SAXO_EXCHANGE_IDS
+            .iter()
+            .find(|(m, _)| *m == mic)
+            .map(|(_, id)| *id)
+    }
+}
+
+/// A listing to look up on Saxo.
+#[derive(Debug, Clone, Copy)]
+pub struct InstrumentQuery<'a> {
+    /// Registry ticker, e.g. `NOVO-B`.
+    pub ticker: &'a str,
+    /// Registry MIC, e.g. `XCSE`; selects the expected Saxo exchange.
+    pub exchange_mic: &'a str,
+    /// ISIN from the registry, searched first when present.
+    pub isin: Option<&'a str>,
+    /// Currency the registry has for the listing, compared with Saxo's.
+    pub registry_currency: Option<&'a str>,
+}
+
+impl<'a> InstrumentQuery<'a> {
+    /// A query by ticker text only.
+    pub fn new(ticker: &'a str, exchange_mic: &'a str) -> Self {
+        Self {
+            ticker,
+            exchange_mic,
+            isin: None,
+            registry_currency: None,
+        }
+    }
+}
+
 /// A successfully resolved Saxo instrument identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedUic {
     /// Saxo's internal numeric instrument identifier.
     pub uic: u64,
-    /// The ticker symbol (uppercase).
+    /// The registry ticker (uppercase).
     pub ticker: String,
-    /// ISO 10383 MIC of the exchange as known to Saxo (e.g. "SSE_FN-SE").
+    /// The registry MIC this listing was resolved for (e.g. `XCSE`).
+    pub exchange_mic: String,
+    /// Saxo's ExchangeId (e.g. "SSE_FN-SE").
     pub exchange_id: String,
-    /// ISO 4217 currency of the instrument (e.g. "SEK").
+    /// ISO 4217 currency **as Saxo reports it**; bars carry this value.
     pub currency: String,
+    /// Saxo's symbol, e.g. `NOVOb:xcse`.
+    pub symbol: String,
+    /// True when the registry's currency differs from Saxo's.
+    pub currency_mismatch: bool,
 }
 
 #[derive(Deserialize)]
@@ -89,6 +162,8 @@ struct InstrumentSummary {
     asset_type: String,
     exchange_id: String,
     currency_code: String,
+    #[serde(default)]
+    symbol: String,
 }
 
 #[derive(Deserialize)]
@@ -97,15 +172,16 @@ struct InstrumentListResponse {
     data: Vec<InstrumentSummary>,
 }
 
-/// Resolves tickers to Saxo `Uic` values via the reference data API.
+/// Resolves listings to Saxo `Uic` values via the reference data API.
 ///
-/// Successful resolutions are cached for the resolver's lifetime: a Uic never
-/// changes, and every lookup counts against Saxo's request limits. Share one
-/// resolver between all users in a process.
+/// Successful resolutions are cached for the resolver's lifetime, keyed by
+/// `(ticker, MIC)`: a Uic never changes, and every lookup counts against Saxo's
+/// request limits. Share one resolver between all users in a process.
 pub struct UicResolver {
     client: reqwest::Client,
     api_base: String,
-    cache: Mutex<HashMap<String, ResolvedUic>>,
+    cache: Mutex<HashMap<(String, String), ResolvedUic>>,
+    exchange_overrides: HashMap<String, String>,
 }
 
 /// `Retry-After` (seconds), or else the longest `X-RateLimit-*-Reset`.
@@ -125,32 +201,61 @@ fn wait_hint(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
+/// Search keywords for a listing: the ISIN if known, else the ticker as
+/// registered and with `-` turned into a space (`NOVO-B` → `NOVO B`).
+fn text_keywords(ticker: &str) -> Vec<String> {
+    let mut v = vec![ticker.to_string()];
+    let spaced = ticker.replace('-', " ");
+    if spaced != ticker {
+        v.push(spaced);
+    }
+    v
+}
+
 impl UicResolver {
     pub fn new(client: reqwest::Client, api_base: impl Into<String>) -> Self {
         Self {
             client,
             api_base: api_base.into(),
             cache: Mutex::new(HashMap::new()),
+            exchange_overrides: HashMap::new(),
         }
+    }
+
+    /// Replaces the built-in ExchangeId of some MICs (`MIC` → Saxo ExchangeId),
+    /// for when [`exchange_ids::SAXO_EXCHANGE_IDS`] proves wrong in production.
+    pub fn with_exchange_ids(mut self, overrides: HashMap<String, String>) -> Self {
+        self.exchange_overrides = overrides;
+        self
+    }
+
+    fn expected_exchange(&self, mic: &str) -> Result<String, UicResolverError> {
+        self.exchange_overrides
+            .get(mic)
+            .cloned()
+            .or_else(|| exchange_ids::default_for(mic).map(str::to_string))
+            .ok_or_else(|| UicResolverError::UnknownExchange(mic.to_string()))
     }
 
     async fn search(
         &self,
         ticker: &str,
+        keywords: &str,
         asset_type: &str,
         access_token: &str,
     ) -> Result<InstrumentListResponse, UicResolverError> {
-        let url = format!(
-            "{}/ref/v1/instruments?Keywords={}&AssetTypes={}",
-            self.api_base, ticker, asset_type
-        );
         let http = |source| UicResolverError::Http {
             ticker: ticker.to_string(),
             source,
         };
+        let mut url = url::Url::parse(&format!("{}/ref/v1/instruments", self.api_base))
+            .map_err(|_| UicResolverError::NotFound(ticker.to_string()))?;
+        url.query_pairs_mut()
+            .append_pair("Keywords", keywords)
+            .append_pair("AssetTypes", asset_type);
         let resp = self
             .client
-            .get(&url)
+            .get(url)
             .bearer_auth(access_token)
             .send()
             .await
@@ -176,80 +281,98 @@ impl UicResolver {
         resp.json().await.map_err(http)
     }
 
-    fn cached(&self, ticker: &str) -> Option<ResolvedUic> {
-        self.cache
-            .lock()
-            .unwrap()
-            .get(&ticker.to_uppercase())
-            .cloned()
+    fn cache_key(q: &InstrumentQuery<'_>) -> (String, String) {
+        (q.ticker.to_uppercase(), q.exchange_mic.to_string())
     }
 
-    fn remember(&self, resolved: &ResolvedUic) {
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(resolved.ticker.clone(), resolved.clone());
+    fn cached(&self, q: &InstrumentQuery<'_>) -> Option<ResolvedUic> {
+        self.cache.lock().unwrap().get(&Self::cache_key(q)).cloned()
     }
 
-    fn to_resolved(ticker: &str, stock: InstrumentSummary) -> ResolvedUic {
-        ResolvedUic {
-            uic: stock.uic,
-            ticker: ticker.to_uppercase(),
-            exchange_id: stock.exchange_id,
-            currency: stock.currency_code,
-        }
+    fn remember(&self, key: (String, String), resolved: &ResolvedUic) {
+        self.cache.lock().unwrap().insert(key, resolved.clone());
     }
 
-    /// Resolve a ticker symbol to its `Stock` Uic on Saxo (cached).
-    pub async fn resolve(
-        &self,
-        ticker: &str,
-        access_token: &str,
-    ) -> Result<ResolvedUic, UicResolverError> {
-        if let Some(hit) = self.cached(ticker) {
-            return Ok(hit);
-        }
-        let stock = self
-            .search(ticker, "Stock", access_token)
-            .await?
-            .data
+    /// The stocks on `expected` among the results for one search.
+    fn candidates(resp: InstrumentListResponse, expected: &str) -> Vec<InstrumentSummary> {
+        resp.data
             .into_iter()
-            .find(|i| i.asset_type == "Stock")
-            .ok_or_else(|| UicResolverError::NotFound(ticker.to_string()))?;
-        let resolved = Self::to_resolved(ticker, stock);
-        self.remember(&resolved);
-        Ok(resolved)
+            .filter(|i| i.asset_type == "Stock" && i.exchange_id.eq_ignore_ascii_case(expected))
+            .collect()
     }
 
-    /// Resolve a ticker (cached), explicitly confirming no CFD exists with the
-    /// same symbol. If a Stock is found, returns it. If only a CfdOnStock
-    /// exists, returns [`UicResolverError::CfdOnly`].
+    /// Resolve a listing to its `Stock` Uic on its expected Saxo exchange
+    /// (cached), explicitly rejecting CFDs.
+    ///
+    /// - ISIN set: search the ISIN; if that finds nothing on the exchange, fall
+    ///   back to the ticker text.
+    /// - Several stocks on the exchange: [`UicResolverError::Ambiguous`].
+    /// - Only a CFD exists: [`UicResolverError::CfdOnly`]; nothing:
+    ///   [`UicResolverError::NotFound`].
     pub async fn resolve_with_cfd_check(
         &self,
-        ticker: &str,
+        q: &InstrumentQuery<'_>,
         access_token: &str,
     ) -> Result<ResolvedUic, UicResolverError> {
-        if let Some(hit) = self.cached(ticker) {
+        if let Some(hit) = self.cached(q) {
             return Ok(hit);
         }
-        let stock = self
-            .search(ticker, "Stock", access_token)
-            .await?
-            .data
-            .into_iter()
-            .find(|i| i.asset_type == "Stock");
-        if let Some(stock) = stock {
-            let resolved = Self::to_resolved(ticker, stock);
-            self.remember(&resolved);
-            return Ok(resolved);
+        let expected = self.expected_exchange(q.exchange_mic)?;
+
+        let mut keywords: Vec<String> = q.isin.map(|i| vec![i.to_string()]).unwrap_or_default();
+        keywords.extend(text_keywords(q.ticker));
+
+        let mut found = Vec::new();
+        for kw in &keywords {
+            found = Self::candidates(
+                self.search(q.ticker, kw, "Stock", access_token).await?,
+                &expected,
+            );
+            if !found.is_empty() {
+                break;
+            }
         }
 
-        // Stock not found — check if a CFD exists to give a better error.
-        let cfd = self.search(ticker, "CfdOnStock", access_token).await?;
-        if cfd.data.iter().any(|i| i.asset_type == "CfdOnStock") {
-            Err(UicResolverError::CfdOnly(ticker.to_string()))
-        } else {
-            Err(UicResolverError::NotFound(ticker.to_string()))
+        match found.len() {
+            1 => {
+                let stock = found.remove(0);
+                let currency_mismatch = q
+                    .registry_currency
+                    .is_some_and(|c| !c.eq_ignore_ascii_case(&stock.currency_code));
+                if currency_mismatch {
+                    tracing::warn!(
+                        ticker = q.ticker, exchange_mic = q.exchange_mic,
+                        registry_currency = q.registry_currency, saxo_currency = %stock.currency_code,
+                        "Saxo's currency differs from the registry's; bars use Saxo's"
+                    );
+                }
+                let resolved = ResolvedUic {
+                    uic: stock.uic,
+                    ticker: q.ticker.to_uppercase(),
+                    exchange_mic: q.exchange_mic.to_string(),
+                    exchange_id: stock.exchange_id,
+                    currency: stock.currency_code,
+                    symbol: stock.symbol,
+                    currency_mismatch,
+                };
+                self.remember(Self::cache_key(q), &resolved);
+                Ok(resolved)
+            }
+            0 => {
+                // Nothing as a Stock on this exchange: say so if a CFD exists.
+                let cfd = self
+                    .search(q.ticker, &keywords[0], "CfdOnStock", access_token)
+                    .await?;
+                if cfd.data.iter().any(|i| i.asset_type == "CfdOnStock") {
+                    Err(UicResolverError::CfdOnly(q.ticker.to_string()))
+                } else {
+                    Err(UicResolverError::NotFound(q.ticker.to_string()))
+                }
+            }
+            _ => Err(UicResolverError::Ambiguous {
+                ticker: q.ticker.to_string(),
+                symbols: found.into_iter().map(|i| i.symbol).collect(),
+            }),
         }
     }
 }
@@ -344,12 +467,184 @@ mod tests {
                 .mount(&server)
                 .await;
             let r = UicResolver::new(reqwest::Client::new(), server.uri());
-            let first = r.resolve_with_cfd_check("GOMX", "t").await.unwrap();
-            let again = r.resolve_with_cfd_check("gomx", "t").await.unwrap();
+            let first = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
+                .await
+                .unwrap();
+            let again = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("gomx", "FNSE"), "t")
+                .await
+                .unwrap();
             assert_eq!(first, again);
             assert_eq!((first.uic, first.currency.as_str()), (4769462, "SEK"));
-            assert_eq!(r.resolve("GOMX", "t").await.unwrap(), first);
             // `expect(1)` is verified when the server drops.
+        }
+
+        fn stock(uic: u64, symbol: &str, exchange: &str, currency: &str) -> String {
+            format!(
+                r#"{{"Identifier":{uic},"AssetType":"Stock","ExchangeId":"{exchange}","CurrencyCode":"{currency}","Symbol":"{symbol}"}}"#
+            )
+        }
+
+        fn list(items: &[String]) -> String {
+            format!(r#"{{"Data":[{}]}}"#, items.join(","))
+        }
+
+        async fn mock_keywords(server: &MockServer, keywords: &str, body: String) {
+            Mock::given(method("GET"))
+                .and(path("/ref/v1/instruments"))
+                .and(query_param("Keywords", keywords))
+                .and(query_param("AssetTypes", "Stock"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .mount(server)
+                .await;
+        }
+
+        const NOVO_ISIN: &str = "DK0062498333";
+
+        #[tokio::test]
+        async fn isin_resolution_picks_the_copenhagen_line_over_london_and_us() {
+            let server = MockServer::start().await;
+            mock_keywords(
+                &server,
+                NOVO_ISIN,
+                list(&[
+                    stock(1, "NOVOb:xlon", "LSE_INTL", "GBP"),
+                    stock(2, "NVO:xnys", "NYSE", "USD"),
+                    stock(3, "NOVOb:xcse", "CSE", "DKK"),
+                ]),
+            )
+            .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let q = InstrumentQuery {
+                isin: Some(NOVO_ISIN),
+                registry_currency: Some("DKK"),
+                ..InstrumentQuery::new("NOVO-B", "XCSE")
+            };
+            let got = r.resolve_with_cfd_check(&q, "t").await.unwrap();
+            assert_eq!(
+                (got.uic, got.exchange_mic.as_str(), got.exchange_id.as_str()),
+                (3, "XCSE", "CSE")
+            );
+            assert_eq!(
+                (got.currency.as_str(), got.symbol.as_str()),
+                ("DKK", "NOVOb:xcse")
+            );
+            assert!(!got.currency_mismatch);
+        }
+
+        #[tokio::test]
+        async fn text_fallback_tries_the_hyphen_as_a_space() {
+            let server = MockServer::start().await;
+            mock_keywords(&server, "NOVO-B", list(&[])).await;
+            mock_keywords(
+                &server,
+                "NOVO B",
+                list(&[
+                    stock(3, "NOVOb:xcse", "CSE", "DKK"),
+                    stock(9, "NOVOb:xlon", "LSE_INTL", "GBP"),
+                ]),
+            )
+            .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let got = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("NOVO-B", "XCSE"), "t")
+                .await
+                .unwrap();
+            assert_eq!(got.uic, 3);
+        }
+
+        #[tokio::test]
+        async fn two_candidates_on_the_expected_exchange_are_ambiguous() {
+            let server = MockServer::start().await;
+            mock_keywords(
+                &server,
+                NOVO_ISIN,
+                list(&[
+                    stock(3, "NOVOb:xcse", "CSE", "DKK"),
+                    stock(4, "NOVOa:xcse", "CSE", "DKK"),
+                ]),
+            )
+            .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let q = InstrumentQuery {
+                isin: Some(NOVO_ISIN),
+                ..InstrumentQuery::new("NOVO-B", "XCSE")
+            };
+            match r.resolve_with_cfd_check(&q, "t").await.unwrap_err() {
+                UicResolverError::Ambiguous { symbols, .. } => {
+                    assert_eq!(symbols, vec!["NOVOb:xcse", "NOVOa:xcse"])
+                }
+                e => panic!("{e:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn a_currency_that_differs_from_the_registry_is_flagged_and_saxos_is_used() {
+            let server = MockServer::start().await;
+            mock_keywords(
+                &server,
+                "NOVO-B",
+                list(&[stock(3, "NOVOb:xcse", "CSE", "DKK")]),
+            )
+            .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let q = InstrumentQuery {
+                registry_currency: Some("SEK"),
+                ..InstrumentQuery::new("NOVO-B", "XCSE")
+            };
+            let got = r.resolve_with_cfd_check(&q, "t").await.unwrap();
+            assert!(got.currency_mismatch);
+            assert_eq!(got.currency, "DKK");
+        }
+
+        #[tokio::test]
+        async fn the_cache_key_is_ticker_and_mic() {
+            let server = MockServer::start().await;
+            mock_keywords(
+                &server,
+                "ABC",
+                list(&[
+                    stock(1, "ABC:xsto", "SSE", "SEK"),
+                    stock(2, "ABC:xcse", "CSE", "DKK"),
+                ]),
+            )
+            .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let se = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("ABC", "XSTO"), "t")
+                .await
+                .unwrap();
+            let dk = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("ABC", "XCSE"), "t")
+                .await
+                .unwrap();
+            assert_eq!((se.uic, dk.uic), (1, 2));
+        }
+
+        #[tokio::test]
+        async fn an_exchange_id_override_and_an_unknown_mic() {
+            let server = MockServer::start().await;
+            mock_keywords(
+                &server,
+                "NOVO-B",
+                list(&[stock(3, "NOVOb:xcse", "CSE_X", "DKK")]),
+            )
+            .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri())
+                .with_exchange_ids([("XCSE".to_string(), "CSE_X".to_string())].into());
+            assert_eq!(
+                r.resolve_with_cfd_check(&InstrumentQuery::new("NOVO-B", "XCSE"), "t")
+                    .await
+                    .unwrap()
+                    .uic,
+                3
+            );
+            let err = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("X", "XHEL"), "t")
+                .await
+                .unwrap_err();
+            assert!(matches!(err, UicResolverError::UnknownExchange(_)));
         }
 
         #[tokio::test]
@@ -365,7 +660,10 @@ mod tests {
                 .mount(&server)
                 .await;
             let r = UicResolver::new(reqwest::Client::new(), server.uri());
-            let err = r.resolve_with_cfd_check("GOMX", "t").await.unwrap_err();
+            let err = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
+                .await
+                .unwrap_err();
             assert_eq!(err.retry_after(), Some(Duration::from_secs(30)));
             let UicResolverError::Status {
                 status, rate_limit, ..
@@ -378,7 +676,10 @@ mod tests {
                 .iter()
                 .any(|(k, v)| k == "x-ratelimit-session-remaining" && v == "0"));
             // A failure is not cached: the next call asks again.
-            assert!(r.resolve_with_cfd_check("GOMX", "t").await.is_err());
+            assert!(r
+                .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
+                .await
+                .is_err());
             assert_eq!(server.received_requests().await.unwrap().len(), 2);
         }
 
@@ -394,7 +695,10 @@ mod tests {
                 .mount(&server)
                 .await;
             let r = UicResolver::new(reqwest::Client::new(), server.uri());
-            let err = r.resolve_with_cfd_check("GOMX", "t").await.unwrap_err();
+            let err = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
+                .await
+                .unwrap_err();
             assert_eq!(err.retry_after(), Some(Duration::from_secs(3600)));
         }
 
@@ -414,11 +718,20 @@ mod tests {
                     .mount(&server)
                     .await;
                 let r = UicResolver::new(reqwest::Client::new(), server.uri());
-                let err = r.resolve_with_cfd_check("GOMX", "t").await.unwrap_err();
+                let err = r
+                    .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
+                    .await
+                    .unwrap_err();
                 assert_eq!(err.is_transient(), transient, "{code}");
             }
             assert!(!UicResolverError::NotFound("X".into()).is_transient());
             assert!(!UicResolverError::CfdOnly("X".into()).is_transient());
+            assert!(!UicResolverError::UnknownExchange("X".into()).is_transient());
+            assert!(!UicResolverError::Ambiguous {
+                ticker: "X".into(),
+                symbols: vec![]
+            }
+            .is_transient());
         }
     }
 }
