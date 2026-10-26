@@ -33,7 +33,7 @@ mod tests {
             close: 1.5,
             volume: 1000.0,
             timestamp: SystemTime::UNIX_EPOCH,
-            currency: mic::currency(exchange_mic).to_string(),
+            currency: mic::currency(exchange_mic).expect("known MIC").to_string(),
         }
     }
 

@@ -34,7 +34,8 @@ pub struct Listing {
 impl Listing {
     /// Normalises a registration the same way signal does: uppercase ticker,
     /// `XNAS` when no MIC was sent, currency derived from the MIC when absent.
-    /// Returns `None` for a registration without a ticker.
+    /// Returns `None` for a registration without a ticker, or without a
+    /// currency on a MIC whose currency is unknown (logged).
     pub fn from_registration(r: &TickerRegistration) -> Option<Self> {
         let ticker = r.ticker.trim().to_uppercase();
         if ticker.is_empty() {
@@ -46,7 +47,17 @@ impl Listing {
             r.exchange_mic.clone()
         };
         let currency = if r.currency.is_empty() {
-            mic::currency(&exchange_mic).to_string()
+            match mic::currency(&exchange_mic) {
+                Some(c) => c.to_string(),
+                None => {
+                    tracing::warn!(
+                        ticker = %ticker,
+                        exchange_mic = %exchange_mic,
+                        "skipping registration: no currency given and MIC has no known currency"
+                    );
+                    return None;
+                }
+            }
         } else {
             r.currency.clone()
         };

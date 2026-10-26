@@ -158,14 +158,23 @@ enum CalendarAction {
     /// Examples:
     ///   nexus calendar sync --country SE --year 2029
     ///   nexus calendar sync --country US --year 2029
+    ///   nexus calendar sync --country DK --from-year 2015 --to-year 2027
     Sync {
-        /// ISO 3166-1 alpha-2 country code (e.g. SE, US).
+        /// ISO 3166-1 alpha-2 country code (e.g. SE, US, DK).
         #[arg(long)]
         country: String,
 
         /// Calendar year to fetch (e.g. 2028).
-        #[arg(long)]
-        year: i32,
+        #[arg(long, conflicts_with_all = ["from_year", "to_year"], required_unless_present = "from_year")]
+        year: Option<i32>,
+
+        /// First year of a range to fetch (inclusive).
+        #[arg(long, requires = "to_year")]
+        from_year: Option<i32>,
+
+        /// Last year of a range to fetch (inclusive).
+        #[arg(long, requires = "from_year")]
+        to_year: Option<i32>,
     },
 }
 
@@ -237,8 +246,25 @@ async fn main() -> Result<()> {
         } => cmd_register(tickers, brokers, topic).await,
 
         Commands::Calendar {
-            action: CalendarAction::Sync { country, year },
-        } => cmd_calendar_sync(country, year).await,
+            action:
+                CalendarAction::Sync {
+                    country,
+                    year,
+                    from_year,
+                    to_year,
+                },
+        } => {
+            let (from, to) = match (year, from_year, to_year) {
+                (Some(y), _, _) => (y, y),
+                (None, Some(f), Some(t)) => (f, t),
+                // clap guarantees one of the two forms
+                _ => anyhow::bail!("pass --year, or --from-year with --to-year"),
+            };
+            for y in from..=to {
+                cmd_calendar_sync(country.clone(), y).await?;
+            }
+            Ok(())
+        }
 
         Commands::Saxo {
             action:
@@ -355,11 +381,14 @@ async fn validate_and_resolve(
         }
     };
 
-    let currency = result
-        .meta
-        .currency
-        .filter(|c| !c.is_empty())
-        .unwrap_or_else(|| mic::currency(&exchange_mic).to_string());
+    let currency = match result.meta.currency.filter(|c| !c.is_empty()) {
+        Some(c) => c,
+        None => mic::currency(&exchange_mic)
+            .with_context(|| {
+                format!("Yahoo gave no currency for '{input}' and MIC {exchange_mic} has no known currency")
+            })?
+            .to_string(),
+    };
 
     // Strip Yahoo exchange suffix (e.g. ".ST") to get the canonical ticker.
     let canonical = input.split('.').next().unwrap_or(input).to_uppercase();
@@ -536,7 +565,7 @@ mod tests {
     fn aapl_yahoo_code_resolves_to_xnas_usd() {
         let exchange_mic = mic::mic_for_yahoo_exchange("NMS").unwrap();
         assert_eq!(exchange_mic, mic::XNAS);
-        assert_eq!(mic::currency(exchange_mic), "USD");
+        assert_eq!(mic::currency(exchange_mic), Some("USD"));
     }
 
     #[test]
@@ -544,14 +573,21 @@ mod tests {
         // Yahoo returns "STO" for Stockholm exchange (GOMX.ST)
         let exchange_mic = mic::mic_for_yahoo_exchange("STO").unwrap();
         assert_eq!(exchange_mic, mic::FNSE);
-        assert_eq!(mic::currency(exchange_mic), "SEK");
+        assert_eq!(mic::currency(exchange_mic), Some("SEK"));
+    }
+
+    #[test]
+    fn cph_yahoo_code_resolves_to_xcse_dkk() {
+        let exchange_mic = mic::mic_for_yahoo_exchange("CPH").unwrap();
+        assert_eq!(exchange_mic, mic::XCSE);
+        assert_eq!(mic::currency(exchange_mic), Some("DKK"));
     }
 
     #[test]
     fn nyse_yahoo_code_resolves_to_xnys() {
         let exchange_mic = mic::mic_for_yahoo_exchange("NYQ").unwrap();
         assert_eq!(exchange_mic, mic::XNYS);
-        assert_eq!(mic::currency(exchange_mic), "USD");
+        assert_eq!(mic::currency(exchange_mic), Some("USD"));
     }
 
     #[test]

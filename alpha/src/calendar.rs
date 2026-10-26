@@ -60,6 +60,66 @@ struct CountryCalendar {
     /// Holiday name substrings that are early-close sessions rather than full
     /// closures.
     half_days: &'static [&'static str],
+    /// Closures the exchange observes that Nager.Date may not list (or lists
+    /// under another name/type). Added after the feed; a date the feed
+    /// already produced is kept as is.
+    extra_closures: &'static [ExtraClosure],
+}
+
+/// A closure computed from the year rather than read from Nager.Date.
+enum ExtraClosure {
+    /// Same month/day every year.
+    Fixed {
+        month: u32,
+        day: u32,
+        note: &'static str,
+    },
+    /// A fixed number of days after Easter Sunday, optionally only up to and
+    /// including `last_year`.
+    EasterOffset {
+        days: i64,
+        note: &'static str,
+        last_year: Option<i32>,
+    },
+}
+
+impl ExtraClosure {
+    fn resolve(&self, year: i32) -> Option<(NaiveDate, &'static str)> {
+        match *self {
+            ExtraClosure::Fixed { month, day, note } => {
+                NaiveDate::from_ymd_opt(year, month, day).map(|d| (d, note))
+            }
+            ExtraClosure::EasterOffset {
+                days,
+                note,
+                last_year,
+            } => {
+                if last_year.is_some_and(|l| year > l) {
+                    return None;
+                }
+                Some((easter_sunday(year)? + chrono::Duration::days(days), note))
+            }
+        }
+    }
+}
+
+/// Easter Sunday of `year` (Gregorian calendar, anonymous Gregorian algorithm).
+pub fn easter_sunday(year: i32) -> Option<NaiveDate> {
+    let a = year % 19;
+    let b = year / 100;
+    let c = year % 100;
+    let d = b / 4;
+    let e = b % 4;
+    let f = (b + 8) / 25;
+    let g = (b - f + 1) / 3;
+    let h = (19 * a + b - d - g + 15) % 30;
+    let i = c / 4;
+    let k = c % 4;
+    let l = (32 + 2 * e + 2 * i - h - k) % 7;
+    let m = (a + 11 * h + 22 * l) / 451;
+    let month = (h + l - 7 * m + 114) / 31;
+    let day = (h + l - 7 * m + 114) % 31 + 1;
+    NaiveDate::from_ymd_opt(year, month as u32, day as u32)
 }
 
 /// Country-level calendar rules.
@@ -80,6 +140,46 @@ const COUNTRY_CALENDARS: &[CountryCalendar] = &[
             "Christmas Eve",  // Dec 24 — early close 13:00 CET
             "New Year's Eve", // Dec 31 — early close 13:00 CET
         ],
+        extra_closures: &[],
+    },
+    // Nasdaq Copenhagen / First North Denmark: 09:00-17:00, no half days.
+    // Nager.Date lists the bank holidays too, but the extra closures below
+    // make the result independent of how it types them.
+    CountryCalendar {
+        country: "DK",
+        skip: &[
+            "Easter Sunday", // always a Sunday
+            "Pentecost",     // always a Sunday
+        ],
+        half_days: &[],
+        extra_closures: &[
+            ExtraClosure::EasterOffset {
+                days: 40,
+                note: "Friday after Ascension Day",
+                last_year: None,
+            },
+            ExtraClosure::Fixed {
+                month: 6,
+                day: 5,
+                note: "Constitution Day",
+            },
+            ExtraClosure::Fixed {
+                month: 12,
+                day: 24,
+                note: "Christmas Eve",
+            },
+            ExtraClosure::Fixed {
+                month: 12,
+                day: 31,
+                note: "New Year's Eve",
+            },
+            // Store Bededag, abolished from 2024.
+            ExtraClosure::EasterOffset {
+                days: 26,
+                note: "Great Prayer Day",
+                last_year: Some(2023),
+            },
+        ],
     },
     CountryCalendar {
         country: "US",
@@ -94,6 +194,7 @@ const COUNTRY_CALENDARS: &[CountryCalendar] = &[
             "Veterans Day",            // not observed by NYSE/Nasdaq
         ],
         half_days: &[],
+        extra_closures: &[],
     },
 ];
 
@@ -107,6 +208,8 @@ const COUNTRY_CALENDARS: &[CountryCalendar] = &[
 pub const EXCHANGE_TO_COUNTRY: &[(&str, &str)] = &[
     ("FNSE", "SE"), // Nasdaq First North Growth Market Stockholm
     ("XSTO", "SE"), // Nasdaq Stockholm
+    ("XCSE", "DK"), // Nasdaq Copenhagen
+    ("FNDK", "DK"), // Nasdaq First North Denmark
     ("XNYS", "US"), // New York Stock Exchange
     ("XNAS", "US"), // Nasdaq US
 ];
@@ -169,7 +272,13 @@ impl CalendarProvider {
             .ok_or_else(|| CalendarError::UnknownCountry(country.to_string()))?;
 
         let raw = self.fetch(year, cal.country).await?;
-        Ok(filter_holidays(raw, cal.skip, cal.half_days))
+        Ok(filter_holidays(
+            raw,
+            cal.skip,
+            cal.half_days,
+            cal.extra_closures,
+            year,
+        ))
     }
 
     /// Convenience: resolve `exchange_mic` to a country, then fetch.
@@ -209,9 +318,12 @@ fn filter_holidays(
     raw: Vec<NagerHoliday>,
     skip: &[&str],
     half_day_names: &[&str],
+    extra_closures: &[ExtraClosure],
+    year: i32,
 ) -> Vec<CalendarEntry> {
     let mut seen_dates: HashSet<NaiveDate> = HashSet::new();
-    raw.into_iter()
+    let mut entries: Vec<CalendarEntry> = raw
+        .into_iter()
         .filter_map(|h| {
             if h.date.weekday() == Weekday::Sat || h.date.weekday() == Weekday::Sun {
                 return None;
@@ -233,7 +345,21 @@ fn filter_holidays(
                 note: h.name,
             })
         })
-        .collect()
+        .collect();
+    for (date, note) in extra_closures.iter().filter_map(|e| e.resolve(year)) {
+        if date.weekday() != Weekday::Sat
+            && date.weekday() != Weekday::Sun
+            && seen_dates.insert(date)
+        {
+            entries.push(CalendarEntry {
+                date,
+                status: "closed",
+                note: note.to_string(),
+            });
+        }
+    }
+    entries.sort_by_key(|e| e.date);
+    entries
 }
 
 // ── Nager.Date wire types ─────────────────────────────────────────────────
@@ -242,4 +368,139 @@ fn filter_holidays(
 struct NagerHoliday {
     date: NaiveDate,
     name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    #[test]
+    fn easter_sundays_2023_to_2027() {
+        for (y, m, day) in [
+            (2023, 4, 9),
+            (2024, 3, 31),
+            (2025, 4, 20),
+            (2026, 4, 5),
+            (2027, 3, 28),
+        ] {
+            assert_eq!(easter_sunday(y), Some(d(y, m, day)));
+        }
+    }
+
+    async fn dk(year: i32, body: serde_json::Value) -> Vec<CalendarEntry> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v3/publicholidays/{year}/DK")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        CalendarProvider::with_base_url(server.uri())
+            .holidays_for_country("DK", year)
+            .await
+            .unwrap()
+    }
+
+    /// Nager's public holidays only: none of the bank holidays.
+    fn public_2026() -> serde_json::Value {
+        serde_json::json!([
+            {"date": "2026-01-01", "name": "New Year's Day"},
+            {"date": "2026-04-02", "name": "Maundy Thursday"},
+            {"date": "2026-04-03", "name": "Good Friday"},
+            {"date": "2026-04-05", "name": "Easter Sunday"},
+            {"date": "2026-04-06", "name": "Easter Monday"},
+            {"date": "2026-05-14", "name": "Ascension Day"},
+            {"date": "2026-05-24", "name": "Pentecost"},
+            {"date": "2026-05-25", "name": "Whit Monday"},
+            {"date": "2026-12-25", "name": "Christmas Day"},
+            {"date": "2026-12-26", "name": "St. Stephen's Day"},
+        ])
+    }
+
+    #[tokio::test]
+    async fn dk_2026_has_exactly_the_nasdaq_closures() {
+        let got = dk(2026, public_2026()).await;
+        let dates: Vec<_> = got.iter().map(|e| e.date).collect();
+        assert_eq!(
+            dates,
+            vec![
+                d(2026, 1, 1),
+                d(2026, 4, 2),
+                d(2026, 4, 3),
+                d(2026, 4, 6),
+                d(2026, 5, 14),
+                d(2026, 5, 15),
+                d(2026, 5, 25),
+                d(2026, 6, 5),
+                d(2026, 12, 24),
+                d(2026, 12, 25),
+                d(2026, 12, 31),
+            ]
+        );
+        assert!(got.iter().all(|e| e.status == "closed"), "no half days");
+    }
+
+    #[tokio::test]
+    async fn dk_does_not_duplicate_dates_nager_already_lists() {
+        let mut body = public_2026();
+        body.as_array_mut().unwrap().push(serde_json::json!(
+            {"date": "2026-05-15", "name": "Bank closing day"}
+        ));
+        let got = dk(2026, body).await;
+        assert_eq!(got.len(), 11);
+    }
+
+    #[tokio::test]
+    async fn dk_2023_includes_great_prayer_day() {
+        let body = serde_json::json!([
+            {"date": "2023-01-01", "name": "New Year's Day"},
+        ]);
+        let got = dk(2023, body).await;
+        assert!(got.iter().any(|e| e.date == d(2023, 5, 5)));
+        assert!(got.iter().any(|e| e.date == d(2023, 5, 19)));
+    }
+
+    #[tokio::test]
+    async fn dk_2024_has_no_great_prayer_day() {
+        let got = dk(2024, serde_json::json!([])).await;
+        // 4th Friday after Easter 2024 (Mar 31) is Apr 26.
+        assert!(!got.iter().any(|e| e.date == d(2024, 4, 26)));
+        assert!(got.iter().all(|e| e.status == "closed"));
+    }
+
+    #[test]
+    fn danish_mics_map_to_dk() {
+        assert_eq!(country_for_exchange("XCSE"), Some("DK"));
+        assert_eq!(country_for_exchange("FNDK"), Some("DK"));
+    }
+
+    /// (mic, country) pairs from the `exchanges` seed in the migration.
+    fn seeded_exchanges() -> Vec<(String, String)> {
+        let sql = include_str!("../../signal/migrations/20261027000000_create_exchanges.sql");
+        sql.lines()
+            .filter_map(|l| {
+                let l = l.trim().trim_start_matches('(');
+                let parts: Vec<_> = l.split(',').map(|p| p.trim().trim_matches('\'')).collect();
+                (parts.len() > 2 && parts[0].len() == 4 && l.contains("Europe/"))
+                    .then(|| (parts[0].to_string(), parts[1].to_string()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn exchanges_seed_agrees_with_exchange_to_country() {
+        let seeded = seeded_exchanges();
+        assert_eq!(seeded.len(), 4, "FNSE, XSTO, XCSE, FNDK: {seeded:?}");
+        for (mic, country) in &seeded {
+            assert_eq!(country_for_exchange(mic), Some(country.as_str()), "{mic}");
+        }
+        for mic in ["FNSE", "XSTO", "XCSE", "FNDK"] {
+            assert!(seeded.iter().any(|(m, _)| m == mic), "{mic} not seeded");
+        }
+    }
 }

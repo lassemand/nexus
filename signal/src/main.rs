@@ -100,7 +100,14 @@ async fn handle_ticker_registration<P: CompanyProvider>(
     };
     // Resolve currency: use explicit proto value if present, else derive from MIC.
     let currency = if msg.currency.is_empty() {
-        mic::currency(&exchange_mic).to_string()
+        match mic::currency(&exchange_mic) {
+            Some(c) => c.to_string(),
+            None => {
+                warn!(ticker = %ticker, exchange_mic = %exchange_mic,
+                      "registration has no currency and MIC has no known currency, skipping");
+                return;
+            }
+        }
     } else {
         msg.currency.clone()
     };
