@@ -207,6 +207,7 @@ mod tests {
             author_slug: "gomspace-group".into(),
             author_slugs: vec![],
             author_tickers: vec!["FNSE:GOMX".into()],
+            author_isins: vec!["SE0008348304".into()],
             source: None,
             attachment_urls: vec![],
         }

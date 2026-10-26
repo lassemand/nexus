@@ -123,25 +123,7 @@ async fn handle_ticker_registration<P: CompanyProvider>(
         }
     };
 
-    let isin = Some(msg.isin.trim().to_uppercase()).filter(|i| !i.is_empty());
-    let isin = match isin {
-        Some(i) if !model::isin::is_valid(&i) => {
-            warn!(ticker = %ticker, isin = %i, "ignoring invalid ISIN in registration");
-            None
-        }
-        other => other,
-    };
-
-    if let Err(e) = upsert_company(
-        pool,
-        &ticker,
-        &exchange_mic,
-        &currency,
-        sector,
-        isin.as_deref(),
-    )
-    .await
-    {
+    if let Err(e) = upsert_company(pool, &ticker, &exchange_mic, &currency, sector).await {
         error!(ticker = %ticker, error = %e, "failed to persist company to DB");
         return;
     }

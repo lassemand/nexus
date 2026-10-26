@@ -86,6 +86,22 @@ pub async fn advance_feed_cursor(
     Ok(())
 }
 
+/// Stores `isin` on the company if it has none. Never overwrites. Returns
+/// whether a row was updated.
+pub async fn fill_isin(pool: &PgPool, ticker: &str, mic: &str, isin: &str) -> sqlx::Result<bool> {
+    Ok(sqlx::query(
+        "UPDATE companies SET isin = $3 \
+         WHERE ticker = $1 AND exchange_mic = $2 AND isin IS NULL",
+    )
+    .bind(ticker)
+    .bind(mic)
+    .bind(isin)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
 /// Records the hash of the calendar snapshot just published.
 pub async fn set_calendar_hash(
     pool: &PgPool,

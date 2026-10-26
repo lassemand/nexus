@@ -16,7 +16,4 @@ message TickerRegistration {
   // Empty string means the consumer should derive it from exchange_mic.
   // Added in field 3 — do not renumber existing fields.
   string currency = 3;
-  // ISIN of the instrument (e.g. "DK0062498333"), validated by the publisher.
-  // Empty string means unknown. Added in field 4 — do not renumber existing fields.
-  string isin = 4;
 }

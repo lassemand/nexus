@@ -83,6 +83,7 @@ pub async fn ingest_company(
     let mut newest_published: Option<DateTime<Utc>> = None;
     let mic_prefix = format!("{}:", company.exchange_mic);
     let mut checked_tickers = false;
+    let mut checked_isin = false;
     let mut url = first_page_url(&feed.base()?, slug)?;
 
     loop {
@@ -109,6 +110,10 @@ pub async fn ingest_company(
                         "mapping may point at the wrong company"
                     );
                 }
+            }
+            if !checked_isin {
+                checked_isin = true;
+                store_isin(pool, company, slug, &item.author_isins).await;
             }
             let c = classify_item(&item.tags, &item.title);
             if c.calendar_update && start.is_none_or(|s| item.published_at > s) {
@@ -138,6 +143,34 @@ pub async fn ingest_company(
         outcome.cursor = outcome.cursor.max(Some(newest));
     }
     Ok(outcome)
+}
+
+/// The one valid ISIN in MFN's `author.isins`, if there is exactly one.
+/// Several (or none valid) is ambiguous: an ISIN is never guessed.
+fn unique_valid_isin(isins: &[String]) -> Option<&str> {
+    let mut valid = isins
+        .iter()
+        .map(String::as_str)
+        .filter(|i| model::isin::is_valid(i));
+    let first = valid.next()?;
+    valid.next().is_none().then_some(first)
+}
+
+/// Fills `companies.isin` from the feed's author data when it is still empty.
+/// Best effort: a problem is logged and never stops the ingest.
+async fn store_isin(pool: &PgPool, company: &Company, slug: &str, isins: &[String]) {
+    let Some(isin) = unique_valid_isin(isins) else {
+        if !isins.is_empty() {
+            warn!(ticker = %company.ticker, slug, isins = ?isins,
+                  "MFN lists no single valid ISIN, leaving companies.isin unset");
+        }
+        return;
+    };
+    match db::fill_isin(pool, &company.ticker, &company.exchange_mic, isin).await {
+        Ok(true) => info!(ticker = %company.ticker, isin, "stored ISIN from MFN"),
+        Ok(false) => {}
+        Err(e) => warn!(ticker = %company.ticker, isin, error = %e, "could not store ISIN"),
+    }
 }
 
 /// Publish every mapped company, then refresh the MFN calendar once for each
@@ -189,4 +222,31 @@ pub async fn process_companies(
         }
     }
     summary
+}
+
+#[cfg(test)]
+mod isin_tests {
+    use super::unique_valid_isin;
+
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn isin_is_taken_only_when_unambiguous() {
+        assert_eq!(
+            unique_valid_isin(&v(&["DK0062498333"])),
+            Some("DK0062498333")
+        );
+        assert_eq!(unique_valid_isin(&v(&["DK0062498332"])), None);
+        assert_eq!(unique_valid_isin(&v(&[])), None);
+        assert_eq!(
+            unique_valid_isin(&v(&["DK0062498333", "SE0008348304"])),
+            None
+        );
+        assert_eq!(
+            unique_valid_isin(&v(&["bad", "SE0008348304"])),
+            Some("SE0008348304")
+        );
+    }
 }

@@ -30,20 +30,23 @@ otherwise `nordic-reports` logs `mapping may point at the wrong company`.
 ## Danish companies
 
 Danish listings (Nasdaq Copenhagen `XCSE`, First North Denmark `FNDK`) are
-registered the same way, plus the ISIN, which is the one identifier MFN, Saxo
-and Yahoo share whatever they call the ticker:
+registered the same way:
 
 ```bash
-nexus register NOVO-B.CO --isin DK0062498333
+nexus register NOVO-B.CO
 ```
+
+The ISIN is the one identifier MFN, Saxo and Yahoo share whatever they call the
+ticker. It is not given at registration: `nordic-reports` reads it from MFN's
+`author.isins` the first time it fetches a company's feed (so after `mfn_slug`
+is set) and stores it in `companies.isin` when that is empty. It is never
+overwritten, and when MFN lists several valid ISINs (several share classes) none
+is stored; set it by hand then.
 
 - Yahoo reports Copenhagen as `CPH` for both markets, so a First North Denmark
   company needs `--mic FNDK`. Likewise `--mic XSTO` for a Stockholm main-market
   share (`STO` alone gives `FNSE`). The MIC must be in the same country as
   Yahoo's exchange; `--mic FNDK` on a `.ST` symbol is an error.
-- `--isin` is checked (format and check digit) before publishing and takes one
-  ticker at a time. A stored ISIN is never overwritten or cleared by a later
-  registration.
 - MFN slug: `https://mfn.se/a/novo-nordisk` → `novo-nordisk`.
 - MFN spells the ticker `XCSE:NOVO B` (space) while the registry has `NOVO-B`
   (hyphen). This is expected: the registry keeps the Yahoo spelling, and other

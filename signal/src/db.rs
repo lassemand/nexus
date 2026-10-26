@@ -422,7 +422,6 @@ pub async fn is_registered(pool: &PgPool, ticker: &str) -> sqlx::Result<bool> {
 ///
 /// `ticker` is normalized to uppercase. On conflict (ticker, exchange_mic) the
 /// sector is updated; exchange_mic and currency are immutable after first insert.
-/// `isin` fills a missing ISIN but never overwrites or clears a stored one.
 /// `None` stores a NULL sector, for listings no sector source covers.
 pub async fn upsert_company(
     pool: &PgPool,
@@ -430,24 +429,19 @@ pub async fn upsert_company(
     exchange_mic: &str,
     currency: &str,
     sector: Option<Sector>,
-    isin: Option<&str>,
 ) -> sqlx::Result<()> {
     let ticker = ticker.to_uppercase();
-    // An absent ISIN never clears a stored one.
     sqlx::query(
         r#"
-        INSERT INTO companies (ticker, exchange_mic, currency, sector, isin)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (ticker, exchange_mic) DO UPDATE
-            SET sector = EXCLUDED.sector,
-                isin   = COALESCE(companies.isin, EXCLUDED.isin)
+        INSERT INTO companies (ticker, exchange_mic, currency, sector)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (ticker, exchange_mic) DO UPDATE SET sector = EXCLUDED.sector
         "#,
     )
     .bind(&ticker)
     .bind(exchange_mic)
     .bind(currency)
     .bind(sector.as_ref().map(Sector::slug))
-    .bind(isin)
     .execute(pool)
     .await?;
     Ok(())
@@ -573,35 +567,13 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn unknown_sector_is_stored_as_null(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "GOMX", "FNSE", "SEK", None, None).await?;
+        upsert_company(&pool, "GOMX", "FNSE", "SEK", None).await?;
         let sector: Option<String> =
             sqlx::query_scalar("SELECT sector FROM companies WHERE ticker = 'GOMX'")
                 .fetch_one(&pool)
                 .await?;
         assert_eq!(sector, None);
         assert!(load_companies(&pool).await?.is_empty());
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn isin_fills_but_never_overwrites_or_clears(pool: PgPool) -> sqlx::Result<()> {
-        let isin = |pool: &PgPool| {
-            let pool = pool.clone();
-            async move {
-                sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT isin FROM companies WHERE ticker = 'NOVO-B'",
-                )
-                .fetch_one(&pool)
-                .await
-            }
-        };
-        upsert_company(&pool, "NOVO-B", "XCSE", "DKK", None, None).await?;
-        assert_eq!(isin(&pool).await?, None);
-        upsert_company(&pool, "NOVO-B", "XCSE", "DKK", None, Some("DK0062498333")).await?;
-        assert_eq!(isin(&pool).await?.as_deref(), Some("DK0062498333"));
-        upsert_company(&pool, "NOVO-B", "XCSE", "DKK", None, None).await?;
-        upsert_company(&pool, "NOVO-B", "XCSE", "DKK", None, Some("SE0008348304")).await?;
-        assert_eq!(isin(&pool).await?.as_deref(), Some("DK0062498333"));
         Ok(())
     }
 
@@ -660,7 +632,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_upsert_inserts_new_row(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "AAPL", "XNAS", "USD", Some(Sector::Technology), None).await?;
+        upsert_company(&pool, "AAPL", "XNAS", "USD", Some(Sector::Technology)).await?;
         let map = load_companies(&pool).await?;
         assert_eq!(map.get("AAPL"), Some(&Sector::Technology));
         Ok(())
@@ -668,8 +640,8 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_upsert_updates_sector_on_conflict(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "AAPL", "XNAS", "USD", Some(Sector::Technology), None).await?;
-        upsert_company(&pool, "AAPL", "XNAS", "USD", Some(Sector::Healthcare), None).await?;
+        upsert_company(&pool, "AAPL", "XNAS", "USD", Some(Sector::Technology)).await?;
+        upsert_company(&pool, "AAPL", "XNAS", "USD", Some(Sector::Healthcare)).await?;
         let map = load_companies(&pool).await?;
         assert_eq!(map.get("AAPL"), Some(&Sector::Healthcare));
         Ok(())
@@ -698,7 +670,7 @@ mod tests {
             ("T11", Sector::CommunicationServices),
         ];
         for (ticker, ref sector) in &fixtures {
-            upsert_company(&pool, ticker, "XNAS", "USD", Some(sector.clone()), None).await?;
+            upsert_company(&pool, ticker, "XNAS", "USD", Some(sector.clone())).await?;
         }
         let map = load_companies(&pool).await?;
         assert_eq!(map.len(), 11);
@@ -732,7 +704,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_ticker_normalization_to_uppercase(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "aapl", "XNAS", "USD", Some(Sector::Technology), None).await?;
+        upsert_company(&pool, "aapl", "XNAS", "USD", Some(Sector::Technology)).await?;
         let map = load_companies(&pool).await?;
         assert_eq!(
             map.get("AAPL"),
@@ -748,7 +720,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_is_registered_returns_true_for_known_ticker(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "AAPL", "XNAS", "USD", Some(Sector::Technology), None).await?;
+        upsert_company(&pool, "AAPL", "XNAS", "USD", Some(Sector::Technology)).await?;
         assert!(is_registered(&pool, "AAPL").await?);
         Ok(())
     }
@@ -761,7 +733,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_is_registered_is_case_sensitive(pool: PgPool) -> sqlx::Result<()> {
-        upsert_company(&pool, "aapl", "XNAS", "USD", Some(Sector::Technology), None).await?; // stored as AAPL
+        upsert_company(&pool, "aapl", "XNAS", "USD", Some(Sector::Technology)).await?; // stored as AAPL
         assert!(is_registered(&pool, "AAPL").await?, "uppercase must match");
         assert!(
             !is_registered(&pool, "aapl").await?,
@@ -777,7 +749,7 @@ mod tests {
         use sqlx::Row;
 
         // Register GOMX as an FNSE instrument with SEK currency.
-        upsert_company(&pool, "GOMX", "FNSE", "SEK", Some(Sector::Technology), None).await?;
+        upsert_company(&pool, "GOMX", "FNSE", "SEK", Some(Sector::Technology)).await?;
 
         let row = sqlx::query(
             "SELECT ticker, exchange_mic, currency FROM companies WHERE ticker = 'GOMX'",
@@ -796,8 +768,8 @@ mod tests {
         use sqlx::Row;
 
         // Hypothetical: same ticker string on two different exchanges.
-        upsert_company(&pool, "GOMX", "XNAS", "USD", Some(Sector::Technology), None).await?;
-        upsert_company(&pool, "GOMX", "FNSE", "SEK", Some(Sector::Technology), None).await?;
+        upsert_company(&pool, "GOMX", "XNAS", "USD", Some(Sector::Technology)).await?;
+        upsert_company(&pool, "GOMX", "FNSE", "SEK", Some(Sector::Technology)).await?;
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM companies WHERE ticker = 'GOMX'")
             .fetch_one(&pool)
