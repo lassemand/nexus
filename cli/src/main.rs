@@ -42,6 +42,17 @@ enum Commands {
         #[arg(required = true)]
         tickers: Vec<String>,
 
+        /// Override the MIC Yahoo implies, e.g. `FNDK` for First North Denmark
+        /// or `XSTO` for a Stockholm main-market share. Must be a known MIC in
+        /// the same country as Yahoo's exchange.
+        #[arg(long)]
+        mic: Option<String>,
+
+        /// ISIN of the instrument (e.g. DK0062498333); the check digit is
+        /// validated. Only valid with a single ticker.
+        #[arg(long)]
+        isin: Option<String>,
+
         /// Kafka broker addresses.
         #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:9092")]
         brokers: String,
@@ -241,9 +252,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Register {
             tickers,
+            mic,
+            isin,
             brokers,
             topic,
-        } => cmd_register(tickers, brokers, topic).await,
+        } => cmd_register(tickers, mic, isin, brokers, topic).await,
 
         Commands::Calendar {
             action:
@@ -324,6 +337,21 @@ struct ResolvedTicker {
     canonical: String,
     exchange_mic: String,
     currency: String,
+    isin: Option<String>,
+}
+
+/// Suffix-stripped, uppercase ticker (`NOVO-B.CO` → `NOVO-B`).
+fn canonical_ticker(input: &str) -> String {
+    input.split('.').next().unwrap_or(input).to_uppercase()
+}
+
+/// Validates an `--isin` value and returns it normalised.
+fn parse_isin(raw: &str) -> Result<String> {
+    let isin = raw.trim().to_uppercase();
+    if !model::isin::is_valid(&isin) {
+        anyhow::bail!("'{raw}' is not a valid ISIN (format or check digit is wrong)");
+    }
+    Ok(isin)
 }
 
 /// Validate a ticker against Yahoo Finance and resolve its exchange MIC and currency.
@@ -337,6 +365,8 @@ struct ResolvedTicker {
 async fn validate_and_resolve(
     client: &reqwest::Client,
     input: &str,
+    mic_override: Option<&str>,
+    isin: Option<&str>,
 ) -> Result<Option<ResolvedTicker>> {
     use model::asset::mic;
 
@@ -381,6 +411,9 @@ async fn validate_and_resolve(
         }
     };
 
+    let exchange_mic = mic::apply_override(&exchange_mic, mic_override)
+        .map_err(|e| anyhow::anyhow!("{input}: {e}"))?;
+
     let currency = match result.meta.currency.filter(|c| !c.is_empty()) {
         Some(c) => c,
         None => mic::currency(&exchange_mic)
@@ -391,18 +424,29 @@ async fn validate_and_resolve(
     };
 
     // Strip Yahoo exchange suffix (e.g. ".ST") to get the canonical ticker.
-    let canonical = input.split('.').next().unwrap_or(input).to_uppercase();
+    let canonical = canonical_ticker(input);
 
     Ok(Some(ResolvedTicker {
         canonical,
         exchange_mic,
         currency,
+        isin: isin.map(str::to_string),
     }))
 }
 
 /// Validate each ticker against Yahoo Finance (resolving exchange + currency
 /// automatically), then publish `TickerRegistration` protobuf messages to Kafka.
-async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> Result<()> {
+async fn cmd_register(
+    tickers: Vec<String>,
+    mic_override: Option<String>,
+    isin: Option<String>,
+    brokers: String,
+    topic: String,
+) -> Result<()> {
+    let isin = isin.as_deref().map(parse_isin).transpose()?;
+    if isin.is_some() && tickers.len() > 1 {
+        anyhow::bail!("--isin identifies one instrument; register one ticker at a time with it");
+    }
     let http = reqwest::Client::new();
 
     // Resolve all tickers concurrently.
@@ -411,8 +455,11 @@ async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> R
         .map(|raw| {
             let input = raw.clone();
             let http = http.clone();
+            let (mic_override, isin) = (mic_override.clone(), isin.clone());
             async move {
-                match validate_and_resolve(&http, &input).await {
+                match validate_and_resolve(&http, &input, mic_override.as_deref(), isin.as_deref())
+                    .await
+                {
                     Ok(Some(resolved)) => Ok::<_, anyhow::Error>(Some(resolved)),
                     Ok(None) => {
                         eprintln!("✗ {input} — not found on Yahoo Finance");
@@ -457,6 +504,7 @@ async fn cmd_register(tickers: Vec<String>, brokers: String, topic: String) -> R
                     ticker: resolved.canonical.clone(),
                     exchange_mic: resolved.exchange_mic.clone(),
                     currency: resolved.currency.clone(),
+                    isin: resolved.isin.clone().unwrap_or_default(),
                 }
                 .encode_to_vec();
 
@@ -555,10 +603,50 @@ mod tests {
             ticker: "aapl".to_string(),
             exchange_mic: "XNAS".to_string(),
             currency: "USD".to_string(),
+            isin: "US0378331005".to_string(),
         };
         let encoded = original.encode_to_vec();
         let decoded = TickerRegistration::decode(encoded.as_slice()).unwrap();
         assert_eq!(decoded.ticker.to_uppercase(), "AAPL");
+        assert_eq!(decoded.isin, "US0378331005");
+    }
+
+    #[test]
+    fn registration_without_isin_still_decodes() {
+        // Field 4 is append-only: a message from before it existed has no isin.
+        let old = TickerRegistration {
+            ticker: "GOMX".into(),
+            exchange_mic: "FNSE".into(),
+            currency: "SEK".into(),
+            isin: String::new(),
+        };
+        let decoded = TickerRegistration::decode(old.encode_to_vec().as_slice()).unwrap();
+        assert!(decoded.isin.is_empty());
+    }
+
+    #[test]
+    fn novo_b_resolves_to_xcse_dkk_and_fndk_with_override() {
+        assert_eq!(super::canonical_ticker("NOVO-B.CO"), "NOVO-B");
+        let yahoo = mic::mic_for_yahoo_exchange("CPH").unwrap();
+        let plain = mic::apply_override(yahoo, None).unwrap();
+        assert_eq!(plain, "XCSE");
+        assert_eq!(mic::currency(&plain), Some("DKK"));
+        let fndk = mic::apply_override(yahoo, Some("FNDK")).unwrap();
+        assert_eq!(fndk, "FNDK");
+        assert_eq!(mic::currency(&fndk), Some("DKK"));
+    }
+
+    #[test]
+    fn fndk_override_on_a_stockholm_symbol_is_an_error() {
+        let yahoo = mic::mic_for_yahoo_exchange("STO").unwrap();
+        assert!(mic::apply_override(yahoo, Some("FNDK")).is_err());
+    }
+
+    #[test]
+    fn invalid_isin_is_rejected() {
+        assert!(super::parse_isin("DK0062498333").is_ok());
+        assert_eq!(super::parse_isin(" dk0062498333 ").unwrap(), "DK0062498333");
+        assert!(super::parse_isin("DK0062498332").is_err());
     }
 
     #[test]

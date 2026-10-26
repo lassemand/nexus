@@ -71,6 +71,37 @@ pub mod mic {
         matches!(exchange_mic, XNAS | XNYS | "XASE" | "ARCX" | "XBTS")
     }
 
+    /// ISO 3166-1 alpha-2 country of a known MIC, `None` for unknown ones.
+    pub fn country(exchange_mic: &str) -> Option<&'static str> {
+        match exchange_mic {
+            m if is_us(m) => Some("US"),
+            FNSE | XSTO => Some("SE"),
+            XCSE | FNDK => Some("DK"),
+            _ => None,
+        }
+    }
+
+    /// Applies a user's `--mic` override to the MIC Yahoo implied.
+    ///
+    /// Yahoo cannot tell a main market from its growth market (`CPH` is both
+    /// `XCSE` and `FNDK`, `STO` both `XSTO` and `FNSE`). The override must be a
+    /// known MIC in the same country as `yahoo_mic`.
+    pub fn apply_override(yahoo_mic: &str, mic_override: Option<&str>) -> Result<String, String> {
+        let Some(o) = mic_override else {
+            return Ok(yahoo_mic.to_string());
+        };
+        let o = o.trim().to_uppercase();
+        let Some(o_country) = country(&o) else {
+            return Err(format!("--mic {o} is not a known MIC"));
+        };
+        match country(yahoo_mic) {
+            Some(c) if c == o_country => Ok(o),
+            _ => Err(format!(
+                "--mic {o} ({o_country}) does not match the exchange Yahoo reports ({yahoo_mic})"
+            )),
+        }
+    }
+
     /// Returns the ISO 4217 currency code for the primary trading currency of
     /// the given exchange MIC. Providers should use this to populate
     /// `Bar.currency` rather than hardcoding a currency string.
@@ -178,6 +209,21 @@ mod currency_tests {
         assert_eq!(mic::currency(mic::FNSE), Some("SEK"));
         assert_eq!(mic::currency(mic::XCSE), Some("DKK"));
         assert_eq!(mic::currency(mic::FNDK), Some("DKK"));
+    }
+
+    #[test]
+    fn mic_override_stays_in_the_yahoo_country() {
+        assert_eq!(mic::apply_override(mic::XCSE, None).unwrap(), "XCSE");
+        assert_eq!(
+            mic::apply_override(mic::XCSE, Some("FNDK")).unwrap(),
+            "FNDK"
+        );
+        assert_eq!(
+            mic::apply_override(mic::FNSE, Some("xsto")).unwrap(),
+            "XSTO"
+        );
+        assert!(mic::apply_override(mic::FNSE, Some("FNDK")).is_err());
+        assert!(mic::apply_override(mic::FNSE, Some("NOPE")).is_err());
     }
 
     #[test]

@@ -29,6 +29,8 @@ pub struct Listing {
     pub exchange_mic: String,
     /// ISO 4217 trading currency, e.g. `SEK`.
     pub currency: String,
+    /// ISIN when the registration carried a valid one.
+    pub isin: Option<String>,
 }
 
 impl Listing {
@@ -61,10 +63,19 @@ impl Listing {
         } else {
             r.currency.clone()
         };
+        let isin = Some(r.isin.trim().to_uppercase()).filter(|i| !i.is_empty());
+        let isin = match isin {
+            Some(i) if !model::isin::is_valid(&i) => {
+                warn!(ticker = %ticker, isin = %i, "ignoring invalid ISIN in registration");
+                None
+            }
+            other => other,
+        };
         Some(Self {
             ticker,
             exchange_mic,
             currency,
+            isin,
         })
     }
 }
@@ -138,6 +149,22 @@ pub async fn upsert_listings(pool: &PgPool, listings: &[Listing]) -> sqlx::Resul
         .execute(pool)
         .await?
         .rows_affected();
+        if let Some(isin) = &l.isin {
+            // Only fills a missing ISIN; a stored one is never overwritten. A
+            // clash with another row (unique index) must not stop the sync.
+            if let Err(e) = sqlx::query(
+                "UPDATE companies SET isin = $3 \
+                 WHERE ticker = $1 AND exchange_mic = $2 AND isin IS NULL",
+            )
+            .bind(&l.ticker)
+            .bind(&l.exchange_mic)
+            .bind(isin)
+            .execute(pool)
+            .await
+            {
+                warn!(ticker = %l.ticker, isin = %isin, error = %e, "could not store ISIN");
+            }
+        }
     }
     Ok(inserted)
 }
@@ -180,6 +207,7 @@ mod tests {
             ticker: ticker.into(),
             exchange_mic: mic.into(),
             currency: currency.into(),
+            isin: String::new(),
         }
     }
 
@@ -191,8 +219,17 @@ mod tests {
                 ticker: "GOMX".into(),
                 exchange_mic: "FNSE".into(),
                 currency: "SEK".into(),
+                isin: None,
             })
         );
+        let mut r = reg("novo-b", "XCSE", "DKK");
+        r.isin = "DK0062498333".into();
+        assert_eq!(
+            Listing::from_registration(&r).unwrap().isin.as_deref(),
+            Some("DK0062498333")
+        );
+        r.isin = "DK0062498332".into();
+        assert_eq!(Listing::from_registration(&r).unwrap().isin, None);
         let us = Listing::from_registration(&reg("AAPL", "", "")).unwrap();
         assert_eq!(
             (us.exchange_mic.as_str(), us.currency.as_str()),
