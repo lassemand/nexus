@@ -171,6 +171,10 @@ data:
                 },
                 "properties": [
                   {
+                    "id": "color",
+                    "value": { "mode": "fixed", "fixedColor": "text" }
+                  },
+                  {
                     "id": "custom.cellOptions",
                     "value": {
                       "type": "color-text"
@@ -182,7 +186,7 @@ data:
                       {
                         "type": "regex",
                         "options": {
-                          "pattern": "^[+-]?0\\.[0-4][0-9] %$",
+                          "pattern": "/^[+-]?0\\.[0-4][0-9] %$/",
                           "result": {
                             "color": "text",
                             "index": 0
@@ -192,7 +196,7 @@ data:
                       {
                         "type": "regex",
                         "options": {
-                          "pattern": "^\\+",
+                          "pattern": "/^\\+/",
                           "result": {
                             "color": "green",
                             "index": 1
@@ -202,7 +206,7 @@ data:
                       {
                         "type": "regex",
                         "options": {
-                          "pattern": "^-",
+                          "pattern": "/^-/",
                           "result": {
                             "color": "red",
                             "index": 2
@@ -212,7 +216,7 @@ data:
                       {
                         "type": "regex",
                         "options": {
-                          "pattern": "^[a-z_ ]+$",
+                          "pattern": "/^[a-z_ ]+$/",
                           "result": {
                             "color": "orange",
                             "index": 3
@@ -241,7 +245,7 @@ data:
                       {
                         "type": "regex",
                         "options": {
-                          "pattern": "^.+$",
+                          "pattern": "/^.+$/",
                           "result": {
                             "color": "orange",
                             "index": 0
@@ -270,7 +274,7 @@ data:
                       {
                         "type": "regex",
                         "options": {
-                          "pattern": "^corrected$",
+                          "pattern": "/^corrected$/",
                           "result": {
                             "color": "blue",
                             "index": 0
