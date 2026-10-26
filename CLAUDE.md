@@ -30,7 +30,7 @@ Polygon ────► market ────► market.bars       (MarketEvent)
 | Market | Source | Notes |
 |---|---|---|
 | US equities (XNAS/XNYS) | Polygon API | Used by `chronicle/market` and `alpha::PolygonBarProvider` |
-| Nordic/First North (FNSE) | Saxo Bank OpenAPI | Minute bars from `saxo-stream`; official daily bars below. See `docs/adr/0001-saxo-openapi-nordic-data-source.md` |
+| Nordic (FNSE, XSTO, XCSE, FNDK) | Saxo Bank OpenAPI | Minute bars from `saxo-stream`; official daily bars below. See `docs/adr/0001-saxo-openapi-nordic-data-source.md` |
 
 ### Nordic daily prices
 

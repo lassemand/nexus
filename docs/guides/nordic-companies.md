@@ -50,6 +50,32 @@ Check that one row was updated (`UPDATE 1`). `UPDATE 0` means the company is not
 The migration `*_companies_add_nordic_source_mappings.sql` seeds GomSpace the
 same way (and did nothing if the row was absent).
 
+## Trading holidays (Sweden, Denmark)
+
+`trading_holidays` (signal DB) is seeded per **country**, not per MIC:
+`FNSE`/`XSTO` use `SE`, `XCSE`/`FNDK` use `DK` (`alpha::calendar::EXCHANGE_TO_COUNTRY`).
+Session hours per MIC are in the `exchanges` table (Copenhagen: 09:00-17:00
+`Europe/Copenhagen`, no half days; Stockholm: 09:00-17:30, 13:00 half-day close).
+
+Denmark's calendar adds closures Nager.Date may not list: the Friday after
+Ascension, 5 June, 24 and 31 December (fully closed), and Great Prayer Day
+(Store Bededag) for years up to and including 2023.
+
+Seed from the Mac mini (`DATABASE_URL` set to the signal DB):
+
+```bash
+nexus calendar sync --country DK --from-year 2015 --to-year 2027
+# or one year at a time:
+nexus calendar sync --country DK --year 2026
+```
+
+Confirm (expect 11; 26 Dec 2026 is a Saturday):
+
+```sql
+SELECT count(*) FROM trading_holidays
+WHERE country = 'DK' AND date BETWEEN '2026-01-01' AND '2026-12-31';
+```
+
 ## Where reports are stored (`special_events`)
 
 Nordic reports are stored **only by signal**, in `backtest.special_events`, with

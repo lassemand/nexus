@@ -1,10 +1,7 @@
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use model::{
-    asset::{mic, Asset},
-    bar::Bar,
-};
+use model::{asset::Asset, bar::Bar};
 use serde::Deserialize;
 use time::format_description::well_known::Iso8601;
 use time::Date;
@@ -101,7 +98,8 @@ impl BarProvider for PolygonBarProvider {
             .map(|r| {
                 let timestamp = SystemTime::UNIX_EPOCH + Duration::from_millis(r.t);
                 Bar {
-                    currency: mic::currency(&asset.exchange_mic).to_string(),
+                    // Polygon only serves US listings, which are USD-quoted.
+                    currency: "USD".to_string(),
                     asset: asset.clone(),
                     open: r.o,
                     high: r.h,

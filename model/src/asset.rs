@@ -9,6 +9,13 @@ pub mod mic {
     /// Nasdaq First North Growth Market Stockholm (Sweden).
     /// Segment MIC operating under Nasdaq Stockholm (XSTO).
     pub const FNSE: &str = "FNSE";
+    /// Nasdaq Stockholm (Sweden), the main market.
+    pub const XSTO: &str = "XSTO";
+    /// Nasdaq Copenhagen (Denmark), the main market.
+    pub const XCSE: &str = "XCSE";
+    /// Nasdaq First North Denmark (Denmark).
+    /// Segment MIC operating under Nasdaq Copenhagen (XCSE).
+    pub const FNDK: &str = "FNDK";
 
     /// Mapping from Yahoo Finance `exchangeName` codes to ISO 10383 MIC codes.
     ///
@@ -32,7 +39,7 @@ pub mod mic {
         // ── Sweden ────────────────────────────────────────────────────────
         ("STO", FNSE), // Nasdaq Stockholm / First North
         // ── Denmark ───────────────────────────────────────────────────────
-        ("CPH", "XCSE"), // Nasdaq Copenhagen
+        ("CPH", XCSE), // Nasdaq Copenhagen
         // ── Finland ───────────────────────────────────────────────────────
         ("HEL", "XHEL"), // Nasdaq Helsinki
         // ── Norway ────────────────────────────────────────────────────────
@@ -68,14 +75,15 @@ pub mod mic {
     /// the given exchange MIC. Providers should use this to populate
     /// `Bar.currency` rather than hardcoding a currency string.
     ///
-    /// Returns `"USD"` for unknown MICs as a safe default for US-centric usage,
-    /// but callers constructing bars for non-US instruments should always pass
-    /// the currency explicitly rather than relying on this fallback.
-    pub fn currency(exchange_mic: &str) -> &'static str {
+    /// US venues give `"USD"`, Nordic venues their local currency. Any other
+    /// MIC returns `None`: a currency is never guessed, so callers must handle
+    /// it (or take the currency from the data source).
+    pub fn currency(exchange_mic: &str) -> Option<&'static str> {
         match exchange_mic {
-            XNAS | XNYS => "USD",
-            FNSE => "SEK",
-            _ => "USD",
+            m if is_us(m) => Some("USD"),
+            FNSE | XSTO => Some("SEK"),
+            XCSE | FNDK => Some("DKK"),
+            _ => None,
         }
     }
 }
@@ -157,5 +165,24 @@ mod tests {
             2,
             "different MICs must produce different hash keys"
         );
+    }
+}
+
+#[cfg(test)]
+mod currency_tests {
+    use super::mic;
+
+    #[test]
+    fn nordic_mics_have_local_currency() {
+        assert_eq!(mic::currency(mic::XSTO), Some("SEK"));
+        assert_eq!(mic::currency(mic::FNSE), Some("SEK"));
+        assert_eq!(mic::currency(mic::XCSE), Some("DKK"));
+        assert_eq!(mic::currency(mic::FNDK), Some("DKK"));
+    }
+
+    #[test]
+    fn us_mics_are_usd_and_unknown_is_none() {
+        assert_eq!(mic::currency(mic::XNAS), Some("USD"));
+        assert_eq!(mic::currency("XHEL"), None);
     }
 }
