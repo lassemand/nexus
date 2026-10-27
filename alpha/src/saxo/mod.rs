@@ -56,6 +56,7 @@
 pub mod aggregator;
 pub mod auth;
 pub mod chart;
+pub mod market_calendar;
 pub mod stream;
 pub mod uic;
 pub mod validation;
@@ -79,8 +80,9 @@ pub fn is_transient_reqwest(e: &reqwest::Error) -> bool {
 pub use aggregator::BarAggregator;
 pub use auth::{RotatedToken, SaxoAuth, SaxoToken, SharedToken, TokenStore};
 pub use chart::{ChartClient, ChartError, DailyBarRow};
-pub use stream::{SaxoBarStream, SaxoConfig};
-pub use uic::{ResolvedUic, UicResolver, UicResolverError};
+pub use market_calendar::MarketCalendar;
+pub use stream::{AccessObserver, DataAccess, SaxoBarStream, SaxoConfig};
+pub use uic::{exchange_ids, InstrumentQuery, ResolvedUic, UicResolver, UicResolverError};
 pub use validation::{
     GapBoundary, GapClassifier, OhlcError, OhlcValidator, SilenceCause, TickDeduplicator,
 };

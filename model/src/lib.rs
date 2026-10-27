@@ -1,6 +1,7 @@
 pub mod asset;
 pub mod bar;
 pub mod calendar;
+pub mod exchange;
 pub mod insider;
 pub mod isin;
 pub mod price;

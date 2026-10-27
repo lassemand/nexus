@@ -131,7 +131,7 @@ data:
           "id": 5,
           "type": "stat",
           "title": "WS Connected",
-          "description": "Informational only — reflects whether a WebSocket bar stream is currently subscribed. 0 is expected and healthy when no FNSE tickers are registered; does not affect pod readiness/liveness (NEX-106).",
+          "description": "Informational only — reflects whether a WebSocket bar stream is currently subscribed. 0 is expected and healthy when no Nordic instruments are registered; does not affect pod readiness/liveness (NEX-106).",
           "gridPos": { "x": 0, "y": 10, "w": 8, "h": 4 },
           "datasource": { "type": "prometheus", "uid": "nexus-prometheus" },
           "fieldConfig": {
