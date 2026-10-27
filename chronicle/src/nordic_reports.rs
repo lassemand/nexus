@@ -1,6 +1,6 @@
 /// Nordic report-release publisher (NEX-160, NEX-166, NEX-171).
 ///
-/// For every Swedish-calendar company (`FNSE`, `XSTO`) with a
+/// For every Nordic company (`NORDIC_MICS`: `FNSE`, `XSTO`, `XCSE`, `FNDK`) with a
 /// `companies.mfn_slug`, pages through MFN's JSON news feed
 /// (`https://mfn.se/all/a/<slug>.json`, fetched despite `robots.txt` with the
 /// owner's approval), classifies each item and publishes reports and
@@ -15,15 +15,13 @@ use chronicle_lib::nordic::calendar::{MfnClient, MFN_BASE_URL};
 use chronicle_lib::nordic::db;
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
 use chronicle_lib::nordic::ingest::process_companies;
+use chronicle_lib::nordic::NORDIC_MICS;
 use chronicle_lib::registry;
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
 use std::process::ExitCode;
 use std::time::Duration;
 use tracing::{error, info};
-
-/// Exchanges following the Swedish calendar / Stockholm time.
-const SE_MICS: &[&str] = &["FNSE", "XSTO"];
 
 #[derive(Parser)]
 #[command(about = "Publish Nordic report releases from MFN's news feed as special events")]
@@ -73,7 +71,7 @@ async fn run(args: Args) -> anyhow::Result<bool> {
     registry::sync_or_warn(&pool, Some(&args.kafka_brokers), &args.tickers_topic).await;
 
     let sink = KafkaSink::new(&args.kafka_brokers, &args.special_events_topic)?;
-    let companies = db::load_companies(&pool, SE_MICS).await?;
+    let companies = db::load_companies(&pool, NORDIC_MICS).await?;
     let mut feed = MfnClient::new(args.mfn_base_url.clone(), Duration::from_secs(1))?;
     let mut calendar = MfnClient::new(args.mfn_base_url, Duration::from_secs(2))?;
 

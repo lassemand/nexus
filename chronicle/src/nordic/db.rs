@@ -14,13 +14,15 @@ pub struct Company {
     pub mfn_slug: Option<String>,
     /// Display name (`companies.name`), if set.
     pub name: Option<String>,
+    /// ISIN (`companies.isin`), if known; checked against MFN's `author.isins`.
+    pub isin: Option<String>,
 }
 
 /// Load all companies on the given MICs, mapped or not.
 pub async fn load_companies(pool: &PgPool, mics: &[&str]) -> sqlx::Result<Vec<Company>> {
     let mics: Vec<String> = mics.iter().map(|m| m.to_string()).collect();
     let rows = sqlx::query(
-        "SELECT ticker, exchange_mic, mfn_slug, name FROM companies \
+        "SELECT ticker, exchange_mic, mfn_slug, name, isin FROM companies \
          WHERE exchange_mic = ANY($1) ORDER BY ticker",
     )
     .bind(&mics)
@@ -33,6 +35,7 @@ pub async fn load_companies(pool: &PgPool, mics: &[&str]) -> sqlx::Result<Vec<Co
             exchange_mic: r.get("exchange_mic"),
             mfn_slug: r.get("mfn_slug"),
             name: r.get("name"),
+            isin: r.get("isin"),
         })
         .collect())
 }
@@ -125,7 +128,7 @@ pub async fn set_calendar_hash(
 /// Every company with an MFN slug, on any exchange.
 pub async fn load_mapped_companies(pool: &PgPool) -> sqlx::Result<Vec<Company>> {
     let rows = sqlx::query(
-        "SELECT ticker, exchange_mic, mfn_slug, name FROM companies \
+        "SELECT ticker, exchange_mic, mfn_slug, name, isin FROM companies \
          WHERE mfn_slug IS NOT NULL ORDER BY ticker",
     )
     .fetch_all(pool)
@@ -137,6 +140,7 @@ pub async fn load_mapped_companies(pool: &PgPool) -> sqlx::Result<Vec<Company>> 
             exchange_mic: r.get("exchange_mic"),
             mfn_slug: r.get("mfn_slug"),
             name: r.get("name"),
+            isin: r.get("isin"),
         })
         .collect())
 }

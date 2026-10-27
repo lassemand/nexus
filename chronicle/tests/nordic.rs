@@ -9,6 +9,7 @@ use chronicle_lib::nordic::calendar::{refresh_company, MfnClient, Refresh};
 use chronicle_lib::nordic::db::{self, Company};
 use chronicle_lib::nordic::events::EventSink;
 use chronicle_lib::nordic::ingest::{process_companies, RunSummary};
+use chronicle_lib::nordic::NORDIC_MICS;
 use common::TestDb;
 use model::generated::SpecialEvent;
 use serde_json::{json, Value};
@@ -19,6 +20,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const NEWS_GOMSPACE: &str = include_str!("fixtures/mfn_news_gomspace.json");
 const NEWS_VOLVO: &str = include_str!("fixtures/mfn_news_volvo.json");
+const NEWS_NOVO: &str = include_str!("fixtures/mfn_news_novo.json");
 const MFN_FIXTURE: &str = include_str!("fixtures/mfn_gomspace.html");
 
 // ── MFN client (no database) ────────────────────────────────────────────────
@@ -147,6 +149,61 @@ mod fixture {
         }
     }
 
+    /// Real Novo Nordisk items (`https://mfn.se/all/a/novo-nordisk.json`),
+    /// trimmed to the fields the classifier reads.
+    #[test]
+    fn novo_nordisk_items() {
+        let items: Vec<Value> = serde_json::from_str(super::NEWS_NOVO).unwrap();
+        let rows = [
+            // Q2 2026, published 18:37 Copenhagen time, after the close.
+            (
+                "2026-08-04T16:37",
+                Some(ReportKind::Interim),
+                Some("2026-Q2"),
+            ),
+            ("2026-05-06", Some(ReportKind::Interim), Some("2026-Q1")),
+            ("2025-11-05", Some(ReportKind::Interim), Some("2025-Q3")),
+            // Year-end results carry only `sub:report:annual`.
+            ("2026-02-03", Some(ReportKind::Annual), Some("2025")),
+            // The annual report document, its SEC filing and a mis-tagged trial news item.
+            ("2026-02-04T06:30", None, None),
+            ("2026-02-04T14:53", None, None),
+            ("2026-02-02", None, None),
+            // Outlook news, AGM, weekly buy-back, insider trades, voting rights, major shareholder.
+            ("2026-08-04T16:33", None, None),
+            ("2026-03-26", None, None),
+            ("2026-10-26", None, None),
+            ("2026-10-19", None, None),
+            ("2026-08-06", None, None),
+            ("2024-04-26", None, None),
+            ("2022-05-02", None, None),
+            // Untagged trial news whose title says "reports" (false reports before).
+            ("2025-11-25", None, None),
+            ("2020-06-04", None, None),
+        ];
+        for (date, kind, fp) in rows {
+            let c = classify(find(&items, date, "en"));
+            assert_eq!(c.report_kind, kind, "{date} kind");
+            assert!(!c.is_correction && !c.calendar_update, "{date}");
+            assert_eq!(c.fiscal_period.as_deref(), fp, "{date} fiscal period");
+        }
+    }
+
+    /// The PDMR notice named in NEX-190 is not in Novo's feed (Novo titles its
+    /// notices "Trading in Novo Nordisk shares by board members ..."), so this
+    /// one is the wording from the issue, with MFN's report tags on top.
+    #[test]
+    fn a_pdmr_reporting_notice_is_not_a_report_even_with_report_tags() {
+        let title = "Novo Nordisk A/S \u{2013} Reporting of transactions made by persons discharging managerial responsibilities in Novo Nordisk A/S";
+        for tags in [
+            vec![":regulatory"],
+            vec![":regulatory", "sub:report", "sub:report:interim"],
+        ] {
+            let tags: Vec<String> = tags.into_iter().map(String::from).collect();
+            assert_eq!(classify_item(&tags, title).report_kind, None);
+        }
+    }
+
     #[test]
     fn volvo_items_in_both_languages() {
         let items: Vec<Value> = serde_json::from_str(super::NEWS_VOLVO).unwrap();
@@ -244,9 +301,7 @@ async fn requests_to(server: &MockServer, prefix: &str) -> usize {
 }
 
 async fn run(db: &TestDb, server: &MockServer, sink: &VecSink, backfill: bool) -> RunSummary {
-    let companies = db::load_companies(&db.pool, &["FNSE", "XSTO"])
-        .await
-        .unwrap();
+    let companies = db::load_companies(&db.pool, NORDIC_MICS).await.unwrap();
     let mut feed = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
     let mut cal = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
     process_companies(&db.pool, &mut feed, &mut cal, sink, &companies, backfill).await
@@ -484,6 +539,77 @@ async fn rate_limited_request_is_retried() {
     assert!(started.elapsed() >= Duration::from_secs(1));
     assert_eq!(requests_to(&server, "/all/").await, 2);
     assert_eq!(releases(&sink.take()).len(), 6);
+    db.drop_db().await;
+}
+
+/// Novo Nordisk (Nasdaq Copenhagen): a Danish feed page publishes exactly the
+/// reports, keyed `NOVO-B:XCSE`, and the company's ISIN matches the feed's.
+#[tokio::test]
+async fn danish_company_publishes_exactly_its_reports() {
+    let Some(db) = TestDb::create().await else {
+        return;
+    };
+    db.add_company_with_isin("NOVO-B", "XCSE", "novo-nordisk", "DKK", "DK0062498333")
+        .await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/all/a/gomspace-group.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": []})))
+        .mount(&server)
+        .await;
+    serve_feed(&server, "novo-nordisk", &news_items(NEWS_NOVO), 5).await;
+    serve_calendar(
+        &server,
+        "novo-nordisk",
+        include_str!("fixtures/mfn_novo.html"),
+    )
+    .await;
+    let sink = VecSink::default();
+
+    let summary = run(&db, &server, &sink, false).await;
+    assert!(summary.is_success(), "{summary:?}");
+    let sent = sink.take();
+    assert!(
+        sent.iter().all(|(key, _)| key == "NOVO-B:XCSE"),
+        "one key per company: {:?}",
+        sent.iter().map(|(k, _)| k).collect::<Vec<_>>()
+    );
+    assert!(sent
+        .iter()
+        .all(|(_, e)| e.ticker == "NOVO-B" && e.exchange_mic == "XCSE"));
+    assert_eq!(
+        releases(&sent),
+        vec![
+            (
+                "quarterly_report".into(),
+                "2025-11-05T06:30:45Z".into(),
+                "en".into()
+            ),
+            (
+                "annual_report".into(),
+                "2026-02-03T16:38:42Z".into(),
+                "en".into()
+            ),
+            (
+                "quarterly_report".into(),
+                "2026-05-06T05:31:16Z".into(),
+                "en".into()
+            ),
+            (
+                "quarterly_report".into(),
+                "2026-08-04T16:37:02Z".into(),
+                "en".into()
+            ),
+        ],
+        "buy-backs, insider trades, AGM, the annual report document and news are not published"
+    );
+    // The stored ISIN stays: MFN lists the same one.
+    let isin: Option<String> =
+        sqlx::query_scalar("SELECT isin FROM companies WHERE ticker = 'NOVO-B'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(isin.as_deref(), Some("DK0062498333"));
     db.drop_db().await;
 }
 
