@@ -57,6 +57,20 @@ sum by (namespace) (count_over_time({cluster="orbstack"}[1h]))
 
 Alloy's metrics (`alloy_*`, `loki_write_*`) are scraped through its ServiceMonitor.
 
+## When an alert fires
+
+The rules are the group `nexus.log-pipeline` in `infra/charts/nexus/prometheus/rules/nexus.rules.yml` (unit tests in `nexus.rules.test.yml`). They route to Slack through the existing Alertmanager.
+
+- **LokiDown** (critical): no Loki target is up for 5 minutes, so logs are not stored. Check `kubectl -n nexus get pods -l app.kubernetes.io/name=loki` and `kubectl -n nexus logs statefulset/loki`.
+- **AlloyDown** (critical): no Alloy pod is up for 5 minutes, so logs are being lost. Check `kubectl -n nexus get pods -l app.kubernetes.io/name=alloy` and `kubectl -n nexus logs daemonset/alloy`.
+- **LokiObjectStoreErrors** (warning): S3 requests to B2 fail (other than 404) or chunk flushes fail, for 15 minutes. Usually an expired or revoked application key or a B2 outage. Check the key in Vault `secret/nexus/loki`, the `loki-s3` ExternalSecret, and the Loki logs.
+- **LokiChunksNotFlushing** (warning): logs arrive but no chunk has been flushed for 3 hours. The WAL is filling the 10Gi PVC. Same first steps as above; check the B2 key and `kubectl -n nexus logs statefulset/loki | grep -i flush`.
+- **LokiCompactorNotRunning** (warning): no successful retention run for 3 hours. Expired logs are not deleted, so B2 storage and cost grow. Check `kubectl -n nexus logs statefulset/loki | grep -i compactor`.
+- **AlloyLokiWriteFailing** (warning): Alloy retries or drops batches sent to Loki for 10 minutes. Check Alloy's logs and whether Loki is up.
+- **LokiRequestRateLimited** (warning): Loki discards lines because of its limits (`rate_limited`, `stream_limit`, `per_stream_rate_limit`). Find the noisy stream in Explore, quieten it, or raise the limit in `infra/charts/nexus/loki/values.yaml`.
+
+Metric names were checked against Loki 3.6.11 and Alloy v1.21.2 run locally. Loki 3.6.11 with the chart's default object-store client has no `loki_objstore_bucket_operation_failures_total`, so object-store errors use `loki_s3_request_duration_seconds_count{status_code}` and `loki_ingester_chunks_flush_failures_total`. Cost (the B2 free tier) is not observable from metrics and is not alerted on.
+
 ## Cost
 
 B2 is free under 10 GB, then about $6.95 per TB per month. API calls are free.

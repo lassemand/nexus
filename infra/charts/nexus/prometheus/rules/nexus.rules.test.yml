@@ -275,3 +275,308 @@ tests:
       - eval_time: 30m
         alertname: PodCrashLooping
         exp_alerts: []
+
+  # ── log-pipeline group (NEX-180) ─────────────────────────────────────────
+  # Series use a 1m step; 'a+bxN' = start a, add b, N more samples.
+
+  - name: LokiDown fires when the loki target is down
+    input_series:
+      - series: 'up{job="loki"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LokiDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: LokiDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Loki is down"
+              description: "Loki is not being scraped successfully, so logs are not being stored. Check `kubectl -n nexus get pods -l app.kubernetes.io/name=loki` and `kubectl -n nexus logs statefulset/loki`."
+
+  - name: LokiDown fires when the loki target has disappeared
+    input_series:
+      - series: 'up{job="alloy"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LokiDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Loki is down"
+              description: "Loki is not being scraped successfully, so logs are not being stored. Check `kubectl -n nexus get pods -l app.kubernetes.io/name=loki` and `kubectl -n nexus logs statefulset/loki`."
+
+  - name: LokiDown is silent when loki is up
+    input_series:
+      - series: 'up{job="loki"}'
+        values: '1x40'
+      - series: 'up{job="alloy"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LokiDown
+        exp_alerts: []
+
+  - name: AlloyDown fires when every alloy pod is down
+    input_series:
+      - series: 'up{job="alloy",pod="alloy-a"}'
+        values: '0x40'
+      - series: 'up{job="alloy",pod="alloy-b"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: AlloyDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: AlloyDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "No Alloy pod is up"
+              description: "No Alloy pod is up, so pod logs are being lost. Check `kubectl -n nexus get pods -l app.kubernetes.io/name=alloy` and `kubectl -n nexus logs daemonset/alloy`."
+
+  - name: AlloyDown fires when no alloy target exists
+    input_series:
+      - series: 'up{job="loki"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: AlloyDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "No Alloy pod is up"
+              description: "No Alloy pod is up, so pod logs are being lost. Check `kubectl -n nexus get pods -l app.kubernetes.io/name=alloy` and `kubectl -n nexus logs daemonset/alloy`."
+
+  - name: AlloyDown is silent while at least one alloy pod is up
+    input_series:
+      - series: 'up{job="alloy",pod="alloy-a"}'
+        values: '0x40'
+      - series: 'up{job="alloy",pod="alloy-b"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AlloyDown
+        exp_alerts: []
+
+  - name: LokiObjectStoreErrors fires on failing S3 requests
+    input_series:
+      - series: 'loki_s3_request_duration_seconds_count{status_code="403"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LokiObjectStoreErrors
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: LokiObjectStoreErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Loki object-store requests are failing"
+              description: "Loki cannot write to or read from the Backblaze B2 bucket. This is usually an expired or revoked key or a B2 outage. Check the B2 key in Vault `secret/nexus/loki`, the `loki-s3` ExternalSecret, and `kubectl -n nexus logs statefulset/loki | grep -i s3`."
+
+  - name: LokiObjectStoreErrors fires on failing chunk flushes
+    input_series:
+      - series: 'loki_ingester_chunks_flush_failures_total'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: LokiObjectStoreErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Loki object-store requests are failing"
+              description: "Loki cannot write to or read from the Backblaze B2 bucket. This is usually an expired or revoked key or a B2 outage. Check the B2 key in Vault `secret/nexus/loki`, the `loki-s3` ExternalSecret, and `kubectl -n nexus logs statefulset/loki | grep -i s3`."
+
+  - name: LokiObjectStoreErrors is silent for 2xx, 404 and flat counters
+    input_series:
+      - series: 'loki_s3_request_duration_seconds_count{status_code="200"}'
+        values: '0+5x40'
+      - series: 'loki_s3_request_duration_seconds_count{status_code="404"}'
+        values: '0+5x40'
+      - series: 'loki_ingester_chunks_flush_failures_total'
+        values: '3+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: LokiObjectStoreErrors
+        exp_alerts: []
+
+  - name: LokiChunksNotFlushing fires when logs arrive but nothing flushes for 3h
+    input_series:
+      - series: 'loki_distributor_lines_received_total'
+        values: '0+100x300'
+      - series: 'loki_ingester_chunks_flushed_total{reason="idle"}'
+        values: '5+0x300'
+      - series: 'process_start_time_seconds{job="loki"}'
+        values: '0+0x300'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: LokiChunksNotFlushing
+        exp_alerts: []
+      - eval_time: 4h
+        alertname: LokiChunksNotFlushing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Loki has not flushed any chunk for 3h"
+              description: "Loki is receiving logs but has flushed no chunk to B2 in 3 hours, so the WAL is filling the local disk (10Gi PVC). Check `kubectl -n nexus logs statefulset/loki | grep -i flush` and the B2 key in Vault `secret/nexus/loki`."
+
+  - name: LokiChunksNotFlushing is silent while chunks flush
+    input_series:
+      - series: 'loki_distributor_lines_received_total'
+        values: '0+100x300'
+      - series: 'loki_ingester_chunks_flushed_total{reason="idle"}'
+        values: '0+1x300'
+      - series: 'process_start_time_seconds{job="loki"}'
+        values: '0+0x300'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: LokiChunksNotFlushing
+        exp_alerts: []
+
+  - name: LokiChunksNotFlushing is silent when no logs are received
+    input_series:
+      - series: 'loki_distributor_lines_received_total'
+        values: '100+0x300'
+      - series: 'loki_ingester_chunks_flushed_total{reason="idle"}'
+        values: '5+0x300'
+      - series: 'process_start_time_seconds{job="loki"}'
+        values: '0+0x300'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: LokiChunksNotFlushing
+        exp_alerts: []
+
+  - name: LokiChunksNotFlushing is silent in the first 3h after a Loki start
+    input_series:
+      - series: 'loki_distributor_lines_received_total'
+        values: '0+100x300'
+      - series: 'process_start_time_seconds{job="loki"}'
+        values: '10800+0x300'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: LokiChunksNotFlushing
+        exp_alerts: []
+
+  - name: LokiCompactorNotRunning fires when the last retention run is over 3h old
+    input_series:
+      - series: 'loki_compactor_apply_retention_last_successful_run_timestamp_seconds'
+        values: '600+0x300'
+      - series: 'process_start_time_seconds{job="loki"}'
+        values: '0+0x300'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: LokiCompactorNotRunning
+        exp_alerts: []
+      - eval_time: 4h
+        alertname: LokiCompactorNotRunning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Loki retention has not run for 3h"
+              description: "The Loki compactor has not completed a retention run in over 3 hours, so expired logs are not deleted and B2 storage and cost grow without limit. Check `kubectl -n nexus logs statefulset/loki | grep -i compactor`."
+
+  - name: LokiCompactorNotRunning is silent while retention runs
+    input_series:
+      - series: 'loki_compactor_apply_retention_last_successful_run_timestamp_seconds'
+        values: '0+60x300'
+      - series: 'process_start_time_seconds{job="loki"}'
+        values: '0+0x300'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: LokiCompactorNotRunning
+        exp_alerts: []
+
+  - name: LokiCompactorNotRunning is silent in the first 3h after a Loki start
+    input_series:
+      - series: 'loki_compactor_apply_retention_last_successful_run_timestamp_seconds'
+        values: '0+0x300'
+      - series: 'process_start_time_seconds{job="loki"}'
+        values: '10800+0x300'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: LokiCompactorNotRunning
+        exp_alerts: []
+
+  - name: AlloyLokiWriteFailing fires on dropped entries
+    input_series:
+      - series: 'loki_write_dropped_entries_total{reason="ingester_error"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AlloyLokiWriteFailing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: AlloyLokiWriteFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Alloy is failing to write logs to Loki"
+              description: "Alloy is retrying or dropping log batches sent to Loki. Check `kubectl -n nexus logs daemonset/alloy` and that Loki is up (`kubectl -n nexus get pods -l app.kubernetes.io/name=loki`)."
+
+  - name: AlloyLokiWriteFailing fires on batch retries
+    input_series:
+      - series: 'loki_write_batch_retries_total'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AlloyLokiWriteFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Alloy is failing to write logs to Loki"
+              description: "Alloy is retrying or dropping log batches sent to Loki. Check `kubectl -n nexus logs daemonset/alloy` and that Loki is up (`kubectl -n nexus get pods -l app.kubernetes.io/name=loki`)."
+
+  - name: AlloyLokiWriteFailing is silent when nothing is dropped or retried
+    input_series:
+      - series: 'loki_write_dropped_entries_total{reason="ingester_error"}'
+        values: '7+0x40'
+      - series: 'loki_write_batch_retries_total'
+        values: '2+0x40'
+      - series: 'loki_write_sent_entries_total'
+        values: '0+100x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AlloyLokiWriteFailing
+        exp_alerts: []
+
+  - name: LokiRequestRateLimited fires when limits discard samples
+    input_series:
+      - series: 'loki_discarded_samples_total{reason="per_stream_rate_limit",tenant="fake"}'
+        values: '0+5x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LokiRequestRateLimited
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: LokiRequestRateLimited
+        exp_alerts:
+          - exp_labels:
+              reason: per_stream_rate_limit
+              severity: warning
+            exp_annotations:
+              summary: "Loki is dropping logs (per_stream_rate_limit)"
+              description: "Loki is discarding log lines because of its limits (per_stream_rate_limit). Find the noisy stream in Grafana Explore (Loki) and either quieten it or raise the limit in infra/charts/nexus/loki/values.yaml."
+
+  - name: LokiRequestRateLimited is silent for other reasons and flat counters
+    input_series:
+      - series: 'loki_discarded_samples_total{reason="invalid_labels",tenant="fake"}'
+        values: '0+5x60'
+      - series: 'loki_discarded_samples_total{reason="rate_limited",tenant="fake"}'
+        values: '4+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: LokiRequestRateLimited
+        exp_alerts: []
