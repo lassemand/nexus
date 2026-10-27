@@ -1,0 +1,12 @@
+apiVersion: v2
+name: alloy
+description: >-
+  Umbrella chart for Grafana Alloy as a DaemonSet that ships every pod's logs
+  to Loki. See docs/guides/loki.md.
+type: application
+version: 0.1.0
+appVersion: "v1.21.2"
+dependencies:
+  - name: alloy
+    version: "1.14.3"
+    repository: https://grafana.github.io/helm-charts

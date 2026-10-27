@@ -88,6 +88,7 @@ infra/
       external-secrets/      # External Secrets Operator + ClusterSecretStore (Vault backend)
       prometheus/            # kube-prometheus-stack umbrella (operator, Prometheus, Alertmanager, node-exporter, kube-state-metrics, nexus alert rules; Grafana disabled)
       loki/                  # Grafana Loki (SingleBinary) umbrella on Backblaze B2, 30-day retention; see docs/guides/loki.md
+      alloy/                 # Grafana Alloy DaemonSet shipping all pod logs to Loki; see docs/guides/loki.md
       servicelb/             # label-only Node manifest that turns off k3s ServiceLB (MetalLB serves LoadBalancers)
     signal/
       signal/                # nexus signal service (Helm chart, Deployment)

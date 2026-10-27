@@ -1,0 +1,180 @@
+# Grafana Alloy DaemonSet shipping every pod's logs to Loki. See
+# docs/guides/loki.md. All values are nested under `alloy:` (umbrella chart).
+alloy:
+  controller:
+    type: daemonset
+    # Also run on tainted (control-plane) nodes.
+    tolerations:
+      - operator: Exists
+    volumes:
+      extra:
+        # Positions and the loki.write WAL live on the node, so they survive an
+        # Alloy pod restart (no re-read, no lost buffered entries).
+        - name: alloy-data
+          hostPath:
+            path: /var/lib/alloy
+            type: DirectoryOrCreate
+
+  alloy:
+    storagePath: /var/lib/alloy
+    # Mounts the node's /var/log (read-only), which holds /var/log/pods.
+    mounts:
+      varlog: true
+      extra:
+        - name: alloy-data
+          mountPath: /var/lib/alloy
+    extraEnv:
+      - name: NODE_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: spec.nodeName
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+    configMap:
+      create: true
+      content: |
+        // Pod discovery, restricted to the pods on this node (NODE_NAME comes from the
+        // downward API, see alloy.extraEnv).
+        discovery.kubernetes "pods" {
+          role = "pod"
+          selectors {
+            role  = "pod"
+            field = "spec.nodeName=" + coalesce(sys.env("NODE_NAME"), "")
+          }
+        }
+
+        // Only these Loki labels are created: namespace, pod, container, app, node (and
+        // cluster as an external label). Other pod labels are never turned into labels:
+        // every label combination is a separate stream, and IDs/hashes such as
+        // pod-template-hash or controller-revision-hash would explode cardinality.
+        discovery.relabel "pods" {
+          targets = discovery.kubernetes.pods.targets
+
+          rule {
+            source_labels = ["__meta_kubernetes_namespace"]
+            target_label  = "namespace"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_name"]
+            target_label  = "pod"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_container_name"]
+            target_label  = "container"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_node_name"]
+            target_label  = "node"
+          }
+          // app: the `app` label first, then app.kubernetes.io/name wins if set.
+          rule {
+            source_labels = ["__meta_kubernetes_pod_label_app"]
+            target_label  = "app"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+            regex         = "(.+)"
+            target_label  = "app"
+          }
+          // CRI log files: /var/log/pods/<ns>_<pod>_<uid>/<container>/<n>.log
+          rule {
+            source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+            separator     = "/"
+            replacement   = "/var/log/pods/*$1/*.log"
+            target_label  = "__path__"
+          }
+        }
+
+        local.file_match "pods" {
+          path_targets = discovery.relabel.pods.output
+        }
+
+        loki.source.file "pods" {
+          targets    = local.file_match.pods.targets
+          forward_to = [loki.process.pods.receiver]
+        }
+
+        loki.process "pods" {
+          forward_to = [loki.write.loki.receiver]
+
+          // 1. Strip the containerd (CRI) wrapper so the stored line is the app's own.
+          stage.cri {}
+
+          // 2. Drop the pipeline's own debug noise (Alloy and Loki); warn and error
+          // lines are kept.
+          stage.match {
+            selector = `{namespace="nexus", app=~"alloy|loki"} |= "level=debug"`
+            action   = "drop"
+          }
+
+          // 3. Mask secrets before anything is stored. Only capture group 1 is replaced.
+          stage.replace {
+            expression = `(?i)bearer\s+([A-Za-z0-9\-._~+/]+=*)`
+            replace    = "***"
+          }
+          stage.replace {
+            expression = `(?i)password=([^\s&"]+)`
+            replace    = "***"
+          }
+          stage.replace {
+            expression = `(?i)"(?:access_token|refresh_token)"\s*:\s*"([^"]*)"`
+            replace    = "***"
+          }
+          stage.replace {
+            expression = `(?i)(?:access_token|refresh_token)=([^\s&"]+)`
+            replace    = "***"
+          }
+
+          // 4. Level: a JSON "level" field, else the Rust tracing token after the
+          // timestamp.
+          stage.match {
+            selector = `{namespace=~".+"} |~ "^\\s*\\{"`
+            stage.json {
+              expressions = { level = "level" }
+            }
+          }
+          stage.regex {
+            expression = `^\S+\s+(?P<level>TRACE|DEBUG|INFO|WARN|ERROR)\s`
+          }
+          // (Go template braces are escaped for Helm's tpl.)
+        // Normalise to one of five values; anything else becomes empty and no label
+          // is created, which keeps `level` to at most five values.
+          stage.template {
+            source   = "level"
+            template = `{{ "{{" }} $l := ToLower (printf "%v" .Value) {{ "}}" }}{{ "{{" }} if eq $l "warning" {{ "}}" }}warn{{ "{{" }} else if or (eq $l "trace") (eq $l "debug") (eq $l "info") (eq $l "warn") (eq $l "error") {{ "}}" }}{{ "{{" }} $l {{ "}}" }}{{ "{{" }} end {{ "}}" }}`
+          }
+          stage.labels {
+            values = { level = "" }
+          }
+
+          // loki.source.file adds `filename` and stage.cri adds `stream`; the label set
+          // is restricted to the relabelled ones plus `level`.
+          stage.label_drop {
+            values = ["filename", "stream"]
+          }
+        }
+
+        // Push to Loki. Default retry/backoff applies; the WAL buffers entries on disk
+        // (alloy.storagePath, a hostPath) so a short Loki restart or an Alloy restart
+        // loses nothing.
+        loki.write "loki" {
+          endpoint {
+            url = "http://loki.nexus.svc.cluster.local:3100/loki/api/v1/push"
+          }
+          external_labels = {
+            cluster = "orbstack",
+          }
+          wal {
+            enabled         = true
+            max_segment_age = "1h"
+          }
+        }
+
+  # Prometheus selects ServiceMonitors from every namespace without a label
+  # (serviceMonitorSelectorNilUsesHelmValues: false in the prometheus chart).
+  serviceMonitor:
+    enabled: true
