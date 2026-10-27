@@ -57,6 +57,31 @@ enum Commands {
         topic: String,
     },
 
+    /// Withdraw the registration of one or more tickers.
+    ///
+    /// Publishes a TickerRegistration with `unregister` set to the same topic.
+    /// chronicle and signal then drop the listing from their `companies`
+    /// tables and stop fetching it; data already stored for it is kept.
+    /// Registering the ticker again brings it back.
+    Unregister {
+        /// Ticker symbols to unregister, as given to `register` (e.g. TRMD GOMX.ST).
+        #[arg(required = true)]
+        tickers: Vec<String>,
+
+        /// The MIC the listing was registered on. Skips the Yahoo Finance
+        /// lookup, so it also works for delisted tickers.
+        #[arg(long)]
+        mic: Option<String>,
+
+        /// Kafka broker addresses.
+        #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:9092")]
+        brokers: String,
+
+        /// Kafka topic for ticker registrations.
+        #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = "company.tickers")]
+        topic: String,
+    },
+
     /// Fetch and store trading holiday data for an exchange.
     ///
     /// Fetches public holiday data from the Nager.Date API
@@ -209,6 +234,7 @@ _nexus() {
       local commands
       commands=(
         'register:Register tickers for signal tracking'
+        'unregister:Withdraw ticker registrations'
         'calendar:Fetch and store trading holiday data for an exchange'
         'saxo:Saxo Bank OAuth2 operations'
         'completions:Print shell completion scripts'
@@ -251,6 +277,13 @@ async fn main() -> Result<()> {
             brokers,
             topic,
         } => cmd_register(tickers, mic, brokers, topic).await,
+
+        Commands::Unregister {
+            tickers,
+            mic,
+            brokers,
+            topic,
+        } => cmd_unregister(tickers, mic, brokers, topic).await,
 
         Commands::Calendar {
             action:
@@ -462,54 +495,126 @@ async fn cmd_register(
         std::process::exit(1);
     }
 
-    let producer: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", &brokers)
-        .set("message.timeout.ms", "5000")
-        .create()
-        .context("failed to create Kafka producer")?;
-
-    let publish_futures: Vec<_> = validated
+    let messages = validated
         .into_iter()
-        .map(|resolved| {
-            let topic = topic.clone();
-            let producer = producer.clone();
-
-            async move {
-                let payload = TickerRegistration {
-                    ticker: resolved.canonical.clone(),
-                    exchange_mic: resolved.exchange_mic.clone(),
-                    currency: resolved.currency.clone(),
-                }
-                .encode_to_vec();
-
-                let record = FutureRecord::to(&topic)
-                    .key(resolved.canonical.as_str())
-                    .payload(payload.as_slice());
-
-                match producer.send(record, Duration::from_secs(5)).await {
-                    Ok(_) => {
-                        println!(
-                            "✓ {} — registered ({} / {})",
-                            resolved.canonical, resolved.exchange_mic, resolved.currency
-                        );
-                        true
-                    }
-                    Err((e, _)) => {
-                        eprintln!("✗ {} — delivery failed: {e}", resolved.canonical);
-                        false
-                    }
-                }
-            }
+        .map(|resolved| TickerRegistration {
+            ticker: resolved.canonical,
+            exchange_mic: resolved.exchange_mic,
+            currency: resolved.currency,
+            unregister: false,
         })
         .collect();
+    let delivered = publish(&brokers, &topic, messages).await?;
 
-    let results = join_all(publish_futures).await;
-
-    if had_invalid || results.into_iter().any(|ok| !ok) {
+    if had_invalid || !delivered {
         std::process::exit(1);
     }
 
     Ok(())
+}
+
+/// Ticker and MIC to unregister: with `mic`, taken as given (no lookup, so a
+/// delisted ticker works too); without it, resolved like `register` does.
+async fn resolve_for_unregister(
+    http: &reqwest::Client,
+    input: &str,
+    mic: Option<&str>,
+) -> Result<(String, String)> {
+    use model::asset::mic as mics;
+
+    if let Some(m) = mic {
+        let m = m.to_uppercase();
+        if mics::currency(&m).is_none() {
+            anyhow::bail!("unknown MIC '{m}'");
+        }
+        return Ok((canonical_ticker(input), m));
+    }
+    match validate_and_resolve(http, input, None).await? {
+        Some(r) => Ok((r.canonical, r.exchange_mic)),
+        None => anyhow::bail!("not found on Yahoo Finance — pass --mic to unregister it anyway"),
+    }
+}
+
+/// Publish an unregistration for each ticker, so every reader of the topic
+/// drops the listing. Data already stored for it is kept.
+async fn cmd_unregister(
+    tickers: Vec<String>,
+    mic: Option<String>,
+    brokers: String,
+    topic: String,
+) -> Result<()> {
+    let http = reqwest::Client::new();
+    let resolutions = join_all(
+        tickers
+            .iter()
+            .map(|input| resolve_for_unregister(&http, input, mic.as_deref())),
+    )
+    .await;
+
+    let mut messages = Vec::new();
+    let mut had_invalid = false;
+    for (input, res) in tickers.iter().zip(resolutions) {
+        match res {
+            Ok((ticker, exchange_mic)) => messages.push(TickerRegistration {
+                ticker,
+                exchange_mic,
+                currency: String::new(),
+                unregister: true,
+            }),
+            Err(e) => {
+                eprintln!("✗ {input} — {e}");
+                had_invalid = true;
+            }
+        }
+    }
+    if messages.is_empty() {
+        std::process::exit(1);
+    }
+
+    let delivered = publish(&brokers, &topic, messages).await?;
+    if had_invalid || !delivered {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Publishes each message to `topic`, keyed by its ticker, and prints the
+/// outcome per ticker. Returns whether every message was delivered.
+async fn publish(brokers: &str, topic: &str, messages: Vec<TickerRegistration>) -> Result<bool> {
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", brokers)
+        .set("message.timeout.ms", "5000")
+        .create()
+        .context("failed to create Kafka producer")?;
+
+    let results = join_all(messages.into_iter().map(|msg| {
+        let producer = producer.clone();
+        async move {
+            let payload = msg.encode_to_vec();
+            let record = FutureRecord::to(topic)
+                .key(msg.ticker.as_str())
+                .payload(payload.as_slice());
+            match producer.send(record, Duration::from_secs(5)).await {
+                Ok(_) if msg.unregister => {
+                    println!("✓ {} — unregistered ({})", msg.ticker, msg.exchange_mic);
+                    true
+                }
+                Ok(_) => {
+                    println!(
+                        "✓ {} — registered ({} / {})",
+                        msg.ticker, msg.exchange_mic, msg.currency
+                    );
+                    true
+                }
+                Err((e, _)) => {
+                    eprintln!("✗ {} — delivery failed: {e}", msg.ticker);
+                    false
+                }
+            }
+        }
+    }))
+    .await;
+    Ok(results.into_iter().all(|ok| ok))
 }
 
 /// Print the zsh completion script to stdout.
@@ -577,10 +682,27 @@ mod tests {
             ticker: "aapl".to_string(),
             exchange_mic: "XNAS".to_string(),
             currency: "USD".to_string(),
+            unregister: false,
         };
         let encoded = original.encode_to_vec();
         let decoded = TickerRegistration::decode(encoded.as_slice()).unwrap();
         assert_eq!(decoded.ticker.to_uppercase(), "AAPL");
+    }
+
+    #[tokio::test]
+    async fn unregister_with_mic_skips_the_lookup() {
+        let http = reqwest::Client::new();
+        let resolved = super::resolve_for_unregister(&http, "trmd", Some("xnas"))
+            .await
+            .unwrap();
+        assert_eq!(resolved, ("TRMD".to_string(), "XNAS".to_string()));
+        let suffixed = super::resolve_for_unregister(&http, "GOMX.ST", Some("FNSE"))
+            .await
+            .unwrap();
+        assert_eq!(suffixed.0, "GOMX");
+        assert!(super::resolve_for_unregister(&http, "TRMD", Some("XXXX"))
+            .await
+            .is_err());
     }
 
     #[test]

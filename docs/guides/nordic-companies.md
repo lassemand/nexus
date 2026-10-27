@@ -18,6 +18,20 @@ GOMX.ST` publishes to `company.tickers`, and `pdmr`, `nordic-reports` and
 `nordic-reports` run (daily at 22:00) or start one by hand, then set the
 mappings below. The mapping steps never insert.
 
+## Unregistering
+
+`nexus unregister GOMX.ST` (or `nexus unregister GOMX --mic FNSE`, which skips
+the Yahoo lookup and also works for a delisted ticker) publishes the same
+message with `unregister` set. The topic is replayed in order, so the last
+message for a listing decides. The next `pdmr`, `nordic-reports` or
+`nordic-calendar` run deletes the `companies` row together with its
+`mfn_ingest_state` and `saxo_daily_bars_state` rows, and `saxo-stream` stops
+fetching it from its next sweep. The US jobs (`chronicle`, `market`,
+`earnings`, `filings`) drop it on their next run. The mappings above go with
+the row, so set them again if the company is registered later. signal deletes its
+own `companies` row straight away and skips the ticker's new events. Data
+already stored (`special_events`, `daily_bars`, ...) is kept.
+
 ## Finding the MFN slug
 
 Open the company's page on [mfn.se](https://mfn.se). The slug is the last path

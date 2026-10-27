@@ -3,6 +3,8 @@ package nexus;
 
 // A ticker registration event published to the `company.tickers` Kafka topic.
 // Sector is intentionally absent — it is looked up server-side by `signal`.
+// Readers replay the topic in order; the last message for a listing
+// (ticker, exchange_mic) decides whether it is registered.
 message TickerRegistration {
   // Raw ticker symbol as provided by the publisher.
   // Normalisation to uppercase is performed by the consumer, not here.
@@ -16,4 +18,8 @@ message TickerRegistration {
   // Empty string means the consumer should derive it from exchange_mic.
   // Added in field 3 — do not renumber existing fields.
   string currency = 3;
+  // When true, withdraws an earlier registration of (ticker, exchange_mic);
+  // currency is ignored. A later registration brings the listing back.
+  // Added in field 4 — do not renumber existing fields.
+  bool unregister = 4;
 }
