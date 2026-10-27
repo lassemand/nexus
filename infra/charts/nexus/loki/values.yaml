@@ -1,0 +1,163 @@
+# Loki in SingleBinary mode on Backblaze B2 (S3 API). See docs/guides/loki.md
+# for the manual B2 and Vault prerequisites. Without the bucket and the
+# nexus/loki Vault key Loki starts but cannot flush chunks.
+# All values are nested under `loki:` because this is an umbrella chart.
+loki:
+  deploymentMode: SingleBinary
+
+  loki:
+    # Single tenant: no X-Scope-OrgID header needed from clients.
+    auth_enabled: false
+
+    commonConfig:
+      path_prefix: /var/loki
+      replication_factor: 1
+
+    schemaConfig:
+      configs:
+        # Period starts on the deploy date; there is no earlier data.
+        - from: "2026-10-27"
+          store: tsdb
+          object_store: s3
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    storage:
+      type: s3
+      bucketNames:
+        # One bucket shared by chunks, ruler and admin. Loki separates them by
+        # key prefix (fake/ for chunks, ruler/, admin/), so one B2 bucket and one
+        # application key cover everything.
+        chunks: nexus-loki
+        ruler: nexus-loki
+        admin: nexus-loki
+      s3:
+        endpoint: s3.eu-central-003.backblazeb2.com
+        region: eu-central-003
+        # Expanded by Loki from the container environment (loki-s3 secret) thanks
+        # to -config.expand-env=true. Never put real keys here.
+        accessKeyId: ${AWS_ACCESS_KEY_ID}
+        secretAccessKey: ${AWS_SECRET_ACCESS_KEY}
+        # Virtual-hosted style, which B2 supports.
+        s3ForcePathStyle: false
+        insecure: false
+
+    ingester:
+      # WAL on the PVC (/var/loki is the mounted volume) so a pod restart replays
+      # unflushed logs instead of losing them. Chunk settings stay at the
+      # defaults (~1.5MB target, 2h max age): fewer, larger objects keep B2
+      # transactions and per-object minimums low.
+      wal:
+        enabled: true
+        dir: /var/loki/wal
+
+    # TSDB shipper working directories, also on the PVC.
+    storage_config:
+      tsdb_shipper:
+        active_index_directory: /var/loki/tsdb-index
+        cache_location: /var/loki/tsdb-cache
+
+    compactor:
+      working_directory: /var/loki/compactor
+      # Retention is enforced by the compactor deleting expired chunks. B2 only
+      # hides them; the bucket lifecycle rule "keep only the last version" (see
+      # docs/guides/loki.md) removes them for real.
+      retention_enabled: true
+      delete_request_store: s3
+
+    limits_config:
+      # 30 days of logs.
+      retention_period: 720h
+      # Sustained ingest per tenant; far above what a small cluster produces.
+      ingestion_rate_mb: 8
+      # Short bursts (e.g. a crash loop dumping stack traces) up to 16MB.
+      ingestion_burst_size_mb: 16
+      # Cut very long lines instead of rejecting them, so the start of a huge
+      # JSON blob or stack trace is still stored.
+      max_line_size: 256KB
+      max_line_size_truncate: true
+      # Refuse samples older than a week (replayed or backfilled logs).
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+
+  # Loki reads credentials from env; the values above contain placeholders only.
+  singleBinary:
+    replicas: 1
+    extraArgs:
+      - -config.expand-env=true
+    extraEnvFrom:
+      - secretRef:
+          name: loki-s3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: local-path
+
+  # Everything below is off: not needed on a single node.
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+  backend:
+    replicas: 0
+  ingester:
+    replicas: 0
+  querier:
+    replicas: 0
+  queryFrontend:
+    replicas: 0
+  queryScheduler:
+    replicas: 0
+  distributor:
+    replicas: 0
+  compactor:
+    replicas: 0
+  indexGateway:
+    replicas: 0
+  bloomCompactor:
+    replicas: 0
+  bloomGateway:
+    replicas: 0
+
+  minio:
+    enabled: false
+  lokiCanary:
+    enabled: false
+  test:
+    enabled: false
+  # Grafana talks to the single binary's Service (loki:3100) directly.
+  gateway:
+    enabled: false
+
+  # The chunks cache defaults reserve several GB, which the OrbStack VM cannot
+  # spare. Both caches are disabled (not resized).
+  chunksCache:
+    enabled: false
+  resultsCache:
+    enabled: false
+
+  monitoring:
+    # Prometheus selects ServiceMonitors from every namespace without a label
+    # (serviceMonitorSelectorNilUsesHelmValues: false in the prometheus chart).
+    serviceMonitor:
+      enabled: true
+    selfMonitoring:
+      enabled: false
+      grafanaAgent:
+        installOperator: false
+    lokiCanary:
+      enabled: false
+
+  # The rules sidecar (and its ClusterRole) is only for loading ruler rules from
+  # ConfigMaps; alerting on logs is out of scope.
+  sidecar:
+    rules:
+      enabled: false
