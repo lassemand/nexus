@@ -112,3 +112,130 @@ groups:
             Container {{ $labels.container }} in
             {{ $labels.namespace }}/{{ $labels.pod }} has restarted
             more than 3 times in 15 minutes.
+
+  - name: nexus.log-pipeline
+    rules:
+      # Log pipeline: Alloy (DaemonSet) -> Loki (single binary) -> Backblaze B2.
+      #
+      # Metric names verified on 2026-10-27 by running Loki 3.6.11 (chart
+      # grafana/loki 7.5.0, S3 storage, WAL, retention) and Alloy v1.21.2 (chart
+      # grafana/alloy 1.14.3) locally and reading their /metrics, not on the
+      # cluster (no kubectl there). Re-check on the running pods after deploying.
+      #   Loki:  loki_ingester_chunks_flushed_total{reason}, loki_ingester_chunks_flush_failures_total,
+      #          loki_distributor_lines_received_total, loki_s3_request_duration_seconds_count{status_code},
+      #          loki_compactor_apply_retention_last_successful_run_timestamp_seconds,
+      #          loki_discarded_samples_total{reason}, process_start_time_seconds
+      #   Alloy: loki_write_dropped_entries_total{reason}, loki_write_batch_retries_total
+      # Differences from the names in the task: Loki 3.6.11 with the chart's
+      # default (non-thanos) object-store client exposes no
+      # loki_objstore_bucket_operation_failures_total, and no
+      # loki_compactor_last_successful_run_timestamp_seconds; the equivalents
+      # used here are the S3 request status codes plus the chunk flush failure
+      # counter, and the retention run timestamp.
+      # Scrape job names are the Service names: `loki` and `alloy`.
+
+      - alert: LokiDown
+        # Fires when no Loki target is up (also covers a missing target; an absent()
+        # of a comparison carries no labels, so the alert has none).
+        expr: absent(up{job=~".*loki.*"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Loki is down"
+          description: >-
+            Loki is not being scraped successfully, so logs are not being
+            stored. Check `kubectl -n nexus get pods -l app.kubernetes.io/name=loki`
+            and `kubectl -n nexus logs statefulset/loki`.
+
+      - alert: AlloyDown
+        expr: absent(up{job="alloy"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No Alloy pod is up"
+          description: >-
+            No Alloy pod is up, so pod logs are being lost. Check
+            `kubectl -n nexus get pods -l app.kubernetes.io/name=alloy` and
+            `kubectl -n nexus logs daemonset/alloy`.
+
+      # S3 404s are normal for Loki (missing optional objects), so they are
+      # excluded. Failed chunk flushes are the dependable signal: they were seen
+      # to increment when the object store was unreachable.
+      - alert: LokiObjectStoreErrors
+        expr: >
+          sum(rate(loki_s3_request_duration_seconds_count{status_code!~"2..|404"}[5m])) > 0
+          or sum(rate(loki_ingester_chunks_flush_failures_total[5m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki object-store requests are failing"
+          description: >-
+            Loki cannot write to or read from the Backblaze B2 bucket. This is
+            usually an expired or revoked key or a B2 outage. Check the B2 key
+            in Vault `secret/nexus/loki`, the `loki-s3` ExternalSecret, and
+            `kubectl -n nexus logs statefulset/loki | grep -i s3`.
+
+      # Chunks are cut at least every 2h (max_chunk_age), so 3h of received
+      # logs without any flush means flushing is stuck. Only evaluated once
+      # Loki has been up for 3h, so a fresh deploy cannot trip it.
+      - alert: LokiChunksNotFlushing
+        expr: >
+          (sum(increase(loki_ingester_chunks_flushed_total[3h])) or vector(0)) == 0
+          and sum(increase(loki_distributor_lines_received_total[3h])) > 0
+          and on() (min(time() - process_start_time_seconds{job="loki"}) > 10800)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki has not flushed any chunk for 3h"
+          description: >-
+            Loki is receiving logs but has flushed no chunk to B2 in 3 hours,
+            so the WAL is filling the local disk (10Gi PVC). Check
+            `kubectl -n nexus logs statefulset/loki | grep -i flush` and the B2
+            key in Vault `secret/nexus/loki`.
+
+      # The metric is 0 until the first run, so this also fires if retention
+      # never ran, but only once Loki has been up for 3h.
+      - alert: LokiCompactorNotRunning
+        expr: >
+          (time() - loki_compactor_apply_retention_last_successful_run_timestamp_seconds > 10800)
+          and on() (min(time() - process_start_time_seconds{job="loki"}) > 10800)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki retention has not run for 3h"
+          description: >-
+            The Loki compactor has not completed a retention run in over 3
+            hours, so expired logs are not deleted and B2 storage and cost grow
+            without limit. Check `kubectl -n nexus logs statefulset/loki | grep -i compactor`.
+
+      - alert: AlloyLokiWriteFailing
+        expr: >
+          sum(rate(loki_write_dropped_entries_total[5m])) > 0
+          or sum(rate(loki_write_batch_retries_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Alloy is failing to write logs to Loki"
+          description: >-
+            Alloy is retrying or dropping log batches sent to Loki. Check
+            `kubectl -n nexus logs daemonset/alloy` and that Loki is up
+            (`kubectl -n nexus get pods -l app.kubernetes.io/name=loki`).
+
+      - alert: LokiRequestRateLimited
+        expr: >
+          sum by (reason) (rate(loki_discarded_samples_total{reason=~"rate_limited|stream_limit|per_stream_rate_limit"}[5m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki is dropping logs ({{ $labels.reason }})"
+          description: >-
+            Loki is discarding log lines because of its limits ({{ $labels.reason }}).
+            Find the noisy stream in Grafana Explore (Loki) and either quieten
+            it or raise the limit in infra/charts/nexus/loki/values.yaml.
