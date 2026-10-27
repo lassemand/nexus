@@ -1,5 +1,9 @@
 # ADR-0001: Saxo Bank OpenAPI as Nordic/First North Real-Time Data Source
 
+> **Update 2026-10-27 (NEX-193):** the live WebSocket price stream described below was removed from
+> `saxo-stream`. Nothing consumed its 1-minute bars; Nordic daily prices come from Saxo's chart API
+> (`signal.daily_bars`, NEX-162). The OAuth, Uic and chart parts of this ADR still apply.
+
 **Status:** Accepted  
 **Date:** 2026-07-12  
 **Linear:** NEX-77  

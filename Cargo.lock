@@ -23,7 +23,6 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "chrono",
- "futures-util",
  "model",
  "rand 0.9.4",
  "reqwest",
@@ -33,7 +32,6 @@ dependencies = [
  "thiserror 1.0.69",
  "time",
  "tokio",
- "tokio-tungstenite",
  "tracing",
  "url",
  "wiremock",

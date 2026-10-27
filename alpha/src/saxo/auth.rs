@@ -54,8 +54,8 @@ impl SaxoToken {
 }
 
 /// The current access token, shared between the periodic refresh task (writer)
-/// and any reader that needs the latest value (e.g. `SaxoBarStream`'s connect/
-/// reconnect logic). A `std::sync::Mutex` is sufficient since critical sections
+/// and any reader that needs the latest value (the chart client and Uic
+/// lookups). A `std::sync::Mutex` is sufficient since critical sections
 /// are a plain struct read/write, never held across an `.await`.
 pub type SharedToken = Arc<Mutex<SaxoToken>>;
 
@@ -298,24 +298,6 @@ impl SaxoAuth {
             refresh_token: new_refresh,
             refresh_token_expires_at: refresh_expires_at,
         })
-    }
-
-    /// Reauthorize an existing WebSocket connection with a new access token.
-    /// No reconnect; the connection and all subscriptions stay live.
-    pub async fn refresh_on_stream(
-        &self,
-        streaming_base: &str,
-        context_id: &str,
-        new_token: &str,
-    ) -> Result<(), AuthError> {
-        let url = format!("{streaming_base}/authorize?contextid={context_id}");
-        self.client
-            .put(&url)
-            .bearer_auth(new_token)
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(())
     }
 }
 

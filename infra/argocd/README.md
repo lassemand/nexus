@@ -363,7 +363,6 @@ vault kv put secret/nexus/saxo \
   client_id="<saxo-client-id>" \
   client_secret="<saxo-client-secret>" \
   api_base="https://gateway.saxobank.com/sim/openapi" \
-  streaming_base="wss://streaming.saxobank.com/sim/openapi/streamingws" \
   auth_base="https://sim.logonvalidation.net"
 
 # market

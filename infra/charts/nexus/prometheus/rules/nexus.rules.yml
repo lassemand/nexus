@@ -57,7 +57,7 @@ groups:
 
   - name: nexus.ingestion
     rules:
-      # Saxo WebSocket stream pod has been not-ready for >2m.
+      # saxo-stream (Saxo token keeper + daily-bar sync) has been not-ready for >2m.
       - alert: SaxoStreamDown
         expr: |
           absent(kube_pod_status_ready{namespace="chronicle", pod=~"saxo-stream.*", condition="true"})

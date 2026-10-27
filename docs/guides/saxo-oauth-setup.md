@@ -102,8 +102,7 @@ vault kv put secret/nexus/saxo \
   refresh_token="<REFRESH_TOKEN>" \
   access_token="<ACCESS_TOKEN>" \
   token_expires_at="<UNIX_TIMESTAMP>" \
-  api_base="https://gateway.saxobank.com/openapi" \
-  streaming_base="https://live-streaming.saxobank.com/oapi/streaming/ws"
+  api_base="https://gateway.saxobank.com/openapi"
 ```
 
 Verify:
@@ -128,7 +127,7 @@ kubectl get externalsecret saxo-secret -n chronicle
 # → should show SecretSynced
 ```
 
-The `saxo_stream` pod will then start, use the bootstrap tokens to connect,
+The `saxo_stream` pod will then start, use the bootstrap tokens,
 and write the rotated refresh token to the `saxo_tokens` Postgres table.
 After that first write the Vault `refresh_token` value is no longer needed
 for normal operation.
