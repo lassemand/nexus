@@ -9,9 +9,9 @@ use alpha::{CompanyProvider, PolygonSectorProvider, YahooPriceProvider};
 use chrono::DateTime;
 use clap::Parser;
 use db::{
-    fetch_bars_after, fetch_bars_before, fetch_unlabeled_events_needing_bar, insert_event_signal,
-    insert_trade_result, is_registered, label_event_truth, upsert_bar, upsert_company,
-    upsert_insider_filing, upsert_special_event,
+    delete_company, fetch_bars_after, fetch_bars_before, fetch_unlabeled_events_needing_bar,
+    insert_event_signal, insert_trade_result, is_registered, label_event_truth, upsert_bar,
+    upsert_company, upsert_insider_filing, upsert_special_event,
 };
 use features::{compute_post_event_ar, compute_pre_event_features};
 use model::{
@@ -75,6 +75,8 @@ struct Args {
 ///
 /// - Decodes the message; logs a warning and returns on malformed bytes.
 /// - Normalises the ticker to uppercase.
+/// - An unregistration deletes the listing from `companies`, so its later
+///   events are skipped; the data already stored for it is kept.
 /// - Resolves the sector with [`resolve_sector`]; logs an error and returns
 ///   on API failure, but the caller should still commit the offset.
 /// - On success, persists the mapping to Postgres.
@@ -98,6 +100,17 @@ async fn handle_ticker_registration<P: CompanyProvider>(
     } else {
         msg.exchange_mic.clone()
     };
+    if msg.unregister {
+        match delete_company(pool, &ticker, &exchange_mic).await {
+            Ok(true) => {
+                info!(ticker = %ticker, exchange_mic = %exchange_mic, "ticker unregistered")
+            }
+            Ok(false) => info!(ticker = %ticker, exchange_mic = %exchange_mic,
+                               "unregistration for a ticker that is not registered, nothing to do"),
+            Err(e) => error!(ticker = %ticker, error = %e, "failed to delete company from DB"),
+        }
+        return;
+    }
     // Resolve currency: use explicit proto value if present, else derive from MIC.
     let currency = if msg.currency.is_empty() {
         match mic::currency(&exchange_mic) {

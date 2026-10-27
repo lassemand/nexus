@@ -447,6 +447,20 @@ pub async fn upsert_company(
     Ok(())
 }
 
+/// Removes a listing from the registry. Returns whether a row was deleted.
+///
+/// Only the `companies` row goes; events, bars and reactions already stored
+/// for the ticker are kept.
+pub async fn delete_company(pool: &PgPool, ticker: &str, exchange_mic: &str) -> sqlx::Result<bool> {
+    let deleted = sqlx::query("DELETE FROM companies WHERE ticker = $1 AND exchange_mic = $2")
+        .bind(ticker.to_uppercase())
+        .bind(exchange_mic)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(deleted > 0)
+}
+
 /// Load a [`DynamicCalendar`] for `exchange_mic` from the `trading_holidays` table.
 ///
 /// Resolves the exchange MIC to a country code via [`alpha::country_for_exchange`],
@@ -760,6 +774,23 @@ mod tests {
         assert_eq!(row.get::<String, _>("ticker"), "GOMX");
         assert_eq!(row.get::<String, _>("exchange_mic"), "FNSE");
         assert_eq!(row.get::<String, _>("currency"), "SEK");
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_company_removes_only_that_listing(pool: PgPool) -> sqlx::Result<()> {
+        upsert_company(&pool, "TRMD", "XNAS", "USD", None).await?;
+        upsert_company(&pool, "TRMD", "XCSE", "DKK", None).await?;
+
+        assert!(delete_company(&pool, "trmd", "XNAS").await?);
+        assert!(!delete_company(&pool, "TRMD", "XNAS").await?);
+
+        let mics: Vec<String> =
+            sqlx::query_scalar("SELECT exchange_mic FROM companies WHERE ticker = 'TRMD'")
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(mics, vec!["XCSE"]);
+        assert!(is_registered(&pool, "TRMD").await?);
         Ok(())
     }
 
