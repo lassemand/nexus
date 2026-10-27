@@ -1,0 +1,8 @@
+apiVersion: v2
+name: metallb-pools
+description: >
+  MetalLB address pools and L2 advertisement for the OrbStack LoadBalancer
+  range. MetalLB itself is installed outside this repo; this chart owns only
+  its configuration.
+type: application
+version: 0.1.0

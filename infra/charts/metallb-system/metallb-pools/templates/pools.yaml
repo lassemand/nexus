@@ -1,0 +1,30 @@
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: {{ .Values.pinned.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  addresses:
+    {{- toYaml .Values.pinned.addresses | nindent 4 }}
+  # Only Services that ask for an address in this range by annotation get one.
+  autoAssign: false
+---
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: {{ .Values.dynamic.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  addresses:
+    {{- toYaml .Values.dynamic.addresses | nindent 4 }}
+  autoAssign: true
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: {{ .Values.l2AdvertisementName }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  ipAddressPools:
+    - {{ .Values.pinned.name }}
+    - {{ .Values.dynamic.name }}
