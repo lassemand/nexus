@@ -1,3 +1,4 @@
+mod lookup;
 mod saxo_auth;
 
 use alpha::CalendarProvider;
@@ -30,6 +31,10 @@ enum Commands {
     ///
     /// Validates each ticker against Yahoo Finance before publishing a
     /// TickerRegistration protobuf message to the configured Kafka topic.
+    /// For Nordic listings it also looks up the MFN company (slug and name)
+    /// and, for Swedish ones, the FI insider-register issuer, and asks when a
+    /// lookup has several candidates. Registering an already registered
+    /// ticker again fills in its mappings.
     /// All tickers are attempted even if earlier ones fail; the process
     /// exits with code 1 if any validation or delivery fails.
     Register {
@@ -47,6 +52,14 @@ enum Commands {
         /// the same country as Yahoo's exchange.
         #[arg(long)]
         mic: Option<String>,
+
+        /// MFN slug (`https://mfn.se/a/<slug>`); skips the MFN lookup. One ticker only.
+        #[arg(long)]
+        mfn_slug: Option<String>,
+
+        /// Issuer name in FI's insider register; skips the FI lookup. One ticker only.
+        #[arg(long)]
+        fi_issuer: Option<String>,
 
         /// Kafka broker addresses.
         #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:9092")]
@@ -274,9 +287,17 @@ async fn main() -> Result<()> {
         Commands::Register {
             tickers,
             mic,
+            mfn_slug,
+            fi_issuer,
             brokers,
             topic,
-        } => cmd_register(tickers, mic, brokers, topic).await,
+        } => {
+            let overrides = lookup::Overrides {
+                mfn_slug,
+                fi_issuer,
+            };
+            cmd_register(tickers, mic, overrides, brokers, topic).await
+        }
 
         Commands::Unregister {
             tickers,
@@ -454,9 +475,13 @@ async fn validate_and_resolve(
 async fn cmd_register(
     tickers: Vec<String>,
     mic_override: Option<String>,
+    overrides: lookup::Overrides,
     brokers: String,
     topic: String,
 ) -> Result<()> {
+    if tickers.len() > 1 && (overrides.mfn_slug.is_some() || overrides.fi_issuer.is_some()) {
+        anyhow::bail!("--mfn-slug and --fi-issuer apply to one ticker at a time");
+    }
     let http = reqwest::Client::new();
 
     // Resolve all tickers concurrently.
@@ -495,15 +520,29 @@ async fn cmd_register(
         std::process::exit(1);
     }
 
-    let messages = validated
-        .into_iter()
-        .map(|resolved| TickerRegistration {
+    // One ticker at a time, so a question is never interleaved with another's.
+    let lookups = lookup::Lookup::new(http);
+    let mut chooser = lookup::TerminalChooser;
+    let mut messages = Vec::with_capacity(validated.len());
+    for resolved in validated {
+        let m = lookups
+            .mappings(
+                &resolved.canonical,
+                &resolved.exchange_mic,
+                &overrides,
+                &mut chooser,
+            )
+            .await;
+        messages.push(TickerRegistration {
             ticker: resolved.canonical,
             exchange_mic: resolved.exchange_mic,
             currency: resolved.currency,
             unregister: false,
-        })
-        .collect();
+            name: m.name.unwrap_or_default(),
+            mfn_slug: m.mfn_slug.unwrap_or_default(),
+            fi_issuer: m.fi_issuer.unwrap_or_default(),
+        });
+    }
     let delivered = publish(&brokers, &topic, messages).await?;
 
     if had_invalid || !delivered {
@@ -558,8 +597,8 @@ async fn cmd_unregister(
             Ok((ticker, exchange_mic)) => messages.push(TickerRegistration {
                 ticker,
                 exchange_mic,
-                currency: String::new(),
                 unregister: true,
+                ..Default::default()
             }),
             Err(e) => {
                 eprintln!("✗ {input} — {e}");
@@ -601,8 +640,11 @@ async fn publish(brokers: &str, topic: &str, messages: Vec<TickerRegistration>) 
                 }
                 Ok(_) => {
                     println!(
-                        "✓ {} — registered ({} / {})",
-                        msg.ticker, msg.exchange_mic, msg.currency
+                        "✓ {} — registered ({} / {}){}",
+                        msg.ticker,
+                        msg.exchange_mic,
+                        msg.currency,
+                        mapping_summary(&msg)
                     );
                     true
                 }
@@ -615,6 +657,26 @@ async fn publish(brokers: &str, topic: &str, messages: Vec<TickerRegistration>) 
     }))
     .await;
     Ok(results.into_iter().all(|ok| ok))
+}
+
+/// `, MFN torm (Torm), FI …` for the mappings a registration carries.
+fn mapping_summary(msg: &TickerRegistration) -> String {
+    let mut parts = Vec::new();
+    if !msg.mfn_slug.is_empty() {
+        parts.push(if msg.name.is_empty() {
+            format!("MFN {}", msg.mfn_slug)
+        } else {
+            format!("MFN {} ({})", msg.mfn_slug, msg.name)
+        });
+    }
+    if !msg.fi_issuer.is_empty() {
+        parts.push(format!("FI issuer {}", msg.fi_issuer));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", parts.join(", "))
+    }
 }
 
 /// Print the zsh completion script to stdout.
@@ -682,7 +744,7 @@ mod tests {
             ticker: "aapl".to_string(),
             exchange_mic: "XNAS".to_string(),
             currency: "USD".to_string(),
-            unregister: false,
+            ..Default::default()
         };
         let encoded = original.encode_to_vec();
         let decoded = TickerRegistration::decode(encoded.as_slice()).unwrap();
