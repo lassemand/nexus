@@ -27,6 +27,10 @@ alloy:
     # Mounts the node's /var/log (read-only), which holds /var/log/pods.
     mounts:
       varlog: true
+      # OrbStack's Kubernetes runs on Docker: every /var/log/pods/.../<n>.log is
+      # a symlink to /var/lib/docker/containers/<id>/<id>-json.log. Without this
+      # read-only mount the links dangle and Alloy ships nothing.
+      dockercontainers: true
       extra:
         - name: alloy-data
           mountPath: /var/lib/alloy
