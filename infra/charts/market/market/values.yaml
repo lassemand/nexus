@@ -1,6 +1,6 @@
 image:
   repository: "lmapwns/nexus"
-  tag: "0.5.0"
+  tag: "0.6.0"
 schedule: "0 2 * * 2-6"
 resources:
   requests:
