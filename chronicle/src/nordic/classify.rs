@@ -86,6 +86,14 @@ const NON_REPORT_WORDS: &[&str] = &[
     "återköp",
 ];
 
+/// Clinical-trial and regulatory-approval wording, matched at the start of a
+/// word ("industrial" is not a "trial"). Pharma headlines such as "Novo Nordisk
+/// phase 2 trial with amycretin reports significant weight loss" contain
+/// "reports" but are not results releases. Only the headline heuristic uses it.
+const CLINICAL_WORDS: &[&str] = &[
+    "trial", "phase 1", "phase 2", "phase 3", "clinical", "fda", "chmp",
+];
+
 const CALENDAR_PHRASES: &[&str] = &[
     "financial calendar",
     "finansiell kalender",
@@ -183,7 +191,9 @@ fn mentions_quarter(lower: &str) -> bool {
 /// The headline heuristic: strong report wording, or a quarter mention without
 /// business-news wording; never for regulatory notices that only look similar.
 fn headline_looks_like_report(lower: &str) -> bool {
-    if NON_REPORT_WORDS.iter().any(|w| lower.contains(w)) {
+    if NON_REPORT_WORDS.iter().any(|w| lower.contains(w))
+        || CLINICAL_WORDS.iter().any(|w| starts_a_word(lower, w))
+    {
         return false;
     }
     STRONG_WORDS.iter().any(|w| lower.contains(w))
@@ -558,6 +568,9 @@ mod tests {
             ("novo AGM", tags(&[REG]), "Resolutions from the Annual General Meeting of Novo Nordisk A/S", None, false, false),
             ("novo voting rights", tags(&[REG]), "Novo Nordisk A/S \u{2013} Total number of voting rights and share capital in Novo Nordisk A/S as of 26 April 2024", None, false, false),
             ("novo major shareholder", tags(&[REG, "sub:ci"]), "Novo Nordisk \u{2013} major shareholder announcement", None, false, false),
+            ("novo trial news saying reports (2025)", tags(&[REG]), "Novo Nordisk phase 2 trial with amycretin reports significant weight loss and HbA1c reduction in type 2 diabetes", None, false, false),
+            ("novo trial news saying reports (2020)", tags(&[REG]), "Novo Nordisk reports weight loss of 14.9% (16.9% if taken as intended) in STEP 1 trial", None, false, false),
+            ("industrial is not a trial", tags(&[REG]), "Industrial AB: Industrial AB reports strong Q2 2026", Some(Interim), false, false),
             ("novo outlook update is business news", tags(&[REG]), "Novo Nordisk raises adjusted sales and adjusted operating profit outlook for 2026", None, false, false),
             // exclusions win over report wording and over report tags
             ("PDMR notice with the word reporting", tags(&[REG]), "Novo Nordisk A/S \u{2013} Reporting of transactions made by persons discharging managerial responsibilities in Novo Nordisk A/S", None, false, false),

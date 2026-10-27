@@ -370,6 +370,38 @@
   }
  },
  {
+  "news_id": "408abb4f-0228-4c11-8e7b-6b3281176692",
+  "url": "https://mfn.se/one/a/novo-nordisk/novo-nordisk-phase-2-trial-with-amycretin-reports-significant-weight-loss-and-hba1c-reduction-in-type-2-diabetes-408abb4f",
+  "author": {
+   "entity_id": "cee9f274-d5a4-46e4-a678-078e231589ef",
+   "slug": "novo-nordisk",
+   "slugs": [
+    "novo-nordisk"
+   ],
+   "name": "Novo Nordisk",
+   "isins": [
+    "DK0062498333"
+   ],
+   "leis": [
+    "549300DAQ1CVT6CXN342"
+   ],
+   "tickers": [
+    "XCSE:NOVO B",
+    "XLON:0QIU"
+   ]
+  },
+  "properties": {
+   "lang": "en",
+   "tags": [
+    ":regulatory"
+   ]
+  },
+  "content": {
+   "title": "Novo Nordisk phase 2 trial with amycretin reports significant weight loss and HbA1c reduction in type 2 diabetes",
+   "publish_date": "2025-11-25T11:24:50Z"
+  }
+ },
+ {
   "news_id": "cca02e56-104f-4db8-bacc-71baca2a1e61",
   "url": "https://mfn.se/one/a/novo-nordisk/novo-nordisks-sales-increased-by-12-in-danish-kroner-and-by-15-at-cer-in-the-first-nine-months-of-2025-randd-pipeline-progress-continues-cca02e56",
   "author": {
@@ -465,6 +497,37 @@
   "content": {
    "title": "Novo Nordisk – major shareholder announcement",
    "publish_date": "2022-05-02T15:07:58Z"
+  }
+ },
+ {
+  "news_id": "912738b1-e786-49dd-a07a-9cc9749bde12",
+  "url": "https://mfn.se/one/a/novo-nordisk/novo-nordisk-reports-weight-loss-of-14-9-16-9-if-taken-as-intended-in-step-1-trial-912738b1",
+  "author": {
+   "entity_id": "cee9f274-d5a4-46e4-a678-078e231589ef",
+   "slug": "novo-nordisk",
+   "slugs": [
+    "novo-nordisk"
+   ],
+   "name": "Novo Nordisk",
+   "isins": [
+    "DK0060534915"
+   ],
+   "leis": [
+    "549300DAQ1CVT6CXN342"
+   ],
+   "tickers": [
+    "XCSE:NOVO B"
+   ]
+  },
+  "properties": {
+   "lang": "en",
+   "tags": [
+    ":regulatory"
+   ]
+  },
+  "content": {
+   "title": "Novo Nordisk reports weight loss of 14.9% (16.9% if taken as intended) in STEP 1 trial",
+   "publish_date": "2020-06-04T17:10:28Z"
   }
  }
 ]

@@ -177,6 +177,9 @@ mod fixture {
             ("2026-08-06", None, None),
             ("2024-04-26", None, None),
             ("2022-05-02", None, None),
+            // Untagged trial news whose title says "reports" (false reports before).
+            ("2025-11-25", None, None),
+            ("2020-06-04", None, None),
         ];
         for (date, kind, fp) in rows {
             let c = classify(find(&items, date, "en"));
