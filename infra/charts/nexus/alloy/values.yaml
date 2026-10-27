@@ -16,6 +16,9 @@ alloy:
             type: DirectoryOrCreate
 
   alloy:
+    # The loki.write WAL below is an experimental Alloy feature; at the default
+    # "generally-available" level Alloy refuses the config and crash-loops.
+    stabilityLevel: experimental
     storagePath: /var/lib/alloy
     # Mounts the node's /var/log (read-only), which holds /var/log/pods.
     mounts:
