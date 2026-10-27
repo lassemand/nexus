@@ -1,0 +1,23 @@
+# The OrbStack LoadBalancer range is 192.168.139.10-50.
+#
+# Pinned addresses (requested with `metallb.universe.tf/loadBalancerIPs`) live
+# in their own pool that MetalLB never hands out on its own. With one shared
+# auto-assign pool, unpinned Services that came up first after a restart took
+# the pinned addresses and left their owners pending (NEX-197).
+#
+#   .10  Kafka external bootstrap   infra/charts/nexus/kafka
+#   .11  argocd-server              infra/argocd/overlays/orbstack
+#   .12  Grafana                    infra/charts/nexus/grafana
+#   .13  Kafka broker 0             infra/charts/nexus/kafka
+pinned:
+  name: orbstack-pinned
+  addresses:
+    - 192.168.139.10-192.168.139.13
+
+# Everything else gets the next free address from here.
+dynamic:
+  name: orbstack-pool
+  addresses:
+    - 192.168.139.14-192.168.139.50
+
+l2AdvertisementName: orbstack-l2
