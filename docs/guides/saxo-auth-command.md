@@ -43,7 +43,7 @@ For production pass `--auth-base https://live.logonvalidation.net`.
 4. The command exchanges the code for an access token + refresh token and
    **POSTs both to `--register-endpoint`** (`saxo_stream`'s `/tokens`
    endpoint). `saxo_stream` receives the POST, persists the refresh token,
-   and immediately starts the WebSocket stream.
+   and starts keeping it fresh and syncing daily bars.
 5. The command prints the four token values to stdout as a permanent record:
 
    ```
