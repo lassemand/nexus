@@ -42,6 +42,16 @@ Polygon ────► market ────► market.bars       (MarketEvent)
 
 Known limitations: `bars` (fed by `market.bars`) holds only the **last minute bar** of each day for Nordic tickers, so its OHLC and volume are not daily values; use `daily_bars`. It is **unverified** whether Saxo's daily samples are adjusted for splits and share issues (the docs are silent and `/chart/v1` is unavailable on SIM): treat them as unadjusted.
 
+### Companies are runtime data
+
+Companies are registered at runtime (`nexus register` / `nexus unregister`) and
+mapped in the `companies` tables. Never hard-code an individual company in code,
+migrations, dashboards or docs: no seed `UPDATE`s, no per-company branches, no
+per-company guide sections. Docs use placeholders (`<TICKER>`, `<slug>`); tests
+may use real tickers as example fixtures. (Two early migrations seed GomSpace
+and Novo Nordisk; they are applied and cannot be edited, and do nothing on a
+database without those rows.)
+
 ## Commands
 
 ```bash
