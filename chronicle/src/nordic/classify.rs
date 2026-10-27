@@ -14,6 +14,32 @@ const STRONG_WORDS: &[&str] = &[
     "rapport",
     "bokslutskommuniké",
     "delårsrapport",
+    // Danish: half-year / annual / quarterly report, results announcement
+    // (`årsregnskabsmeddelelse` contains `regnskabsmeddelelse`).
+    "halvårsrapport",
+    "årsrapport",
+    "regnskabsmeddelelse",
+    "kvartalsrapport",
+    "financial statement for",
+];
+
+/// Regulatory notices that are never a results release, even when MFN tags
+/// them `sub:report*` or the headline says "report" (a PDMR notice titled
+/// "Reporting of transactions made by persons discharging managerial
+/// responsibilities"). Unlike [`NON_REPORT_WORDS`] this wins over tags.
+const HARD_NON_REPORT_WORDS: &[&str] = &[
+    "persons discharging managerial responsibilities",
+    "managerial responsibilities",
+    "ledende medarbejdere",
+    "share repurchase",
+    "share buy-back",
+    "aktietilbagekøb",
+    "tilbagekøbsprogram",
+    "major shareholder",
+    "storaktionær",
+    "voting rights",
+    "stemmerettigheder",
+    "total number of voting rights and capital",
 ];
 
 /// Words that mark a headline as business news that merely mentions a quarter
@@ -63,6 +89,9 @@ const NON_REPORT_WORDS: &[&str] = &[
 const CALENDAR_PHRASES: &[&str] = &[
     "financial calendar",
     "finansiell kalender",
+    "finanskalender",
+    "finansiel kalender",
+    "ændret dato",
     "ändrad rapportdag",
     "changes date of",
     "rescheduled",
@@ -161,16 +190,18 @@ fn headline_looks_like_report(lower: &str) -> bool {
         || (mentions_quarter(lower) && !NEWS_WORDS.iter().any(|w| lower.contains(w)))
 }
 
-/// True for correction notices. The prefix is stripped before looking, and the
+/// True for correction notices (`Correction:`, `Rättelse:`, `Rettelse:`,
+/// `Korrektion:`). The prefix is stripped before looking, and the
 /// unstripped title is checked too (stripping eats a leading `Correction: `).
 pub fn is_correction(title: &str) -> bool {
     fn check(s: &str) -> bool {
         let lower = s.trim().to_lowercase();
-        if lower.starts_with("correction:") || lower.starts_with("rättelse:") {
+        const MARKERS: [&str; 4] = ["correction:", "rättelse:", "rettelse:", "korrektion:"];
+        if MARKERS.iter().any(|m| lower.starts_with(m)) {
             return true;
         }
         let head: String = lower.chars().take(MAX_PREFIX_CHARS).collect();
-        head.contains(" correction:") || head.contains(" rättelse:")
+        MARKERS.iter().any(|m| head.contains(&format!(" {m}")))
     }
     check(title) || check(strip_issuer_prefix(title))
 }
@@ -189,6 +220,16 @@ fn is_calendar_notice(title: &str) -> bool {
         || (l.contains("flyttar") && l.contains("rapport"))
 }
 
+/// True if `needle` occurs in `lower` at the start of a word.
+fn starts_a_word(lower: &str, needle: &str) -> bool {
+    lower.match_indices(needle).any(|(i, _)| {
+        lower[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphabetic())
+    })
+}
+
 /// Mentions the fourth quarter / the full year.
 fn mentions_year_end(lower: &str) -> bool {
     // Q1–Q3 or half-year wording means a "full year" mention is an outlook.
@@ -203,6 +244,12 @@ fn mentions_year_end(lower: &str) -> bool {
             "half-year",
             "first half",
             "halvår",
+            "1. kvartal",
+            "2. kvartal",
+            "3. kvartal",
+            "first three months",
+            "first six months",
+            "first nine months",
         ]
         .iter()
         .any(|p| lower.contains(p));
@@ -212,10 +259,35 @@ fn mentions_year_end(lower: &str) -> bool {
             "fjärde kvartalet",
             "year-end",
             "bokslutskommuniké",
+            "årsregnskabsmeddelelse",
+            "financial statement for",
         ]
         .iter()
         .any(|p| lower.contains(p))
+        // Not inside "delårsrapport" / "halvårsrapport".
+        || starts_a_word(lower, "årsrapport")
         || (!early_quarter && ["full year", "helår"].iter().any(|p| lower.contains(p)))
+}
+
+/// A year-end results headline on an item tagged only `sub:report:annual`:
+/// not the annual report document, one standalone year, and a results word.
+fn is_annual_results_headline(lower: &str) -> bool {
+    const DOCUMENT: &[&str] = &["annual report", "årsredovisning", "årsrapport", "20-f"];
+    const RESULTS: &[&str] = &[
+        "sales",
+        "profit",
+        "revenue",
+        "results",
+        "financial report",
+        "financial statement",
+        "regnskab",
+    ];
+    let mut ys = years(lower);
+    ys.sort_unstable();
+    ys.dedup();
+    ys.len() == 1
+        && !DOCUMENT.iter().any(|w| lower.contains(w))
+        && RESULTS.iter().any(|w| lower.contains(w))
 }
 
 /// Rules 3–6 of the classification, for a title already known not to be a
@@ -238,7 +310,13 @@ fn kind_from(tags: &[String], lower: &str) -> Option<ReportKind> {
     }
     // 4. The published annual report document is not a results release.
     if annual_tag && !interim_tag {
-        return None;
+        // MFN tags a company's year-end *results* `sub:report:annual` alone
+        // when it has no Q4 tag (Novo Nordisk: "sales increased by 6% ... in
+        // 2025"). Those are told from the document and from unrelated news
+        // that carry the tag too by the title: no "annual report" wording, a
+        // single year, and a results word.
+        return (has(":regulatory") && is_annual_results_headline(lower))
+            .then_some(ReportKind::Annual);
     }
     // 5. Interim.
     if report_test {
@@ -270,6 +348,17 @@ fn years(text: &str) -> Vec<&str> {
     out
 }
 
+/// True if `lower` has a standalone token `h1`.
+fn has_h1_token(lower: &str) -> bool {
+    let b = lower.as_bytes();
+    (0..b.len().saturating_sub(1)).any(|i| {
+        b[i] == b'h'
+            && b[i + 1] == b'1'
+            && (i == 0 || !b[i - 1].is_ascii_alphanumeric())
+            && b.get(i + 2).is_none_or(|c| !c.is_ascii_alphanumeric())
+    })
+}
+
 /// The quarter (1–4) named by a tag or the headline, if exactly one.
 fn quarter_of(tags: &[String], lower: &str) -> Option<u8> {
     if let Some(n) = (1..=4u8).find(|n| {
@@ -289,6 +378,26 @@ fn quarter_of(tags: &[String], lower: &str) -> Option<u8> {
     ];
     for (en, sv, n) in ordinals {
         if (lower.contains(en) || lower.contains(sv)) && !found.contains(&n) {
+            found.push(n);
+        }
+    }
+    // Danish "1. kvartal 2026", English "first/... quarter of 2026" (above),
+    // "H1 2026" (the half-year report is the second quarter's), and the
+    // cumulative wording of year-to-date reports.
+    let extra: [(&[&str], u8); 5] = [
+        (&["1. kvartal", "first three months"], 1),
+        (&["2. kvartal", "first half", "first six months"], 2),
+        (&["3. kvartal", "first nine months"], 3),
+        (&["4. kvartal"], 4),
+        (&[], 2), // `H1`, below
+    ];
+    for (needles, n) in extra {
+        let hit = if needles.is_empty() {
+            has_h1_token(lower)
+        } else {
+            needles.iter().any(|w| lower.contains(w))
+        };
+        if hit && !found.contains(&n) {
             found.push(n);
         }
     }
@@ -318,8 +427,15 @@ fn fiscal_period(tags: &[String], title: &str, kind: ReportKind) -> Option<Strin
 pub fn classify_item(tags: &[String], title: &str) -> Classification {
     let t = strip_issuer_prefix(title);
     let calendar_update = is_calendar_notice(t) || is_calendar_notice(title);
-    let is_correction = is_correction(title);
-    let report_kind = if calendar_update || is_correction {
+    // Regulatory notices that are never reports (and so never report corrections).
+    let excluded = {
+        let (a, b) = (t.to_lowercase(), title.to_lowercase());
+        HARD_NON_REPORT_WORDS
+            .iter()
+            .any(|w| a.contains(w) || b.contains(w))
+    };
+    let is_correction = !excluded && is_correction(title);
+    let report_kind = if excluded || calendar_update || is_correction {
         None
     } else {
         kind_from(tags, &t.to_lowercase())
@@ -428,6 +544,49 @@ mod tests {
             ("not regulatory", tags(&[]), "Issuer AB: Issuer reports strong Q2 growth in a press release", None, false, false),
             ("interim Q3 with full year outlook", tags(&[REG, REPORT, INTERIM, "sub:report:interim:q3"]), "Issuer AB: Third quarter 2026 - full year outlook raised", Some(Interim), false, false),
             ("untagged Q3 with full year outlook", tags(&[REG]), "Issuer AB: Issuer Q3 report: full year outlook raised", Some(Interim), false, false),
+            // Danish issuers (Novo Nordisk, real titles and tags unless noted)
+            ("novo Q2 2026", tags(&[REG, REPORT, INTERIM]), "Novo Nordisk reports adjusted operating profit of DKK 33,389 million for Q2 2026 and raises full-year outlook", Some(Interim), false, false),
+            ("novo Q1 2026", tags(&[REG, REPORT, INTERIM]), "Novo Nordisk's adjusted operating profit reached DKK 32,858 million in Q1 2026", Some(Interim), false, false),
+            ("novo nine months", tags(&[REG, REPORT, INTERIM]), "Novo Nordisk's sales increased by 12% in Danish kroner and by 15% at CER in the first nine months of 2025; R&D pipeline progress continues", Some(Interim), false, false),
+            ("novo year-end, annual tag only", tags(&[REG, REPORT, ANNUAL]), "Novo Nordisk's sales increased by 6% in Danish kroner and by 10% at constant exchange rates to DKK 309.1 billion in 2025 ", Some(Annual), false, false),
+            ("novo annual report document", tags(&[REG, REPORT, ANNUAL]), "Novo Nordisk has published its annual report for 2025", None, false, false),
+            ("novo SEC filing of the annual report", tags(&[REG, REPORT, ANNUAL]), "Novo Nordisk files annual report with the SEC", None, false, false),
+            ("trial news mis-tagged annual", tags(&[REG, REPORT, ANNUAL]), "Novo Nordisk A/S: CagriSema demonstrated superior HbA1c reduction of 1.91%-points and weight loss of 14.2% in adults with type 2 diabetes in the REIMAGINE 2 trial", None, false, false),
+            ("novo share repurchase (tagged)", tags(&[REG, "sub:ca", "sub:ca:shares"]), "Novo Nordisk A/S - share repurchase programme", None, false, false),
+            ("novo share repurchase, capital S", tags(&[REG, "sub:ca", "sub:ca:shares"]), "Novo Nordisk A/S \u{2013} Share repurchase programme", None, false, false),
+            ("novo insider trading notice", tags(&[REG, "sub:ci", "sub:ci:insider"]), "Novo Nordisk A/S: Trading in Novo Nordisk shares by board members, executives and associated persons", None, false, false),
+            ("novo AGM", tags(&[REG]), "Resolutions from the Annual General Meeting of Novo Nordisk A/S", None, false, false),
+            ("novo voting rights", tags(&[REG]), "Novo Nordisk A/S \u{2013} Total number of voting rights and share capital in Novo Nordisk A/S as of 26 April 2024", None, false, false),
+            ("novo major shareholder", tags(&[REG, "sub:ci"]), "Novo Nordisk \u{2013} major shareholder announcement", None, false, false),
+            ("novo outlook update is business news", tags(&[REG]), "Novo Nordisk raises adjusted sales and adjusted operating profit outlook for 2026", None, false, false),
+            // exclusions win over report wording and over report tags
+            ("PDMR notice with the word reporting", tags(&[REG]), "Novo Nordisk A/S \u{2013} Reporting of transactions made by persons discharging managerial responsibilities in Novo Nordisk A/S", None, false, false),
+            ("PDMR notice, interim tag", tags(&[REG, REPORT, INTERIM]), "Novo Nordisk A/S \u{2013} Reporting of transactions made by persons discharging managerial responsibilities in Novo Nordisk A/S", None, false, false),
+            ("managerial responsibilities, Q3 mention", tags(&[REG]), "Issuer A/S: Managerial responsibilities: transactions in Q3", None, false, false),
+            ("danish leading employees", tags(&[REG, REPORT, INTERIM]), "Issuer A/S: Indberetning af transaktioner foretaget af ledende medarbejdere i Issuer A/S", None, false, false),
+            ("share buy-back", tags(&[REG, REPORT, INTERIM]), "Issuer A/S: Share buy-back programme, transactions in week 12 of the first quarter", None, false, false),
+            ("danish aktietilbagek\u{f8}b", tags(&[REG]), "Issuer A/S: Aktietilbagek\u{f8}b i 3. kvartal", None, false, false),
+            ("danish tilbagek\u{f8}bsprogram", tags(&[REG, REPORT, INTERIM]), "Issuer A/S: Tilbagek\u{f8}bsprogram - halv\u{e5}rsrapport", None, false, false),
+            ("storaktion\u{e6}r", tags(&[REG]), "Issuer A/S: Meddelelse fra storaktion\u{e6}r", None, false, false),
+            ("stemmerettigheder", tags(&[REG]), "Issuer A/S: Stemmerettigheder og kapital i Q2", None, false, false),
+            ("total voting rights and capital", tags(&[REG, REPORT, INTERIM]), "Issuer A/S: Total number of voting rights and capital", None, false, false),
+            ("correction of an excluded notice is no report correction", tags(&[REG]), "Correction: Novo Nordisk A/S - share repurchase programme", None, false, false),
+            // Danish report words
+            ("danish delårsrapport", tags(&[REG]), "Issuer A/S: Delårsrapport for 1. kvartal 2026", Some(Interim), false, false),
+            ("danish halvårsrapport", tags(&[REG]), "Issuer A/S: Halvårsrapport 2026", Some(Interim), false, false),
+            ("danish kvartalsrapport", tags(&[REG]), "Issuer A/S: Kvartalsrapport for 3. kvartal 2026", Some(Interim), false, false),
+            ("danish regnskabsmeddelelse", tags(&[REG]), "Issuer A/S: Regnskabsmeddelelse for 2. kvartal 2026", Some(Interim), false, false),
+            ("danish årsrapport", tags(&[REG]), "Issuer A/S: Årsrapport 2025", Some(Annual), false, false),
+            ("danish årsregnskabsmeddelelse", tags(&[REG]), "Issuer A/S: Årsregnskabsmeddelelse 2025", Some(Annual), false, false),
+            ("danish kvartal wording only", tags(&[REG]), "Issuer A/S: Resultat for 2. kvartal 2026", Some(Interim), false, false),
+            ("english financial statement for", tags(&[REG]), "Issuer A/S: Financial statement for 2025", Some(Annual), false, false),
+            ("danish kvartal with news wording", tags(&[REG]), "Issuer A/S: Ny kontrakt og ordreindgang i 2. kvartal 2026 contract", None, false, false),
+            // Danish corrections and calendar notices
+            ("danish rettelse", tags(&[REG, REPORT, INTERIM]), "Issuer A/S: Rettelse: Delårsrapport for 1. kvartal 2026", None, true, false),
+            ("danish korrektion", tags(&[REG, REPORT, INTERIM]), "Korrektion: Halvårsrapport 2026", None, true, false),
+            ("danish finanskalender", tags(&[REG]), "Issuer A/S: Opdateret finanskalender 2026", None, false, true),
+            ("danish finansiel kalender", tags(&[REG]), "Issuer A/S: Ændring i finansiel kalender for 2026", None, false, true),
+            ("danish ændret dato", tags(&[REG]), "Issuer A/S: Ændret dato for offentliggørelse af delårsrapport", None, false, true),
         ];
         for (name, tags, title, kind, corr, cal) in rows {
             let c = classify_item(&tags, title);
@@ -493,6 +652,60 @@ mod tests {
             None
         );
         assert_eq!(f(&[REG, INTERIM], "Issuer AB: Q1 and Q2 report 2026"), None);
+        // Q1-Q4 with a year, ordinals with "of", Danish ordinals, H1.
+        assert_eq!(
+            f(&[REG, INTERIM], "Issuer: results for Q3 2026").as_deref(),
+            Some("2026-Q3")
+        );
+        assert_eq!(
+            f(
+                &[REG, INTERIM],
+                "Issuer: results for the first quarter of 2026"
+            )
+            .as_deref(),
+            Some("2026-Q1")
+        );
+        assert_eq!(
+            f(
+                &[REG, INTERIM],
+                "Issuer: results for the fourth quarter of 2026"
+            )
+            .as_deref(),
+            Some("2026") // the fourth quarter is the year-end report
+        );
+        assert_eq!(
+            f(&[REG], "Issuer A/S: Delårsrapport for 1. kvartal 2026").as_deref(),
+            Some("2026-Q1")
+        );
+        assert_eq!(
+            f(&[REG], "Issuer A/S: Kvartalsrapport 3. kvartal 2026").as_deref(),
+            Some("2026-Q3")
+        );
+        assert_eq!(
+            f(&[REG], "Issuer A/S: Halvårsrapport H1 2026").as_deref(),
+            Some("2026-Q2")
+        );
+        assert_eq!(
+            f(&[REG], "Issuer: H1 2026 report").as_deref(),
+            Some("2026-Q2")
+        );
+        assert_eq!(
+            f(
+                &[REG, INTERIM],
+                "Issuer sales rose in the first nine months of 2025"
+            )
+            .as_deref(),
+            Some("2025-Q3")
+        );
+        // No unique year → NULL; two quarters → NULL.
+        assert_eq!(f(&[REG, INTERIM], "Issuer: Q2 report"), None);
+        assert_eq!(f(&[REG, INTERIM], "Issuer: H1 and Q3 2026"), None);
+        assert_eq!(f(&[REG, INTERIM], "Issuer: H1 2025 and 2026 report"), None);
+        // Annual (year-end) results by statement title.
+        assert_eq!(
+            f(&[REG], "Issuer A/S: Financial statement for 2025").as_deref(),
+            Some("2025")
+        );
         // Non-reports have none.
         assert_eq!(
             f(

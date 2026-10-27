@@ -24,8 +24,11 @@ Open the company's page on [mfn.se](https://mfn.se). The slug is the last path
 segment of the URL: `https://mfn.se/a/gomspace-group` → `gomspace-group`.
 
 To check the mapping, open `https://mfn.se/all/a/<slug>.json`: the items'
-`author.tickers` should contain `<exchange_mic>:<ticker>` (e.g. `FNSE:GOMX`);
-otherwise `nordic-reports` logs `mapping may point at the wrong company`.
+`author.tickers` should contain `<exchange_mic>:<ticker>` (e.g. `FNSE:GOMX`),
+compared uppercase with spaces and hyphens removed (`XCSE:NOVO B` matches the
+registry's `NOVO-B`), and, when `companies.isin` is set, `author.isins` should
+contain it. Otherwise `nordic-reports` logs `mapping may point at the wrong
+company` with both values.
 
 ## Danish companies
 
@@ -65,6 +68,17 @@ UPDATE companies
 `UPDATE 0` means the company is not registered yet. The migration
 `*_companies_isin.sql` seeds Novo Nordisk and GomSpace (`SE0008348304`) this
 way and does nothing if the row is absent.
+
+Danish reports: `nordic-reports`, `nordic-calendar` and `nordic-live` need only
+the `mfn_slug`. Novo Nordisk reports in the evening (Q2 2026 came at 18:37
+Copenhagen time, after the close). Stored report times use Stockholm local time,
+which equals Copenhagen's. Notices that only look like reports are never
+published, whatever MFN tags them: PDMR notices ("persons discharging managerial
+responsibilities"), share buy-backs, voting-rights and major-shareholder notices
+(`HARD_NON_REPORT_WORDS` in `nordic/classify.rs`). Novo's year-end results are
+tagged `sub:report:annual` only, so an annual-tagged item counts as year-end
+results when it is not the annual report document, names exactly one year and
+has a results word (sales, profit, revenue, results, financial report/statement).
 
 **Danish insider trades are not covered**: there is no FI-style register for
 them, deliberately deferred.
@@ -155,7 +169,7 @@ committed, so no report event is lost.
 
 The `nordic-reports` chronicle binary (CronJob in `infra/charts/chronicle/chronicle/`,
 daily at 22:00 `Europe/Stockholm`) reads every
-`FNSE`/`XSTO` company with an `mfn_slug`, pages MFN's JSON news feed
+`FNSE`/`XSTO`/`XCSE`/`FNDK` company (`chronicle_lib::nordic::NORDIC_MICS`) with an `mfn_slug`, pages MFN's JSON news feed
 `https://mfn.se/all/a/<slug>.json` newest first (following `next_url`), keeps
 items authored by that slug, classifies them and publishes reports and
 corrections. Other items (business news, calendar notices, report documents)

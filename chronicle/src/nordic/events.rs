@@ -193,6 +193,7 @@ mod tests {
             exchange_mic: "FNSE".into(),
             mfn_slug: Some("gomspace-group".into()),
             name: Some("GomSpace Group AB (GOMX)".into()),
+            isin: None,
         }
     }
 

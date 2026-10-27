@@ -61,6 +61,29 @@ impl TestDb {
         .unwrap();
     }
 
+    /// Insert a company with an MFN slug, a currency and an ISIN.
+    pub async fn add_company_with_isin(
+        &self,
+        ticker: &str,
+        mic: &str,
+        slug: &str,
+        currency: &str,
+        isin: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO companies (ticker, sector, exchange_mic, currency, mfn_slug, isin) \
+             VALUES ($1, 'Healthcare', $2, $3, $4, $5)",
+        )
+        .bind(ticker)
+        .bind(mic)
+        .bind(currency)
+        .bind(slug)
+        .bind(isin)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
     /// Drop the database.
     pub async fn drop_db(mut self) {
         self.pool.close().await;

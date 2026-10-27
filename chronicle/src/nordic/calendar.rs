@@ -332,6 +332,7 @@ mod tests {
 
     const GOMSPACE: &str = include_str!("../../tests/fixtures/mfn_gomspace.html");
     const HEXAGON: &str = include_str!("../../tests/fixtures/mfn_hexagon.html");
+    const NOVO: &str = include_str!("../../tests/fixtures/mfn_novo.html");
 
     fn d(s: &str) -> NaiveDate {
         s.parse().unwrap()
@@ -347,6 +348,20 @@ mod tests {
         assert_eq!(r.label, "Bokslutskommuniké 2026");
         assert_eq!(r.kind, ReportKind::Annual);
         assert_eq!(r.fiscal_period.as_deref(), Some("2026"));
+    }
+
+    #[test]
+    fn novo_nordisk_upcoming_quarterly_report_in_the_evening() {
+        // `https://mfn.se/a/novo-nordisk`: the same Swedish MFN labels as for
+        // Swedish issuers, an estimated time after the Copenhagen close.
+        let rows = parse_calendar(NOVO, "novo-nordisk").unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let r = &rows[0];
+        assert_eq!(r.date, d("2026-11-04"));
+        assert_eq!(r.time, Some(NaiveTime::from_hms_opt(18, 35, 0).unwrap()));
+        assert_eq!(r.label, "Kvartalsrapport 2026-Q3");
+        assert_eq!(r.kind, ReportKind::Interim);
+        assert_eq!(r.fiscal_period.as_deref(), Some("2026-Q3"));
     }
 
     #[test]

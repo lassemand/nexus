@@ -81,7 +81,6 @@ pub async fn ingest_company(
         ..Default::default()
     };
     let mut newest_published: Option<DateTime<Utc>> = None;
-    let mic_prefix = format!("{}:", company.exchange_mic);
     let mut checked_tickers = false;
     let mut checked_isin = false;
     let mut url = first_page_url(&feed.base()?, slug)?;
@@ -100,15 +99,9 @@ pub async fn ingest_company(
             }
             if !checked_tickers {
                 checked_tickers = true;
-                if !item
-                    .author_tickers
-                    .iter()
-                    .any(|t| t.starts_with(&mic_prefix))
-                {
-                    warn!(
-                        ticker = %company.ticker, slug, tickers = ?item.author_tickers,
-                        "mapping may point at the wrong company"
-                    );
+                for problem in mapping_problems(company, &item.author_tickers, &item.author_isins) {
+                    warn!(ticker = %company.ticker, slug, problem = %problem,
+                          "mapping may point at the wrong company");
                 }
             }
             if !checked_isin {
@@ -143,6 +136,48 @@ pub async fn ingest_company(
         outcome.cursor = outcome.cursor.max(Some(newest));
     }
     Ok(outcome)
+}
+
+/// A ticker as compared across sources: uppercase, spaces and hyphens removed
+/// (MFN `NOVO B`, registry `NOVO-B`).
+pub fn normalise_ticker(t: &str) -> String {
+    t.chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// What looks wrong about the company's MFN mapping, from the feed's
+/// `author.tickers` (`MIC:SYMBOL`) and `author.isins`. Empty if it looks right.
+///
+/// - No ticker on the company's MIC with the same normalised symbol.
+/// - The company has an ISIN that MFN does not list (both values reported).
+pub fn mapping_problems(
+    company: &Company,
+    author_tickers: &[String],
+    author_isins: &[String],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let wanted = normalise_ticker(&company.ticker);
+    let ticker_ok = author_tickers.iter().any(|t| {
+        t.split_once(':').is_some_and(|(m, sym)| {
+            m.eq_ignore_ascii_case(&company.exchange_mic) && normalise_ticker(sym) == wanted
+        })
+    });
+    if !ticker_ok {
+        out.push(format!(
+            "registry {}:{} is not among MFN's tickers {author_tickers:?}",
+            company.exchange_mic, company.ticker
+        ));
+    }
+    if let Some(isin) = &company.isin {
+        if !author_isins.iter().any(|i| i.eq_ignore_ascii_case(isin)) {
+            out.push(format!(
+                "registry ISIN {isin} is not among MFN's ISINs {author_isins:?}"
+            ));
+        }
+    }
+    out
 }
 
 /// The one valid ISIN in MFN's `author.isins`, if there is exactly one.
@@ -247,6 +282,65 @@ mod isin_tests {
         assert_eq!(
             unique_valid_isin(&v(&["bad", "SE0008348304"])),
             Some("SE0008348304")
+        );
+    }
+}
+
+#[cfg(test)]
+mod mapping_tests {
+    use super::*;
+
+    fn company(ticker: &str, mic: &str, isin: Option<&str>) -> Company {
+        Company {
+            ticker: ticker.into(),
+            exchange_mic: mic.into(),
+            mfn_slug: Some("x".into()),
+            name: None,
+            isin: isin.map(String::from),
+        }
+    }
+
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn tickers_are_compared_without_spaces_hyphens_and_case() {
+        assert_eq!(normalise_ticker("novo-b"), "NOVOB");
+        assert_eq!(normalise_ticker("NOVO B"), "NOVOB");
+        assert_eq!(normalise_ticker("VOLV B"), normalise_ticker("VOLV-B"));
+    }
+
+    #[test]
+    fn novo_matches_with_the_space_and_the_isin() {
+        let c = company("NOVO-B", "XCSE", Some("DK0062498333"));
+        let t = v(&["XCSE:NOVO B", "XLON:0QIU"]);
+        assert!(mapping_problems(&c, &t, &v(&["DK0062498333"])).is_empty());
+        // No ISIN registered: only the ticker is checked.
+        let c = company("NOVO-B", "XCSE", None);
+        assert!(mapping_problems(&c, &t, &[]).is_empty());
+        // GomSpace as before.
+        let g = company("GOMX", "FNSE", None);
+        assert!(mapping_problems(&g, &v(&["FNSE:GOMX", "XLON:0GE8"]), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_wrong_ticker_or_exchange_is_reported() {
+        let c = company("NOVO-B", "XCSE", None);
+        // Same symbol on another MIC does not count.
+        assert_eq!(mapping_problems(&c, &v(&["XLON:NOVO B"]), &[]).len(), 1);
+        assert_eq!(mapping_problems(&c, &v(&["XCSE:DSV"]), &[]).len(), 1);
+        assert_eq!(mapping_problems(&c, &[], &[]).len(), 1);
+    }
+
+    #[test]
+    fn an_isin_mfn_does_not_list_is_reported_with_both_values() {
+        let c = company("NOVO-B", "XCSE", Some("DK0062498333"));
+        let p = mapping_problems(&c, &v(&["XCSE:NOVO B"]), &v(&["SE0008348304"]));
+        assert_eq!(p.len(), 1);
+        assert!(
+            p[0].contains("DK0062498333") && p[0].contains("SE0008348304"),
+            "{p:?}"
         );
     }
 }
