@@ -1,124 +1,115 @@
 # Registering a Nordic company
 
+Companies are registered at runtime; nothing in code, migrations or docs is
+specific to one company. A company row (`ticker`, `exchange_mic`, `currency`)
+is created from the registration: `nexus register <yahoo-symbol>` publishes to
+`company.tickers`, and `pdmr`, `nordic-reports` and `nordic-calendar` copy new
+registrations into `companies` when they start (`chronicle_lib::registry`).
+
 The Nordic report sources identify companies by their MFN slug, not by ticker,
-so each company is mapped once by hand in the `companies` table:
+so after registering, each company is mapped once by hand in the chronicle
+`companies` table:
 
 | Column | Meaning |
 |---|---|
-| `name` | Display name used by the dashboard, free text, e.g. `GomSpace Group AB (GOMX)` |
+| `name` | Display name used by the dashboard, free text |
 | `mfn_slug` | Slug of the company page on MFN (`https://mfn.se/a/<slug>`). Must match `^[a-z0-9][a-z0-9-]*$` and be unique |
-| `fi_issuer` | Issuer name exactly as Finansinspektionen's insider register spells it. Used by `pdmr` for PDMR (insider) transactions. Unique |
+| `fi_issuer` | Issuer name exactly as Finansinspektionen's insider register spells it. Used by `pdmr` for PDMR (insider) transactions (Swedish listings only). Unique |
+| `isin` | Filled in by `nordic-reports` (see below); set by hand only when MFN lists several |
 
-All three are nullable. (`nasdaq_news_company`, used while releases came from the
-Nasdaq news API, was dropped in NEX-166.) The company row itself (`ticker`,
-`exchange_mic`, `currency`) is created from the registration: `nexus register
-GOMX.ST` publishes to `company.tickers`, and `pdmr`, `nordic-reports` and
-`nordic-calendar` copy new registrations into `companies` when they start
-(`chronicle_lib::registry`). After registering, wait for the next
-`nordic-reports` run (daily at 22:00) or start one by hand, then set the
-mappings below. The mapping steps never insert.
+All are nullable. Wait for the next `nordic-reports` run (daily at 22:00) or
+start one by hand so the row exists, then set the mappings. The mapping steps
+never insert.
+
+## Choosing the symbol and MIC
+
+`nexus register` looks the symbol up on Yahoo Finance and takes the exchange and
+currency from it. The registry keeps the Yahoo symbol without its suffix
+(`<TICKER>.ST` → `<TICKER>`).
+
+- Use the Yahoo symbol of the Nordic listing, with its suffix: `.ST` for
+  Stockholm, `.CO` for Copenhagen. A bare symbol resolves to whatever Yahoo
+  lists under it, often a US listing of the same company. Share classes are part
+  of the symbol (`<TICKER>-A.CO`, `<TICKER>-B.CO`).
+- Yahoo reports Copenhagen as `CPH` for both markets, so a First North Denmark
+  company needs `--mic FNDK`. Likewise `--mic XSTO` for a Stockholm main-market
+  share (`STO` alone gives `FNSE`). The MIC must be in the same country as
+  Yahoo's exchange; `--mic FNDK` on a `.ST` symbol is an error.
+- Check the result line, e.g. `registered (XCSE / DKK)`. A wrong listing is
+  withdrawn with `nexus unregister` (below).
 
 ## Unregistering
 
-`nexus unregister GOMX.ST` (or `nexus unregister GOMX --mic FNSE`, which skips
-the Yahoo lookup and also works for a delisted ticker) publishes the same
-message with `unregister` set. The topic is replayed in order, so the last
+`nexus unregister <yahoo-symbol>` (or `nexus unregister <TICKER> --mic <MIC>`,
+which skips the Yahoo lookup and also works for a delisted ticker) publishes the
+same message with `unregister` set. The topic is replayed in order, so the last
 message for a listing decides. The next `pdmr`, `nordic-reports` or
 `nordic-calendar` run deletes the `companies` row together with its
 `mfn_ingest_state` and `saxo_daily_bars_state` rows, and `saxo-stream` stops
 fetching it from its next sweep. The US jobs (`chronicle`, `market`,
-`earnings`, `filings`) drop it on their next run. The mappings above go with
-the row, so set them again if the company is registered later. signal deletes its
-own `companies` row straight away and skips the ticker's new events. Data
-already stored (`special_events`, `daily_bars`, ...) is kept.
+`earnings`, `filings`) drop it on their next run. The mappings go with the row,
+so set them again if the company is registered later. signal deletes its own
+`companies` row straight away and skips the ticker's new events. Data already
+stored (`special_events`, `daily_bars`, ...) is kept.
 
 ## Finding the MFN slug
 
 Open the company's page on [mfn.se](https://mfn.se). The slug is the last path
-segment of the URL: `https://mfn.se/a/gomspace-group` → `gomspace-group`.
+segment of the URL: `https://mfn.se/a/<slug>`.
 
 To check the mapping, open `https://mfn.se/all/a/<slug>.json`: the items'
-`author.tickers` should contain `<exchange_mic>:<ticker>` (e.g. `FNSE:GOMX`),
-compared uppercase with spaces and hyphens removed (`XCSE:NOVO B` matches the
-registry's `NOVO-B`), and, when `companies.isin` is set, `author.isins` should
-contain it. Otherwise `nordic-reports` logs `mapping may point at the wrong
-company` with both values.
+`author.tickers` should contain `<exchange_mic>:<ticker>`, compared uppercase
+with spaces and hyphens removed (MFN's `XCSE:<TICKER> B` matches the registry's
+`<TICKER>-B`), and, when `companies.isin` is set, `author.isins` should contain
+it. Otherwise `nordic-reports` logs `mapping may point at the wrong company`
+with both values.
 
-## Danish companies
-
-Danish listings (Nasdaq Copenhagen `XCSE`, First North Denmark `FNDK`) are
-registered the same way:
-
-```bash
-nexus register NOVO-B.CO
-```
+## ISIN
 
 The ISIN is the one identifier MFN, Saxo and Yahoo share whatever they call the
 ticker. It is not given at registration: `nordic-reports` reads it from MFN's
 `author.isins` the first time it fetches a company's feed (so after `mfn_slug`
 is set) and stores it in `companies.isin` when that is empty. It is never
 overwritten, and when MFN lists several valid ISINs (several share classes) none
-is stored; set it by hand then.
-
-- Yahoo reports Copenhagen as `CPH` for both markets, so a First North Denmark
-  company needs `--mic FNDK`. Likewise `--mic XSTO` for a Stockholm main-market
-  share (`STO` alone gives `FNSE`). The MIC must be in the same country as
-  Yahoo's exchange; `--mic FNDK` on a `.ST` symbol is an error.
-- MFN slug: `https://mfn.se/a/novo-nordisk` → `novo-nordisk`.
-- MFN spells the ticker `XCSE:NOVO B` (space) while the registry has `NOVO-B`
-  (hyphen). This is expected: the registry keeps the Yahoo spelling, and other
-  sources map through `mfn_slug` and `isin`.
-- Check the ISIN at `https://mfn.se/all/a/<slug>.json` → `author.isins`.
-- Set the mappings by hand for later companies:
-
-```sql
-UPDATE companies
-   SET name     = 'Novo Nordisk A/S (NOVO B)',
-       mfn_slug = 'novo-nordisk',
-       isin     = 'DK0062498333'
- WHERE ticker = 'NOVO-B' AND exchange_mic = 'XCSE';
-```
-
-`UPDATE 0` means the company is not registered yet. The migration
-`*_companies_isin.sql` seeds Novo Nordisk and GomSpace (`SE0008348304`) this
-way and does nothing if the row is absent.
-
-Danish reports: `nordic-reports`, `nordic-calendar` and `nordic-live` need only
-the `mfn_slug`. Novo Nordisk reports in the evening (Q2 2026 came at 18:37
-Copenhagen time, after the close). Stored report times use Stockholm local time,
-which equals Copenhagen's. Notices that only look like reports are never
-published, whatever MFN tags them: PDMR notices ("persons discharging managerial
-responsibilities"), share buy-backs, voting-rights and major-shareholder notices
-(`HARD_NON_REPORT_WORDS` in `nordic/classify.rs`). Novo's year-end results are
-tagged `sub:report:annual` only, so an annual-tagged item counts as year-end
-results when it is not the annual report document, names exactly one year and
-has a results word (sales, profit, revenue, results, financial report/statement).
-
-**Danish insider trades are not covered**: there is no FI-style register for
-them, deliberately deferred.
+is stored; set it by hand then, from `https://mfn.se/all/a/<slug>.json` →
+`author.isins`.
 
 ## Finding the FI issuer name
 
-Query FI's issuer autocomplete with part of the company name (not the ticker)
-and copy the current name verbatim:
-`https://marknadssok.fi.se/Publiceringsklient/sv-SE/AutoComplete/H%C3%A4mtaAutoCompleteListaFull?sokfunktion=Insyn&falt=Utgivare&sokterm=GomSpace`
-returns `["GomSpace AB","GomSpace Group AB"]`. Without `fi_issuer`, pdmr searches
-with the ticker, which only works when the ticker is part of the issuer name.
+Swedish listings only. Query FI's issuer autocomplete with part of the company
+name (not the ticker) and copy the current name verbatim:
+`https://marknadssok.fi.se/Publiceringsklient/sv-SE/AutoComplete/H%C3%A4mtaAutoCompleteListaFull?sokfunktion=Insyn&falt=Utgivare&sokterm=<part-of-name>`.
+Without `fi_issuer`, pdmr searches with the ticker, which only works when the
+ticker is part of the issuer name. **Danish insider trades are not covered**:
+there is no FI-style register for them, deliberately deferred.
 
 ## SQL
 
+On the chronicle database:
+
 ```sql
 UPDATE companies
-   SET name      = 'GomSpace Group AB (GOMX)',
-       mfn_slug  = 'gomspace-group',
-       fi_issuer = 'GomSpace Group AB'
- WHERE ticker = 'GOMX' AND exchange_mic = 'FNSE';
+   SET name      = '<display name>',
+       mfn_slug  = '<slug>',
+       fi_issuer = '<FI issuer name>'   -- Swedish listings only
+ WHERE ticker = '<TICKER>' AND exchange_mic = '<MIC>';
 ```
 
-Check that one row was updated (`UPDATE 1`). `UPDATE 0` means the company is not registered yet.
+Check that one row was updated (`UPDATE 1`). `UPDATE 0` means the company is
+not registered yet (or has not been synced into `companies`).
 
-The migration `*_companies_add_nordic_source_mappings.sql` seeds GomSpace the
-same way (and did nothing if the row was absent).
+## Report classification
+
+`nordic-reports`, `nordic-calendar` and `nordic-live` need only the `mfn_slug`.
+Report times are stored in Stockholm local time, which equals Copenhagen's; a
+release after the close is handled by the reaction rules in signal. Notices that
+only look like reports are never published, whatever MFN tags them: PDMR
+notices ("persons discharging managerial responsibilities"), share buy-backs,
+voting-rights and major-shareholder notices (`HARD_NON_REPORT_WORDS` in
+`nordic/classify.rs`). Some companies tag their year-end results
+`sub:report:annual` only, so an annual-tagged item counts as year-end results
+when it is not the annual report document, names exactly one year and has a
+results word (sales, profit, revenue, results, financial report/statement).
 
 ## Trading holidays (Sweden, Denmark)
 
