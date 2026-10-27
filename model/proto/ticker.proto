@@ -22,4 +22,15 @@ message TickerRegistration {
   // currency is ignored. A later registration brings the listing back.
   // Added in field 4 — do not renumber existing fields.
   bool unregister = 4;
+  // Source mappings looked up by `nexus register` for Nordic listings. Empty
+  // means "not given": a reader keeps what it already has. A later
+  // registration with a value replaces an earlier one.
+  // Display name, as MFN spells it.
+  string name = 5;
+  // Slug of the company page on MFN (`https://mfn.se/a/<slug>`).
+  string mfn_slug = 6;
+  // Issuer name in Finansinspektionen's insider register (Swedish listings).
+  string fi_issuer = 7;
+  // ISIN, when the MFN company lists exactly one valid one.
+  string isin = 8;
 }

@@ -7,19 +7,43 @@ is created from the registration: `nexus register <yahoo-symbol>` publishes to
 registrations into `companies` when they start (`chronicle_lib::registry`).
 
 The Nordic report sources identify companies by their MFN slug, not by ticker,
-so after registering, each company is mapped once by hand in the chronicle
-`companies` table:
+so a company row also carries source mappings. `nexus register` looks them up
+and sends them with the registration (see *Source mappings* below); the sync
+sets them on the chronicle `companies` table:
 
 | Column | Meaning |
 |---|---|
 | `name` | Display name used by the dashboard, free text |
 | `mfn_slug` | Slug of the company page on MFN (`https://mfn.se/a/<slug>`). Must match `^[a-z0-9][a-z0-9-]*$` and be unique |
 | `fi_issuer` | Issuer name exactly as Finansinspektionen's insider register spells it. Used by `pdmr` for PDMR (insider) transactions (Swedish listings only). Unique |
-| `isin` | Filled in by `nordic-reports` (see below); set by hand only when MFN lists several |
+| `isin` | Sent by `nexus register`, else filled in by `nordic-reports` (see below); set by hand only when MFN lists several |
 
-All are nullable. Wait for the next `nordic-reports` run (daily at 22:00) or
-start one by hand so the row exists, then set the mappings. The mapping steps
-never insert.
+All are nullable. A registration that leaves a mapping empty never clears it,
+and a later registration with a value replaces it, so running `nexus register`
+again for a registered company fills in or corrects its mappings. The row (and
+its mappings) appear at the next `pdmr`, `nordic-reports` (daily at 22:00) or
+`nordic-calendar` run, or start one by hand.
+
+## Source mappings
+
+For a listing on `FNSE`, `XSTO`, `XCSE` or `FNDK`, `nexus register`:
+
+1. Searches MFN's company search (`https://mfn.se/search/companies?query=<TICKER>`)
+   and keeps the companies whose `tickers` contain `<MIC>:<TICKER>`, compared
+   uppercase with spaces and hyphens removed (MFN's `XCSE:<TICKER> B` matches
+   the registry's `<TICKER>-B`). Exactly one: its `slug` and `name` are taken.
+   Several, or none matching while the search found companies: it lists them
+   and asks which one (`0` for none). The chosen company's ISIN is sent too
+   when it lists exactly one valid ISIN.
+2. For Swedish listings, looks the MFN name up in FI's issuer autocomplete
+   (below). One result is taken; several are listed and asked about.
+
+Each line of the result says what was set, e.g.
+`registered (XCSE / DKK), MFN <slug> (<name>)`. Without a terminal (a script)
+an ambiguous lookup is left empty and its options are printed. A failed lookup
+never fails the registration. `--mfn-slug <slug>` and `--fi-issuer <name>` (one
+ticker per command) skip the lookup. A mapping the table rejects (a slug or
+issuer another company already has) is logged by the sync and skipped.
 
 ## Choosing the symbol and MIC
 
@@ -35,8 +59,8 @@ currency from it. The registry keeps the Yahoo symbol without its suffix
   company needs `--mic FNDK`. Likewise `--mic XSTO` for a Stockholm main-market
   share (`STO` alone gives `FNSE`). The MIC must be in the same country as
   Yahoo's exchange; `--mic FNDK` on a `.ST` symbol is an error.
-- Check the result line, e.g. `registered (XCSE / DKK)`. A wrong listing is
-  withdrawn with `nexus unregister` (below).
+- Check the result line, e.g. `registered (XCSE / DKK), MFN …`. A wrong
+  listing is withdrawn with `nexus unregister` (below).
 
 ## Unregistering
 
@@ -47,17 +71,15 @@ message for a listing decides. The next `pdmr`, `nordic-reports` or
 `nordic-calendar` run deletes the `companies` row together with its
 `mfn_ingest_state` and `saxo_daily_bars_state` rows, and `saxo-stream` stops
 fetching it from its next sweep. The US jobs (`chronicle`, `market`,
-`earnings`, `filings`) drop it on their next run. The mappings go with the row,
-so set them again if the company is registered later. signal deletes its own
+`earnings`, `filings`) drop it on their next run. The mappings go with the row;
+registering the company again looks them up again. signal deletes its own
 `companies` row straight away and skips the ticker's new events. Data already
 stored (`special_events`, `daily_bars`, ...) is kept.
 
-## Finding the MFN slug
+## Checking the MFN slug
 
-Open the company's page on [mfn.se](https://mfn.se). The slug is the last path
-segment of the URL: `https://mfn.se/a/<slug>`.
-
-To check the mapping, open `https://mfn.se/all/a/<slug>.json`: the items'
+The slug is the last path segment of the company's page on
+[mfn.se](https://mfn.se): `https://mfn.se/a/<slug>`. To check the mapping, open `https://mfn.se/all/a/<slug>.json`: the items'
 `author.tickers` should contain `<exchange_mic>:<ticker>`, compared uppercase
 with spaces and hyphens removed (MFN's `XCSE:<TICKER> B` matches the registry's
 `<TICKER>-B`), and, when `companies.isin` is set, `author.isins` should contain
@@ -67,17 +89,20 @@ with both values.
 ## ISIN
 
 The ISIN is the one identifier MFN, Saxo and Yahoo share whatever they call the
-ticker. It is not given at registration: `nordic-reports` reads it from MFN's
+ticker; `saxo-stream` resolves instruments by it, and falls back to ticker text,
+which Saxo does not always know. `nexus register` sends it when the MFN company
+lists exactly one valid ISIN. Otherwise `nordic-reports` reads it from MFN's
 `author.isins` the first time it fetches a company's feed (so after `mfn_slug`
-is set) and stores it in `companies.isin` when that is empty. It is never
-overwritten, and when MFN lists several valid ISINs (several share classes) none
+is set) and stores it in `companies.isin` when that is empty; it never
+overwrites one. When MFN lists several valid ISINs (several share classes) none
 is stored; set it by hand then, from `https://mfn.se/all/a/<slug>.json` →
 `author.isins`.
 
-## Finding the FI issuer name
+## FI issuer name
 
-Swedish listings only. Query FI's issuer autocomplete with part of the company
-name (not the ticker) and copy the current name verbatim:
+Swedish listings only. `nexus register` queries FI's issuer autocomplete with
+the MFN name; to look one up yourself, use part of the company name (not the
+ticker) and copy the current name verbatim:
 `https://marknadssok.fi.se/Publiceringsklient/sv-SE/AutoComplete/H%C3%A4mtaAutoCompleteListaFull?sokfunktion=Insyn&falt=Utgivare&sokterm=<part-of-name>`.
 Without `fi_issuer`, pdmr searches with the ticker, which only works when the
 ticker is part of the issuer name. **Danish insider trades are not covered**:
@@ -85,7 +110,8 @@ there is no FI-style register for them, deliberately deferred.
 
 ## SQL
 
-On the chronicle database:
+Only needed when a lookup found nothing. Prefer `nexus register <yahoo-symbol>
+--mfn-slug <slug>`; by hand, on the chronicle database:
 
 ```sql
 UPDATE companies

@@ -6,8 +6,9 @@
 //! decides whether it is registered. The binaries that read `companies` (pdmr,
 //! nordic-reports, nordic-calendar) call [`sync_from_topic`] first, so a
 //! registered listing gets a row, and an unregistered one loses it, without
-//! anyone editing the table by hand. Source mappings (`nasdaq_news_company`, `mfn_slug`,
-//! `fi_issuer`) are still set by hand, see `docs/guides/nordic-companies.md`.
+//! anyone editing the table by hand. `nexus register` looks up the source
+//! mappings (`name`, `mfn_slug`, `fi_issuer`) of Nordic listings and sends them
+//! along; the sync sets them, and never clears one a registration leaves empty.
 
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,61 @@ pub struct Listing {
     pub exchange_mic: String,
     /// ISO 4217 trading currency, e.g. `SEK`.
     pub currency: String,
+    /// Source mappings sent with the registration.
+    pub mappings: Mappings,
+}
+
+/// Source mappings a registration may carry. `None` means "not given".
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Mappings {
+    /// Display name.
+    pub name: Option<String>,
+    /// Slug of the company page on MFN.
+    pub mfn_slug: Option<String>,
+    /// Issuer name in Finansinspektionen's insider register.
+    pub fi_issuer: Option<String>,
+    /// ISIN of the listing.
+    pub isin: Option<String>,
+}
+
+fn given(s: &str) -> Option<String> {
+    let s = s.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+impl Mappings {
+    fn from_registration(r: &TickerRegistration) -> Self {
+        Self {
+            name: given(&r.name),
+            mfn_slug: given(&r.mfn_slug),
+            fi_issuer: given(&r.fi_issuer),
+            isin: given(&r.isin),
+        }
+    }
+
+    /// Whether no mapping is given.
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.mfn_slug.is_none()
+            && self.fi_issuer.is_none()
+            && self.isin.is_none()
+    }
+
+    /// Takes every mapping `newer` gives; keeps the others.
+    fn overlay(&mut self, newer: Mappings) {
+        if newer.name.is_some() {
+            self.name = newer.name;
+        }
+        if newer.mfn_slug.is_some() {
+            self.mfn_slug = newer.mfn_slug;
+        }
+        if newer.fi_issuer.is_some() {
+            self.fi_issuer = newer.fi_issuer;
+        }
+        if newer.isin.is_some() {
+            self.isin = newer.isin;
+        }
+    }
 }
 
 /// Uppercase ticker and MIC (`XNAS` when none was sent) of a registration,
@@ -79,6 +135,7 @@ impl Listing {
             ticker,
             exchange_mic,
             currency,
+            mappings: Mappings::from_registration(r),
         })
     }
 }
@@ -104,7 +161,7 @@ impl Registrations {
 
 /// Replays registrations in log order. The last message for a listing wins;
 /// a repeated registration keeps the first one's currency, like
-/// [`upsert_listings`] does.
+/// [`upsert_listings`] does, and adds the mappings it gives.
 pub fn replay<I: IntoIterator<Item = TickerRegistration>>(messages: I) -> Registrations {
     let mut out = Registrations::default();
     for r in messages {
@@ -121,12 +178,13 @@ pub fn replay<I: IntoIterator<Item = TickerRegistration>>(messages: I) -> Regist
             }
         } else if let Some(listing) = Listing::from_registration(&r) {
             out.withdrawn.retain(|(t, m)| !listing.is(t, m));
-            if !out
+            match out
                 .active
-                .iter()
-                .any(|l| l.is(&listing.ticker, &listing.exchange_mic))
+                .iter_mut()
+                .find(|l| l.is(&listing.ticker, &listing.exchange_mic))
             {
-                out.active.push(listing);
+                Some(existing) => existing.mappings.overlay(listing.mappings),
+                None => out.active.push(listing),
             }
         }
     }
@@ -188,8 +246,12 @@ pub fn read_registrations(brokers: &str, topic: &str) -> anyhow::Result<Registra
     Ok(replay(messages))
 }
 
-/// Inserts listings that are not in `companies` yet. Existing rows, and their
-/// hand-set mappings, are left untouched. Returns the number of new rows.
+/// Inserts listings that are not in `companies` yet, then sets the mappings
+/// each one gives. A mapping a listing leaves empty is never cleared, so
+/// existing rows keep what they have. A mapping the table rejects (a slug or
+/// issuer another row already has, or a malformed slug) is logged and that
+/// listing's mappings skipped, so one bad registration cannot block the sync.
+/// Returns the number of new rows.
 pub async fn upsert_listings(pool: &PgPool, listings: &[Listing]) -> sqlx::Result<u64> {
     let mut inserted = 0;
     for l in listings {
@@ -203,6 +265,40 @@ pub async fn upsert_listings(pool: &PgPool, listings: &[Listing]) -> sqlx::Resul
         .execute(pool)
         .await?
         .rows_affected();
+
+        if l.mappings.is_empty() {
+            continue;
+        }
+        let set = sqlx::query(
+            "UPDATE companies SET name = COALESCE($3, name), \
+                                  mfn_slug = COALESCE($4, mfn_slug), \
+                                  fi_issuer = COALESCE($5, fi_issuer), \
+                                  isin = COALESCE($6, isin) \
+             WHERE ticker = $1 AND exchange_mic = $2",
+        )
+        .bind(&l.ticker)
+        .bind(&l.exchange_mic)
+        .bind(&l.mappings.name)
+        .bind(&l.mappings.mfn_slug)
+        .bind(&l.mappings.fi_issuer)
+        .bind(&l.mappings.isin)
+        .execute(pool)
+        .await;
+        match set {
+            Ok(_) => {}
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() || e.is_check_violation() => {
+                warn!(
+                    ticker = %l.ticker,
+                    exchange_mic = %l.exchange_mic,
+                    mfn_slug = ?l.mappings.mfn_slug,
+                    fi_issuer = ?l.mappings.fi_issuer,
+                    isin = ?l.mappings.isin,
+                    error = %e,
+                    "registration's mappings rejected, keeping the row's current ones"
+                );
+            }
+            Err(e) => return Err(e),
+        }
     }
     Ok(inserted)
 }
@@ -279,6 +375,15 @@ mod tests {
             exchange_mic: mic.into(),
             currency: currency.into(),
             unregister: false,
+            ..Default::default()
+        }
+    }
+
+    fn reg_mapped(ticker: &str, mic: &str, name: &str, slug: &str) -> TickerRegistration {
+        TickerRegistration {
+            name: name.into(),
+            mfn_slug: slug.into(),
+            ..reg(ticker, mic, "")
         }
     }
 
@@ -288,6 +393,7 @@ mod tests {
             exchange_mic: mic.into(),
             currency: String::new(),
             unregister: true,
+            ..Default::default()
         }
     }
 
@@ -338,6 +444,98 @@ mod tests {
         assert!(r.withdrawn.is_empty());
     }
 
+    #[test]
+    fn later_registrations_add_mappings_without_clearing_them() {
+        let r = replay([
+            reg("TRMD-A", "XCSE", "DKK"),
+            reg_mapped("TRMD-A", "XCSE", "Torm", "torm"),
+            reg("TRMD-A", "XCSE", "DKK"),
+            TickerRegistration {
+                fi_issuer: " ".into(),
+                ..reg_mapped("TRMD-A", "XCSE", "", "torm-plc")
+            },
+        ]);
+        assert_eq!(r.active.len(), 1);
+        assert_eq!(
+            r.active[0].mappings,
+            Mappings {
+                name: Some("Torm".into()),
+                mfn_slug: Some("torm-plc".into()),
+                fi_issuer: None,
+                isin: None,
+            }
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn upsert_sets_given_mappings_and_keeps_the_rest(pool: PgPool) -> sqlx::Result<()> {
+        let plain = replay([reg("GOMX", "FNSE", "SEK")]).active;
+        upsert_listings(&pool, &plain).await?;
+        sqlx::query("UPDATE companies SET fi_issuer = 'Hand Set AB' WHERE ticker = 'GOMX'")
+            .execute(&pool)
+            .await?;
+
+        let mapped = replay([TickerRegistration {
+            isin: "SE0008348304".into(),
+            ..reg_mapped("GOMX", "FNSE", "GomSpace Group", "gomspace-group")
+        }])
+        .active;
+        assert_eq!(upsert_listings(&pool, &mapped).await?, 0);
+        assert_eq!(upsert_listings(&pool, &plain).await?, 0);
+
+        let row: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT name, mfn_slug, fi_issuer, isin FROM companies WHERE ticker = 'GOMX'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            row,
+            (
+                Some("GomSpace Group".into()),
+                Some("gomspace-group".into()),
+                Some("Hand Set AB".into()),
+                Some("SE0008348304".into())
+            )
+        );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rejected_mappings_skip_only_that_listing(pool: PgPool) -> sqlx::Result<()> {
+        let listings = replay([
+            reg_mapped("AAA", "XSTO", "First", "shared-slug"),
+            reg_mapped("BBB", "XSTO", "Second", "shared-slug"),
+            reg_mapped("CCC", "XSTO", "Third", "Not A Slug"),
+            reg_mapped("DDD", "XSTO", "Fourth", "fourth"),
+        ])
+        .active;
+        assert_eq!(upsert_listings(&pool, &listings).await?, 4);
+
+        let rows: Vec<(String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT ticker, name, mfn_slug FROM companies ORDER BY ticker")
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "AAA".into(),
+                    Some("First".into()),
+                    Some("shared-slug".into())
+                ),
+                ("BBB".into(), None, None),
+                ("CCC".into(), None, None),
+                ("DDD".into(), Some("Fourth".into()), Some("fourth".into())),
+            ]
+        );
+        Ok(())
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn delete_removes_the_company_and_its_state(pool: PgPool) -> sqlx::Result<()> {
         let listings: Vec<Listing> = [reg("TRMD", "XNAS", "USD"), reg("GOMX", "FNSE", "SEK")]
@@ -371,6 +569,7 @@ mod tests {
                 ticker: "GOMX".into(),
                 exchange_mic: "FNSE".into(),
                 currency: "SEK".into(),
+                mappings: Mappings::default(),
             })
         );
         let us = Listing::from_registration(&reg("AAPL", "", "")).unwrap();
