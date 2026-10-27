@@ -51,6 +51,14 @@ grafana:
             timescaledb: false
           editable: false
 
+        - name: Loki
+          uid: nexus-loki
+          type: loki
+          url: http://loki.nexus.svc.cluster.local:3100
+          editable: false
+          jsonData:
+            maxLines: 1000
+
   sidecar:
     dashboards:
       enabled: true

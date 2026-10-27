@@ -87,6 +87,7 @@ infra/
       vault/                 # HashiCorp Vault standalone (umbrella Helm chart)
       external-secrets/      # External Secrets Operator + ClusterSecretStore (Vault backend)
       prometheus/            # kube-prometheus-stack umbrella (operator, Prometheus, Alertmanager, node-exporter, kube-state-metrics, nexus alert rules; Grafana disabled)
+      loki/                  # Grafana Loki (SingleBinary) umbrella on Backblaze B2, 30-day retention; see docs/guides/loki.md
       servicelb/             # label-only Node manifest that turns off k3s ServiceLB (MetalLB serves LoadBalancers)
     signal/
       signal/                # nexus signal service (Helm chart, Deployment)
@@ -114,6 +115,7 @@ Node metrics (`node_*` from node-exporter) describe the OrbStack Linux VM that h
 | Vault | `vault.nexus.svc.cluster.local:8200` | `localhost:32200` |
 | Prometheus | `prometheus-kube-prometheus-prometheus.nexus.svc.cluster.local:9090` | `localhost:32090` |
 | Alertmanager (ClusterIP, not exposed) | `prometheus-kube-prometheus-alertmanager.nexus.svc.cluster.local:9093` | — |
+| Loki (ClusterIP, not exposed; Grafana datasource `Loki`) | `loki.nexus.svc.cluster.local:3100` | — |
 | Grafana | — | `localhost:32300` |
 | ArgoCD | — | `localhost:30443` |
 

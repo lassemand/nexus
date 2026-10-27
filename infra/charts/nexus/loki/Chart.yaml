@@ -1,0 +1,13 @@
+apiVersion: v2
+name: loki
+description: >-
+  Umbrella chart for Grafana Loki in SingleBinary mode, storing chunks and
+  index in Backblaze B2 (S3 API), plus the ExternalSecret holding the B2
+  application key. See docs/guides/loki.md.
+type: application
+version: 0.1.0
+appVersion: "3.6.16"
+dependencies:
+  - name: loki
+    version: "7.5.0"
+    repository: https://grafana.github.io/helm-charts
