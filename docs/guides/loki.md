@@ -35,6 +35,28 @@ Grafana → Explore → datasource **Loki**. Example:
 
 Loki's own metrics are scraped through its ServiceMonitor (`loki` in `nexus`, port `http-metrics`).
 
+## What is collected
+
+Grafana Alloy (chart `infra/charts/nexus/alloy/`) runs as a DaemonSet in `nexus` and ships the logs of **every container in every namespace** to Loki. It discovers pods with `discovery.kubernetes`, tails the node's CRI log files under `/var/log/pods` (mounted read-only) with `loki.source.file`, and pushes with `loki.write` (positions and a write-ahead log are kept on the node in `/var/lib/alloy`, so a short Loki or Alloy restart loses nothing).
+
+Labels (and only these): `namespace`, `pod`, `container`, `app` (from `app.kubernetes.io/name`, else `app`), `node`, `cluster="orbstack"`, and `level` (`trace`, `debug`, `info`, `warn`, `error`). `level` comes from a JSON `level` field or from the Rust `tracing` token after the timestamp; lines with no recognisable level have no `level` label. Loki also adds `service_name` itself, derived from `app`.
+
+Processing: the CRI wrapper is stripped, so the stored line is the application's own line. Alloy's and Loki's own `level=debug` lines are dropped (warn and error are kept). Secrets are masked with `***`: `Bearer <token>`, `password=...`, and `access_token`/`refresh_token` values (JSON or `key=value`). This is a safety net, not a licence to log secrets.
+
+### Why labels are restricted
+
+Every distinct label combination is a separate stream. Labels such as pod IDs, `pod-template-hash` or `controller-revision-hash` multiply streams on every rollout, which slows Loki and bloats the index. Put everything else in the line and filter it at query time.
+
+### More queries
+
+```logql
+{namespace="chronicle", app="nordic-reports"}
+{namespace="signal"} | level="error"
+sum by (namespace) (count_over_time({cluster="orbstack"}[1h]))
+```
+
+Alloy's metrics (`alloy_*`, `loki_write_*`) are scraped through its ServiceMonitor.
+
 ## Cost
 
 B2 is free under 10 GB, then about $6.95 per TB per month. API calls are free.
