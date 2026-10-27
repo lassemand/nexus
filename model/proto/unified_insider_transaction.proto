@@ -31,6 +31,7 @@ enum SourceRegistry {
   SOURCE_REGISTRY_UNSPECIFIED = 0;
   SOURCE_REGISTRY_SEC = 1; // U.S. Securities and Exchange Commission (Form 4)
   SOURCE_REGISTRY_FI  = 2; // Finansinspektionen, Sweden (MAR Article 19 PDMR)
+  SOURCE_REGISTRY_FIN_MAR = 3; // Finnish issuer MAR Art. 19 release (via MFN)
 }
 
 // Unified transaction type — broader than the FI-only TransactionType in
@@ -77,6 +78,7 @@ message UnifiedInsiderTransaction {
   oneof source_detail {
     SecDetail sec = 14;
     FiDetail  fi  = 15;
+    MarReleaseDetail mar = 16;
   }
 }
 
@@ -96,4 +98,26 @@ message FiDetail {
   string instrument_type = 3; // FI instrument category (e.g. "Aktie", "Warrant")
   bool   is_close_associate = 4; // Närstående — filed by associate, not the PDMR
   string correction_description = 5; // Free-text from FI's "Beskrivning av korrigering"
+}
+
+// Finnish issuer MAR Art. 19 release (stock exchange release carried by MFN).
+// Finland has no regulator register, so rows are parsed from release text.
+//
+// The shared `volume` / `price_per_unit` doubles on the parent message are
+// filled from the decimal strings below at the proto boundary only; the
+// strings are the exact values as disclosed.
+message MarReleaseDetail {
+  string lei              = 1; // Issuer LEI
+  string isin             = 2; // Instrument ISIN
+  string reference_number = 3; // MAR notification reference, e.g. "549300R0VN9C371W0E07_20260320093338_264"
+  string instrument_type  = 4; // e.g. "Share"
+  string venue            = 5; // Trading venue as written; empty when the release gives none
+  string nature           = 6; // Raw "Nature of the transaction" text
+  bool   is_close_associate = 7; // Filed by a person closely associated with the manager
+  string amendment_reason = 8; // Free text of an amendment; empty for initial notifications
+  string mfn_news_id      = 9;
+  string url              = 10;
+  string lang             = 11; // "en" or "fi"
+  string volume_decimal     = 12; // Exact volume, e.g. "23201" or "12.5"
+  string unit_price_decimal = 13; // Exact unit price in `currency`, e.g. "0.00"
 }

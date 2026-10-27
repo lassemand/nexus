@@ -1,0 +1,87 @@
+Wärtsilä Oyj Abp, Johdon liiketoimet, 23.7.2026 klo 15:00
+
+Wärtsilä Oyj Abp - Johdon liiketoimet: Huovinen, Sakari
+
+____________________________________________
+
+Ilmoitusvelvollinen
+
+Nimi: Sakari Huovinen
+
+Asema: Lähipiiriin kuuluva henkilö
+
+(1):Liikkeeseenlaskijassa johtotehtävissä toimiva henkilö
+
+Nimi: Anu Sirkiä
+
+Asema: Muu ylin johto
+
+Liikkeeseenlaskija: Wärtsilä Oyj Abp
+
+LEI: 743700G7A9J1PHM3X223
+
+Ilmoituksen luonne: ENSIMMÄINEN ILMOITUS
+
+Viitenumero: 167108/9/12
+
+____________________________________________
+
+Liiketoimen päivämäärä: 2026-07-22
+
+Kauppapaikka: HREU
+
+Instrumenttityyppi: OSAKE
+
+ISIN: FI0009003727
+
+Liiketoimen luonne: HANKINTA
+
+Liiketoimien yksityiskohtaiset tiedot
+
+(1): Volyymi: 328 Yksikköhinta: 30.44 EUR
+
+Liiketoimien yhdistetyt tiedot (1):
+
+Volyymi: 328 Keskihinta: 30.44 EUR
+
+____________________________________________
+
+Liiketoimen päivämäärä: 2026-07-22
+
+Kauppapaikka: CEUX
+
+Instrumenttityyppi: OSAKE
+
+ISIN: FI0009003727
+
+Liiketoimen luonne: HANKINTA
+
+Liiketoimien yksityiskohtaiset tiedot
+
+(1): Volyymi: 132 Yksikköhinta: 30.52 EUR
+
+Liiketoimien yhdistetyt tiedot (1):
+
+Volyymi: 132 Keskihinta: 30.52 EUR
+
+Lisätietoja:
+
+Samu Heikkilä
+Sijoittajasuhdepäällikkö
+Puh. 0 10 709 1121
+samu.heikkila@wartsila.com
+
+Wärtsilä lyhyesti
+
+Wärtsilä on kansainvälisesti johtava innovatiivisen teknologian ja
+elinkaariratkaisujen toimittaja merenkulku- ja energiamarkkinoilla. Panostamme
+kestävän teknologian ja palveluiden innovaatioihin, joilla autamme asiakkaitamme
+huomioimaan ympäristön ja parantamaan taloudellista suorituskykyään.
+Omistautuneeseen tiimiimme kuuluu 17 900 huippuammattilaista 199
+toimipisteessämme 78 maassa. Yhdessä edistämme toimialojemme siirtymää kohti
+hiilineutraaliutta ympäri maailmaa. Vuonna 2025 Wärtsilän liikevaihto oli 6,2
+miljardia euroa. Wärtsilän osakkeet on listattu Nasdaq Helsingissä.
+www.wartsila.com
+
+[1]: mailto:samu.heikkila@wartsila.com
+[2]: http://www.wartsila.com
