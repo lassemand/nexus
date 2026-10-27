@@ -17,6 +17,10 @@ alloy:
 
   alloy:
     storagePath: /var/lib/alloy
+    # loki.write's `wal` block is experimental in Alloy v1.21: without this
+    # level Alloy refuses to load the config ("enabling wal requires
+    # stability.level flag to be experimental") and the pod crash-loops.
+    stabilityLevel: experimental
     # Mounts the node's /var/log (read-only), which holds /var/log/pods.
     mounts:
       varlog: true
