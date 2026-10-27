@@ -7,12 +7,22 @@
 //!
 //! # Definitions
 //!
-//! Let `t` be the release instant in Europe/Stockholm local time and `d` its
-//! local date. The regular session is **09:00–17:30**, or **09:00–13:00** on a
-//! `half_day`. A *trading day* is a weekday that is not `closed` in
-//! `trading_holidays` for the exchange's country (`FNSE`/`XSTO` → `SE`, from
-//! `alpha::calendar`). The exchange's calendar applies, not the company's home
-//! country.
+//! Everything exchange-specific comes from the `exchanges` table (one row per
+//! MIC, loaded once per refresh):
+//!
+//! | MIC            | country | time zone           | open  | close | half-day close |
+//! |----------------|---------|---------------------|-------|-------|----------------|
+//! | `FNSE`, `XSTO` | `SE`    | `Europe/Stockholm`  | 09:00 | 17:30 | 13:00          |
+//! | `XCSE`, `FNDK` | `DK`    | `Europe/Copenhagen` | 09:00 | 17:00 | none           |
+//!
+//! Let `t` be the release instant in the exchange's local time (its own
+//! `timezone`, never another city's) and `d` its local date. The regular
+//! session runs from `open_local` to `close_local`, or to `half_day_close_local`
+//! on a `half_day` (a `half_day` of an exchange with no half-day close counts as
+//! a full day, with a one-time warning). A *trading day* is a weekday that is not
+//! `closed` in `trading_holidays` for the exchange's `country` (`SE`, `DK`).
+//! The exchange's calendar applies, not the company's home country. A MIC that
+//! is not in `exchanges` gives `calendar_unknown`.
 //!
 //! 1. **Session**: on a trading day `d`, `pre_open` before 09:00, `intraday`
 //!    from 09:00 up to the close, `after_close` at or after the close; on a
@@ -43,23 +53,17 @@
 //! only so absurd data can never overflow the column. `move_pct` is NULL unless
 //! the status is `ok`; `needs_review` is set when `|move_pct| > 40`.
 
-use alpha::calendar::country_for_exchange;
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono_tz::Tz;
 use model::calendar::{DynamicCalendar, TradingCalendar, TradingStatus};
-use model::stockholm::stockholm_offset_hours;
 use rust_decimal::Decimal;
 use sqlx::{PgConnection, PgPool, Row};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use tracing::{info, warn};
 
-/// Regular session open, Stockholm local time.
-pub const OPEN: (u32, u32) = (9, 0);
-/// Regular session close.
-pub const CLOSE: (u32, u32) = (17, 30);
-/// Early close on `half_day` dates.
-pub const HALF_DAY_CLOSE: (u32, u32) = (13, 0);
 /// A base bar older than this many trading days before `b` is `stale_base`.
 pub const STALE_AFTER_TRADING_DAYS: i64 = 5;
 /// `needs_review` threshold for `|move_pct|`.
@@ -71,7 +75,7 @@ pub const CORRECTION_WINDOW_DAYS: i64 = 10;
 const QUALIFYING: &str = "source = 'mfn' AND status = 'occurred' \
      AND event_type IN ('quarterly_report', 'annual_report') AND NOT is_correction";
 
-/// Where the release falls relative to the Stockholm session.
+/// Where the release falls relative to the exchange's session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Session {
     PreOpen,
@@ -119,6 +123,87 @@ impl DataStatus {
             DataStatus::ImplausibleMove => "implausible_move",
         }
     }
+}
+
+/// One row of the `exchanges` table: where and when a MIC trades.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exchange {
+    /// ISO 10383 MIC.
+    pub mic: String,
+    /// Country whose `trading_holidays` apply.
+    pub country: String,
+    /// The exchange's own IANA time zone.
+    pub timezone: Tz,
+    /// Regular session open, local time.
+    pub open: NaiveTime,
+    /// Regular session close, local time.
+    pub close: NaiveTime,
+    /// Early close on `half_day` dates, if the exchange has any.
+    pub half_day_close: Option<NaiveTime>,
+}
+
+impl Exchange {
+    /// Loads the row for `mic`. `None` if the MIC is not in `exchanges` or its
+    /// time zone is not an IANA name (logged): both mean `calendar_unknown`.
+    pub async fn load(conn: &mut PgConnection, mic: &str) -> sqlx::Result<Option<Self>> {
+        let Some(r) = sqlx::query(
+            "SELECT country, timezone, open_local, close_local, half_day_close_local \
+             FROM exchanges WHERE mic = $1",
+        )
+        .bind(mic)
+        .fetch_optional(&mut *conn)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let tz: String = r.get("timezone");
+        let Ok(timezone) = tz.parse::<Tz>() else {
+            warn!(mic, timezone = %tz, "exchanges.timezone is not an IANA time zone");
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            mic: mic.to_string(),
+            country: r.get("country"),
+            timezone,
+            open: r.get("open_local"),
+            close: r.get("close_local"),
+            half_day_close: r.get("half_day_close_local"),
+        }))
+    }
+
+    /// The release instant in the exchange's local time.
+    fn local(&self, at: DateTime<Utc>) -> NaiveDateTime {
+        at.with_timezone(&self.timezone).naive_local()
+    }
+
+    /// The session close on a day with the given status.
+    fn close_on(&self, status: TradingStatus) -> NaiveTime {
+        match (status, self.half_day_close) {
+            (TradingStatus::HalfDay, Some(early)) => early,
+            (TradingStatus::HalfDay, None) => {
+                // Logged once per MIC, not once per report.
+                static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+                let first = WARNED
+                    .get_or_init(Default::default)
+                    .lock()
+                    .map(|mut w| w.insert(self.mic.clone()))
+                    .unwrap_or(false);
+                if first {
+                    warn!(mic = %self.mic,
+                          "half_day in trading_holidays but the exchange has no half-day close; treated as a full day");
+                }
+                self.close
+            }
+            _ => self.close,
+        }
+    }
+}
+
+/// An exchange together with its country's calendar.
+#[derive(Debug, Clone)]
+pub struct Market {
+    pub exchange: Exchange,
+    pub calendar: Calendar,
 }
 
 /// A country's trading calendar plus the date range it is known for.
@@ -203,7 +288,7 @@ impl Calendar {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Plan {
     pub session: Session,
-    /// Stockholm local date of the release (`d`).
+    /// The exchange's local date of the release (`d`).
     pub release_date: NaiveDate,
     /// First trading day the market could react (`r`).
     pub reaction_date: NaiveDate,
@@ -211,14 +296,10 @@ pub struct Plan {
     pub base_date: NaiveDate,
 }
 
-fn time(hm: (u32, u32)) -> NaiveTime {
-    NaiveTime::from_hms_opt(hm.0, hm.1, 0).expect("valid time")
-}
-
-/// Classifies a release instant. `None` means `calendar_unknown`: `d`, `r` or
-/// `b` falls outside the calendar's covered range.
-pub fn plan(occurred_at: DateTime<Utc>, cal: &Calendar) -> Option<Plan> {
-    let local = (occurred_at + Duration::hours(stockholm_offset_hours(occurred_at))).naive_utc();
+/// Classifies a release instant on `ex`. `None` means `calendar_unknown`: `d`,
+/// `r` or `b` falls outside the calendar's covered range.
+pub fn plan(occurred_at: DateTime<Utc>, cal: &Calendar, ex: &Exchange) -> Option<Plan> {
+    let local = ex.local(occurred_at);
     let (d, t) = (local.date(), local.time());
     if !cal.covers(d) {
         return None;
@@ -226,14 +307,9 @@ pub fn plan(occurred_at: DateTime<Utc>, cal: &Calendar) -> Option<Plan> {
     let session = match cal.days.trading_status(d) {
         TradingStatus::Closed => Session::NonTradingDay,
         status => {
-            let close = if status == TradingStatus::HalfDay {
-                HALF_DAY_CLOSE
-            } else {
-                CLOSE
-            };
-            if t < time(OPEN) {
+            if t < ex.open {
                 Session::PreOpen
-            } else if t < time(close) {
+            } else if t < ex.close_on(status) {
                 Session::Intraday
             } else {
                 Session::AfterClose
@@ -273,12 +349,14 @@ impl Counts {
     }
 }
 
-async fn load_calendar(conn: &mut PgConnection, mic: &str) -> sqlx::Result<Option<Calendar>> {
-    let Some(country) = country_for_exchange(mic) else {
+/// The exchange and its country's calendar. `None` (→ `calendar_unknown`) for a
+/// MIC missing from `exchanges`, or a country without holiday rows.
+async fn load_market(conn: &mut PgConnection, mic: &str) -> sqlx::Result<Option<Market>> {
+    let Some(exchange) = Exchange::load(conn, mic).await? else {
         return Ok(None);
     };
     let rows = sqlx::query("SELECT date, status FROM trading_holidays WHERE country = $1")
-        .bind(country)
+        .bind(&exchange.country)
         .fetch_all(&mut *conn)
         .await?;
     let (mut closed, mut half) = (HashSet::new(), HashSet::new());
@@ -290,7 +368,7 @@ async fn load_calendar(conn: &mut PgConnection, mic: &str) -> sqlx::Result<Optio
             half.insert(date);
         }
     }
-    Ok(Calendar::from_holidays(closed, half))
+    Ok(Calendar::from_holidays(closed, half).map(|calendar| Market { exchange, calendar }))
 }
 
 struct Bar {
@@ -353,12 +431,13 @@ async fn compute(
     ticker: &str,
     mic: &str,
     occurred_at: DateTime<Utc>,
-    cal: Option<&Calendar>,
+    market: Option<&Market>,
 ) -> sqlx::Result<Outcome> {
-    let Some(cal) = cal else {
+    let Some(market) = market else {
         return Ok(Outcome::unknown());
     };
-    let Some(p) = plan(occurred_at, cal) else {
+    let cal = &market.calendar;
+    let Some(p) = plan(occurred_at, cal, &market.exchange) else {
         return Ok(Outcome::unknown());
     };
     let mut out = Outcome {
@@ -477,7 +556,8 @@ async fn refresh_in(
         ..Counts::default()
     };
 
-    let cal = load_calendar(conn, mic).await?;
+    // Once per refresh, not once per report.
+    let market = load_market(conn, mic).await?;
     let rows = sqlx::query(&format!(
         "SELECT id, occurred_at FROM special_events \
          WHERE ticker = $1 AND exchange_mic = $2 AND {QUALIFYING} \
@@ -495,7 +575,7 @@ async fn refresh_in(
     for row in rows {
         let id: i64 = row.get("id");
         let occurred_at: DateTime<Utc> = row.get("occurred_at");
-        let o = compute(conn, ticker, mic, occurred_at, cal.as_ref()).await?;
+        let o = compute(conn, ticker, mic, occurred_at, market.as_ref()).await?;
         sqlx::query(
             "UPDATE special_events SET release_session = $2, reaction_date = $3, base_date = $4, \
                     base_close = $5::numeric, reaction_close = $6::numeric, \
@@ -666,6 +746,33 @@ mod tests {
         Calendar::from_holidays(closed, half).unwrap()
     }
 
+    fn hm(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    /// The `exchanges` rows of FNSE/XSTO and XCSE/FNDK.
+    fn sto() -> Exchange {
+        Exchange {
+            mic: "FNSE".into(),
+            country: "SE".into(),
+            timezone: "Europe/Stockholm".parse().unwrap(),
+            open: hm(9, 0),
+            close: hm(17, 30),
+            half_day_close: Some(hm(13, 0)),
+        }
+    }
+
+    fn cph() -> Exchange {
+        Exchange {
+            mic: "XCSE".into(),
+            country: "DK".into(),
+            timezone: "Europe/Copenhagen".parse().unwrap(),
+            open: hm(9, 0),
+            close: hm(17, 0),
+            half_day_close: None,
+        }
+    }
+
     fn utc(y: i32, m: u32, day: u32, h: u32, mi: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(y, m, day, h, mi, 0).unwrap()
     }
@@ -747,7 +854,7 @@ mod tests {
             ),
         ];
         for (at, session, r, b) in cases {
-            let p = plan(at, &c).unwrap_or_else(|| panic!("{at} unknown"));
+            let p = plan(at, &c, &sto()).unwrap_or_else(|| panic!("{at} unknown"));
             assert_eq!(p.session, session, "{at}");
             assert_eq!(p.reaction_date, d(r), "{at} reaction");
             assert_eq!(p.base_date, d(b), "{at} base");
@@ -757,7 +864,7 @@ mod tests {
     #[test]
     fn session_boundaries() {
         let c = cal();
-        let s = |at| plan(at, &c).unwrap().session;
+        let s = |at| plan(at, &c, &sto()).unwrap().session;
         // 09:00 CEST = 07:00Z is intraday, 08:59 is pre-open.
         assert_eq!(s(utc(2026, 8, 25, 6, 59)), Session::PreOpen);
         assert_eq!(s(utc(2026, 8, 25, 7, 0)), Session::Intraday);
@@ -770,15 +877,66 @@ mod tests {
     }
 
     #[test]
+    fn copenhagen_closes_at_1700_and_has_no_half_day() {
+        // DK: Dec 24 closed all day; no half-day rows.
+        let closed = ["2015-01-01", "2026-12-24", "2027-12-31"]
+            .iter()
+            .map(|s| d(s))
+            .collect();
+        let c = Calendar::from_holidays(closed, HashSet::new()).unwrap();
+        let s = |at| plan(at, &c, &cph()).unwrap().session;
+        // 17:15 CEST = 15:15Z: after Copenhagen's close (Stockholm's would be intraday).
+        assert_eq!(s(utc(2026, 8, 25, 15, 14)), Session::AfterClose);
+        assert_eq!(s(utc(2026, 8, 25, 14, 59)), Session::Intraday);
+        assert_eq!(
+            plan(utc(2026, 8, 25, 15, 15), &cal(), &sto())
+                .unwrap()
+                .session,
+            Session::Intraday
+        );
+        // The Danish Christmas Eve is a closed day.
+        assert_eq!(s(utc(2026, 12, 24, 9, 0)), Session::NonTradingDay);
+    }
+
+    #[test]
+    fn a_half_day_without_a_half_day_close_is_a_full_day() {
+        // The SE calendar's 2026-12-24 half day on an exchange with no early close.
+        let c = cal();
+        let p = |at| plan(at, &c, &cph()).unwrap().session;
+        assert_eq!(p(utc(2026, 12, 24, 13, 0)), Session::Intraday); // 14:00 CET < 17:00
+        assert_eq!(p(utc(2026, 12, 24, 16, 0)), Session::AfterClose);
+    }
+
+    #[test]
+    fn the_release_is_converted_in_the_exchanges_own_zone() {
+        let c = cal();
+        // Winter 08:00 CET (07:00Z) and summer 08:00 CEST (06:00Z), Copenhagen.
+        let s = |at| plan(at, &c, &cph()).unwrap().session;
+        assert_eq!(s(utc(2026, 1, 13, 7, 0)), Session::PreOpen);
+        assert_eq!(s(utc(2026, 7, 14, 6, 0)), Session::PreOpen);
+        assert_eq!(s(utc(2026, 1, 13, 8, 0)), Session::Intraday);
+        // A zone with another offset must not be read as Stockholm: same
+        // instant, 08:00Z is 09:00 CET (open) but 03:00 in New York (pre-open).
+        let ny = Exchange {
+            timezone: "America/New_York".parse().unwrap(),
+            ..cph()
+        };
+        assert_eq!(
+            plan(utc(2026, 1, 13, 8, 0), &c, &ny).unwrap().session,
+            Session::PreOpen
+        );
+    }
+
+    #[test]
     fn the_calendar_is_never_guessed() {
         let c = cal();
         // Covered range is 2015-01-01..=2027-12-31 (whole years).
-        assert!(plan(utc(2030, 5, 5, 6, 0), &c).is_none());
-        assert!(plan(utc(2014, 12, 30, 6, 0), &c).is_none());
+        assert!(plan(utc(2030, 5, 5, 6, 0), &c, &sto()).is_none());
+        assert!(plan(utc(2014, 12, 30, 6, 0), &c, &sto()).is_none());
         // The reaction day would fall in 2028: unknown, although `d` is covered.
-        assert!(plan(utc(2027, 12, 31, 16, 0), &c).is_none());
+        assert!(plan(utc(2027, 12, 31, 16, 0), &c, &sto()).is_none());
         // The base day would fall before the range.
-        assert!(plan(utc(2015, 1, 2, 6, 0), &c).is_none());
+        assert!(plan(utc(2015, 1, 2, 6, 0), &c, &sto()).is_none());
         assert!(Calendar::from_holidays(HashSet::new(), HashSet::new()).is_none());
     }
 
@@ -1109,18 +1267,19 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn calendar_unknown_for_far_dates_and_unmapped_exchanges(pool: PgPool) {
         let far = report(&pool, "FAR", MIC, utc(2030, 5, 7, 6, 0)).await;
-        let unmapped = report(&pool, "DKSTOCK", "XCSE", utc(2026, 8, 25, 6, 0)).await;
+        // Oslo is not in `exchanges`: never guessed, even with prices.
+        let unmapped = report(&pool, "NOSTOCK", "XOSL", utc(2026, 8, 25, 6, 0)).await;
         sqlx::query(
             "INSERT INTO daily_bars (ticker, exchange_mic, date, open, high, low, close, volume, \
                currency, source, fetched_at) \
-             VALUES ('DKSTOCK','XCSE','2026-08-24',1,1,1,1,1,'DKK','saxo',now()), \
-                    ('DKSTOCK','XCSE','2026-08-25',2,2,2,2,1,'DKK','saxo',now())",
+             VALUES ('NOSTOCK','XOSL','2026-08-24',1,1,1,1,1,'NOK','saxo',now()), \
+                    ('NOSTOCK','XOSL','2026-08-25',2,2,2,2,1,'NOK','saxo',now())",
         )
         .execute(&pool)
         .await
         .unwrap();
         refresh(&pool, "FAR").await;
-        refresh_report_reactions(&pool, "DKSTOCK", "XCSE")
+        refresh_report_reactions(&pool, "NOSTOCK", "XOSL")
             .await
             .unwrap();
         for id in [far, unmapped] {
@@ -1128,6 +1287,251 @@ mod tests {
             assert_eq!(r.status.as_deref(), Some("calendar_unknown"));
             assert_eq!((r.session, r.reaction_date, r.move_pct), (None, None, None));
         }
+    }
+
+    // ── Denmark (XCSE/FNDK): the `exchanges` row and DK holidays decide ─────
+
+    /// DK closures for 2026 as `nexus calendar sync --country DK` would store
+    /// them (no half days), with 2015 and 2027 as range markers.
+    async fn seed_denmark(pool: &PgPool) {
+        sqlx::query(
+            "INSERT INTO trading_holidays (country, date, status, note) VALUES \
+             ('DK','2015-01-01','closed','New Year'), ('DK','2026-01-01','closed','New Year'), \
+             ('DK','2026-04-02','closed','Maundy Thursday'), ('DK','2026-04-03','closed','Good Friday'), \
+             ('DK','2026-04-06','closed','Easter Monday'), ('DK','2026-05-14','closed','Ascension Day'), \
+             ('DK','2026-05-15','closed','Friday after Ascension'), ('DK','2026-05-25','closed','Whit Monday'), \
+             ('DK','2026-06-05','closed','Constitution Day'), ('DK','2026-12-24','closed','Christmas Eve'), \
+             ('DK','2026-12-25','closed','Christmas Day'), ('DK','2026-12-31','closed','New Year''s Eve'), \
+             ('DK','2027-12-31','closed','New Year''s Eve')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn bar_of(pool: &PgPool, ticker: &str, mic: &str, date: &str, close: &str) {
+        sqlx::query(
+            "INSERT INTO daily_bars (ticker, exchange_mic, date, open, high, low, close, volume, \
+               currency, source, fetched_at) \
+             VALUES ($1, $2, $3::date, $4::numeric, $4::numeric, $4::numeric, $4::numeric, 1, \
+               'DKK', 'saxo', now())",
+        )
+        .bind(ticker)
+        .bind(mic)
+        .bind(date)
+        .bind(close)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Stores a report at `at` with a 100 → 110 move between `b` and `r`, refreshes,
+    /// and asserts the session and both days.
+    async fn expect(
+        pool: &PgPool,
+        (ticker, mic): (&str, &str),
+        at: DateTime<Utc>,
+        (session, r, b): (&str, &str, &str),
+    ) {
+        let id = report(pool, ticker, mic, at).await;
+        bar_of(pool, ticker, mic, b, "100.000000").await;
+        bar_of(pool, ticker, mic, r, "110.000000").await;
+        refresh_report_reactions(pool, ticker, mic).await.unwrap();
+        let got = row(pool, id).await;
+        assert_eq!(got.session.as_deref(), Some(session), "{ticker}/{mic} {at}");
+        assert_eq!(
+            got.reaction_date.as_deref(),
+            Some(r),
+            "{ticker}/{mic} {at} r"
+        );
+        assert_eq!(got.base_date.as_deref(), Some(b), "{ticker}/{mic} {at} b");
+        assert_eq!(
+            got.move_pct.as_deref(),
+            Some("10.0000"),
+            "{ticker}/{mic} {at}"
+        );
+        assert_eq!(got.status.as_deref(), Some("ok"), "{ticker}/{mic} {at}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn novo_reports_after_the_close_and_the_move_is_taken_the_next_day(pool: PgPool) {
+        seed_denmark(&pool).await;
+        // Q2 2026: 16:37:02Z = 18:37 Copenhagen.
+        expect(
+            &pool,
+            ("NOVO-B", "XCSE"),
+            Utc.with_ymd_and_hms(2026, 8, 4, 16, 37, 2).unwrap(),
+            ("after_close", "2026-08-05", "2026-08-04"),
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_1715_copenhagen_release_is_after_the_close_not_intraday(pool: PgPool) {
+        seed_denmark(&pool).await;
+        // 17:15 CEST = 15:15Z. Stockholm's 17:30 close would call it intraday.
+        let at = utc(2026, 8, 25, 15, 15);
+        expect(
+            &pool,
+            ("DK1", "XCSE"),
+            at,
+            ("after_close", "2026-08-26", "2026-08-25"),
+        )
+        .await;
+        expect(
+            &pool,
+            ("DK2", "FNDK"),
+            at,
+            ("after_close", "2026-08-26", "2026-08-25"),
+        )
+        .await;
+        expect(
+            &pool,
+            ("SE1", "FNSE"),
+            at,
+            ("intraday", "2026-08-25", "2026-08-24"),
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_friday_after_ascension_is_closed_in_copenhagen_only(pool: PgPool) {
+        seed_denmark(&pool).await;
+        let at = utc(2026, 5, 15, 6, 0); // 08:00 CEST
+                                         // Closed: next trading day Monday the 18th, base Wednesday the 13th
+                                         // (Thursday the 14th is Ascension Day).
+        expect(
+            &pool,
+            ("DK", "XCSE"),
+            at,
+            ("non_trading_day", "2026-05-18", "2026-05-13"),
+        )
+        .await;
+        // Stockholm trades that day.
+        expect(
+            &pool,
+            ("SE", "FNSE"),
+            at,
+            ("pre_open", "2026-05-15", "2026-05-13"),
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn constitution_day_is_closed_in_denmark_but_not_in_sweden(pool: PgPool) {
+        seed_denmark(&pool).await;
+        let at = utc(2026, 6, 5, 6, 0);
+        expect(
+            &pool,
+            ("DK", "XCSE"),
+            at,
+            ("non_trading_day", "2026-06-08", "2026-06-04"),
+        )
+        .await;
+        expect(
+            &pool,
+            ("SE", "XSTO"),
+            at,
+            ("pre_open", "2026-06-05", "2026-06-04"),
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn midsummer_eve_is_closed_in_sweden_but_not_in_denmark(pool: PgPool) {
+        seed_denmark(&pool).await;
+        let at = utc(2026, 6, 19, 6, 0);
+        expect(
+            &pool,
+            ("SE", "FNSE"),
+            at,
+            ("non_trading_day", "2026-06-22", "2026-06-18"),
+        )
+        .await;
+        expect(
+            &pool,
+            ("DK", "XCSE"),
+            at,
+            ("pre_open", "2026-06-19", "2026-06-18"),
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn christmas_eve_is_closed_all_day_in_copenhagen_and_a_half_day_in_stockholm(
+        pool: PgPool,
+    ) {
+        seed_denmark(&pool).await;
+        let at = utc(2026, 12, 24, 9, 0); // 10:00 CET
+        expect(
+            &pool,
+            ("DK", "XCSE"),
+            at,
+            ("non_trading_day", "2026-12-28", "2026-12-23"),
+        )
+        .await;
+        expect(
+            &pool,
+            ("SE", "FNSE"),
+            at,
+            ("intraday", "2026-12-24", "2026-12-23"),
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn copenhagen_is_pre_open_at_0800_local_in_summer_and_winter(pool: PgPool) {
+        seed_denmark(&pool).await;
+        expect(
+            &pool,
+            ("SUM", "XCSE"),
+            utc(2026, 7, 14, 6, 0),
+            ("pre_open", "2026-07-14", "2026-07-13"),
+        )
+        .await;
+        // 2026-01-13 07:00Z = 08:00 CET. 2026-01-01 is the only Danish holiday in January.
+        expect(
+            &pool,
+            ("WIN", "XCSE"),
+            utc(2026, 1, 13, 7, 0),
+            ("pre_open", "2026-01-13", "2026-01-12"),
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn exchanges_and_the_alpha_country_map_agree(pool: PgPool) {
+        let rows = sqlx::query("SELECT mic, country FROM exchanges")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 4);
+        for r in rows {
+            let (mic, country): (String, String) = (r.get("mic"), r.get("country"));
+            assert_eq!(
+                alpha::calendar::country_for_exchange(&mic),
+                Some(country.as_str()),
+                "{mic}"
+            );
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_bad_time_zone_is_calendar_unknown(pool: PgPool) {
+        sqlx::query(
+            "INSERT INTO exchanges (mic, country, timezone, open_local, close_local, currency) \
+             VALUES ('XBAD', 'SE', 'Mars/Olympus', '09:00', '17:00', 'SEK')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        assert_eq!(Exchange::load(&mut conn, "XBAD").await.unwrap(), None);
+        let xcse = Exchange::load(&mut conn, "XCSE").await.unwrap().unwrap();
+        assert_eq!(
+            (xcse.country.as_str(), xcse.close, xcse.half_day_close),
+            ("DK", hm(17, 0), None)
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
