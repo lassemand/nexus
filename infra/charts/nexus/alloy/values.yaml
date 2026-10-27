@@ -27,6 +27,10 @@ alloy:
     # Mounts the node's /var/log (read-only), which holds /var/log/pods.
     mounts:
       varlog: true
+      # OrbStack's Kubernetes runs on Docker: every /var/log/pods/.../<n>.log is
+      # a symlink to /var/lib/docker/containers/<id>/<id>-json.log. Without this
+      # read-only mount the links dangle and Alloy ships nothing.
+      dockercontainers: true
       extra:
         - name: alloy-data
           mountPath: /var/lib/alloy
@@ -108,8 +112,10 @@ alloy:
         loki.process "pods" {
           forward_to = [loki.write.loki.receiver]
 
-          // 1. Strip the containerd (CRI) wrapper so the stored line is the app's own.
-          stage.cri {}
+          // 1. Strip the runtime's wrapper so the stored line is the app's own. OrbStack's
+          // Kubernetes runs on Docker, whose json-file logs are one
+          // {"log","stream","time"} object per line (not the containerd CRI format).
+          stage.docker {}
 
           // 2. Drop the pipeline's own debug noise (Alloy and Loki); warn and error
           // lines are kept.
@@ -158,7 +164,7 @@ alloy:
             values = { level = "" }
           }
 
-          // loki.source.file adds `filename` and stage.cri adds `stream`; the label set
+          // loki.source.file adds `filename` and stage.docker adds `stream`; the label set
           // is restricted to the relabelled ones plus `level`.
           stage.label_drop {
             values = ["filename", "stream"]
