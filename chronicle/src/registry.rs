@@ -46,6 +46,8 @@ pub struct Mappings {
     pub mfn_slug: Option<String>,
     /// Issuer name in Finansinspektionen's insider register.
     pub fi_issuer: Option<String>,
+    /// ISIN of the listing.
+    pub isin: Option<String>,
 }
 
 fn given(s: &str) -> Option<String> {
@@ -59,12 +61,16 @@ impl Mappings {
             name: given(&r.name),
             mfn_slug: given(&r.mfn_slug),
             fi_issuer: given(&r.fi_issuer),
+            isin: given(&r.isin),
         }
     }
 
     /// Whether no mapping is given.
     pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.mfn_slug.is_none() && self.fi_issuer.is_none()
+        self.name.is_none()
+            && self.mfn_slug.is_none()
+            && self.fi_issuer.is_none()
+            && self.isin.is_none()
     }
 
     /// Takes every mapping `newer` gives; keeps the others.
@@ -77,6 +83,9 @@ impl Mappings {
         }
         if newer.fi_issuer.is_some() {
             self.fi_issuer = newer.fi_issuer;
+        }
+        if newer.isin.is_some() {
+            self.isin = newer.isin;
         }
     }
 }
@@ -263,7 +272,8 @@ pub async fn upsert_listings(pool: &PgPool, listings: &[Listing]) -> sqlx::Resul
         let set = sqlx::query(
             "UPDATE companies SET name = COALESCE($3, name), \
                                   mfn_slug = COALESCE($4, mfn_slug), \
-                                  fi_issuer = COALESCE($5, fi_issuer) \
+                                  fi_issuer = COALESCE($5, fi_issuer), \
+                                  isin = COALESCE($6, isin) \
              WHERE ticker = $1 AND exchange_mic = $2",
         )
         .bind(&l.ticker)
@@ -271,6 +281,7 @@ pub async fn upsert_listings(pool: &PgPool, listings: &[Listing]) -> sqlx::Resul
         .bind(&l.mappings.name)
         .bind(&l.mappings.mfn_slug)
         .bind(&l.mappings.fi_issuer)
+        .bind(&l.mappings.isin)
         .execute(pool)
         .await;
         match set {
@@ -281,6 +292,7 @@ pub async fn upsert_listings(pool: &PgPool, listings: &[Listing]) -> sqlx::Resul
                     exchange_mic = %l.exchange_mic,
                     mfn_slug = ?l.mappings.mfn_slug,
                     fi_issuer = ?l.mappings.fi_issuer,
+                    isin = ?l.mappings.isin,
                     error = %e,
                     "registration's mappings rejected, keeping the row's current ones"
                 );
@@ -450,6 +462,7 @@ mod tests {
                 name: Some("Torm".into()),
                 mfn_slug: Some("torm-plc".into()),
                 fi_issuer: None,
+                isin: None,
             }
         );
     }
@@ -462,26 +475,31 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let mapped = replay([reg_mapped(
-            "GOMX",
-            "FNSE",
-            "GomSpace Group",
-            "gomspace-group",
-        )])
+        let mapped = replay([TickerRegistration {
+            isin: "SE0008348304".into(),
+            ..reg_mapped("GOMX", "FNSE", "GomSpace Group", "gomspace-group")
+        }])
         .active;
         assert_eq!(upsert_listings(&pool, &mapped).await?, 0);
         assert_eq!(upsert_listings(&pool, &plain).await?, 0);
 
-        let row: (Option<String>, Option<String>, Option<String>) =
-            sqlx::query_as("SELECT name, mfn_slug, fi_issuer FROM companies WHERE ticker = 'GOMX'")
-                .fetch_one(&pool)
-                .await?;
+        let row: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT name, mfn_slug, fi_issuer, isin FROM companies WHERE ticker = 'GOMX'",
+        )
+        .fetch_one(&pool)
+        .await?;
         assert_eq!(
             row,
             (
                 Some("GomSpace Group".into()),
                 Some("gomspace-group".into()),
-                Some("Hand Set AB".into())
+                Some("Hand Set AB".into()),
+                Some("SE0008348304".into())
             )
         );
         Ok(())

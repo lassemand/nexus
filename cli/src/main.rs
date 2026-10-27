@@ -541,6 +541,7 @@ async fn cmd_register(
             name: m.name.unwrap_or_default(),
             mfn_slug: m.mfn_slug.unwrap_or_default(),
             fi_issuer: m.fi_issuer.unwrap_or_default(),
+            isin: m.isin.unwrap_or_default(),
         });
     }
     let delivered = publish(&brokers, &topic, messages).await?;
@@ -668,6 +669,9 @@ fn mapping_summary(msg: &TickerRegistration) -> String {
         } else {
             format!("MFN {} ({})", msg.mfn_slug, msg.name)
         });
+    }
+    if !msg.isin.is_empty() {
+        parts.push(format!("ISIN {}", msg.isin));
     }
     if !msg.fi_issuer.is_empty() {
         parts.push(format!("FI issuer {}", msg.fi_issuer));

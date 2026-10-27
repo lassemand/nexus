@@ -16,7 +16,7 @@ sets them on the chronicle `companies` table:
 | `name` | Display name used by the dashboard, free text |
 | `mfn_slug` | Slug of the company page on MFN (`https://mfn.se/a/<slug>`). Must match `^[a-z0-9][a-z0-9-]*$` and be unique |
 | `fi_issuer` | Issuer name exactly as Finansinspektionen's insider register spells it. Used by `pdmr` for PDMR (insider) transactions (Swedish listings only). Unique |
-| `isin` | Filled in by `nordic-reports` (see below); set by hand only when MFN lists several |
+| `isin` | Sent by `nexus register`, else filled in by `nordic-reports` (see below); set by hand only when MFN lists several |
 
 All are nullable. A registration that leaves a mapping empty never clears it,
 and a later registration with a value replaces it, so running `nexus register`
@@ -33,7 +33,8 @@ For a listing on `FNSE`, `XSTO`, `XCSE` or `FNDK`, `nexus register`:
    uppercase with spaces and hyphens removed (MFN's `XCSE:<TICKER> B` matches
    the registry's `<TICKER>-B`). Exactly one: its `slug` and `name` are taken.
    Several, or none matching while the search found companies: it lists them
-   and asks which one (`0` for none).
+   and asks which one (`0` for none). The chosen company's ISIN is sent too
+   when it lists exactly one valid ISIN.
 2. For Swedish listings, looks the MFN name up in FI's issuer autocomplete
    (below). One result is taken; several are listed and asked about.
 
@@ -88,10 +89,12 @@ with both values.
 ## ISIN
 
 The ISIN is the one identifier MFN, Saxo and Yahoo share whatever they call the
-ticker. It is not given at registration: `nordic-reports` reads it from MFN's
+ticker; `saxo-stream` resolves instruments by it, and falls back to ticker text,
+which Saxo does not always know. `nexus register` sends it when the MFN company
+lists exactly one valid ISIN. Otherwise `nordic-reports` reads it from MFN's
 `author.isins` the first time it fetches a company's feed (so after `mfn_slug`
-is set) and stores it in `companies.isin` when that is empty. It is never
-overwritten, and when MFN lists several valid ISINs (several share classes) none
+is set) and stores it in `companies.isin` when that is empty; it never
+overwrites one. When MFN lists several valid ISINs (several share classes) none
 is stored; set it by hand then, from `https://mfn.se/all/a/<slug>.json` →
 `author.isins`.
 

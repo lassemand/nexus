@@ -31,4 +31,6 @@ message TickerRegistration {
   string mfn_slug = 6;
   // Issuer name in Finansinspektionen's insider register (Swedish listings).
   string fi_issuer = 7;
+  // ISIN, when the MFN company lists exactly one valid one.
+  string isin = 8;
 }

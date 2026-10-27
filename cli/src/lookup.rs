@@ -20,6 +20,7 @@ pub struct Mappings {
     pub name: Option<String>,
     pub mfn_slug: Option<String>,
     pub fi_issuer: Option<String>,
+    pub isin: Option<String>,
 }
 
 /// Values given on the command line, which skip the matching lookup.
@@ -36,9 +37,26 @@ pub struct MfnCompany {
     pub name: String,
     #[serde(default)]
     pub tickers: Vec<String>,
+    #[serde(default)]
+    pub isins: Vec<String>,
 }
 
 impl MfnCompany {
+    /// The ISIN, when the company lists exactly one valid one (several mean
+    /// several share classes, and the listing's own cannot be told apart).
+    fn isin(&self) -> Option<String> {
+        match self
+            .isins
+            .iter()
+            .filter(|i| model::isin::is_valid(i))
+            .collect::<Vec<_>>()
+            .as_slice()
+        {
+            [only] => Some(only.to_string()),
+            _ => None,
+        }
+    }
+
     fn label(&self) -> String {
         format!(
             "{} — {} [{}]",
@@ -172,14 +190,18 @@ impl Lookup {
 
         let company = match &overrides.mfn_slug {
             Some(slug) => {
-                let name = match self.search_mfn(slug).await {
-                    Ok(found) => found.into_iter().find(|c| &c.slug == slug).map(|c| c.name),
+                let found = match self.search_mfn(slug).await {
+                    Ok(found) => found.into_iter().find(|c| &c.slug == slug),
                     Err(e) => {
                         eprintln!("  ! {label}: {e:#}");
                         None
                     }
                 };
-                Some((slug.clone(), name))
+                Some((
+                    slug.clone(),
+                    found.as_ref().map(|c| c.name.clone()),
+                    found.as_ref().and_then(MfnCompany::isin),
+                ))
             }
             None => match self.search_mfn(ticker).await {
                 Ok(found) => {
@@ -205,7 +227,7 @@ impl Lookup {
                                 .map(|i| candidates[i])
                         }
                     };
-                    chosen.map(|c| (c.slug.clone(), Some(c.name.clone())))
+                    chosen.map(|c| (c.slug.clone(), Some(c.name.clone()), c.isin()))
                 }
                 Err(e) => {
                     eprintln!("  ! {label}: {e:#}; reports need mfn_slug (--mfn-slug)");
@@ -213,9 +235,10 @@ impl Lookup {
                 }
             },
         };
-        if let Some((slug, name)) = company {
+        if let Some((slug, name, isin)) = company {
             out.mfn_slug = Some(slug);
             out.name = name;
+            out.isin = isin;
         }
 
         if is_swedish(exchange_mic) {
@@ -301,6 +324,7 @@ mod tests {
             slug: slug.into(),
             name: name.into(),
             tickers: tickers.iter().map(|t| t.to_string()).collect(),
+            isins: Vec::new(),
         }
     }
 
@@ -327,7 +351,7 @@ mod tests {
     const NOVO_SEARCH: &str = r#"[
         {"slug":"novotek","name":"Novotek","tickers":["XSTO:NTEK B"]},
         {"slug":"novonesis","name":"Novonesis","tickers":["XCSE:NSIS B"]},
-        {"slug":"novo-nordisk","name":"Novo Nordisk","tickers":["XCSE:NOVO B","XNYS:NVO"]}
+        {"slug":"novo-nordisk","name":"Novo Nordisk","tickers":["XCSE:NOVO B","XNYS:NVO"],"isins":["DK0062498333"]}
     ]"#;
 
     async fn server_with(query: &str, body: &str) -> MockServer {
@@ -371,6 +395,7 @@ mod tests {
             .await;
         assert_eq!(m.mfn_slug.as_deref(), Some("novo-nordisk"));
         assert_eq!(m.name.as_deref(), Some("Novo Nordisk"));
+        assert_eq!(m.isin.as_deref(), Some("DK0062498333"));
         assert_eq!(m.fi_issuer, None, "Danish listings have no FI issuer");
         assert!(chooser.asked.is_empty());
     }
@@ -397,7 +422,8 @@ mod tests {
     async fn swedish_listings_get_an_fi_issuer_and_ask_when_several() {
         let server = server_with(
             "VOLV-B",
-            r#"[{"slug":"volvo","name":"Volvo","tickers":["XSTO:VOLV A","XSTO:VOLV B"]}]"#,
+            r#"[{"slug":"volvo","name":"Volvo","tickers":["XSTO:VOLV A","XSTO:VOLV B"],
+                 "isins":["SE0000115420","SE0000115446"]}]"#,
         )
         .await;
         Mock::given(method("GET"))
@@ -416,6 +442,7 @@ mod tests {
             .await;
         assert_eq!(m.mfn_slug.as_deref(), Some("volvo"));
         assert_eq!(m.fi_issuer.as_deref(), Some("AB Volvo (publ)"));
+        assert_eq!(m.isin, None, "two share classes, so no ISIN");
         assert_eq!(chooser.asked.len(), 1, "only the FI issuer was ambiguous");
     }
 
@@ -423,7 +450,7 @@ mod tests {
     async fn overrides_skip_the_lookups_and_us_listings_get_nothing() {
         let server = server_with(
             "torm",
-            r#"[{"slug":"torm","name":"Torm","tickers":["XCSE:TRMD A"]}]"#,
+            r#"[{"slug":"torm","name":"Torm","tickers":["XCSE:TRMD A"],"isins":["GB00BZ3CNK81"]}]"#,
         )
         .await;
         let lookup = Lookup::with_bases(reqwest::Client::new(), &server.uri(), &server.uri());
@@ -439,6 +466,7 @@ mod tests {
             (m.mfn_slug.as_deref(), m.name.as_deref()),
             (Some("torm"), Some("Torm"))
         );
+        assert_eq!(m.isin.as_deref(), Some("GB00BZ3CNK81"));
 
         let us = lookup
             .mappings("TRMD", "XNAS", &Overrides::default(), &mut chooser)
