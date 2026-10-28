@@ -137,16 +137,24 @@ voting-rights and major-shareholder notices (`HARD_NON_REPORT_WORDS` in
 when it is not the annual report document, names exactly one year and has a
 results word (sales, profit, revenue, results, financial report/statement).
 
-## Trading holidays (Sweden, Denmark)
+## Trading holidays (Sweden, Denmark, Finland)
 
 `trading_holidays` (signal DB) is seeded per **country**, not per MIC:
-`FNSE`/`XSTO` use `SE`, `XCSE`/`FNDK` use `DK` (`alpha::calendar::EXCHANGE_TO_COUNTRY`).
+`FNSE`/`XSTO` use `SE`, `XCSE`/`FNDK` use `DK`, `XHEL`/`FNFI` use `FI` (`alpha::calendar::EXCHANGE_TO_COUNTRY`).
 Session hours per MIC are in the `exchanges` table (Copenhagen: 09:00-17:00
-`Europe/Copenhagen`, no half days; Stockholm: 09:00-17:30, 13:00 half-day close).
+`Europe/Copenhagen`, no half days; Stockholm: 09:00-17:30, 13:00 half-day close;
+Helsinki: 10:00-18:30 `Europe/Helsinki`, no half days; prices in EUR).
 
 Denmark's calendar adds closures Nager.Date may not list: the Friday after
 Ascension, 5 June, 24 and 31 December (fully closed), and Great Prayer Day
 (Store Bededag) for years up to and including 2023.
+
+Finland's calendar is computed, not read from Nager.Date (whose FI list has
+Saturday-only holidays and lacks 24 and 31 December): 1 Jan, 6 Jan, Good Friday,
+Easter Monday, 1 May, Ascension Day, Midsummer Eve (the Friday 19-25 June),
+6 Dec, 24, 25, 26 and 31 Dec. Only weekdays are stored, so 6 and 26 December
+count only when they fall on one. Source: Nasdaq's holiday schedule at
+https://www.nasdaq.com/european-market-activity/trading-hours.
 
 Seed from the Mac mini (`DATABASE_URL` set to the signal DB):
 

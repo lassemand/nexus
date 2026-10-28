@@ -16,6 +16,11 @@ pub mod mic {
     /// Nasdaq First North Denmark (Denmark).
     /// Segment MIC operating under Nasdaq Copenhagen (XCSE).
     pub const FNDK: &str = "FNDK";
+    /// Nasdaq Helsinki (Finland), the main market.
+    pub const XHEL: &str = "XHEL";
+    /// Nasdaq First North Finland (Finland).
+    /// Segment MIC operating under Nasdaq Helsinki (XHEL).
+    pub const FNFI: &str = "FNFI";
 
     /// Mapping from Yahoo Finance `exchangeName` codes to ISO 10383 MIC codes.
     ///
@@ -41,7 +46,7 @@ pub mod mic {
         // ── Denmark ───────────────────────────────────────────────────────
         ("CPH", XCSE), // Nasdaq Copenhagen
         // ── Finland ───────────────────────────────────────────────────────
-        ("HEL", "XHEL"), // Nasdaq Helsinki
+        ("HEL", XHEL), // Nasdaq Helsinki
         // ── Norway ────────────────────────────────────────────────────────
         ("OSL", "XOSL"), // Oslo Børs
         // ── Germany ───────────────────────────────────────────────────────
@@ -77,6 +82,7 @@ pub mod mic {
             m if is_us(m) => Some("US"),
             FNSE | XSTO => Some("SE"),
             XCSE | FNDK => Some("DK"),
+            XHEL | FNFI => Some("FI"),
             _ => None,
         }
     }
@@ -114,6 +120,8 @@ pub mod mic {
             m if is_us(m) => Some("USD"),
             FNSE | XSTO => Some("SEK"),
             XCSE | FNDK => Some("DKK"),
+            // Finland uses the euro: prices stay in EUR, nothing is converted.
+            XHEL | FNFI => Some("EUR"),
             _ => None,
         }
     }
@@ -209,6 +217,24 @@ mod currency_tests {
         assert_eq!(mic::currency(mic::FNSE), Some("SEK"));
         assert_eq!(mic::currency(mic::XCSE), Some("DKK"));
         assert_eq!(mic::currency(mic::FNDK), Some("DKK"));
+        assert_eq!(mic::currency(mic::XHEL), Some("EUR"));
+        assert_eq!(mic::currency(mic::FNFI), Some("EUR"));
+    }
+
+    #[test]
+    fn finnish_mics_are_finnish_euro_and_never_usd() {
+        for m in [mic::XHEL, mic::FNFI] {
+            assert_eq!(mic::country(m), Some("FI"), "{m}");
+            assert_eq!(mic::currency(m), Some("EUR"), "{m}");
+            assert_ne!(mic::currency(m), Some("USD"), "{m}");
+            assert!(!mic::is_us(m), "{m}");
+        }
+        assert_eq!(mic::mic_for_yahoo_exchange("HEL"), Some(mic::XHEL));
+        assert_eq!(
+            mic::apply_override(mic::XHEL, Some("FNFI")).unwrap(),
+            "FNFI"
+        );
+        assert!(mic::apply_override(mic::XHEL, Some("FNDK")).is_err());
     }
 
     #[test]
@@ -229,6 +255,6 @@ mod currency_tests {
     #[test]
     fn us_mics_are_usd_and_unknown_is_none() {
         assert_eq!(mic::currency(mic::XNAS), Some("USD"));
-        assert_eq!(mic::currency("XHEL"), None);
+        assert_eq!(mic::currency("XOSL"), None);
     }
 }

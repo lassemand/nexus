@@ -15,6 +15,8 @@ pub const EXCHANGE_TIMEZONES: &[(&str, &str)] = &[
     (mic::XSTO, "Europe/Stockholm"),
     (mic::XCSE, "Europe/Copenhagen"),
     (mic::FNDK, "Europe/Copenhagen"),
+    (mic::XHEL, "Europe/Helsinki"),
+    (mic::FNFI, "Europe/Helsinki"),
 ];
 
 /// IANA time zone of `exchange_mic`, if known.
@@ -31,6 +33,13 @@ fn offset_hours(tz: &str, utc: DateTime<Utc>) -> Option<i64> {
         // Both follow the EU summer-time rule.
         "Europe/Stockholm" | "Europe/Copenhagen" => {
             Some(crate::stockholm::stockholm_offset_hours(utc))
+        }
+        // Helsinki has its own zone (one hour ahead of Stockholm); it comes from
+        // the tz database, never as an offset from Stockholm.
+        "Europe/Helsinki" => {
+            use chrono::{Offset, TimeZone};
+            let off = chrono_tz::Europe::Helsinki.offset_from_utc_datetime(&utc.naive_utc());
+            Some(i64::from(off.fix().local_minus_utc()) / 3600)
         }
         _ => None,
     }
@@ -70,6 +79,22 @@ mod tests {
     }
 
     #[test]
+    fn helsinki_is_one_hour_ahead_of_stockholm_and_follows_dst() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        // 22:30 UTC: already the next day in Helsinki, not yet in Stockholm.
+        let winter = Utc.with_ymd_and_hms(2026, 1, 15, 22, 30, 0).unwrap();
+        assert_eq!(local_date("XHEL", winter), Some(d(2026, 1, 16)));
+        assert_eq!(local_date("XSTO", winter), Some(d(2026, 1, 15)));
+        // EEST (UTC+3) from the last Sunday of March, 01:00 UTC.
+        let before = Utc.with_ymd_and_hms(2026, 3, 29, 0, 59, 0).unwrap();
+        let after = Utc.with_ymd_and_hms(2026, 3, 29, 1, 0, 0).unwrap();
+        assert_eq!(offset_hours("Europe/Helsinki", before), Some(2));
+        assert_eq!(offset_hours("Europe/Helsinki", after), Some(3));
+        let summer = Utc.with_ymd_and_hms(2026, 7, 15, 21, 0, 0).unwrap();
+        assert_eq!(local_date("FNFI", summer), Some(d(2026, 7, 16)));
+    }
+
+    #[test]
     fn unknown_mic_has_no_local_date() {
         assert_eq!(timezone("XNAS"), None);
         assert_eq!(local_date("XNAS", Utc::now()), None);
@@ -78,7 +103,11 @@ mod tests {
     /// The `exchanges` seed must name the same zones as this table.
     #[test]
     fn timezones_agree_with_the_exchanges_seed() {
-        let sql = include_str!("../../signal/migrations/20261027000000_create_exchanges.sql");
+        let sql = [
+            include_str!("../../signal/migrations/20261027000000_create_exchanges.sql"),
+            include_str!("../../signal/migrations/20261028000000_exchanges_add_finland.sql"),
+        ]
+        .join("\n");
         let mut seen = 0;
         for line in sql.lines() {
             let parts: Vec<&str> = line
