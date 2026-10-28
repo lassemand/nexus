@@ -81,6 +81,8 @@ enum ExtraClosure {
         note: &'static str,
         last_year: Option<i32>,
     },
+    /// The Friday between 19 and 25 June (Finnish Midsummer Eve).
+    MidsummerEve { note: &'static str },
 }
 
 impl ExtraClosure {
@@ -98,6 +100,12 @@ impl ExtraClosure {
                     return None;
                 }
                 Some((easter_sunday(year)? + chrono::Duration::days(days), note))
+            }
+            ExtraClosure::MidsummerEve { note } => {
+                let first = NaiveDate::from_ymd_opt(year, 6, 19)?;
+                let to_friday =
+                    (4 - i64::from(first.weekday().num_days_from_monday())).rem_euclid(7);
+                Some((first + chrono::Duration::days(to_friday), note))
             }
         }
     }
@@ -181,6 +189,83 @@ const COUNTRY_CALENDARS: &[CountryCalendar] = &[
             },
         ],
     },
+    // Nasdaq Helsinki / First North Finland: 10:00-18:30, no half days.
+    // Nager.Date's FI list is not used as is: it has Saturday-only holidays
+    // and Sundays, and lacks 24 and 31 December. The full closure set is
+    // computed below, so the result does not depend on how Nager names or
+    // types a date (a date it already lists is kept once).
+    CountryCalendar {
+        country: "FI",
+        skip: &[
+            "Easter Sunday",   // always a Sunday
+            "Pentecost",       // always a Sunday
+            "Whit Sunday",     // alternate name for Pentecost
+            "Midsummer Day",   // the Saturday; Midsummer Eve is the closure
+            "All Saints' Day", // a Saturday, not an exchange closure
+        ],
+        half_days: &[],
+        extra_closures: &[
+            ExtraClosure::Fixed {
+                month: 1,
+                day: 1,
+                note: "New Year's Day",
+            },
+            ExtraClosure::Fixed {
+                month: 1,
+                day: 6,
+                note: "Epiphany",
+            },
+            ExtraClosure::EasterOffset {
+                days: -2,
+                note: "Good Friday",
+                last_year: None,
+            },
+            ExtraClosure::EasterOffset {
+                days: 1,
+                note: "Easter Monday",
+                last_year: None,
+            },
+            ExtraClosure::Fixed {
+                month: 5,
+                day: 1,
+                note: "May Day",
+            },
+            ExtraClosure::EasterOffset {
+                days: 39,
+                note: "Ascension Day",
+                last_year: None,
+            },
+            ExtraClosure::MidsummerEve {
+                note: "Midsummer Eve",
+            },
+            // Weekday-only: `filter_holidays` never stores a weekend date.
+            ExtraClosure::Fixed {
+                month: 12,
+                day: 6,
+                note: "Independence Day",
+            },
+            ExtraClosure::Fixed {
+                month: 12,
+                day: 24,
+                note: "Christmas Eve",
+            },
+            ExtraClosure::Fixed {
+                month: 12,
+                day: 25,
+                note: "Christmas Day",
+            },
+            ExtraClosure::Fixed {
+                month: 12,
+                day: 26,
+                note: "Boxing Day",
+            },
+            ExtraClosure::Fixed {
+                month: 12,
+                day: 31,
+                note: "New Year's Eve",
+            },
+        ],
+    },
     CountryCalendar {
         country: "US",
         // NYSE/Nasdaq US observe: New Year's Day, MLK Day, Presidents Day,
@@ -210,6 +295,8 @@ pub const EXCHANGE_TO_COUNTRY: &[(&str, &str)] = &[
     ("XSTO", "SE"), // Nasdaq Stockholm
     ("XCSE", "DK"), // Nasdaq Copenhagen
     ("FNDK", "DK"), // Nasdaq First North Denmark
+    ("XHEL", "FI"), // Nasdaq Helsinki
+    ("FNFI", "FI"), // Nasdaq First North Finland
     ("XNYS", "US"), // New York Stock Exchange
     ("XNAS", "US"), // Nasdaq US
 ];
@@ -479,9 +566,186 @@ mod tests {
         assert_eq!(country_for_exchange("FNDK"), Some("DK"));
     }
 
-    /// (mic, country) pairs from the `exchanges` seed in the migration.
+    async fn fi(year: i32, body: serde_json::Value) -> Vec<CalendarEntry> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v3/publicholidays/{year}/FI")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        CalendarProvider::with_base_url(server.uri())
+            .holidays_for_country("FI", year)
+            .await
+            .unwrap()
+    }
+
+    /// What Nager.Date's FI feed looks like: Saturday/Sunday holidays and
+    /// Easter Sunday/Pentecost included, 24 and 31 December missing.
+    fn nager_fi_2026() -> serde_json::Value {
+        serde_json::json!([
+            {"date": "2026-01-01", "name": "New Year's Day"},
+            {"date": "2026-01-06", "name": "Epiphany"},
+            {"date": "2026-04-03", "name": "Good Friday"},
+            {"date": "2026-04-05", "name": "Easter Sunday"},
+            {"date": "2026-04-06", "name": "Easter Monday"},
+            {"date": "2026-05-01", "name": "May Day"},
+            {"date": "2026-05-14", "name": "Ascension Day"},
+            {"date": "2026-05-24", "name": "Pentecost"},
+            {"date": "2026-06-19", "name": "Midsummer Eve"},
+            {"date": "2026-06-20", "name": "Midsummer Day"},
+            {"date": "2026-10-31", "name": "All Saints' Day"},
+            {"date": "2026-12-06", "name": "Independence Day"},
+            {"date": "2026-12-25", "name": "Christmas Day"},
+            {"date": "2026-12-26", "name": "St. Stephen's Day"},
+        ])
+    }
+
+    fn dates(entries: &[CalendarEntry]) -> Vec<NaiveDate> {
+        entries.iter().map(|e| e.date).collect()
+    }
+
+    #[tokio::test]
+    async fn fi_2026_has_exactly_the_nasdaq_helsinki_closures() {
+        let got = fi(2026, nager_fi_2026()).await;
+        assert_eq!(
+            dates(&got),
+            vec![
+                d(2026, 1, 1),
+                d(2026, 1, 6),
+                d(2026, 4, 3),
+                d(2026, 4, 6),
+                d(2026, 5, 1),
+                d(2026, 5, 14),
+                d(2026, 6, 19),
+                d(2026, 12, 24),
+                d(2026, 12, 25),
+                d(2026, 12, 31),
+            ]
+        );
+        assert!(got.iter().all(|e| e.status == "closed"), "no half days");
+        // Not a closure on Nasdaq's list.
+        assert!(!dates(&got).contains(&d(2026, 12, 28)));
+    }
+
+    #[tokio::test]
+    async fn fi_is_complete_even_when_nager_lists_nothing() {
+        assert_eq!(fi(2026, serde_json::json!([])).await.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn fi_does_not_duplicate_dates_nager_already_lists() {
+        let mut body = nager_fi_2026();
+        body.as_array_mut().unwrap().push(serde_json::json!(
+            {"date": "2026-12-24", "name": "Christmas Eve"}
+        ));
+        let got = fi(2026, body).await;
+        assert_eq!(got.len(), 10);
+        let eve: Vec<_> = got.iter().filter(|e| e.date == d(2026, 12, 24)).collect();
+        assert_eq!(eve.len(), 1);
+        assert_eq!(eve[0].note, "Christmas Eve");
+    }
+
+    #[tokio::test]
+    async fn fi_never_stores_weekend_dates() {
+        for year in 2015..=2027 {
+            let got = fi(year, serde_json::json!([])).await;
+            assert!(
+                got.iter()
+                    .all(|e| !matches!(e.date.weekday(), Weekday::Sat | Weekday::Sun)),
+                "{year}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fi_easter_dependent_closures_2023_to_2027() {
+        // (year, Good Friday, Easter Monday, Ascension)
+        for (y, gf, em, asc) in [
+            (2023, d(2023, 4, 7), d(2023, 4, 10), d(2023, 5, 18)),
+            (2024, d(2024, 3, 29), d(2024, 4, 1), d(2024, 5, 9)),
+            (2025, d(2025, 4, 18), d(2025, 4, 21), d(2025, 5, 29)),
+            (2026, d(2026, 4, 3), d(2026, 4, 6), d(2026, 5, 14)),
+            (2027, d(2027, 3, 26), d(2027, 3, 29), d(2027, 5, 6)),
+        ] {
+            let got = dates(&fi(y, serde_json::json!([])).await);
+            for day in [gf, em, asc] {
+                assert!(got.contains(&day), "{y}: {day}");
+            }
+            // Easter Sunday and Whit Sunday are never stored.
+            let easter = easter_sunday(y).unwrap();
+            assert!(!got.contains(&easter));
+            assert_eq!(gf, easter - chrono::Duration::days(2));
+            assert_eq!(em, easter + chrono::Duration::days(1));
+            assert_eq!(asc, easter + chrono::Duration::days(39));
+        }
+    }
+
+    #[tokio::test]
+    async fn fi_midsummer_eve_2023_to_2027() {
+        for (y, day) in [
+            (2023, d(2023, 6, 23)),
+            (2024, d(2024, 6, 21)),
+            (2025, d(2025, 6, 20)),
+            (2026, d(2026, 6, 19)),
+            (2027, d(2027, 6, 25)),
+        ] {
+            let got = fi(y, serde_json::json!([])).await;
+            let eve: Vec<_> = got.iter().filter(|e| e.note == "Midsummer Eve").collect();
+            assert_eq!(eve.len(), 1, "{y}");
+            assert_eq!(eve[0].date, day, "{y}");
+            assert_eq!(day.weekday(), Weekday::Fri);
+        }
+    }
+
+    #[tokio::test]
+    async fn fi_independence_day_and_boxing_day_close_only_on_weekdays() {
+        // 2024: Dec 6 is a Friday, Dec 26 a Thursday.
+        let y24 = dates(&fi(2024, serde_json::json!([])).await);
+        assert!(y24.contains(&d(2024, 12, 6)));
+        assert!(y24.contains(&d(2024, 12, 26)));
+        // 2027: Dec 6 is a Monday; Dec 26 is a Sunday.
+        let y27 = dates(&fi(2027, serde_json::json!([])).await);
+        assert!(y27.contains(&d(2027, 12, 6)));
+        assert!(!y27.contains(&d(2027, 12, 26)));
+        // 2026: both fall on a weekend.
+        let y26 = dates(&fi(2026, serde_json::json!([])).await);
+        assert!(!y26.contains(&d(2026, 12, 6)));
+        assert!(!y26.contains(&d(2026, 12, 26)));
+    }
+
+    /// Nasdaq's official 2027 list for Helsinki
+    /// (nasdaq.com/european-market-activity/trading-hours).
+    #[tokio::test]
+    async fn fi_2027_matches_nasdaqs_published_list() {
+        assert_eq!(
+            dates(&fi(2027, serde_json::json!([])).await),
+            vec![
+                d(2027, 1, 1),
+                d(2027, 1, 6),
+                d(2027, 3, 26),
+                d(2027, 3, 29),
+                d(2027, 5, 6),
+                d(2027, 6, 25),
+                d(2027, 12, 6),
+                d(2027, 12, 24),
+                d(2027, 12, 31),
+            ]
+        );
+    }
+
+    #[test]
+    fn finnish_mics_map_to_fi() {
+        assert_eq!(country_for_exchange("XHEL"), Some("FI"));
+        assert_eq!(country_for_exchange("FNFI"), Some("FI"));
+    }
+
+    /// (mic, country) pairs from the `exchanges` seeds in the migrations.
     fn seeded_exchanges() -> Vec<(String, String)> {
-        let sql = include_str!("../../signal/migrations/20261027000000_create_exchanges.sql");
+        let sql = [
+            include_str!("../../signal/migrations/20261027000000_create_exchanges.sql"),
+            include_str!("../../signal/migrations/20261028000000_exchanges_add_finland.sql"),
+        ]
+        .join("\n");
         sql.lines()
             .filter_map(|l| {
                 let l = l.trim().trim_start_matches('(');
@@ -495,11 +759,15 @@ mod tests {
     #[test]
     fn exchanges_seed_agrees_with_exchange_to_country() {
         let seeded = seeded_exchanges();
-        assert_eq!(seeded.len(), 4, "FNSE, XSTO, XCSE, FNDK: {seeded:?}");
+        assert_eq!(
+            seeded.len(),
+            6,
+            "FNSE, XSTO, XCSE, FNDK, XHEL, FNFI: {seeded:?}"
+        );
         for (mic, country) in &seeded {
             assert_eq!(country_for_exchange(mic), Some(country.as_str()), "{mic}");
         }
-        for mic in ["FNSE", "XSTO", "XCSE", "FNDK"] {
+        for mic in ["FNSE", "XSTO", "XCSE", "FNDK", "XHEL", "FNFI"] {
             assert!(seeded.iter().any(|(m, _)| m == mic), "{mic} not seeded");
         }
     }

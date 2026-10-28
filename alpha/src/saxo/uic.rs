@@ -99,6 +99,9 @@ pub mod exchange_ids {
         ("XSTO", "SSE"),
         ("XCSE", "CSE"),
         ("FNDK", "CSE_FN-DK"),
+        // Unverified, like the rest: confirm against /ref/v1/exchanges.
+        ("XHEL", "HSE"),
+        ("FNFI", "HSE_FN-FI"),
     ];
 
     /// The built-in ExchangeId for `mic`.
@@ -641,7 +644,7 @@ mod tests {
                 3
             );
             let err = r
-                .resolve_with_cfd_check(&InstrumentQuery::new("X", "XHEL"), "t")
+                .resolve_with_cfd_check(&InstrumentQuery::new("X", "XOSL"), "t")
                 .await
                 .unwrap_err();
             assert!(matches!(err, UicResolverError::UnknownExchange(_)));
