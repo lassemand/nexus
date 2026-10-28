@@ -1,0 +1,86 @@
+Wärtsilä Corporation, Managers' transactions, 23 July 2026 at 15:00 EEST
+
+Wärtsilä Corporation - Managers' transaction: Huovinen, Sakari
+
+____________________________________________
+
+Person subject to the notification requirement
+
+Name: Sakari Huovinen
+
+Position: Closely associated person
+
+(1):Person Discharging Managerial Responsibilities In Issuer
+
+Name: Anu Sirkiä
+
+Position: Other senior manager
+
+Issuer: Wärtsilä Corporation
+
+LEI: 743700G7A9J1PHM3X223
+
+Notification type: INITIAL NOTIFICATION
+
+Reference number: 167108/9/12
+
+____________________________________________
+
+Transaction date: 2026-07-22
+
+Venue: HREU
+
+Instrument type: SHARE
+
+ISIN: FI0009003727
+
+Nature of transaction: ACQUISITION
+
+Transaction details
+
+(1): Volume: 328 Unit price: 30.44 EUR
+
+Aggregated transactions (1):
+
+Volume: 328 Volume weighted average price: 30.44 EUR
+
+____________________________________________
+
+Transaction date: 2026-07-22
+
+Venue: CEUX
+
+Instrument type: SHARE
+
+ISIN: FI0009003727
+
+Nature of transaction: ACQUISITION
+
+Transaction details
+
+(1): Volume: 132 Unit price: 30.52 EUR
+
+Aggregated transactions (1):
+
+Volume: 132 Volume weighted average price: 30.52 EUR
+
+More information:
+
+Samu Heikkilä
+Senior Manager, Investor Relations
+Tel. +358 10 709 1121
+samu.heikkila@wartsila.com
+
+Wärtsilä in brief
+
+Wärtsilä is a global leader in innovative technologies and lifecycle solutions
+for the marine and energy markets. We emphasise innovation in sustainable
+technology and services to help our customers continuously improve environmental
+and economic performance. Our dedicated and passionate team of 17,900
+professionals in 199 locations in 78 countries shape the decarbonisation
+transformation of our industries across the globe. In 2025, Wärtsilä's net sales
+totalled EUR 6.2 billion. Wärtsilä is listed on Nasdaq Helsinki.
+www.wartsila.com
+
+[1]: mailto:samu.heikkila@wartsila.com
+[2]: http://www.wartsila.com/

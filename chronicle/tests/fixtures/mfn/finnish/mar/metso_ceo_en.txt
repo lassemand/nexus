@@ -1,0 +1,66 @@
+Metso Corporation's stock exchange release on March 20, 2026, at 2:40 p.m. EET
+
+Metso Corporation has received the following disclosure under EU Market Abuse
+Regulation No 596/2014, regarding managers' or their closely associated persons'
+transactions with Metso's shares.
+
+──────────────────────────────────────────────────────────────────────
+Person subject to the notification requirement                        
+──────────────────────────────┬───────────────────┬───────────────────
+Name:                         │Takaluoma, Sami    │                   
+──────────────────────────────┼───────────────────┴───────────────────
+Position:                     │Chief Executive Officer                
+──────────────────────────────┼───────────────────────────────────────
+Initial Notification          │                                       
+──────────────────────────────┼───────────────────────────────────────
+Reference number:             │549300R0VN9C371W0E07_20260320093338_264
+──────────────────────────────┴───────────────────────────────────────
+Issuer                                                                
+──────────────────────────────┬───────────────────────────────────────
+Name:                         │Metso Corporation                      
+──────────────────────────────┼───────────────────────────────────────
+LEI:                          │549300R0VN9C371W0E07                   
+──────────────────────────────┴───────────────────────────────────────
+Transaction details                                                   
+──────────────────────────────┬───────────────────────────────────────
+Transaction date:             │2026-03-19                             
+──────────────────────────────┼───────────────────────────────────────
+Venue:                        │NASDAQ HELSINKI                        
+──────────────────────────────┼───────────────────────────────────────
+Nature of the transaction:    │Receipt of a Share-Based Incentive     
+──────────────────────────────┼───────────────────────────────────────
+Instrument:                   │Share                                  
+──────────────────────────────┼───────────────────────────────────────
+Volume:                       │23201                                  
+──────────────────────────────┼───────────────────────────────────────
+Unit price:                   │0.00 EUR                               
+──────────────────────────────┴───────────────────────────────────────
+Aggregated transactions                                               
+──────────────────────────────┬───────────────────────────────────────
+Volume:                       │23201                                  
+──────────────────────────────┼───────────────────────────────────────
+Volume weighted average price:│0.00 EUR                               
+──────────────────────────────┴───────────────────────────────────────
+
+Distribution:
+
+Nasdaq Helsinki Ltd
+
+Main media
+
+www.metso.com
+
+
+Metso is a frontrunner in sustainable technologies, end-to-end solutions and
+services for the aggregates, minerals processing and metals refining industries
+globally. We improve our customers' energy and water efficiency, increase their
+productivity, and reduce environmental risks with our product and service
+expertise. We are the partner for positive change.
+
+Metso is headquartered in Espoo, Finland. At the end of 2025 Metso had close to
+18,000 employees in around 50 countries, and sales in 2025 were about EUR 5.3
+billion. Metso is listed on the Nasdaq Helsinki.
+
+metso.com
+
+[1]: http://www.metso.com

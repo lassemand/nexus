@@ -42,7 +42,7 @@ mod daily_bar_tests {
 #[cfg(test)]
 mod unified_insider_transaction_tests {
     use super::generated::{
-        unified_insider_transaction, FiDetail, SecDetail, SourceRegistry,
+        unified_insider_transaction, FiDetail, MarReleaseDetail, SecDetail, SourceRegistry,
         UnifiedInsiderTransaction, UnifiedTransactionType,
     };
     use prost::Message;
@@ -196,6 +196,118 @@ mod unified_insider_transaction_tests {
         // source_registry field distinguishes SEC from FI
         assert_eq!(decoded.source_registry, SourceRegistry::Sec as i32);
         assert_ne!(decoded.source_registry, SourceRegistry::Fi as i32);
+    }
+
+    fn mar_record() -> UnifiedInsiderTransaction {
+        UnifiedInsiderTransaction {
+            ticker: "METSO".into(),
+            exchange_mic: "XHEL".into(),
+            source_registry: SourceRegistry::FinMar as i32,
+            person_name: "Sami Takaluoma".into(),
+            person_role: "Chief Executive Officer".into(),
+            transaction_date: "2026-03-19".into(),
+            published_date: "2026-03-20".into(),
+            transaction_type: UnifiedTransactionType::Grant as i32,
+            volume: 23201.0,
+            price_per_unit: 0.0,
+            currency: "EUR".into(),
+            source_detail: Some(unified_insider_transaction::SourceDetail::Mar(
+                MarReleaseDetail {
+                    lei: "549300R0VN9C371W0E07".into(),
+                    reference_number: "549300R0VN9C371W0E07_20260320093338_264".into(),
+                    instrument_type: "Share".into(),
+                    venue: "NASDAQ HELSINKI".into(),
+                    nature: "Receipt of a Share-Based Incentive".into(),
+                    mfn_news_id: "9954de80-88dd-5084-a03b-4b42e17c1644".into(),
+                    lang: "en".into(),
+                    volume_decimal: "23201".into(),
+                    unit_price_decimal: "0.00".into(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mar_record_round_trips() {
+        let original = mar_record();
+        let decoded =
+            UnifiedInsiderTransaction::decode(original.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded, original);
+        assert_eq!(decoded.source_registry, SourceRegistry::FinMar as i32);
+        assert_eq!(SourceRegistry::FinMar as i32, 3);
+    }
+
+    #[test]
+    fn existing_registry_values_are_unchanged() {
+        assert_eq!(SourceRegistry::Unspecified as i32, 0);
+        assert_eq!(SourceRegistry::Sec as i32, 1);
+        assert_eq!(SourceRegistry::Fi as i32, 2);
+    }
+
+    /// An old consumer (schema without field 16 / registry 3) sees the common
+    /// fields intact; the unknown oneof member and enum value are tolerated.
+    #[test]
+    fn old_consumer_decodes_new_message() {
+        // The previous schema, as it was before NEX-206.
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct OldMsg {
+            #[prost(string, tag = "1")]
+            ticker: String,
+            #[prost(enumeration = "OldRegistry", tag = "3")]
+            source_registry: i32,
+            #[prost(string, tag = "4")]
+            person_name: String,
+            #[prost(double, tag = "9")]
+            volume: f64,
+            #[prost(oneof = "OldDetail", tags = "14, 15")]
+            source_detail: Option<OldDetail>,
+        }
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
+        #[repr(i32)]
+        enum OldRegistry {
+            Unspecified = 0,
+            Sec = 1,
+            Fi = 2,
+        }
+        #[derive(Clone, PartialEq, prost::Oneof)]
+        enum OldDetail {
+            #[prost(message, tag = "14")]
+            Sec(SecDetail),
+            #[prost(message, tag = "15")]
+            Fi(FiDetail),
+        }
+
+        let old = OldMsg::decode(mar_record().encode_to_vec().as_slice()).unwrap();
+        assert_eq!(old.ticker, "METSO");
+        assert_eq!(old.person_name, "Sami Takaluoma");
+        assert_eq!(old.volume, 23201.0);
+        assert_eq!(
+            old.source_registry, 3,
+            "unknown enum value is preserved as an int"
+        );
+        assert!(
+            old.source_detail.is_none(),
+            "unknown oneof member is skipped"
+        );
+    }
+
+    #[test]
+    fn new_consumer_decodes_old_sec_and_fi_messages() {
+        for (record, registry) in [
+            (sec_record(), SourceRegistry::Sec),
+            (fi_record(), SourceRegistry::Fi),
+        ] {
+            let decoded =
+                UnifiedInsiderTransaction::decode(record.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(decoded, record);
+            assert_eq!(decoded.source_registry, registry as i32);
+            assert!(!matches!(
+                decoded.source_detail,
+                Some(unified_insider_transaction::SourceDetail::Mar(_))
+            ));
+        }
     }
 }
 

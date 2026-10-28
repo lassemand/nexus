@@ -321,6 +321,7 @@ dependencies = [
  "quick-xml",
  "rdkafka",
  "reqwest",
+ "rust_decimal",
  "scraper",
  "serde",
  "serde_json",

@@ -1,0 +1,114 @@
+Kesko Oyj - Managers' Transactions
+____________________________________________
+Person subject to the notification requirement
+Name: Saija Kiiskinen Oy
+Position: Closely associated person
+(X) Legal person (1):Person Discharging Managerial Responsibilities In Issuer
+Name: Esa Kiiskinen
+Position: Member of the Board
+Issuer: Kesko Oyj
+LEI: 743700OX6HSVMCAHPB95
+Notification type: AMENDMENT
+Reference number: 41890/11/16
+Amendment comment:
+This is to amend the Managers' Transactions notification issued on 30 October
+2023 with regard to the person subject to the notification requirement. The
+shares specified in the notification were acquired not in the name of Esa
+Kiiskinen but in the name of an entity jointly controlled by Esa Kiiskinen and a
+related party to him.
+____________________________________________
+Transaction date: 2023-10-26
+Venue: NASDAQ HELSINKI LTD (XHEL)
+Instrument type: SHARE
+ISIN: FI0009007900
+Nature of transaction: ACQUISITION
+Transaction details
+(1): Volume: 2 Unit price: 15.78 EUR
+(2): Volume: 3 Unit price: 15.78 EUR
+(3): Volume: 5 Unit price: 15.76 EUR
+(4): Volume: 10 Unit price: 15.78 EUR
+(5): Volume: 10 Unit price: 15.52 EUR
+Aggregated transactions (5):
+Volume: 30 Volume weighted average price: 15.69 EUR
+____________________________________________
+Transaction date: 2023-10-26
+Venue: BEUP
+Instrument type: SHARE
+ISIN: FI0009007900
+Nature of transaction: ACQUISITION
+Transaction details
+(1): Volume: 4 Unit price: 15.76 EUR
+(2): Volume: 2 Unit price: 15.76 EUR
+(3): Volume: 14 Unit price: 15.74 EUR
+(4): Volume: 192 Unit price: 15.54 EUR
+Aggregated transactions (4):
+Volume: 212 Volume weighted average price: 15.55943 EUR
+____________________________________________
+Transaction date: 2023-10-26
+Venue: MHEL
+Instrument type: SHARE
+ISIN: FI0009007900
+Nature of transaction: ACQUISITION
+Transaction details
+(1): Volume: 12 Unit price: 15.78 EUR
+(2): Volume: 369 Unit price: 15.54 EUR
+Aggregated transactions (2):
+Volume: 381 Volume weighted average price: 15.54756 EUR
+____________________________________________
+Transaction date: 2023-10-26
+Venue: SGMV
+Instrument type: SHARE
+ISIN: FI0009007900
+Nature of transaction: ACQUISITION
+Transaction details
+(1): Volume: 87 Unit price: 15.54 EUR
+Aggregated transactions (1):
+Volume: 87 Volume weighted average price: 15.54 EUR
+____________________________________________
+Transaction date: 2023-10-26
+Venue: AQED
+Instrument type: SHARE
+ISIN: FI0009000202
+Nature of transaction: ACQUISITION
+Transaction details
+(1): Volume: 60 Unit price: 15.0975 EUR
+Aggregated transactions (1):
+Volume: 60 Volume weighted average price: 15.0975 EUR
+____________________________________________
+Transaction date: 2023-10-26
+Venue: BEUP
+Instrument type: SHARE
+ISIN: FI0009000202
+Nature of transaction: ACQUISITION
+Transaction details
+(1): Volume: 24 Unit price: 15.11 EUR
+(2): Volume: 60 Unit price: 15.1 EUR
+Aggregated transactions (2):
+Volume: 84 Volume weighted average price: 15.10286 EUR
+____________________________________________
+Transaction date: 2023-10-26
+Venue: GSSI
+Instrument type: SHARE
+ISIN: FI0009000202
+Nature of transaction: ACQUISITION
+Transaction details
+(1): Volume: 8 Unit price: 15.1075 EUR
+(2): Volume: 3 Unit price: 15.1075 EUR
+Aggregated transactions (2):
+Volume: 11 Volume weighted average price: 15.1075 EUR
+____________________________________________
+Transaction date: 2023-10-26
+Venue: NASDAQ HELSINKI LTD (XHEL)
+Instrument type: SHARE
+ISIN: FI0009000202
+Nature of transaction: ACQUISITION
+Transaction details
+(1): Volume: 11 Unit price: 15.1 EUR
+(2): Volume: 31 Unit price: 15.1 EUR
+(3): Volume: 12 Unit price: 15.1 EUR
+(4): Volume: 68 Unit price: 15.1 EUR
+Aggregated transactions (4):
+Volume: 122 Volume weighted average price: 15.1 EUR
+
+Further information is available from Lasse Luukkainen, Group General Counsel,
+tel. +358 105 322 818.
