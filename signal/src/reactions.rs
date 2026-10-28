@@ -14,6 +14,7 @@
 //! |----------------|---------|---------------------|-------|-------|----------------|
 //! | `FNSE`, `XSTO` | `SE`    | `Europe/Stockholm`  | 09:00 | 17:30 | 13:00          |
 //! | `XCSE`, `FNDK` | `DK`    | `Europe/Copenhagen` | 09:00 | 17:00 | none           |
+//! | `XHEL`, `FNFI` | `FI`    | `Europe/Helsinki`   | 10:00 | 18:30 | none           |
 //!
 //! Let `t` be the release instant in the exchange's local time (its own
 //! `timezone`, never another city's) and `d` its local date. The regular
@@ -1505,7 +1506,7 @@ mod tests {
             .fetch_all(&pool)
             .await
             .unwrap();
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 6, "FNSE, XSTO, XCSE, FNDK, XHEL, FNFI");
         for r in rows {
             let (mic, country): (String, String) = (r.get("mic"), r.get("country"));
             assert_eq!(
@@ -1513,6 +1514,22 @@ mod tests {
                 Some(country.as_str()),
                 "{mic}"
             );
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn finnish_exchanges_are_helsinki_10_to_1830_in_eur(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        for mic in ["XHEL", "FNFI"] {
+            let ex = Exchange::load(&mut conn, mic).await.unwrap().unwrap();
+            assert_eq!(ex.country, "FI", "{mic}");
+            assert_eq!(ex.timezone, chrono_tz::Europe::Helsinki, "{mic}");
+            assert_eq!(ex.open, chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+            assert_eq!(
+                ex.close,
+                chrono::NaiveTime::from_hms_opt(18, 30, 0).unwrap()
+            );
+            assert_eq!(ex.half_day_close, None);
         }
     }
 
