@@ -784,6 +784,42 @@ mod tests {
     }
 
     #[test]
+    fn registration_summary_shows_mfn_slug_name_and_isin() {
+        let msg = TickerRegistration {
+            ticker: "METSO".into(),
+            exchange_mic: "XHEL".into(),
+            currency: "EUR".into(),
+            mfn_slug: "metso-2".into(),
+            name: "Metso".into(),
+            isin: "FI0009014575".into(),
+            ..Default::default()
+        };
+        let s = super::mapping_summary(&msg);
+        assert!(s.contains("MFN metso-2 (Metso)"), "{s}");
+        assert!(s.contains("ISIN FI0009014575"), "{s}");
+        assert!(!s.contains("FI issuer"), "{s}");
+    }
+
+    #[test]
+    fn metso_he_resolves_to_xhel_eur_and_fnfi_override_is_accepted() {
+        assert_eq!(super::canonical_ticker("METSO.HE"), "METSO");
+        let yahoo = mic::mic_for_yahoo_exchange("HEL").unwrap();
+        let plain = mic::apply_override(yahoo, None).unwrap();
+        assert_eq!(plain, "XHEL");
+        assert_eq!(mic::currency(&plain), Some("EUR"));
+        let fnfi = mic::apply_override(yahoo, Some("FNFI")).unwrap();
+        assert_eq!(fnfi, "FNFI");
+        assert_eq!(mic::currency(&fnfi), Some("EUR"));
+    }
+
+    #[test]
+    fn xcse_override_on_a_helsinki_symbol_is_an_error() {
+        let yahoo = mic::mic_for_yahoo_exchange("HEL").unwrap();
+        assert!(mic::apply_override(yahoo, Some("XCSE")).is_err());
+        assert!(mic::apply_override(yahoo, Some("FNDK")).is_err());
+    }
+
+    #[test]
     fn fndk_override_on_a_stockholm_symbol_is_an_error() {
         let yahoo = mic::mic_for_yahoo_exchange("STO").unwrap();
         assert!(mic::apply_override(yahoo, Some("FNDK")).is_err());

@@ -22,6 +22,10 @@ pub mod mic {
     /// Segment MIC operating under Nasdaq Helsinki (XHEL).
     pub const FNFI: &str = "FNFI";
 
+    /// Every Nordic venue we cover, in one list: Sweden, Denmark and Finland.
+    /// The CLI uses it to decide which listings get MFN/ISIN mappings.
+    pub const NORDIC: &[&str] = &[FNSE, XSTO, XCSE, FNDK, XHEL, FNFI];
+
     /// Mapping from Yahoo Finance `exchangeName` codes to ISO 10383 MIC codes.
     ///
     /// Yahoo's `exchangeName` field (from `chart/meta.exchangeName`) uses
@@ -219,6 +223,25 @@ mod currency_tests {
         assert_eq!(mic::currency(mic::FNDK), Some("DKK"));
         assert_eq!(mic::currency(mic::XHEL), Some("EUR"));
         assert_eq!(mic::currency(mic::FNFI), Some("EUR"));
+    }
+
+    #[test]
+    fn nordic_list_has_all_six_venues_and_every_one_has_a_country_and_currency() {
+        assert_eq!(
+            mic::NORDIC,
+            [
+                mic::FNSE,
+                mic::XSTO,
+                mic::XCSE,
+                mic::FNDK,
+                mic::XHEL,
+                mic::FNFI
+            ]
+        );
+        for m in mic::NORDIC {
+            assert!(mic::country(m).is_some(), "{m}");
+            assert!(mic::currency(m).is_some(), "{m}");
+        }
     }
 
     #[test]
