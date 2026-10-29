@@ -99,9 +99,32 @@ Finland has no insider register like Sweden's, so there is no FI issuer. Finnish
 insider trades come from the issuers' own MFN releases (a later task), not from a
 regulator register.
 
-Until the reports task switches `nordic-reports` to the shared MIC list,
-`nordic-reports` skips Finnish companies. `nordic-calendar` and `nordic-live` read
-every company with an `mfn_slug`, so they do pick up a registered Finnish company.
+`nordic-reports`, `nordic-calendar` and `nordic-live` take Finnish companies like
+the others (`NORDIC_MICS` is `model::asset::mic::NORDIC`). What is specific to them:
+
+- **Every release comes twice**, in Finnish and English (`properties.lang`), with the
+  same instant and different MFN ids. Signal merges the pair into one
+  `special_events` row and keeps the English one; a Finnish release whose English
+  copy never arrives stays as a report.
+- **Titles.** `osavuosikatsaus` (interim), `puolivuosikatsaus` (half year),
+  `tilinpäätöstiedote` (the year-end results; English "Financial Statements
+  Review"), `liiketoimintakatsaus` (business review). `vuosikertomus` is the annual
+  report *document*, not a results release. The period in the title wins over the
+  word: an "osavuosikatsaus 1. tammikuuta - 31. joulukuuta" is a full-year report.
+  Managers' transactions (`johtohenkilöiden liiketoimet`), buy-backs, flagging
+  notices and meeting notices are never reports. They arrive in bursts (one person
+  per release, many at the same instant), which is why twins are only merged for
+  reports.
+- **A renamed company keeps its ISIN, not its MFN slug.** Metso's feed carries its
+  earlier releases under the `outotec` and `metso-outotec` entities. With the
+  company's ISIN in `companies.isin`, `nordic-reports` publishes those too. A
+  namesake (the old Metso, ISIN FI0009007835; Neles, FI4000440664) is never ours.
+- **Wrong company.** If the first item of the feed does not list the registry's
+  `MIC:TICKER` or ISIN, `nordic-reports` stops for that company (`mapping points at
+  the wrong company, nothing published`, the company counts as failed) instead of
+  publishing another company's releases. `nordic-live` ignores such items.
+- **Calendar times are Stockholm time**, also for Finnish companies: MFN's
+  `2027-10-25 08:00` is 06:00Z, which is 09:00 in Helsinki.
 
 ## Unregistering
 

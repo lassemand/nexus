@@ -21,6 +21,16 @@ const STRONG_WORDS: &[&str] = &[
     "regnskabsmeddelelse",
     "kvartalsrapport",
     "financial statement for",
+    // Finnish (also issuers' English twins): interim, half-year, financial
+    // statements release (the Q4 / full-year report), business review. The
+    // genitive forms (`osavuosikatsauksen`) are not here on purpose: they
+    // occur in calendar notices ("julkaisee ... osavuosikatsauksen").
+    "osavuosikatsaus",
+    "puolivuosikatsaus",
+    "tilinpäätöstiedote",
+    "liiketoimintakatsaus",
+    "financial statements review",
+    "business review",
 ];
 
 /// Regulatory notices that are never a results release, even when MFN tags
@@ -40,6 +50,19 @@ const HARD_NON_REPORT_WORDS: &[&str] = &[
     "voting rights",
     "stemmerettigheder",
     "total number of voting rights and capital",
+    // Finnish: managers' transactions (also the English twins), share
+    // buy-backs, major-shareholder (flagging) notices and the legal formula
+    // that opens them. Whole phrases: `liiketoimet` is also a stem of
+    // `liiketoimintakatsaus` (business review), which IS a report.
+    "johtohenkilöiden liiketoimet",
+    "johdon liiketoimet",
+    "managers' transaction",
+    "managers\u{2019} transaction",
+    "omien osakkeiden hankinta",
+    "omien osakkeiden ostot",
+    "share buyback",
+    "liputusilmoitus",
+    "arvopaperimarkkinalain 9 luvun",
 ];
 
 /// Words that mark a headline as business news that merely mentions a quarter
@@ -52,6 +75,14 @@ const NEWS_WORDS: &[&str] = &[
     "secures",
     "signs",
     "market update",
+    // Profit warnings and outlook changes that name a quarter: not results.
+    "outlook",
+    "tulosvaroitus",
+    "tulosnäkym",
+    "profit warning",
+    "upgrades",
+    "withdraws",
+    "impact of",
 ];
 
 /// Regulatory notices that contain a strong word ("annual general meeting",
@@ -65,6 +96,27 @@ const NON_REPORT_WORDS: &[&str] = &[
     "valberedning",
     "annual report",
     "årsredovisning",
+    "vuosikertomus",
+    // Finnish: general meeting (`yhtiökokouksen` has no `yhtiökokous`) and notices.
+    "yhtiökokou",
+    "kutsu",
+    // Finnish issuers' notices that merely contain "report"/"interim": a
+    // schedule, restated or recast figures, a segment change, an interim
+    // President, the annual review document.
+    "reporting schedule",
+    "financial reporting",
+    "segment reporting",
+    "reporting segment",
+    "reporting structure",
+    "restated",
+    "recast",
+    "oikaist",
+    "interim president",
+    "interim ceo",
+    "interim cfo",
+    "interim evp",
+    "interim change",
+    "annual review",
     "sustainability",
     "hållbarhets",
     "remuneration",
@@ -201,12 +253,19 @@ fn headline_looks_like_report(lower: &str) -> bool {
 }
 
 /// True for correction notices (`Correction:`, `Rättelse:`, `Rettelse:`,
-/// `Korrektion:`). The prefix is stripped before looking, and the
+/// `Korrektion:`, `Oikaisu:`, `Korjaus:`). The prefix is stripped before looking, and the
 /// unstripped title is checked too (stripping eats a leading `Correction: `).
 pub fn is_correction(title: &str) -> bool {
     fn check(s: &str) -> bool {
         let lower = s.trim().to_lowercase();
-        const MARKERS: [&str; 4] = ["correction:", "rättelse:", "rettelse:", "korrektion:"];
+        const MARKERS: [&str; 6] = [
+            "correction:",
+            "rättelse:",
+            "rettelse:",
+            "korrektion:",
+            "oikaisu:",
+            "korjaus:",
+        ];
         if MARKERS.iter().any(|m| lower.starts_with(m)) {
             return true;
         }
@@ -228,6 +287,44 @@ fn is_calendar_notice(title: &str) -> bool {
     is_calendar_update(title)
         || CALENDAR_NOTICE_PHRASES.iter().any(|p| l.contains(p))
         || (l.contains("flyttar") && l.contains("rapport"))
+        || is_finnish_calendar_notice(&l)
+}
+
+/// "Neles julkaisee tammi-joulukuun 2021 tilinpäätöstiedotteen 4. helmikuuta":
+/// announces when a report will come out. The accusative forms
+/// (`osavuosikatsauksen`) differ from the nominative the report titles use.
+fn is_finnish_calendar_notice(lower: &str) -> bool {
+    const ANNOUNCES: &[&str] = &["julkaisee", "julkistaa", "julkaiseminen"];
+    // Stems of the accusative / possessive forms (`osavuosikatsauksen`,
+    // `osavuosikatsauksensa`); the nominative `osavuosikatsaus` of a report
+    // title does not contain them.
+    const REPORTS: &[&str] = &[
+        "osavuosikatsauks",
+        "puolivuosikatsauks",
+        "osavuotiskatsauks",
+        "puolivuotiskatsauks",
+        "tilinpäätöstiedotte",
+        "liiketoimintakatsauks",
+    ];
+    if ANNOUNCES.iter().any(|a| lower.contains(a)) && REPORTS.iter().any(|r| lower.contains(r)) {
+        return true;
+    }
+    // English: "Neles to publish its Interim Review ... on February 4, 2022",
+    // "Publishing of Outotec's Interim Report ...", "KONE publishes ... on
+    // Thursday, October 25". A date follows.
+    const ENGLISH_ANNOUNCES: &[&str] = &["to publish", "publishing of", "publishes"];
+    const ENGLISH_REPORTS: &[&str] = &[
+        "interim",
+        "half-year",
+        "half year",
+        "financial statements",
+        "year-end",
+    ];
+    ENGLISH_REPORTS.iter().any(|r| lower.contains(r))
+        && (lower.contains("publishing of")
+            || (ENGLISH_ANNOUNCES.iter().any(|a| lower.contains(a))
+                && lower.contains(" on ")
+                && EN_MONTHS.iter().any(|m| lower.contains(m))))
 }
 
 /// True if `needle` occurs in `lower` at the start of a word.
@@ -252,6 +349,7 @@ fn mentions_year_end(lower: &str) -> bool {
             "andra kvartalet",
             "tredje kvartalet",
             "half-year",
+            "puolivuosikatsaus",
             "first half",
             "halvår",
             "1. kvartal",
@@ -271,6 +369,10 @@ fn mentions_year_end(lower: &str) -> bool {
             "bokslutskommuniké",
             "årsregnskabsmeddelelse",
             "financial statement for",
+            "tilinpäätöstiedote",
+            "financial statements review",
+            "viimeisen neljänneksen",
+            "neljännen neljänneksen",
         ]
         .iter()
         .any(|p| lower.contains(p))
@@ -282,7 +384,13 @@ fn mentions_year_end(lower: &str) -> bool {
 /// A year-end results headline on an item tagged only `sub:report:annual`:
 /// not the annual report document, one standalone year, and a results word.
 fn is_annual_results_headline(lower: &str) -> bool {
-    const DOCUMENT: &[&str] = &["annual report", "årsredovisning", "årsrapport", "20-f"];
+    const DOCUMENT: &[&str] = &[
+        "annual report",
+        "årsredovisning",
+        "årsrapport",
+        "vuosikertomus",
+        "20-f",
+    ];
     const RESULTS: &[&str] = &[
         "sales",
         "profit",
@@ -315,6 +423,9 @@ fn kind_from(tags: &[String], lower: &str) -> Option<ReportKind> {
     if has("sub:report:interim:q4")
         || (annual_tag && has("sub:report:interim"))
         || (report_test && !early_quarter_tag && mentions_year_end(lower))
+        // The period wins over the word: a Finnish "osavuosikatsaus 1. tammikuuta
+        // - 31. joulukuuta" is a full-year report.
+        || (report_test && month_range(lower) == Some(RangePeriod::YearEnd))
     {
         return Some(ReportKind::Annual);
     }
@@ -334,6 +445,164 @@ fn kind_from(tags: &[String], lower: &str) -> Option<ReportKind> {
     }
     // 6.
     None
+}
+
+/// What a "from month to month" range in a title says about the period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangePeriod {
+    /// The first (or only) three, six or nine months, or a single quarter:
+    /// quarter 1 to 3.
+    Quarter(u8),
+    /// January to December (or the last quarter): the year-end report.
+    YearEnd,
+}
+
+/// Finnish month stems; every case form starts with one
+/// (`tammikuuta`, `tammikuun`, `tammikuulta`).
+const FI_MONTHS: [&str; 12] = [
+    "tammikuu",
+    "helmikuu",
+    "maaliskuu",
+    "huhtikuu",
+    "toukokuu",
+    "kesäkuu",
+    "heinäkuu",
+    "elokuu",
+    "syyskuu",
+    "lokakuu",
+    "marraskuu",
+    "joulukuu",
+];
+
+/// The short forms used before a hyphen: `tammi-kesäkuulta`.
+const FI_MONTHS_SHORT: [&str; 12] = [
+    "tammi", "helmi", "maalis", "huhti", "touko", "kesä", "heinä", "elo", "syys", "loka", "marras",
+    "joulu",
+];
+
+const EN_MONTHS: [&str; 12] = [
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+];
+
+/// Swedish month names (`januari-mars`), used by Finnish issuers' Swedish copies.
+const SV_MONTHS: [&str; 12] = [
+    "januari",
+    "februari",
+    "mars",
+    "april",
+    "maj",
+    "juni",
+    "juli",
+    "augusti",
+    "september",
+    "oktober",
+    "november",
+    "december",
+];
+
+/// The month (1-12) a word names. A short Finnish form only counts when a
+/// dash follows it, so `loka` or `kesä` elsewhere are not months.
+fn month_of(word: &str, next: Option<char>) -> Option<u8> {
+    let dash = matches!(next, Some('-' | '\u{2013}' | '\u{2014}'));
+    (0..12).find_map(|i| {
+        let hit = word == EN_MONTHS[i]
+            || word == SV_MONTHS[i]
+            || word.starts_with(FI_MONTHS[i])
+            || (dash && word == FI_MONTHS_SHORT[i]);
+        hit.then_some(i as u8 + 1)
+    })
+}
+
+/// The period named by a "month - month" range: `1. tammikuuta - 30.
+/// syyskuuta 2026`, `tammi-kesäkuulta 2026`, `January 1 - September 30, 2026`.
+/// Exactly two months joined by a dash (or "to"); anything else is `None`.
+fn month_range(lower: &str) -> Option<RangePeriod> {
+    month_name_range(lower).or_else(|| numeric_range(lower))
+}
+
+/// The period of a numeric range such as `1.1. - 30.9.2013` or `1.1.-31.12.2011`.
+fn numeric_range(lower: &str) -> Option<RangePeriod> {
+    /// `d.m.` at the start of `s`: the month and the rest.
+    fn day_month(s: &str) -> Option<(u8, &str)> {
+        let s = s.trim_start();
+        let day_end = s.find(|c: char| !c.is_ascii_digit())?;
+        let (day, rest) = s.split_at(day_end);
+        let rest = rest.strip_prefix('.')?;
+        let month_end = rest.find(|c: char| !c.is_ascii_digit())?;
+        let (month, rest) = rest.split_at(month_end);
+        let rest = rest.strip_prefix('.')?;
+        let (day, month): (u8, u8) = (day.parse().ok()?, month.parse().ok()?);
+        ((1..=31).contains(&day) && (1..=12).contains(&month)).then_some((month, rest))
+    }
+    lower
+        .char_indices()
+        .filter(|(_, c)| c.is_ascii_digit())
+        .find_map(|(i, _)| {
+            if i > 0 && lower.as_bytes()[i - 1].is_ascii_digit() {
+                return None;
+            }
+            let (a, rest) = day_month(&lower[i..])?;
+            let rest = rest
+                .trim_start()
+                .strip_prefix(['-', '\u{2013}', '\u{2014}'])?;
+            let (b, _) = day_month(rest)?;
+            range_period(a, b)
+        })
+}
+
+/// A range of two month names.
+fn month_name_range(lower: &str) -> Option<RangePeriod> {
+    let mut months: Vec<(u8, usize, usize)> = Vec::new();
+    let mut start = None;
+    let push = |s: usize, e: usize, months: &mut Vec<(u8, usize, usize)>| {
+        if let Some(m) = month_of(&lower[s..e], lower[e..].chars().next()) {
+            months.push((m, s, e));
+        }
+    };
+    for (i, c) in lower.char_indices() {
+        match (c.is_alphabetic(), start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                push(s, i, &mut months);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        push(s, lower.len(), &mut months);
+    }
+    let [(a, _, end_a), (b, start_b, _)] = months.as_slice() else {
+        return None;
+    };
+    let between: String = lower[*end_a..*start_b]
+        .chars()
+        .filter(|c| !c.is_ascii_digit() && !c.is_whitespace() && !matches!(c, '.' | ','))
+        .collect();
+    if !matches!(between.as_str(), "-" | "\u{2013}" | "\u{2014}" | "to") {
+        return None;
+    }
+    range_period(*a, *b)
+}
+
+/// What "from month `a` to month `b`" is: a year-end, or a quarter.
+fn range_period(a: u8, b: u8) -> Option<RangePeriod> {
+    match (a, b) {
+        (1 | 10, 12) => Some(RangePeriod::YearEnd),
+        (1, 3 | 6 | 9) | (4, 6) | (7, 9) => Some(RangePeriod::Quarter(b / 3)),
+        _ => None,
+    }
 }
 
 /// Four-digit years `20xx` that stand alone in the text.
@@ -380,11 +649,15 @@ fn quarter_of(tags: &[String], lower: &str) -> Option<u8> {
     let mut found: Vec<u8> = (1..=4u8)
         .filter(|n| has_quarter_token(lower, b'0' + n))
         .collect();
-    let ordinals: [(&str, &str, u8); 4] = [
+    let ordinals: [(&str, &str, u8); 8] = [
         ("first quarter", "första kvartalet", 1),
         ("second quarter", "andra kvartalet", 2),
         ("third quarter", "tredje kvartalet", 3),
         ("fourth quarter", "fjärde kvartalet", 4),
+        ("ensimmäisen neljänneksen", "ensimmäinen neljännes", 1),
+        ("toisen neljänneksen", "toinen neljännes", 2),
+        ("kolmannen neljänneksen", "kolmas neljännes", 3),
+        ("viimeisen neljänneksen", "neljännen neljänneksen", 4),
     ];
     for (en, sv, n) in ordinals {
         if (lower.contains(en) || lower.contains(sv)) && !found.contains(&n) {
@@ -396,7 +669,18 @@ fn quarter_of(tags: &[String], lower: &str) -> Option<u8> {
     // cumulative wording of year-to-date reports.
     let extra: [(&[&str], u8); 5] = [
         (&["1. kvartal", "first three months"], 1),
-        (&["2. kvartal", "first half", "first six months"], 2),
+        (
+            &[
+                "2. kvartal",
+                "first half",
+                "first six months",
+                "puolivuosikatsaus",
+                "half-year report",
+                "half year financial report",
+                "half-year review",
+            ],
+            2,
+        ),
         (&["3. kvartal", "first nine months"], 3),
         (&["4. kvartal"], 4),
         (&[], 2), // `H1`, below
@@ -408,6 +692,22 @@ fn quarter_of(tags: &[String], lower: &str) -> Option<u8> {
             needles.iter().any(|w| lower.contains(w))
         };
         if hit && !found.contains(&n) {
+            found.push(n);
+        }
+    }
+    // `Q1-Q3 2012`: the cumulative report of the last quarter named.
+    for (span, n) in [
+        ("q1-q2", 2),
+        ("q1-q3", 3),
+        ("q1\u{2013}q2", 2),
+        ("q1\u{2013}q3", 3),
+    ] {
+        if lower.contains(span) {
+            return Some(n);
+        }
+    }
+    if let Some(RangePeriod::Quarter(n)) = month_range(lower) {
+        if !found.contains(&n) {
             found.push(n);
         }
     }
@@ -600,6 +900,53 @@ mod tests {
             ("danish finanskalender", tags(&[REG]), "Issuer A/S: Opdateret finanskalender 2026", None, false, true),
             ("danish finansiel kalender", tags(&[REG]), "Issuer A/S: Ændring i finansiel kalender for 2026", None, false, true),
             ("danish ændret dato", tags(&[REG]), "Issuer A/S: Ændret dato for offentliggørelse af delårsrapport", None, false, true),
+            // Finnish issuers (real Metso / Neles titles and tags unless noted)
+            ("fi interim", tags(&[REG, REPORT, INTERIM]), "Metson osavuosikatsaus 1. tammikuuta - 30. syyskuuta 2026", Some(Interim), false, false),
+            ("en interim", tags(&[REG, REPORT, INTERIM]), "Metso's Interim Report January 1 - September 30, 2026", Some(Interim), false, false),
+            ("fi half-year", tags(&[REG, REPORT, INTERIM]), "Metson puolivuosikatsaus 1. tammikuuta - 30. kesäkuuta 2026", Some(Interim), false, false),
+            ("en half-year", tags(&[REG, REPORT, INTERIM]), "Metso's Half-Year Report January 1 - June 30, 2026", Some(Interim), false, false),
+            ("fi interim, prefixed", tags(&[REG, REPORT, INTERIM]), "Metso Corporation: Metson osavuosikatsaus 1. tammikuuta - 31. maaliskuuta 2026", Some(Interim), false, false),
+            ("fi financial statements release, untagged", tags(&[REG]), "Metso Corporation: Metson tilinpäätöstiedote 1. tammikuuta - 31. joulukuuta 2025", Some(Annual), false, false),
+            ("en financial statements review, untagged", tags(&[REG]), "Metso Corporation: Metso's Financial Statements Review January 1 - December 31, 2025", Some(Annual), false, false),
+            ("fi liiketoimintakatsaus", tags(&[REG]), "Issuer Oyj: Liiketoimintakatsaus 1. tammikuuta - 31. maaliskuuta 2026", Some(Interim), false, false),
+            ("en business review", tags(&[REG]), "Issuer Oyj: Business Review January 1 - March 31, 2026", Some(Interim), false, false),
+            ("fi annual report document", tags(&[REG, REPORT, ANNUAL]), "Metso Corporation: Metson vuosikertomus 2025 on julkistettu", None, false, false),
+            ("fi annual report document, untagged", tags(&[REG]), "Issuer Oyj: Vuosikertomus 2025 julkaistu", None, false, false),
+            ("fi neles oddity: osavuosikatsaus for the full year", tags(&[]), "Neles Oyj: Neleksen osavuosikatsaus 1. tammikuuta - 31. joulukuuta, 2021", None, false, false),
+            ("fi neles oddity with regulatory tag", tags(&[REG]), "Neles Oyj: Neleksen osavuosikatsaus 1. tammikuuta - 31. joulukuuta, 2021", Some(Annual), false, false),
+            ("fi nokia quarter ordinal", tags(&[REG]), "Nokia Oyj:n vuoden 2026 kolmannen neljänneksen osavuosikatsaus", Some(Interim), false, false),
+            // managers' transactions are never reports, with or without report words
+            ("fi managers' transactions", tags(&[REG]), "Metso Corporation: Metso Oyj: Johtohenkilöiden liiketoimet - Niko Pakalén", None, false, false),
+            ("en managers' transactions", tags(&[REG]), "Metso Corporation: Managers' transactions - Sami Takaluoma", None, false, false),
+            ("en managers' transactions, curly apostrophe", tags(&[REG]), "Orion Corporation: Managers\u{2019} transactions \u{2013} Sophie Papa", None, false, false),
+            ("fi johdon liiketoimet", tags(&[REG]), "Wärtsilä Oyj Abp - Johdon liiketoimet: Johnstone, Tom", None, false, false),
+            ("managers' transactions with a report word and tags", tags(&[REG, REPORT, INTERIM]), "Issuer Oyj: Managers' transactions - Q3 interim report shares", None, false, false),
+            ("fi liiketoimet vs liiketoimintakatsaus", tags(&[REG]), "Issuer Oyj: Johtohenkilöiden liiketoimet osavuosikatsauksen jälkeen", None, false, false),
+            ("fi buyback", tags(&[REG]), "Issuer Oyj: Omien osakkeiden hankinta 12.3.2026", None, false, false),
+            ("fi buyback ostot", tags(&[REG, REPORT, INTERIM]), "Issuer Oyj: Omien osakkeiden ostot osavuosikatsauskaudella", None, false, false),
+            ("fi flagging", tags(&[REG]), "Issuer Oyj: Liputusilmoitus (Issuer Oyj)", None, false, false),
+            ("fi flagging formula", tags(&[REG, REPORT, INTERIM]), "Issuer Oyj: Ilmoitus arvopaperimarkkinalain 9 luvun 5 §:n mukaisesti osavuosikatsaus", None, false, false),
+            ("fi general meeting", tags(&[REG]), "Issuer Oyj: Yhtiökokouksen päätökset", None, false, false),
+            ("fi notice of meeting", tags(&[REG]), "Issuer Oyj: Kutsu varsinaiseen yhtiökokoukseen", None, false, false),
+            ("en share buyback", tags(&[REG]), "Issuer Oyj: Share buyback 12 March 2026 report", None, false, false),
+            // Finnish corrections and calendar notices
+            ("fi oikaisu", tags(&[REG, REPORT, INTERIM]), "Issuer Oyj: Oikaisu: osavuosikatsaus 1. tammikuuta - 31. maaliskuuta 2026", None, true, false),
+            ("fi korjaus", tags(&[REG, REPORT, INTERIM]), "Korjaus: osavuosikatsaus 1. tammikuuta - 31. maaliskuuta 2026", None, true, false),
+            ("fi neles julkaisee", tags(&[REG]), "Neles Oyj: Neles julkaisee tammi-joulukuun 2021 tilinpäätöstiedotteen 4. helmikuuta 2022", None, false, true),
+            ("fi julkaisee osavuosikatsauksen", tags(&[REG]), "Neles Oyj: Neles julkaisee tammi-syyskuun 2021 osavuosikatsauksen 27. lokakuuta 2021", None, false, true),
+            ("fi julkistaa possessive", tags(&[REG]), "Metso julkistaa tammi-syyskuun 2018 osavuosikatsauksensa perjantaina 26.10.2018", None, false, true),
+            ("fi julkaiseminen", tags(&[REG]), "Outotecin tammi-syyskuun osavuosikatsauksen 2019 julkaiseminen", None, false, true),
+            ("en to publish its", tags(&[REG]), "Neles Oyj: Neles to publish its Financial Statements Review for January-December 2021 on February 4, 2022", None, false, true),
+            ("en publishing of", tags(&[REG]), "Publishing of Outotec's Interim Report January-March 2019", None, false, true),
+            ("en kone publishes on", tags(&[REG]), "KONE publishes January-March 2018 Interim Report on Wednesday, April 25, 2018 at 12:30 p.m. EEST", None, false, true),
+            // not reports although they say "report", "interim" or name a quarter
+            ("en restated comparatives", tags(&[REG]), "Metso Oyj: Metso updates its segment reporting and publishes restated information based on the new structure", None, false, false),
+            ("fi restated comparatives", tags(&[REG]), "Metso Corporation: Metso julkaisee oikaistut vertailuluvut liittyen jatkuvien toimintojen uudelleenluokitteluun", None, false, false),
+            ("en reporting schedule", tags(&[REG]), "KONE Oyj: Financial reporting schedule of KONE Corporation in 2027", None, false, false),
+            ("en interim president", tags(&[REG]), "Neles Oyj: Simo Sääskilahti, CFO of Neles, appointed Neles' interim President and CEO as of January 1, 2022", None, false, false),
+            ("en profit warning naming a quarter", tags(&[REG]), "Neste raises its second quarter 2022 outlook", None, false, false),
+            ("fi tulosvaroitus naming a quarter", tags(&[REG]), "Positiivinen tulosvaroitus: UPM täsmentää tulosnäkymiään kolmannen neljänneksen ennakkotietojen pohjalta", None, false, false),
+            ("en annual review document", tags(&[REG]), "KONE Oyj: KONE Corporation's Annual Review 2019 has been published", None, false, false),
         ];
         for (name, tags, title, kind, corr, cal) in rows {
             let c = classify_item(&tags, title);
@@ -779,5 +1126,177 @@ mod tests {
         assert!(!has_quarter_token("faq2 results", b'2'));
         assert!(!has_quarter_token("q25 results", b'2'));
         assert!(mentions_quarter("första kvartalet"));
+    }
+
+    #[test]
+    fn finnish_and_english_ranges_give_the_fiscal_period() {
+        let f = |title: &str| classify_item(&tags(&[REG, INTERIM]), title).fiscal_period;
+        // Year to date: Q1-Q3.
+        assert_eq!(
+            f("Metson osavuosikatsaus 1. tammikuuta - 30. syyskuuta 2026").as_deref(),
+            Some("2026-Q3")
+        );
+        assert_eq!(
+            f("Metso's Interim Report January 1 - September 30, 2026").as_deref(),
+            Some("2026-Q3")
+        );
+        assert_eq!(
+            f("Metson osavuosikatsaus 1. tammikuuta - 31. maaliskuuta 2026").as_deref(),
+            Some("2026-Q1")
+        );
+        // Half year.
+        assert_eq!(
+            f("Metsolta tammi-kesäkuulta 2026 puolivuosikatsaus").as_deref(),
+            Some("2026-Q2")
+        );
+        assert_eq!(
+            f("Metson puolivuosikatsaus 1. tammikuuta - 30. kesäkuuta 2026").as_deref(),
+            Some("2026-Q2")
+        );
+        assert_eq!(
+            f("Metso Outotecin tammi-kesäkuun 2022 puolivuosikatsaus").as_deref(),
+            Some("2022-Q2")
+        );
+        assert_eq!(
+            f("Metso Outotec's Interim Report January - March 2023").as_deref(),
+            Some("2023-Q1")
+        );
+        assert_eq!(
+            f("Metso Outotecin osavuosikatsaus tammi-syyskuu 2021").as_deref(),
+            Some("2021-Q3")
+        );
+        // A single quarter written as a range.
+        assert_eq!(
+            f("Issuer Oyj: osavuosikatsaus huhti-kesäkuu 2026").as_deref(),
+            Some("2026-Q2")
+        );
+        // Numeric ranges, Swedish months, Q-spans.
+        assert_eq!(
+            f("Metson osavuosikatsaus 1.1. - 30.9.2013").as_deref(),
+            Some("2013-Q3")
+        );
+        assert_eq!(
+            f("Metson osavuosikatsaus 1.1.-30.6.2011").as_deref(),
+            Some("2011-Q2")
+        );
+        assert_eq!(
+            f("Wärtsiläs delårsrapport januari-mars 2020").as_deref(),
+            Some("2020-Q1")
+        );
+        assert_eq!(
+            f("Outotec's Q1-Q3 2012 Interim Report").as_deref(),
+            Some("2012-Q3")
+        );
+        // Year-end ranges are annual reports with the year.
+        let a = |t: &[&str], title: &str| classify_item(&tags(t), title);
+        for title in [
+            "Metson tilinpäätöstiedote 1. tammikuuta - 31. joulukuuta 2025",
+            "Metso's Financial Statements Review January 1 - December 31, 2025",
+            "Metson tilinpäätöstiedote tammi-joulukuun 2025",
+            "Metsolta tammi-joulukuu 2025 osavuosikatsaus",
+            "Issuer: report 1.1. - 31.12.2025",
+        ] {
+            let c = a(&[REG], title);
+            assert_eq!(
+                (c.report_kind, c.fiscal_period.as_deref()),
+                (Some(Annual), Some("2025")),
+                "{title}"
+            );
+        }
+        // The period wins over the word and over an early-quarter tag.
+        let c = a(
+            &[REG, REPORT, INTERIM, "sub:report:interim:q2"],
+            "Neleksen osavuosikatsaus 1. tammikuuta - 31. joulukuuta, 2021",
+        );
+        assert_eq!(
+            (c.report_kind, c.fiscal_period.as_deref()),
+            (Some(Annual), Some("2021"))
+        );
+        // Two months that are not a range say nothing.
+        assert_eq!(
+            f("Interim report: dividends paid in January and September 2026"),
+            None
+        );
+    }
+
+    #[test]
+    fn every_finnish_month_form_is_recognised() {
+        const FORMS: [&str; 12] = [
+            "tammikuu",
+            "helmikuu",
+            "maaliskuu",
+            "huhtikuu",
+            "toukokuu",
+            "kesäkuu",
+            "heinäkuu",
+            "elokuu",
+            "syyskuu",
+            "lokakuu",
+            "marraskuu",
+            "joulukuu",
+        ];
+        const SHORT: [&str; 12] = [
+            "tammi", "helmi", "maalis", "huhti", "touko", "kesä", "heinä", "elo", "syys", "loka",
+            "marras", "joulu",
+        ];
+        for (i, stem) in FORMS.iter().enumerate() {
+            let want = Some(i as u8 + 1);
+            // nominative, genitive, partitive, ablative, elative.
+            for ending in ["", "n", "ta", "lta", "sta"] {
+                assert_eq!(
+                    month_of(&format!("{stem}{ending}"), None),
+                    want,
+                    "{stem}{ending}"
+                );
+            }
+            // The short form counts only before a dash.
+            assert_eq!(month_of(SHORT[i], Some('-')), want, "{}-", SHORT[i]);
+            assert_eq!(month_of(SHORT[i], Some('\u{2013}')), want);
+            assert_eq!(month_of(SHORT[i], Some(' ')), None, "{} alone", SHORT[i]);
+        }
+        assert_eq!(month_of("september", None), Some(9));
+        assert_eq!(month_of("maaliskuun", None), Some(3));
+        assert_eq!(month_of("kesäkuuta", None), Some(6));
+    }
+
+    #[test]
+    fn finnish_range_forms_by_month() {
+        // Every Jan-to-quarter-end range in the genitive and the partitive.
+        for (end, n) in [("maaliskuuta", 1), ("kesäkuuta", 2), ("syyskuuta", 3)] {
+            let t = format!("osavuosikatsaus 1. tammikuuta - 30. {end} 2026");
+            assert_eq!(month_range(&t), Some(RangePeriod::Quarter(n)), "{t}");
+        }
+        for (a, b, want) in [
+            ("tammi", "joulukuun", Some(RangePeriod::YearEnd)),
+            ("tammi", "maaliskuun", Some(RangePeriod::Quarter(1))),
+            ("huhti", "kesäkuun", Some(RangePeriod::Quarter(2))),
+            ("heinä", "syyskuun", Some(RangePeriod::Quarter(3))),
+            ("loka", "joulukuun", Some(RangePeriod::YearEnd)),
+            ("tammi", "heinäkuun", None),
+        ] {
+            assert_eq!(month_range(&format!("{a}-{b} 2026")), want, "{a}-{b}");
+        }
+    }
+
+    #[test]
+    fn finnish_report_words_are_whole_phrases() {
+        // `liiketoimet` (transactions) is not `liiketoimintakatsaus` (business review).
+        let c = |title: &str| classify_item(&tags(&[REG]), title).report_kind;
+        assert_eq!(
+            c("Issuer Oyj: Liiketoimintakatsaus 1. tammikuuta - 31. maaliskuuta 2026"),
+            Some(Interim)
+        );
+        assert_eq!(
+            c("Issuer Oyj: Johtohenkilöiden liiketoimet - Matti Meikäläinen"),
+            None
+        );
+        assert_eq!(c("Issuer Oyj: Johdon liiketoimet"), None);
+        assert!(is_correction(
+            "Issuer Oyj: Oikaisu: Tilinpäätöstiedote 2025"
+        ));
+        assert!(is_correction("  KORJAUS: osavuosikatsaus"));
+        assert!(!is_correction(
+            "Korjaus Metson 3.2.2017 julkaistuun tilinpäätöstiedotteeseen"
+        ));
     }
 }

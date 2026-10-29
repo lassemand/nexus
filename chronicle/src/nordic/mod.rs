@@ -3,13 +3,11 @@
 //! signal stores them; chronicle keeps only its read position.
 use model::asset::mic;
 
-/// Every exchange the Nordic jobs cover: First North Stockholm, Nasdaq
-/// Stockholm, Nasdaq Copenhagen and First North Denmark. One list for
+/// Every exchange the Nordic jobs cover: the shared `model` list (First North
+/// and main market in Stockholm, Copenhagen and Helsinki). One list for
 /// `nordic-reports`; `nordic-calendar` and `nordic-live` take every company
 /// that has an `mfn_slug`, whatever its MIC.
-// TODO(finnish reports task): switch to `model::asset::mic::NORDIC` so Finnish
-// companies (XHEL/FNFI) are ingested; until then chronicle skips them.
-pub const NORDIC_MICS: &[&str] = &[mic::FNSE, mic::XSTO, mic::XCSE, mic::FNDK];
+pub const NORDIC_MICS: &[&str] = mic::NORDIC;
 
 pub mod calendar;
 pub mod classify;
