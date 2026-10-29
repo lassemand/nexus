@@ -862,6 +862,307 @@ mod tests {
         }
     }
 
+    /// The `exchanges` row of XHEL / FNFI: 10:00-18:30 Europe/Helsinki, no half day.
+    fn hel() -> Exchange {
+        Exchange {
+            mic: "XHEL".into(),
+            country: "FI".into(),
+            timezone: "Europe/Helsinki".parse().unwrap(),
+            open: hm(10, 0),
+            close: hm(18, 30),
+            half_day_close: None,
+        }
+    }
+
+    /// Nasdaq Helsinki's closures as `nexus calendar sync --country FI` stores
+    /// them: 2026 and 2027 as Nasdaq publishes them, 2015 as the range marker.
+    fn fi_cal() -> Calendar {
+        let closed = [
+            "2015-01-01",
+            // 2026
+            "2026-01-01",
+            "2026-01-06",
+            "2026-04-03",
+            "2026-04-06",
+            "2026-05-01",
+            "2026-05-14",
+            "2026-06-19",
+            "2026-12-24",
+            "2026-12-25",
+            "2026-12-31",
+            // 2027 (Dec 6 is a Monday)
+            "2027-01-01",
+            "2027-01-06",
+            "2027-03-26",
+            "2027-03-29",
+            "2027-05-06",
+            "2027-06-25",
+            "2027-12-06",
+            "2027-12-24",
+            "2027-12-31",
+        ]
+        .iter()
+        .map(|s| d(s))
+        .collect();
+        Calendar::from_holidays(closed, HashSet::new()).unwrap()
+    }
+
+    /// Nasdaq Stockholm's full-day closures for the same dates (no Dec 6).
+    fn se_cal() -> Calendar {
+        let closed = [
+            "2015-01-01",
+            "2026-01-01",
+            "2026-01-06",
+            "2026-04-03",
+            "2026-04-06",
+            "2026-05-01",
+            "2026-05-14",
+            "2026-06-19",
+            "2026-12-25",
+            "2026-12-31",
+            "2027-01-01",
+            "2027-01-06",
+            "2027-03-26",
+            "2027-03-29",
+            "2027-05-06",
+            "2027-06-25",
+            "2027-12-24",
+            "2027-12-31",
+        ]
+        .iter()
+        .map(|s| d(s))
+        .collect();
+        Calendar::from_holidays(closed, HashSet::new()).unwrap()
+    }
+
+    /// Helsinki's expected (session, reaction day, base day) for a release instant.
+    /// The release hours here are Helsinki's 10:00-18:30, which are the same UTC
+    /// instants as Stockholm's 09:00-17:30; each row notes what it catches.
+    #[test]
+    fn helsinki_sessions_and_reaction_days() {
+        use Session::*;
+        let c = fi_cal();
+        // (instant, session, reaction day, base day)
+        let cases = [
+            // 09:00 EEST, Metso Q3 2026: before the 10:00 open.
+            (utc(2026, 10, 22, 6, 0), PreOpen, "2026-10-22", "2026-10-21"),
+            // 09:30 EEST: still pre-open. Stockholm hours in Helsinki's zone say intraday.
+            (
+                utc(2026, 10, 22, 6, 30),
+                PreOpen,
+                "2026-10-22",
+                "2026-10-21",
+            ),
+            // 10:00 EEST sharp is intraday; 09:59 is not.
+            (
+                utc(2026, 10, 22, 6, 59),
+                PreOpen,
+                "2026-10-22",
+                "2026-10-21",
+            ),
+            (
+                utc(2026, 10, 22, 7, 0),
+                Intraday,
+                "2026-10-22",
+                "2026-10-21",
+            ),
+            // 10:30 EEST.
+            (
+                utc(2026, 10, 22, 7, 30),
+                Intraday,
+                "2026-10-22",
+                "2026-10-21",
+            ),
+            // 18:00 EEST: before the 18:30 close. Stockholm hours say after_close,
+            // which would move the reaction a whole day.
+            (
+                utc(2026, 10, 22, 15, 0),
+                Intraday,
+                "2026-10-22",
+                "2026-10-21",
+            ),
+            (
+                utc(2026, 10, 22, 15, 29),
+                Intraday,
+                "2026-10-22",
+                "2026-10-21",
+            ),
+            // 18:30 sharp and 18:35 EEST: after the close, reaction the next day.
+            (
+                utc(2026, 10, 22, 15, 30),
+                AfterClose,
+                "2026-10-23",
+                "2026-10-22",
+            ),
+            (
+                utc(2026, 10, 22, 15, 35),
+                AfterClose,
+                "2026-10-23",
+                "2026-10-22",
+            ),
+            // DST: Friday 10:30 EEST is intraday ...
+            (
+                utc(2026, 10, 23, 7, 30),
+                Intraday,
+                "2026-10-23",
+                "2026-10-22",
+            ),
+            // ... and Monday 07:30Z, after the switch on Oct 25, is 09:30 EET: pre-open.
+            (
+                utc(2026, 10, 26, 7, 30),
+                PreOpen,
+                "2026-10-26",
+                "2026-10-23",
+            ),
+            // Winter: 08:00Z is 10:00 EET, the open.
+            (utc(2027, 1, 12, 7, 59), PreOpen, "2027-01-12", "2027-01-11"),
+            (utc(2027, 1, 12, 8, 0), Intraday, "2027-01-12", "2027-01-11"),
+            // Epiphany, Wednesday: closed.
+            (
+                utc(2027, 1, 6, 8, 0),
+                NonTradingDay,
+                "2027-01-07",
+                "2027-01-05",
+            ),
+            // Independence Day 2027 is a Monday: Friday after the close skips it.
+            (
+                utc(2027, 12, 3, 16, 45),
+                AfterClose,
+                "2027-12-07",
+                "2027-12-03",
+            ),
+            // New Year: Dec 31 and Jan 1 are closed, Jan 2-3 is a weekend.
+            (
+                utc(2026, 12, 30, 17, 0),
+                AfterClose,
+                "2027-01-04",
+                "2026-12-30",
+            ),
+            // Midsummer Eve, Friday: closed.
+            (
+                utc(2026, 6, 19, 7, 0),
+                NonTradingDay,
+                "2026-06-22",
+                "2026-06-18",
+            ),
+            // 19:00 EET before Good Friday and Easter Monday 2027.
+            (
+                utc(2027, 3, 25, 17, 0),
+                AfterClose,
+                "2027-03-30",
+                "2027-03-25",
+            ),
+            // Christmas Eve is a full closure in Helsinki (no half day).
+            (
+                utc(2026, 12, 24, 9, 0),
+                NonTradingDay,
+                "2026-12-28",
+                "2026-12-23",
+            ),
+        ];
+        for (at, session, r, b) in cases {
+            let p = plan(at, &c, &hel()).unwrap_or_else(|| panic!("{at} unknown"));
+            assert_eq!(p.session, session, "{at} session");
+            assert_eq!(p.reaction_date, d(r), "{at} reaction");
+            assert_eq!(p.base_date, d(b), "{at} base");
+        }
+    }
+
+    /// The same instant for a Stockholm and a Helsinki company: Helsinki closes
+    /// on Independence Day (a Monday in 2027), Stockholm does not.
+    #[test]
+    fn independence_day_moves_the_helsinki_reaction_but_not_the_stockholm_one() {
+        let at = utc(2027, 12, 3, 16, 45); // 18:45 EET / 17:45 CET, Friday
+        let fi = plan(at, &fi_cal(), &hel()).unwrap();
+        let se = plan(at, &se_cal(), &sto()).unwrap();
+        assert_eq!(
+            (fi.session, fi.reaction_date),
+            (Session::AfterClose, d("2027-12-07"))
+        );
+        assert_eq!(
+            (se.session, se.reaction_date),
+            (Session::AfterClose, d("2027-12-06"))
+        );
+        assert_eq!(fi.base_date, d("2027-12-03"));
+        assert_eq!(se.base_date, d("2027-12-03"));
+    }
+
+    /// The mix-ups the table above exists to catch really do change the answer.
+    #[test]
+    fn a_stockholm_hours_or_calendar_mix_up_would_fail_the_helsinki_cases() {
+        // Helsinki's zone with Stockholm's hours (09:00-17:30).
+        let wrong_hours = Exchange {
+            open: hm(9, 0),
+            close: hm(17, 30),
+            ..hel()
+        };
+        let at = utc(2026, 10, 22, 6, 30); // 09:30 EEST
+        assert_eq!(
+            plan(at, &fi_cal(), &hel()).unwrap().session,
+            Session::PreOpen
+        );
+        assert_eq!(
+            plan(at, &fi_cal(), &wrong_hours).unwrap().session,
+            Session::Intraday
+        );
+        let at = utc(2026, 10, 22, 15, 0); // 18:00 EEST
+        let right = plan(at, &fi_cal(), &hel()).unwrap();
+        let wrong = plan(at, &fi_cal(), &wrong_hours).unwrap();
+        assert_eq!(
+            (right.session, right.reaction_date),
+            (Session::Intraday, d("2026-10-22"))
+        );
+        assert_eq!(
+            (wrong.session, wrong.reaction_date),
+            (Session::AfterClose, d("2026-10-23"))
+        );
+        // Stockholm's holidays for a Helsinki company.
+        let at = utc(2027, 12, 3, 16, 45);
+        assert_eq!(
+            plan(at, &se_cal(), &hel()).unwrap().reaction_date,
+            d("2027-12-06")
+        );
+        // Stockholm's time zone with Helsinki's hours: 09:30 Stockholm is 10:30 EEST.
+        let wrong_zone = Exchange {
+            timezone: "Europe/Stockholm".parse().unwrap(),
+            ..hel()
+        };
+        let at = utc(2026, 10, 22, 7, 30); // 09:30 CEST / 10:30 EEST
+        assert_eq!(
+            plan(at, &fi_cal(), &hel()).unwrap().session,
+            Session::Intraday
+        );
+        assert_eq!(
+            plan(at, &fi_cal(), &wrong_zone).unwrap().session,
+            Session::PreOpen
+        );
+    }
+
+    /// First North Finland shares Helsinki's row apart from the MIC.
+    #[test]
+    fn fnfi_behaves_like_xhel() {
+        let fnfi = Exchange {
+            mic: "FNFI".into(),
+            ..hel()
+        };
+        for at in [
+            utc(2026, 10, 22, 6, 30),
+            utc(2026, 10, 22, 15, 35),
+            utc(2027, 12, 3, 16, 45),
+            utc(2027, 1, 6, 8, 0),
+        ] {
+            let (a, b) = (
+                plan(at, &fi_cal(), &hel()).unwrap(),
+                plan(at, &fi_cal(), &fnfi).unwrap(),
+            );
+            assert_eq!(
+                (a.session, a.reaction_date, a.base_date),
+                (b.session, b.reaction_date, b.base_date),
+                "{at}"
+            );
+        }
+    }
+
     #[test]
     fn session_boundaries() {
         let c = cal();
@@ -1315,12 +1616,13 @@ mod tests {
             "INSERT INTO daily_bars (ticker, exchange_mic, date, open, high, low, close, volume, \
                currency, source, fetched_at) \
              VALUES ($1, $2, $3::date, $4::numeric, $4::numeric, $4::numeric, $4::numeric, 1, \
-               'DKK', 'saxo', now())",
+               $5, 'saxo', now())",
         )
         .bind(ticker)
         .bind(mic)
         .bind(date)
         .bind(close)
+        .bind(model::asset::mic::currency(mic).unwrap_or("SEK"))
         .execute(pool)
         .await
         .unwrap();
@@ -1531,6 +1833,171 @@ mod tests {
             );
             assert_eq!(ex.half_day_close, None);
         }
+    }
+
+    // ── Finland (XHEL/FNFI): the `exchanges` row and FI holidays decide ─────
+
+    /// FI closures as `nexus calendar sync --country FI` would store them, 2015
+    /// and 2027 as range markers (the list of `fi_cal`). Sweden's are seeded by
+    /// the migration.
+    async fn seed_finland(pool: &PgPool) {
+        let values = [
+            "2015-01-01",
+            "2026-01-01",
+            "2026-01-06",
+            "2026-04-03",
+            "2026-04-06",
+            "2026-05-01",
+            "2026-05-14",
+            "2026-06-19",
+            "2026-12-24",
+            "2026-12-25",
+            "2026-12-31",
+            "2027-01-01",
+            "2027-01-06",
+            "2027-03-26",
+            "2027-03-29",
+            "2027-05-06",
+            "2027-06-25",
+            "2027-12-06",
+            "2027-12-24",
+            "2027-12-31",
+        ]
+        .iter()
+        .map(|d| format!("('FI','{d}','closed','test')"))
+        .collect::<Vec<_>>()
+        .join(", ");
+        sqlx::query(&format!(
+            "INSERT INTO trading_holidays (country, date, status, note) VALUES {values}"
+        ))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Like `expect`, for dates that may lie in the future (`data_status` is then
+    /// `future`): checks the session and both days only.
+    async fn expect_days(
+        pool: &PgPool,
+        (ticker, mic): (&str, &str),
+        at: DateTime<Utc>,
+        (session, r, b): (&str, &str, &str),
+    ) {
+        let id = report(pool, ticker, mic, at).await;
+        bar_of(pool, ticker, mic, b, "100.000000").await;
+        bar_of(pool, ticker, mic, r, "110.000000").await;
+        refresh_report_reactions(pool, ticker, mic).await.unwrap();
+        let got = row(pool, id).await;
+        assert_eq!(got.session.as_deref(), Some(session), "{ticker}/{mic} {at}");
+        assert_eq!(
+            got.reaction_date.as_deref(),
+            Some(r),
+            "{ticker}/{mic} {at} r"
+        );
+        assert_eq!(got.base_date.as_deref(), Some(b), "{ticker}/{mic} {at} b");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn metso_reports_before_the_open_and_the_move_is_the_same_days(pool: PgPool) {
+        seed_finland(&pool).await;
+        // Q3 2026: 06:00Z = 09:00 Helsinki. Closes 100 -> 110 give 10 %.
+        expect(
+            &pool,
+            ("METSO", "XHEL"),
+            utc(2026, 10, 22, 6, 0),
+            ("pre_open", "2026-10-22", "2026-10-21"),
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn helsinki_sessions_follow_the_exchanges_row_and_the_fi_calendar(pool: PgPool) {
+        seed_finland(&pool).await;
+        // (instant, session, reaction day, base day), as in `helsinki_sessions_and_reaction_days`.
+        let cases = [
+            (
+                utc(2026, 10, 22, 6, 30),
+                ("pre_open", "2026-10-22", "2026-10-21"),
+            ),
+            (
+                utc(2026, 10, 22, 7, 30),
+                ("intraday", "2026-10-22", "2026-10-21"),
+            ),
+            (
+                utc(2026, 10, 22, 15, 0),
+                ("intraday", "2026-10-22", "2026-10-21"),
+            ),
+            (
+                utc(2026, 10, 22, 15, 35),
+                ("after_close", "2026-10-23", "2026-10-22"),
+            ),
+            (
+                utc(2026, 10, 23, 7, 30),
+                ("intraday", "2026-10-23", "2026-10-22"),
+            ),
+            (
+                utc(2026, 10, 26, 7, 30),
+                ("pre_open", "2026-10-26", "2026-10-23"),
+            ),
+            (
+                utc(2027, 1, 6, 8, 0),
+                ("non_trading_day", "2027-01-07", "2027-01-05"),
+            ),
+            (
+                utc(2027, 12, 3, 16, 45),
+                ("after_close", "2027-12-07", "2027-12-03"),
+            ),
+            (
+                utc(2026, 12, 30, 17, 0),
+                ("after_close", "2027-01-04", "2026-12-30"),
+            ),
+            (
+                utc(2026, 6, 19, 7, 0),
+                ("non_trading_day", "2026-06-22", "2026-06-18"),
+            ),
+        ];
+        for (n, (at, want)) in cases.into_iter().enumerate() {
+            expect_days(&pool, (&format!("HEL{n}"), "XHEL"), at, want).await;
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn independence_day_skips_helsinki_but_not_stockholm(pool: PgPool) {
+        seed_finland(&pool).await;
+        let at = utc(2027, 12, 3, 16, 45);
+        expect_days(
+            &pool,
+            ("FI", "XHEL"),
+            at,
+            ("after_close", "2027-12-07", "2027-12-03"),
+        )
+        .await;
+        expect_days(
+            &pool,
+            ("SE", "XSTO"),
+            at,
+            ("after_close", "2027-12-06", "2027-12-03"),
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn first_north_finland_is_helsinki(pool: PgPool) {
+        seed_finland(&pool).await;
+        expect_days(
+            &pool,
+            ("FNFI1", "FNFI"),
+            utc(2026, 10, 22, 6, 30),
+            ("pre_open", "2026-10-22", "2026-10-21"),
+        )
+        .await;
+        expect_days(
+            &pool,
+            ("FNFI2", "FNFI"),
+            utc(2026, 10, 22, 15, 35),
+            ("after_close", "2026-10-23", "2026-10-22"),
+        )
+        .await;
     }
 
     #[sqlx::test(migrations = "./migrations")]
