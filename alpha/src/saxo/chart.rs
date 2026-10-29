@@ -255,7 +255,12 @@ impl ChartClient {
                 Ok(r) => r,
                 // No response at all: worth another try.
                 Err(e) if attempt < MAX_ATTEMPTS => {
-                    warn!(uic, error = %e, ?backoff, "Saxo chart request failed, retrying");
+                    warn!(
+                        uic,
+                        error = super::error_chain(&e),
+                        ?backoff,
+                        "Saxo chart request failed, retrying"
+                    );
                     tokio::time::sleep(backoff).await;
                     continue;
                 }

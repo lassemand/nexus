@@ -224,7 +224,7 @@ async fn daily_bars_sweep(
                 out.failures += 1;
                 out.transient += usize::from(e.is_transient());
                 counter!("saxo_daily_bars_failures_total").increment(1);
-                error!(ticker, exchange_mic = %inst.exchange_mic, error = %e,
+                error!(ticker, exchange_mic = %inst.exchange_mic, error = alpha::saxo::error_chain(&e),
                        transient = e.is_transient(), "daily bars: Uic resolution failed");
                 continue;
             }
