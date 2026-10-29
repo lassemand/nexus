@@ -26,7 +26,8 @@ its mappings) appear at the next `pdmr`, `nordic-reports` (daily at 22:00) or
 
 ## Source mappings
 
-For a listing on `FNSE`, `XSTO`, `XCSE` or `FNDK`, `nexus register`:
+For a listing on `FNSE`, `XSTO`, `XCSE`, `FNDK`, `XHEL` or `FNFI`
+(`model::asset::mic::NORDIC`), `nexus register`:
 
 1. Searches MFN's company search (`https://mfn.se/search/companies?query=<TICKER>`)
    and keeps the companies whose `tickers` contain `<MIC>:<TICKER>`, compared
@@ -61,6 +62,46 @@ currency from it. The registry keeps the Yahoo symbol without its suffix
   Yahoo's exchange; `--mic FNDK` on a `.ST` symbol is an error.
 - Check the result line, e.g. `registered (XCSE / DKK), MFN …`. A wrong
   listing is withdrawn with `nexus unregister` (below).
+
+## Finnish companies
+
+Register with the Yahoo symbol and its `.HE` suffix:
+
+```bash
+nexus register <TICKER>.HE            # Nasdaq Helsinki  -> XHEL / EUR
+nexus register <TICKER>.HE --mic FNFI # First North Finland -> FNFI / EUR
+```
+
+Yahoo reports `HEL` for both markets, so a First North Finland company needs
+`--mic FNFI` (the same way `--mic FNDK` is needed in Copenhagen). The MIC must be
+in Finland: `--mic XCSE` on a `.HE` symbol is an error. Prices stay in EUR.
+Share classes have no separator in Finland (`<TICKER>`, not `<TICKER>-B`), so
+MFN's `XHEL:<TICKER>` matches the registry ticker as is.
+
+**Same-name trap.** MFN can hold two different companies with the same name.
+Metso is the example: `metso` is the old Metso Oyj (renamed Neles in 2020, since
+merged into Valmet; ISIN FI4000440664, `XHEL:NELES`), while `metso-2` is today's
+Metso (ISIN FI0009014575, `XHEL:METSO`). Both ISINs are valid, so an ISIN check
+does not catch the mix-up; the `XHEL:METSO` ticker does, which is why the lookup
+matches on `<MIC>:<TICKER>` and only takes a company that lists it. If the search
+finds only companies that do not list the ticker, `nexus register` does not pick
+one: it lists them and asks (`0` for none, then pass `--mfn-slug`). Check the
+result line: `MFN <slug> (<name>), ISIN <isin>`.
+
+Check the mapping in both databases (chronicle's and signal's `companies`, after
+the registry sync):
+
+```sql
+SELECT ticker, exchange_mic, mfn_slug, isin FROM companies WHERE exchange_mic IN ('XHEL','FNFI');
+```
+
+Finland has no insider register like Sweden's, so there is no FI issuer. Finnish
+insider trades come from the issuers' own MFN releases (a later task), not from a
+regulator register.
+
+Until the reports task switches `nordic-reports` to the shared MIC list,
+`nordic-reports` skips Finnish companies. `nordic-calendar` and `nordic-live` read
+every company with an `mfn_slug`, so they do pick up a registered Finnish company.
 
 ## Unregistering
 

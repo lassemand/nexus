@@ -69,10 +69,11 @@ impl MfnCompany {
 
 /// Whether a listing on `exchange_mic` has Nordic report sources.
 pub fn is_nordic(exchange_mic: &str) -> bool {
-    [mic::FNSE, mic::XSTO, mic::XCSE, mic::FNDK].contains(&exchange_mic)
+    mic::NORDIC.contains(&exchange_mic)
 }
 
-/// Whether a listing on `exchange_mic` is covered by FI's insider register.
+/// Whether a listing on `exchange_mic` is covered by FI's insider register
+/// (Sweden only: Finnish insider trades come from issuers' MFN releases).
 fn is_swedish(exchange_mic: &str) -> bool {
     mic::country(exchange_mic) == Some("SE")
 }
@@ -375,6 +376,74 @@ mod tests {
         assert!(matching(&found, "TRMD-A", "FNDK").is_empty());
         assert!(matching(&found, "TRMD", "XCSE").is_empty());
         assert_eq!(matching(&found, "volv-b", "XSTO")[0].slug, "volvo");
+    }
+
+    #[test]
+    fn nordic_covers_finland_and_only_sweden_has_an_fi_register() {
+        for m in ["FNSE", "XSTO", "XCSE", "FNDK", "XHEL", "FNFI"] {
+            assert!(is_nordic(m), "{m}");
+        }
+        assert!(!is_nordic("XNAS") && !is_nordic("XOSL"));
+        assert!(is_swedish("FNSE") && is_swedish("XSTO"));
+        for m in ["XHEL", "FNFI", "XCSE", "FNDK", "XNAS"] {
+            assert!(!is_swedish(m), "{m}");
+        }
+    }
+
+    /// Two MFN companies are called Metso; only `metso-2` lists `XHEL:METSO`.
+    const METSO_SEARCH: &str = r#"[
+        {"slug":"metso","name":"Metso","tickers":["XHEL:NELES"],"isins":["FI4000440664"]},
+        {"slug":"metso-2","name":"Metso","tickers":["XHEL:METSO","CAPA:METSOh","XLON:0MGI"],"isins":["FI0009014575"]}
+    ]"#;
+
+    #[tokio::test]
+    async fn metso_maps_to_metso_2_not_the_old_metso_without_asking() {
+        let server = server_with("METSO", METSO_SEARCH).await;
+        let lookup = Lookup::with_bases(reqwest::Client::new(), &server.uri(), &server.uri());
+        let mut chooser = scripted(&[]);
+        let m = lookup
+            .mappings("METSO", "XHEL", &Overrides::default(), &mut chooser)
+            .await;
+        assert_eq!(m.mfn_slug.as_deref(), Some("metso-2"));
+        assert_eq!(m.name.as_deref(), Some("Metso"));
+        assert_eq!(m.isin.as_deref(), Some("FI0009014575"));
+        assert_eq!(m.fi_issuer, None, "Finland has no FI issuer");
+        assert!(chooser.asked.is_empty(), "no prompt");
+    }
+
+    #[tokio::test]
+    async fn if_only_the_old_company_is_found_it_is_not_picked_but_asked() {
+        let only_old = r#"[{"slug":"metso","name":"Metso","tickers":["XHEL:NELES"],"isins":["FI4000440664"]}]"#;
+        let server = server_with("METSO", only_old).await;
+        let lookup = Lookup::with_bases(reqwest::Client::new(), &server.uri(), &server.uri());
+        let mut chooser = scripted(&[None]);
+        let m = lookup
+            .mappings("METSO", "XHEL", &Overrides::default(), &mut chooser)
+            .await;
+        assert_eq!(m, Mappings::default(), "declined: nothing is mapped");
+        assert_eq!(chooser.asked.len(), 1);
+        assert!(chooser.asked[0]
+            .0
+            .contains("no MFN company lists this ticker"));
+    }
+
+    #[tokio::test]
+    async fn finnish_tickers_match_on_their_own_mic() {
+        let found = r#"[{"slug":"kne","name":"Kone","tickers":["XHEL:KNEBV"],"isins":["FI0009013403"]},
+            {"slug":"sampo","name":"Sampo","tickers":["FNFI:SAMPO"],"isins":["FI4000552500"]}]"#;
+        let server = server_with("KNEBV", found).await;
+        let lookup = Lookup::with_bases(reqwest::Client::new(), &server.uri(), &server.uri());
+        let mut chooser = scripted(&[]);
+        let m = lookup
+            .mappings("KNEBV", "XHEL", &Overrides::default(), &mut chooser)
+            .await;
+        assert_eq!(m.mfn_slug.as_deref(), Some("kne"));
+        let list = [
+            company("kne", "Kone", &["XHEL:KNEBV"]),
+            company("sampo", "Sampo", &["FNFI:SAMPO"]),
+        ];
+        assert!(matching(&list, "SAMPO", "XHEL").is_empty());
+        assert_eq!(matching(&list, "SAMPO", "FNFI")[0].slug, "sampo");
     }
 
     #[test]

@@ -7,6 +7,8 @@ use model::asset::mic;
 /// Stockholm, Nasdaq Copenhagen and First North Denmark. One list for
 /// `nordic-reports`; `nordic-calendar` and `nordic-live` take every company
 /// that has an `mfn_slug`, whatever its MIC.
+// TODO(finnish reports task): switch to `model::asset::mic::NORDIC` so Finnish
+// companies (XHEL/FNFI) are ingested; until then chronicle skips them.
 pub const NORDIC_MICS: &[&str] = &[mic::FNSE, mic::XSTO, mic::XCSE, mic::FNDK];
 
 pub mod calendar;
