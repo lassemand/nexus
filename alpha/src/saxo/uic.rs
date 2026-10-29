@@ -536,6 +536,68 @@ mod tests {
             assert!(!got.currency_mismatch);
         }
 
+        const METSO_ISIN: &str = "FI0009014575";
+
+        /// ISIN + the Helsinki ExchangeId pick exactly one instrument: not the
+        /// London line, not a US line, and the Stock asset type excludes CFDs.
+        #[tokio::test]
+        async fn metso_resolves_to_the_helsinki_line_only() {
+            let server = MockServer::start().await;
+            mock_keywords(
+                &server,
+                METSO_ISIN,
+                list(&[
+                    stock(10, "0MGI:xlon", "LSE_INTL", "GBP"),
+                    stock(11, "METSO:xhel", "HSE", "EUR"),
+                ]),
+            )
+            .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let q = InstrumentQuery {
+                isin: Some(METSO_ISIN),
+                registry_currency: Some("EUR"),
+                ..InstrumentQuery::new("METSO", "XHEL")
+            };
+            let got = r.resolve_with_cfd_check(&q, "t").await.unwrap();
+            assert_eq!(
+                (got.uic, got.exchange_mic.as_str(), got.currency.as_str()),
+                (11, "XHEL", "EUR")
+            );
+            assert!(!got.currency_mismatch);
+        }
+
+        #[tokio::test]
+        async fn two_helsinki_candidates_are_ambiguous() {
+            let server = MockServer::start().await;
+            mock_keywords(
+                &server,
+                METSO_ISIN,
+                list(&[
+                    stock(11, "METSO:xhel", "HSE", "EUR"),
+                    stock(12, "METSOa:xhel", "HSE", "EUR"),
+                    stock(10, "0MGI:xlon", "LSE_INTL", "GBP"),
+                ]),
+            )
+            .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let q = InstrumentQuery {
+                isin: Some(METSO_ISIN),
+                ..InstrumentQuery::new("METSO", "XHEL")
+            };
+            match r.resolve_with_cfd_check(&q, "t").await.unwrap_err() {
+                UicResolverError::Ambiguous { symbols, .. } => {
+                    assert_eq!(symbols, vec!["METSO:xhel", "METSOa:xhel"])
+                }
+                e => panic!("{e:?}"),
+            }
+        }
+
+        #[test]
+        fn finnish_mics_have_exchange_ids() {
+            assert!(exchange_ids::default_for("XHEL").is_some());
+            assert!(exchange_ids::default_for("FNFI").is_some());
+        }
+
         #[tokio::test]
         async fn text_fallback_tries_the_hyphen_as_a_space() {
             let server = MockServer::start().await;

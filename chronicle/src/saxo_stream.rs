@@ -79,7 +79,7 @@ struct Args {
         long,
         env = "SAXO_MICS",
         value_delimiter = ',',
-        default_value = "FNSE,XSTO,XCSE,FNDK"
+        default_value = "FNSE,XSTO,XCSE,FNDK,XHEL,FNFI"
     )]
     saxo_mics: Vec<String>,
 
@@ -977,6 +977,28 @@ mod backoff_tests {
             vec![("FNSE", 0), ("XSTO", 1), ("XCSE", 2), ("FNDK", 0)]
         );
         assert_eq!(list[2].query().isin, None);
+    }
+
+    /// Every MIC the stream covers by default must have a built-in ExchangeId,
+    /// or its companies could never be resolved.
+    #[test]
+    fn every_default_mic_has_a_saxo_exchange_id_and_a_time_zone() {
+        use clap::Parser;
+        let args = Args::parse_from([
+            "saxo_stream",
+            "--database-url=x",
+            "--kafka-brokers=x",
+            "--saxo-client-id=x",
+            "--saxo-client-secret=x",
+        ]);
+        let mics: Vec<&str> = args.saxo_mics.iter().map(String::as_str).collect();
+        assert_eq!(mics, ["FNSE", "XSTO", "XCSE", "FNDK", "XHEL", "FNFI"]);
+        assert_eq!(mics, model::asset::mic::NORDIC);
+        for m in mics {
+            assert!(alpha::saxo::exchange_ids::default_for(m).is_some(), "{m}");
+            assert!(model::exchange::timezone(m).is_some(), "{m}");
+            assert!(model::asset::mic::currency(m).is_some(), "{m}");
+        }
     }
 
     #[test]
