@@ -8,13 +8,9 @@
 //! # Definitions
 //!
 //! Everything exchange-specific comes from the `exchanges` table (one row per
-//! MIC, loaded once per refresh):
-//!
-//! | MIC            | country | time zone           | open  | close | half-day close |
-//! |----------------|---------|---------------------|-------|-------|----------------|
-//! | `FNSE`, `XSTO` | `SE`    | `Europe/Stockholm`  | 09:00 | 17:30 | 13:00          |
-//! | `XCSE`, `FNDK` | `DK`    | `Europe/Copenhagen` | 09:00 | 17:00 | none           |
-//! | `XHEL`, `FNFI` | `FI`    | `Europe/Helsinki`   | 10:00 | 18:30 | none           |
+//! MIC, loaded once per refresh). Its rows mirror `model::nordic` (country,
+//! time zone, hours, half-day close, currency), which holds the values; a test
+//! in this module keeps the two in step.
 //!
 //! Let `t` be the release instant in the exchange's local time (its own
 //! `timezone`, never another city's) and `d` its local date. The regular
@@ -1802,21 +1798,48 @@ mod tests {
         .await;
     }
 
+    /// The `exchanges` table (read by the SQL in this module) and
+    /// `model::nordic` hold the same facts: every venue has a row with the same
+    /// country, time zone, hours and currency, and every row has a venue.
     #[sqlx::test(migrations = "./migrations")]
-    async fn exchanges_and_the_alpha_country_map_agree(pool: PgPool) {
-        let rows = sqlx::query("SELECT mic, country FROM exchanges")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), 6, "FNSE, XSTO, XCSE, FNDK, XHEL, FNFI");
-        for r in rows {
-            let (mic, country): (String, String) = (r.get("mic"), r.get("country"));
+    async fn exchanges_table_and_model_nordic_agree(pool: PgPool) {
+        use chrono::NaiveTime;
+        let rows = sqlx::query(
+            "SELECT mic, country, timezone, open_local, close_local, half_day_close_local, currency \
+             FROM exchanges",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for r in &rows {
+            let mic: String = r.get("mic");
+            let country = model::nordic::country_for_mic(&mic)
+                .unwrap_or_else(|| panic!("exchanges row {mic} has no model::nordic venue"));
+            let venue = model::nordic::venue(&mic).unwrap();
+            assert_eq!(r.get::<String, _>("country"), country.code, "{mic}");
+            assert_eq!(r.get::<String, _>("timezone"), country.timezone, "{mic}");
+            assert_eq!(r.get::<String, _>("currency"), country.currency, "{mic}");
             assert_eq!(
-                alpha::calendar::country_for_exchange(&mic),
-                Some(country.as_str()),
+                Some(r.get::<NaiveTime, _>("open_local")),
+                venue.open_local.to_naive(),
                 "{mic}"
             );
+            assert_eq!(
+                Some(r.get::<NaiveTime, _>("close_local")),
+                venue.close_local.to_naive(),
+                "{mic}"
+            );
+            assert_eq!(
+                r.get::<Option<NaiveTime>, _>("half_day_close_local"),
+                venue.half_day_close_local.and_then(|t| t.to_naive()),
+                "{mic}"
+            );
+            seen.insert(mic);
         }
+        let expected: std::collections::BTreeSet<String> =
+            model::nordic::nordic_mics().map(String::from).collect();
+        assert_eq!(seen, expected, "a venue has no exchanges row");
     }
 
     #[sqlx::test(migrations = "./migrations")]

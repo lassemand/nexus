@@ -58,9 +58,9 @@ const REPORT_LABELS: &[(&str, ReportKind)] = &[
 /// One upcoming report from the calendar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CalendarEntry {
-    /// Expected release date (Europe/Stockholm).
+    /// Expected release date (`model::nordic::MFN_TIMEZONE`).
     pub date: NaiveDate,
-    /// Estimated release time (Europe/Stockholm); `None` when MFN shows `-`.
+    /// Estimated release time (`model::nordic::MFN_TIMEZONE`); `None` when MFN shows `-`.
     pub time: Option<NaiveTime>,
     /// Original label, e.g. `Kvartalsrapport 2026-Q3`.
     pub label: String,

@@ -442,7 +442,7 @@ async fn validate_and_resolve(
         None => {
             anyhow::bail!(
                 "Yahoo exchange code '{yahoo_exchange}' for '{input}' is not in the MIC \
-                 mapping table — add it to model::asset::mic::YAHOO_EXCHANGE_TO_MIC \
+                 mapping table — add it to a model::nordic venue (Nordic) or model::asset::mic::YAHOO_EXCHANGE_TO_MIC \
                  before registering this ticker"
             );
         }

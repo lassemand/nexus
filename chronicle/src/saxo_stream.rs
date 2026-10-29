@@ -84,7 +84,7 @@ struct Args {
     saxo_mics: Vec<String>,
 
     /// Overrides of the built-in Saxo ExchangeIds, `MIC=ExchangeId` comma
-    /// separated (e.g. `XCSE=CSE,FNDK=CSE_FN-DK`), for when the built-in table
+    /// separated (e.g. `<MIC>=<ExchangeId>,...`), for when the built-in table
     /// (`alpha::saxo::exchange_ids`) does not match `GET /ref/v1/exchanges`.
     #[arg(long, env = "SAXO_EXCHANGE_IDS", value_delimiter = ',')]
     saxo_exchange_ids: Vec<String>,
@@ -192,7 +192,7 @@ impl BarSink for KafkaBarSink {
     }
 }
 
-/// Local time (Europe/Stockholm) of the daily refresh, after the 17:30 close.
+/// Local time (Stockholm, see `model::nordic`) of the daily refresh, after the 17:30 close.
 const DAILY_BARS_HOUR: u32 = 18;
 const DAILY_BARS_MINUTE: u32 = 30;
 /// Minimum gap between chart requests (they count against Saxo's per-session

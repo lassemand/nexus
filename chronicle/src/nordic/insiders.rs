@@ -17,9 +17,9 @@ use super::feed::NewsItem;
 use super::mar_release::{parse, MarParseError, ParsedMarTransaction, ReleaseContext};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
-use model::asset::mic;
 use model::generated::UnifiedInsiderTransaction;
 use model::insider::transaction_id;
+use model::nordic::{self, InsiderSourceKind};
 use prost::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
@@ -52,9 +52,11 @@ const TEXT_PHRASES: &[&str] = &[
     "ilmoitusvelvollinen",
 ];
 
-/// True for companies listed in Finland.
-pub fn is_finnish(exchange_mic: &str) -> bool {
-    mic::country(exchange_mic) == Some("FI")
+/// True for listings whose country takes its insider transactions from issuers'
+/// MAR releases on MFN ([`InsiderSourceKind::MarReleases`]).
+pub fn uses_mar_releases(exchange_mic: &str) -> bool {
+    nordic::country_for_mic(exchange_mic)
+        .is_some_and(|c| c.insider_source == InsiderSourceKind::MarReleases)
 }
 
 /// True if the item is a managers' transaction release: the headline (after the
@@ -397,9 +399,9 @@ mod tests {
 
     #[test]
     fn only_finnish_companies_get_insiders() {
-        assert!(is_finnish("XHEL") && is_finnish("FNFI"));
+        assert!(uses_mar_releases("XHEL") && uses_mar_releases("FNFI"));
         for m in ["XSTO", "FNSE", "XCSE", "FNDK", "XNAS"] {
-            assert!(!is_finnish(m), "{m}");
+            assert!(!uses_mar_releases(m), "{m}");
         }
     }
 

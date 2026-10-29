@@ -6,7 +6,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use model::asset::mic;
+use model::nordic::{self, InsiderSourceKind};
 use serde::Deserialize;
 
 const MFN_BASE: &str = "https://mfn.se";
@@ -69,13 +69,14 @@ impl MfnCompany {
 
 /// Whether a listing on `exchange_mic` has Nordic report sources.
 pub fn is_nordic(exchange_mic: &str) -> bool {
-    mic::NORDIC.contains(&exchange_mic)
+    nordic::country_for_mic(exchange_mic).is_some()
 }
 
 /// Whether a listing on `exchange_mic` is covered by FI's insider register
-/// (Sweden only: Finnish insider trades come from issuers' MFN releases).
-fn is_swedish(exchange_mic: &str) -> bool {
-    mic::country(exchange_mic) == Some("SE")
+/// (Finnish insider trades come from issuers' MFN releases instead).
+fn uses_fi_register(exchange_mic: &str) -> bool {
+    nordic::country_for_mic(exchange_mic)
+        .is_some_and(|c| c.insider_source == InsiderSourceKind::FiRegister)
 }
 
 /// Uppercase without spaces or hyphens, as `nordic-reports` compares tickers
@@ -242,7 +243,7 @@ impl Lookup {
             out.isin = isin;
         }
 
-        if is_swedish(exchange_mic) {
+        if uses_fi_register(exchange_mic) {
             out.fi_issuer = match (&overrides.fi_issuer, &out.name) {
                 (Some(issuer), _) => Some(issuer.clone()),
                 (None, Some(name)) => match self.fi_issuers(name).await {
@@ -384,9 +385,9 @@ mod tests {
             assert!(is_nordic(m), "{m}");
         }
         assert!(!is_nordic("XNAS") && !is_nordic("XOSL"));
-        assert!(is_swedish("FNSE") && is_swedish("XSTO"));
+        assert!(uses_fi_register("FNSE") && uses_fi_register("XSTO"));
         for m in ["XHEL", "FNFI", "XCSE", "FNDK", "XNAS"] {
-            assert!(!is_swedish(m), "{m}");
+            assert!(!uses_fi_register(m), "{m}");
         }
     }
 

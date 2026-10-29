@@ -24,9 +24,13 @@ pub mod mic {
 
     /// Every Nordic venue we cover, in one list: Sweden, Denmark and Finland.
     /// The CLI uses it to decide which listings get MFN/ISIN mappings.
-    pub const NORDIC: &[&str] = &[FNSE, XSTO, XCSE, FNDK, XHEL, FNFI];
+    /// Derived from [`crate::nordic::COUNTRIES`].
+    pub const NORDIC: &[&str] = &crate::nordic::NORDIC_MICS;
 
-    /// Mapping from Yahoo Finance `exchangeName` codes to ISO 10383 MIC codes.
+    /// Mapping from Yahoo Finance `exchangeName` codes to ISO 10383 MIC codes
+    /// for the **non-Nordic** venues. The Nordic codes live on
+    /// [`crate::nordic::Venue::yahoo_exchange_codes`]; use
+    /// [`mic_for_yahoo_exchange`] to resolve either kind.
     ///
     /// Yahoo's `exchangeName` field (from `chart/meta.exchangeName`) uses
     /// abbreviated codes that differ from ISO MICs. This table maps known
@@ -45,12 +49,6 @@ pub mod mic {
         ("ASE", "XASE"), // NYSE American (formerly AMEX)
         ("PCX", "ARCX"), // NYSE Arca
         ("BTS", "XBTS"), // CBOE BZX Exchange
-        // ── Sweden ────────────────────────────────────────────────────────
-        ("STO", FNSE), // Nasdaq Stockholm / First North
-        // ── Denmark ───────────────────────────────────────────────────────
-        ("CPH", XCSE), // Nasdaq Copenhagen
-        // ── Finland ───────────────────────────────────────────────────────
-        ("HEL", XHEL), // Nasdaq Helsinki
         // ── Norway ────────────────────────────────────────────────────────
         ("OSL", "XOSL"), // Oslo Børs
         // ── Germany ───────────────────────────────────────────────────────
@@ -68,10 +66,17 @@ pub mod mic {
     /// Returns `None` if the code is not in the mapping table — callers
     /// must fail loudly on `None` rather than silently defaulting.
     pub fn mic_for_yahoo_exchange(yahoo_code: &str) -> Option<&'static str> {
-        YAHOO_EXCHANGE_TO_MIC
+        crate::nordic::COUNTRIES
             .iter()
-            .find(|(code, _)| *code == yahoo_code)
-            .map(|(_, mic)| *mic)
+            .flat_map(|c| c.venues.iter())
+            .find(|v| v.yahoo_exchange_codes.contains(&yahoo_code))
+            .map(|v| v.mic)
+            .or_else(|| {
+                YAHOO_EXCHANGE_TO_MIC
+                    .iter()
+                    .find(|(code, _)| *code == yahoo_code)
+                    .map(|(_, mic)| *mic)
+            })
     }
 
     /// Whether `exchange_mic` is a US venue. Polygon only covers US listings,
@@ -82,13 +87,10 @@ pub mod mic {
 
     /// ISO 3166-1 alpha-2 country of a known MIC, `None` for unknown ones.
     pub fn country(exchange_mic: &str) -> Option<&'static str> {
-        match exchange_mic {
-            m if is_us(m) => Some("US"),
-            FNSE | XSTO => Some("SE"),
-            XCSE | FNDK => Some("DK"),
-            XHEL | FNFI => Some("FI"),
-            _ => None,
+        if is_us(exchange_mic) {
+            return Some("US");
         }
+        crate::nordic::country_for_mic(exchange_mic).map(|c| c.code)
     }
 
     /// Applies a user's `--mic` override to the MIC Yahoo implied.
@@ -120,14 +122,10 @@ pub mod mic {
     /// MIC returns `None`: a currency is never guessed, so callers must handle
     /// it (or take the currency from the data source).
     pub fn currency(exchange_mic: &str) -> Option<&'static str> {
-        match exchange_mic {
-            m if is_us(m) => Some("USD"),
-            FNSE | XSTO => Some("SEK"),
-            XCSE | FNDK => Some("DKK"),
-            // Finland uses the euro: prices stay in EUR, nothing is converted.
-            XHEL | FNFI => Some("EUR"),
-            _ => None,
+        if is_us(exchange_mic) {
+            return Some("USD");
         }
+        crate::nordic::country_for_mic(exchange_mic).map(|c| c.currency)
     }
 }
 

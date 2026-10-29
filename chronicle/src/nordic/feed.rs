@@ -6,7 +6,7 @@
 //! single full paging pass per company for `--backfill`.
 //!
 //! `publish_date` is RFC 3339 UTC and is used as-is; session classification
-//! happens later in SQL, in Europe/Stockholm.
+//! happens later in SQL, in the MFN calendar time zone (`model::nordic::MFN_TIMEZONE`).
 
 use super::calendar::MfnClient;
 use anyhow::{anyhow, Context};

@@ -284,7 +284,8 @@ async fn check_holidays_populated(pool: &sqlx::PgPool) -> CheckResult {
     let Some(country) = alpha::calendar::country_for_exchange("FNSE") else {
         return CheckResult::fail(
             "holidays_populated",
-            "FNSE has no country mapping in alpha::calendar::EXCHANGE_TO_COUNTRY".to_string(),
+            "FNSE has no country mapping in model::nordic (alpha::calendar::country_for_exchange)"
+                .to_string(),
         );
     };
 
@@ -326,8 +327,9 @@ async fn bootstrap_holidays(
     provider: &alpha::calendar::CalendarProvider,
 ) -> Result<()> {
     let current_year = Utc::now().year();
-    let country = alpha::calendar::country_for_exchange("FNSE")
-        .context("FNSE has no country mapping in alpha::calendar::EXCHANGE_TO_COUNTRY")?;
+    let country = alpha::calendar::country_for_exchange("FNSE").context(
+        "FNSE has no country mapping in model::nordic (alpha::calendar::country_for_exchange)",
+    )?;
 
     let entries = provider
         .holidays_for_country(country, current_year)

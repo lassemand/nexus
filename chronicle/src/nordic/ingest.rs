@@ -98,7 +98,7 @@ pub async fn ingest_company(
     let mut url = first_page_url(&feed.base()?, slug)?;
     // Managers' transactions of a Finnish company, parsed after the paging so a
     // release and its twin are seen together.
-    let finnish = insiders::is_finnish(&company.exchange_mic);
+    let finnish = insiders::uses_mar_releases(&company.exchange_mic);
     let mut insider_items: Vec<NewsItem> = Vec::new();
 
     loop {
@@ -207,30 +207,27 @@ fn count_insider_metrics(company: &Company, stats: &InsiderStats, published: usi
     }
 }
 
-/// Re-reads one Finnish company's feed for managers' transactions only (the
-/// history, or a re-send). Publishes no report events and touches no cursor, so
-/// it can run at any time and as often as needed: the transaction ids are
-/// stable and signal's upsert is idempotent. Pages back to `from`.
-pub async fn ingest_insiders_only(
+/// Pages one company's feed back to `from` and returns its managers'
+/// transaction releases with the number of pages read. Publishes nothing.
+pub async fn collect_insider_items(
     feed: &mut MfnClient,
-    insider_sink: &dyn InsiderSink,
     company: &Company,
     slug: &str,
     from: DateTime<Utc>,
-) -> anyhow::Result<CompanyOutcome> {
+) -> anyhow::Result<(Vec<NewsItem>, usize)> {
     anyhow::ensure!(
-        insiders::is_finnish(&company.exchange_mic),
-        "{}:{} is not a Finnish listing; only Finnish insiders come from MFN",
+        insiders::uses_mar_releases(&company.exchange_mic),
+        "{}:{} does not take its insiders from MFN releases",
         company.exchange_mic,
         company.ticker
     );
-    let mut outcome = CompanyOutcome::default();
+    let mut pages = 0;
     let mut items: Vec<NewsItem> = Vec::new();
     let mut checked = false;
     let mut url = first_page_url(&feed.base()?, slug)?;
     loop {
         let page = fetch_feed_page(feed, url).await?;
-        outcome.pages += 1;
+        pages += 1;
         let oldest = page.items.iter().map(|i| i.published_at).min();
         for item in &page.items {
             if !belongs_to(company, slug, item) {
@@ -248,12 +245,29 @@ pub async fn ingest_insiders_only(
         if oldest.is_some_and(|o| o < from) {
             break;
         }
-        if outcome.pages >= MAX_PAGES {
-            error!(ticker = %company.ticker, pages = outcome.pages, "page cap reached, stopping");
+        if pages >= MAX_PAGES {
+            error!(ticker = %company.ticker, pages, "page cap reached, stopping");
             break;
         }
         url = next;
     }
+    Ok((items, pages))
+}
+
+/// Re-reads one company's feed for managers' transactions only (the history,
+/// or a re-send). Publishes no report events and touches no cursor, so it can
+/// run at any time and as often as needed: the transaction ids are stable and
+/// signal's upsert is idempotent. Pages back to `from`.
+pub async fn ingest_insiders_only(
+    feed: &mut MfnClient,
+    insider_sink: &dyn InsiderSink,
+    company: &Company,
+    slug: &str,
+    from: DateTime<Utc>,
+) -> anyhow::Result<CompanyOutcome> {
+    let mut outcome = CompanyOutcome::default();
+    let (items, pages) = collect_insider_items(feed, company, slug, from).await?;
+    outcome.pages = pages;
     let refs: Vec<&NewsItem> = items.iter().collect();
     let batch = insiders::build(company, &refs);
     for (_, msg) in &batch.messages {
@@ -277,7 +291,7 @@ pub async fn process_insiders_only(
         let Some(slug) = c.mfn_slug.as_deref() else {
             continue;
         };
-        if !insiders::is_finnish(&c.exchange_mic) {
+        if !insiders::uses_mar_releases(&c.exchange_mic) {
             continue;
         }
         summary.attempted += 1;

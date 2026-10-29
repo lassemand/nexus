@@ -85,31 +85,16 @@ impl UicResolverError {
     }
 }
 
-/// Saxo `ExchangeId` for each MIC we stream.
+/// Saxo `ExchangeId` for each MIC we stream, read from
+/// [`model::nordic::Venue::saxo_exchange_id`].
 ///
-/// **Unverified against the live API**: confirm with `GET /ref/v1/exchanges`
-/// (list, then `GET /ref/v1/exchanges/{ExchangeId}` for the `Mic` of each) and
-/// correct here. `SSE_FN-SE` (First North Stockholm) is the value seen on
-/// GOMX; the others follow Saxo's naming and must be checked. Deployments can
-/// override entries without a rebuild, see [`UicResolver::with_exchange_ids`].
+/// Whether an id was confirmed against `GET /ref/v1/exchanges` is recorded
+/// there as `saxo_verified`. Deployments can override entries without a
+/// rebuild, see [`UicResolver::with_exchange_ids`].
 pub mod exchange_ids {
-    /// `(MIC, Saxo ExchangeId)`.
-    pub const SAXO_EXCHANGE_IDS: &[(&str, &str)] = &[
-        ("FNSE", "SSE_FN-SE"),
-        ("XSTO", "SSE"),
-        ("XCSE", "CSE"),
-        ("FNDK", "CSE_FN-DK"),
-        // Unverified, like the rest: confirm against /ref/v1/exchanges.
-        ("XHEL", "HSE"),
-        ("FNFI", "HSE_FN-FI"),
-    ];
-
     /// The built-in ExchangeId for `mic`.
     pub fn default_for(mic: &str) -> Option<&'static str> {
-        SAXO_EXCHANGE_IDS
-            .iter()
-            .find(|(m, _)| *m == mic)
-            .map(|(_, id)| *id)
+        model::nordic::venue(mic).map(|v| v.saxo_exchange_id)
     }
 }
 
@@ -147,7 +132,7 @@ pub struct ResolvedUic {
     pub ticker: String,
     /// The registry MIC this listing was resolved for (e.g. `XCSE`).
     pub exchange_mic: String,
-    /// Saxo's ExchangeId (e.g. "SSE_FN-SE").
+    /// Saxo's ExchangeId (e.g. `SSE`).
     pub exchange_id: String,
     /// ISO 4217 currency **as Saxo reports it**; bars carry this value.
     pub currency: String,
@@ -272,7 +257,7 @@ impl UicResolver {
     }
 
     /// Replaces the built-in ExchangeId of some MICs (`MIC` → Saxo ExchangeId),
-    /// for when [`exchange_ids::SAXO_EXCHANGE_IDS`] proves wrong in production.
+    /// for when [`model::nordic::Venue::saxo_exchange_id`] proves wrong in production.
     pub fn with_exchange_ids(mut self, overrides: HashMap<String, String>) -> Self {
         self.exchange_overrides = overrides;
         self

@@ -396,3 +396,39 @@ async fn a_wrong_company_publishes_no_insiders_either() {
     assert!(insiders.take().is_empty());
     db.drop_db().await;
 }
+
+/// The same read, through the `InsiderSource` trait chosen from the country's
+/// kind (NEX-211): ten transactions since MAR started, nine from April.
+#[tokio::test]
+async fn the_mar_releases_source_reads_the_same_transactions_through_the_trait() {
+    use chronicle_lib::insider_source::{insider_source, SourceContext};
+    use chronicle_lib::nordic::db::Company;
+    use model::nordic::{country_for_mic, InsiderSourceKind};
+
+    let server = MockServer::start().await;
+    serve(&server, "metso-2", &items()).await;
+    let company = Company {
+        ticker: "METSO".into(),
+        exchange_mic: "XHEL".into(),
+        mfn_slug: Some("metso-2".into()),
+        name: Some("Metso".into()),
+        isin: Some("FI0009014575".into()),
+    };
+    let kind = country_for_mic("XHEL").unwrap().insider_source;
+    assert_eq!(kind, InsiderSourceKind::MarReleases);
+    let source = insider_source(kind).unwrap();
+    let http = reqwest::Client::new();
+    let mut feed = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
+    let mut ctx = SourceContext {
+        http: &http,
+        feed: Some(&mut feed),
+        fi_issuer: None,
+    };
+    let all = source.fetch(&mut ctx, &company, mar_start()).await.unwrap();
+    assert_eq!(all.len(), 10);
+    let april = source
+        .fetch(&mut ctx, &company, "2026-04-01".parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(april.len(), 9);
+}

@@ -1,30 +1,17 @@
 //! Exchange-local time for the Nordic venues, without a time-zone database.
 //!
-//! The IANA zone names here are the same values as `exchanges.timezone` in the
-//! signal database (a test in `alpha` keeps the two in step). Stockholm and
+//! The IANA zone names come from [`crate::nordic`] and equal
+//! `exchanges.timezone` in the signal database (a test in `signal` keeps the two
+//! in step). Stockholm and
 //! Copenhagen both follow the EU rule (CET/CEST), so one offset function serves
 //! both; each MIC still resolves through its **own** zone name, and a MIC or
 //! zone not listed here yields `None` rather than a guess.
 
-use crate::asset::mic;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 
-/// `(MIC, IANA time zone)` for every venue whose local time we can compute.
-pub const EXCHANGE_TIMEZONES: &[(&str, &str)] = &[
-    (mic::FNSE, "Europe/Stockholm"),
-    (mic::XSTO, "Europe/Stockholm"),
-    (mic::XCSE, "Europe/Copenhagen"),
-    (mic::FNDK, "Europe/Copenhagen"),
-    (mic::XHEL, "Europe/Helsinki"),
-    (mic::FNFI, "Europe/Helsinki"),
-];
-
-/// IANA time zone of `exchange_mic`, if known.
+/// IANA time zone of `exchange_mic`, if known (from [`crate::nordic`]).
 pub fn timezone(exchange_mic: &str) -> Option<&'static str> {
-    EXCHANGE_TIMEZONES
-        .iter()
-        .find(|(m, _)| *m == exchange_mic)
-        .map(|(_, tz)| *tz)
+    crate::nordic::country_for_mic(exchange_mic).map(|c| c.timezone)
 }
 
 /// Hours `tz` is ahead of UTC at `utc`, for the zones we implement.
@@ -60,7 +47,7 @@ mod tests {
     #[test]
     fn every_listed_zone_has_an_offset_rule() {
         let now = Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
-        for (m, _) in EXCHANGE_TIMEZONES {
+        for m in crate::nordic::nordic_mics() {
             assert!(local_date(m, now).is_some(), "{m}");
         }
     }
@@ -98,29 +85,5 @@ mod tests {
     fn unknown_mic_has_no_local_date() {
         assert_eq!(timezone("XNAS"), None);
         assert_eq!(local_date("XNAS", Utc::now()), None);
-    }
-
-    /// The `exchanges` seed must name the same zones as this table.
-    #[test]
-    fn timezones_agree_with_the_exchanges_seed() {
-        let sql = [
-            include_str!("../../signal/migrations/20261027000000_create_exchanges.sql"),
-            include_str!("../../signal/migrations/20261028000000_exchanges_add_finland.sql"),
-        ]
-        .join("\n");
-        let mut seen = 0;
-        for line in sql.lines() {
-            let parts: Vec<&str> = line
-                .trim()
-                .trim_start_matches('(')
-                .split(',')
-                .map(|p| p.trim().trim_matches('\''))
-                .collect();
-            if parts.len() > 3 && parts[2].starts_with("Europe/") {
-                assert_eq!(timezone(parts[0]), Some(parts[2]), "{}", parts[0]);
-                seen += 1;
-            }
-        }
-        assert_eq!(seen, EXCHANGE_TIMEZONES.len());
     }
 }
