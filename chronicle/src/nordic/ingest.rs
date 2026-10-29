@@ -11,7 +11,7 @@ use super::calendar::{self, MfnClient, Refresh};
 use super::classify::classify_item;
 use super::db::{self, Company};
 use super::events::{publish, release_event, EventSink};
-use super::feed::{fetch_feed_page, first_page_url};
+use super::feed::{fetch_feed_page, first_page_url, NewsItem};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
 use tracing::{error, info, warn};
@@ -94,14 +94,25 @@ pub async fn ingest_company(
         let oldest = page.items.iter().map(|i| i.published_at).min();
 
         for item in &page.items {
-            if !item.is_authored_by(slug) {
+            if !belongs_to(company, slug, item) {
                 continue;
             }
             if !checked_tickers {
                 checked_tickers = true;
-                for problem in mapping_problems(company, &item.author_tickers, &item.author_isins) {
-                    warn!(ticker = %company.ticker, slug, problem = %problem,
-                          "mapping may point at the wrong company");
+                let problems = mapping_problems(company, &item.author_tickers, &item.author_isins);
+                // A mapping onto another company (two MFN companies can share
+                // a name) would publish its releases as this company's: refuse.
+                if !problems.is_empty() {
+                    for problem in &problems {
+                        error!(ticker = %company.ticker, slug, problem = %problem,
+                               "mapping points at the wrong company, nothing published");
+                    }
+                    anyhow::bail!(
+                        "mfn_slug '{slug}' is not {}:{}: {}",
+                        company.exchange_mic,
+                        company.ticker,
+                        problems.join("; ")
+                    );
                 }
             }
             if !checked_isin {
@@ -147,6 +158,32 @@ pub fn normalise_ticker(t: &str) -> String {
         .collect()
 }
 
+/// True if the feed item is this company's: authored under its MFN slug, or
+/// (when the registry has the company's ISIN) by an entity with the same ISIN.
+///
+/// A renamed company keeps its ISIN but not its slug: Metso's feed carries its
+/// earlier releases under `outotec` and `metso-outotec`, which only the ISIN ties
+/// to `metso-2`. A different company that shares the name has another ISIN.
+pub fn belongs_to(company: &Company, slug: &str, item: &NewsItem) -> bool {
+    item.is_authored_by(slug)
+        || company.isin.as_deref().is_some_and(|isin| {
+            item.author_isins
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(isin))
+        })
+}
+
+/// True if `author_tickers` (`MIC:SYMBOL`) lists `ticker` on `exchange_mic`,
+/// compared uppercase with spaces and hyphens removed.
+pub fn ticker_listed(exchange_mic: &str, ticker: &str, author_tickers: &[String]) -> bool {
+    let wanted = normalise_ticker(ticker);
+    author_tickers.iter().any(|t| {
+        t.split_once(':').is_some_and(|(m, sym)| {
+            m.eq_ignore_ascii_case(exchange_mic) && normalise_ticker(sym) == wanted
+        })
+    })
+}
+
 /// What looks wrong about the company's MFN mapping, from the feed's
 /// `author.tickers` (`MIC:SYMBOL`) and `author.isins`. Empty if it looks right.
 ///
@@ -158,13 +195,7 @@ pub fn mapping_problems(
     author_isins: &[String],
 ) -> Vec<String> {
     let mut out = Vec::new();
-    let wanted = normalise_ticker(&company.ticker);
-    let ticker_ok = author_tickers.iter().any(|t| {
-        t.split_once(':').is_some_and(|(m, sym)| {
-            m.eq_ignore_ascii_case(&company.exchange_mic) && normalise_ticker(sym) == wanted
-        })
-    });
-    if !ticker_ok {
+    if !ticker_listed(&company.exchange_mic, &company.ticker, author_tickers) {
         out.push(format!(
             "registry {}:{} is not among MFN's tickers {author_tickers:?}",
             company.exchange_mic, company.ticker
@@ -331,6 +362,85 @@ mod mapping_tests {
         assert_eq!(mapping_problems(&c, &v(&["XLON:NOVO B"]), &[]).len(), 1);
         assert_eq!(mapping_problems(&c, &v(&["XCSE:DSV"]), &[]).len(), 1);
         assert_eq!(mapping_problems(&c, &[], &[]).len(), 1);
+    }
+
+    // The two MFN entities behind the name "Metso" and today's company.
+    const METSO: (&[&str], &[&str]) = (
+        &["XHEL:METSO", "CAPA:METSOh", "XLON:0MGI"],
+        &["FI0009014575"],
+    );
+    const NELES: (&[&str], &[&str]) = (&["XHEL:NELES"], &["FI4000440664"]);
+    // The old Metso Oyj (before Neles): same ticker symbol, other ISIN.
+    const OLD_METSO: (&[&str], &[&str]) = (&["XHEL:METSO"], &["FI0009007835"]);
+
+    #[test]
+    fn metso_matches_its_own_mfn_entity() {
+        let c = company("METSO", "XHEL", Some("FI0009014575"));
+        assert!(mapping_problems(&c, &v(METSO.0), &v(METSO.1)).is_empty());
+        // Finnish share classes have no separator; a ticker with one still matches.
+        let k = company("KNEBV", "XHEL", None);
+        assert!(mapping_problems(&k, &v(&["XHEL:KNEBV"]), &[]).is_empty());
+    }
+
+    #[test]
+    fn the_neles_and_old_metso_entities_are_rejected_for_metso() {
+        let c = company("METSO", "XHEL", Some("FI0009014575"));
+        // Neles: wrong ticker and wrong ISIN.
+        let p = mapping_problems(&c, &v(NELES.0), &v(NELES.1));
+        assert_eq!(p.len(), 2, "{p:?}");
+        // Old Metso: the ticker symbol matches, the ISIN does not.
+        let p = mapping_problems(&c, &v(OLD_METSO.0), &v(OLD_METSO.1));
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].contains("FI0009014575") && p[0].contains("FI0009007835"));
+        // Without the registry ISIN only the ticker can tell Neles apart.
+        let no_isin = company("METSO", "XHEL", None);
+        assert_eq!(
+            mapping_problems(&no_isin, &v(NELES.0), &v(NELES.1)).len(),
+            1
+        );
+    }
+
+    fn news(slug: &str, slugs: &[&str], entity: (&[&str], &[&str])) -> NewsItem {
+        NewsItem {
+            news_id: uuid::Uuid::nil(),
+            url: None,
+            lang: Some("en".into()),
+            tags: vec![],
+            title: "t".into(),
+            published_at: Utc::now(),
+            author_slug: slug.into(),
+            author_slugs: v(slugs),
+            author_tickers: v(entity.0),
+            author_isins: v(entity.1),
+            source: None,
+            attachment_urls: vec![],
+        }
+    }
+
+    #[test]
+    fn a_renamed_company_belongs_by_isin_and_a_namesake_does_not() {
+        let metso = company("METSO", "XHEL", Some("FI0009014575"));
+        // Today's slug, and the Outotec / Metso Outotec entities of the same ISIN.
+        let now = news("metso-2", &["metso-2", "metso-outotec", "outotec"], METSO);
+        let outotec = news(
+            "outotec",
+            &["outotec"],
+            (&["XHEL:OTE1V"], &["FI0009014575"]),
+        );
+        assert!(belongs_to(&metso, "metso-2", &now));
+        assert!(belongs_to(&metso, "metso-2", &outotec));
+        // Without the ISIN in the registry only the slug counts.
+        let no_isin = company("METSO", "XHEL", None);
+        assert!(!belongs_to(&no_isin, "metso-2", &outotec));
+        // Neles and old Metso: other ISINs, never ours.
+        let neles = news("neles", &["metso", "metso-corporation", "neles"], NELES);
+        let old = news("metso", &["metso", "metso-corporation"], OLD_METSO);
+        assert!(!belongs_to(&metso, "metso-2", &neles));
+        assert!(!belongs_to(&metso, "metso-2", &old));
+        // A registry row that wrongly points at slug `metso` claims their items by slug...
+        assert!(belongs_to(&metso, "metso", &neles));
+        // ...which the mapping check then refuses (see `the_neles_and_old_metso_...`).
+        assert!(!mapping_problems(&metso, &neles.author_tickers, &neles.author_isins).is_empty());
     }
 
     #[test]

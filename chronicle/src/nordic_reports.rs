@@ -1,6 +1,6 @@
 /// Nordic report-release publisher (NEX-160, NEX-166, NEX-171).
 ///
-/// For every Nordic company (`NORDIC_MICS`: `FNSE`, `XSTO`, `XCSE`, `FNDK`) with a
+/// For every Nordic company (`NORDIC_MICS`: `FNSE`, `XSTO`, `XCSE`, `FNDK`, `XHEL`, `FNFI`) with a
 /// `companies.mfn_slug`, pages through MFN's JSON news feed
 /// (`https://mfn.se/all/a/<slug>.json`, fetched despite `robots.txt` with the
 /// owner's approval), classifies each item and publishes reports and

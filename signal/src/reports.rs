@@ -712,6 +712,122 @@ mod tests {
         }
     }
 
+    /// Metso's Q3 2026 release as MFN published it: one Finnish and one English
+    /// item at the same instant, with different ids.
+    fn metso_q3(id: &str, lang: &str, title: &str) -> SpecialEvent {
+        SpecialEvent {
+            ticker: "METSO".into(),
+            exchange_mic: "XHEL".into(),
+            event_type: QUARTERLY.into(),
+            occurred_at_unix_secs: at(2026, 10, 22, 6, 0).timestamp(),
+            description: title.into(),
+            source: SOURCE_MFN.into(),
+            source_id: id.into(),
+            lang: lang.into(),
+            tags: vec![
+                ":regulatory".into(),
+                "sub:report".into(),
+                "sub:report:interim".into(),
+            ],
+            report_kind: "interim".into(),
+            fiscal_period: "2026-Q3".into(),
+            company_name: "Metso".into(),
+            ..Default::default()
+        }
+    }
+
+    const METSO_FI: (&str, &str) = (
+        "d4850232-0000-0000-0000-000000000001",
+        "Metson osavuosikatsaus 1. tammikuuta - 30. syyskuuta 2026",
+    );
+    const METSO_EN: (&str, &str) = (
+        "48d2ed81-0000-0000-0000-000000000002",
+        "Metso's Interim Report January 1 - September 30, 2026",
+    );
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn finnish_and_english_twins_merge_to_english_in_either_order(pool: PgPool) {
+        let fi = metso_q3(METSO_FI.0, "fi", METSO_FI.1);
+        let en = metso_q3(METSO_EN.0, "en", METSO_EN.1);
+        for order in [[&fi, &en], [&en, &fi]] {
+            sqlx::query("DELETE FROM special_events")
+                .execute(&pool)
+                .await
+                .unwrap();
+            for e in order {
+                store(&pool, e).await;
+            }
+            let (n, id, lang, title, period): (i64, String, String, String, String) =
+                sqlx::query_as(
+                    "SELECT count(*) OVER (), source_id, lang, description, fiscal_period \
+                     FROM special_events",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(n, 1, "one row for the pair");
+            assert_eq!((id.as_str(), lang.as_str()), (METSO_EN.0, "en"));
+            assert_eq!(title, METSO_EN.1);
+            assert_eq!(period, "2026-Q3");
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_finnish_report_without_an_english_copy_stays_a_valid_report(pool: PgPool) {
+        store(&pool, &metso_q3(METSO_FI.0, "fi", METSO_FI.1)).await;
+        let (event_type, status, lang, kind, period): (String, String, String, String, String) =
+            sqlx::query_as(
+                "SELECT event_type, status, lang, report_kind, fiscal_period FROM special_events",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            (event_type.as_str(), status.as_str(), lang.as_str()),
+            (QUARTERLY, "occurred", "fi")
+        );
+        assert_eq!((kind.as_str(), period.as_str()), ("interim", "2026-Q3"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn twins_of_different_companies_or_instants_are_not_merged(pool: PgPool) {
+        // Same instant and type, another company: its own row.
+        let mut other = metso_q3(METSO_EN.0, "en", METSO_EN.1);
+        other.ticker = "NESTE".into();
+        store(&pool, &metso_q3(METSO_FI.0, "fi", METSO_FI.1)).await;
+        store(&pool, &other).await;
+        // Same company and type, another instant (the half-year report): its own row.
+        let mut h1 = metso_q3(
+            "h1-en",
+            "en",
+            "Metso's Half-Year Report January 1 - June 30, 2026",
+        );
+        h1.occurred_at_unix_secs = at(2026, 7, 24, 6, 0).timestamp();
+        store(&pool, &h1).await;
+        assert_eq!(rows(&pool).await.len(), 3);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_helsinki_calendar_row_is_stored_in_stockholm_time(pool: PgPool) {
+        // MFN's calendar shows Stockholm time: 08:00 CEST is 06:00Z, not 05:00Z.
+        let e = calendar_event(
+            "METSO",
+            "XHEL",
+            at(2026, 10, 24, 4, 30),
+            vec![entry(
+                "2027-10-25",
+                "08:00",
+                "Kvartalsrapport 2027-Q3",
+                "interim",
+            )],
+        );
+        assert_eq!(apply(&pool, &e, today()).await.scheduled, 1);
+        let r = rows(&pool).await;
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].2, "2027-10-25 06:00");
+        assert_eq!(r[0].1, "scheduled");
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn release_fills_the_scheduled_row_and_keeps_its_expected_date(pool: PgPool) {
         schedule(&pool, "2026-08-25").await;

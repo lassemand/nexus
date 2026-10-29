@@ -90,12 +90,23 @@ impl Companies {
 
     /// The registered company that authored `item`: `author.slug`, or any entry
     /// of `author.slugs`, equals its `mfn_slug`.
+    ///
+    /// When the item lists tickers, the company's own `MIC:TICKER` must be among
+    /// them: two MFN companies can share a name and a slug alias (Metso/Neles),
+    /// and a registry row pointing at the wrong one must not claim its items.
     pub fn find(&self, item: &NewsItem) -> Option<&Registered> {
-        self.by_slug.get(&item.author_slug).or_else(|| {
+        let found = self.by_slug.get(&item.author_slug).or_else(|| {
             item.author_slugs
                 .iter()
                 .find_map(|s| self.by_slug.get(s.as_str()))
-        })
+        })?;
+        let listed = item.author_tickers.is_empty()
+            || super::ingest::ticker_listed(
+                &found.exchange_mic,
+                &found.ticker,
+                &item.author_tickers,
+            );
+        listed.then_some(found)
     }
 }
 
@@ -586,6 +597,63 @@ mod tests {
 
     fn at(secs_after: i64) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 26, 6, 0, 0).unwrap() + chrono::Duration::seconds(secs_after)
+    }
+
+    #[test]
+    fn finnish_tickers_match_and_a_namesake_entity_is_refused() {
+        let companies = Companies::new(vec![
+            Registered {
+                ticker: "METSO".into(),
+                exchange_mic: "XHEL".into(),
+                mfn_slug: "metso-2".into(),
+            },
+            Registered {
+                ticker: "WRONG".into(),
+                exchange_mic: "XHEL".into(),
+                // A misconfigured row on the old Metso / Neles slug.
+                mfn_slug: "metso".into(),
+            },
+        ]);
+        let item = |slug: &str, slugs: &[&str], tickers: &[&str]| NewsItem {
+            news_id: Uuid::nil(),
+            url: None,
+            lang: Some("en".into()),
+            tags: vec![],
+            title: "t".into(),
+            published_at: Utc::now(),
+            author_slug: slug.into(),
+            author_slugs: slugs.iter().map(|s| s.to_string()).collect(),
+            author_tickers: tickers.iter().map(|s| s.to_string()).collect(),
+            author_isins: vec![],
+            source: None,
+            attachment_urls: vec![],
+        };
+        let metso = item(
+            "metso-2",
+            &["metso-2", "metso-outotec", "outotec"],
+            &["XHEL:METSO", "XLON:0MGI"],
+        );
+        assert_eq!(
+            companies.find(&metso).map(|c| c.ticker.as_str()),
+            Some("METSO")
+        );
+        // The Neles entity answers to the slug `metso` but lists XHEL:NELES.
+        let neles = item(
+            "neles",
+            &["metso", "metso-corporation", "neles"],
+            &["XHEL:NELES"],
+        );
+        assert!(companies.find(&neles).is_none());
+        // First North Finland items match on their own MIC.
+        let fnfi = Companies::new(vec![Registered {
+            ticker: "ABC".into(),
+            exchange_mic: "FNFI".into(),
+            mfn_slug: "abc".into(),
+        }]);
+        assert!(fnfi.find(&item("abc", &["abc"], &["FNFI:ABC"])).is_some());
+        assert!(fnfi.find(&item("abc", &["abc"], &["XHEL:ABC"])).is_none());
+        // A WebSocket item without tickers is matched by slug alone, as before.
+        assert!(fnfi.find(&item("abc", &["abc"], &[])).is_some());
     }
 
     #[test]
