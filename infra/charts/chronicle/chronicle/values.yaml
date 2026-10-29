@@ -26,3 +26,8 @@ resources:
     cpu: "50m"
   limits:
     memory: "256Mi"
+
+# Seconds a finished chronicle Job (succeeded or failed) is kept before
+# Kubernetes deletes it. Bounds how long ChronicleJobFailed / KubeJobFailed
+# fire for one failure: a job that keeps failing alerts again on its next run.
+jobTtlSecondsAfterFinished: 86400
