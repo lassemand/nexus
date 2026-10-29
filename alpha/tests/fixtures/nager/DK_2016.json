@@ -1,0 +1,62 @@
+[
+ {
+  "date": "2016-01-01",
+  "name": "New Year's Day"
+ },
+ {
+  "date": "2016-03-24",
+  "name": "Maundy Thursday"
+ },
+ {
+  "date": "2016-03-25",
+  "name": "Good Friday"
+ },
+ {
+  "date": "2016-03-27",
+  "name": "Easter Sunday"
+ },
+ {
+  "date": "2016-03-28",
+  "name": "Easter Monday"
+ },
+ {
+  "date": "2016-04-22",
+  "name": "General Prayer Day"
+ },
+ {
+  "date": "2016-05-05",
+  "name": "Ascension Day"
+ },
+ {
+  "date": "2016-05-06",
+  "name": "Bank closing day"
+ },
+ {
+  "date": "2016-05-15",
+  "name": "Pentecost"
+ },
+ {
+  "date": "2016-05-16",
+  "name": "Whit Monday"
+ },
+ {
+  "date": "2016-06-05",
+  "name": "Constitution Day"
+ },
+ {
+  "date": "2016-12-24",
+  "name": "Christmas Eve"
+ },
+ {
+  "date": "2016-12-25",
+  "name": "Christmas Day"
+ },
+ {
+  "date": "2016-12-26",
+  "name": "St. Stephen's Day"
+ },
+ {
+  "date": "2016-12-31",
+  "name": "New Year's Eve"
+ }
+]

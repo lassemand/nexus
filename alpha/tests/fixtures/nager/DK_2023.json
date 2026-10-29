@@ -1,0 +1,62 @@
+[
+ {
+  "date": "2023-01-01",
+  "name": "New Year's Day"
+ },
+ {
+  "date": "2023-04-06",
+  "name": "Maundy Thursday"
+ },
+ {
+  "date": "2023-04-07",
+  "name": "Good Friday"
+ },
+ {
+  "date": "2023-04-09",
+  "name": "Easter Sunday"
+ },
+ {
+  "date": "2023-04-10",
+  "name": "Easter Monday"
+ },
+ {
+  "date": "2023-05-05",
+  "name": "General Prayer Day"
+ },
+ {
+  "date": "2023-05-18",
+  "name": "Ascension Day"
+ },
+ {
+  "date": "2023-05-19",
+  "name": "Bank closing day"
+ },
+ {
+  "date": "2023-05-28",
+  "name": "Pentecost"
+ },
+ {
+  "date": "2023-05-29",
+  "name": "Whit Monday"
+ },
+ {
+  "date": "2023-06-05",
+  "name": "Constitution Day"
+ },
+ {
+  "date": "2023-12-24",
+  "name": "Christmas Eve"
+ },
+ {
+  "date": "2023-12-25",
+  "name": "Christmas Day"
+ },
+ {
+  "date": "2023-12-26",
+  "name": "St. Stephen's Day"
+ },
+ {
+  "date": "2023-12-31",
+  "name": "New Year's Eve"
+ }
+]

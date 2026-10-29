@@ -1,0 +1,62 @@
+[
+ {
+  "date": "2022-01-01",
+  "name": "New Year's Day"
+ },
+ {
+  "date": "2022-04-14",
+  "name": "Maundy Thursday"
+ },
+ {
+  "date": "2022-04-15",
+  "name": "Good Friday"
+ },
+ {
+  "date": "2022-04-17",
+  "name": "Easter Sunday"
+ },
+ {
+  "date": "2022-04-18",
+  "name": "Easter Monday"
+ },
+ {
+  "date": "2022-05-13",
+  "name": "General Prayer Day"
+ },
+ {
+  "date": "2022-05-26",
+  "name": "Ascension Day"
+ },
+ {
+  "date": "2022-05-27",
+  "name": "Bank closing day"
+ },
+ {
+  "date": "2022-06-05",
+  "name": "Constitution Day"
+ },
+ {
+  "date": "2022-06-05",
+  "name": "Pentecost"
+ },
+ {
+  "date": "2022-06-06",
+  "name": "Whit Monday"
+ },
+ {
+  "date": "2022-12-24",
+  "name": "Christmas Eve"
+ },
+ {
+  "date": "2022-12-25",
+  "name": "Christmas Day"
+ },
+ {
+  "date": "2022-12-26",
+  "name": "St. Stephen's Day"
+ },
+ {
+  "date": "2022-12-31",
+  "name": "New Year's Eve"
+ }
+]

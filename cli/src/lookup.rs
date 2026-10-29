@@ -515,6 +515,43 @@ mod tests {
         assert_eq!(chooser.asked.len(), 1, "only the FI issuer was ambiguous");
     }
 
+    /// NEX-211 snapshot: only a Swedish listing consults FI's insider register.
+    #[tokio::test]
+    async fn only_swedish_listings_consult_the_fi_register() {
+        for (ticker, mic, name, consulted) in [
+            ("VOLV-B", "XSTO", "Volvo", true),
+            ("NOVO-B", "XCSE", "Novo", false),
+            ("METSO", "XHEL", "Metso", false),
+        ] {
+            let body = format!(
+                r#"[{{"slug":"co","name":"{name}","tickers":["{mic}:{}"]}}]"#,
+                ticker.replace('-', " ")
+            );
+            let server = server_with(ticker, &body).await;
+            Mock::given(method("GET"))
+                .and(path(FI_AUTOCOMPLETE))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_raw(r#"["Only Issuer"]"#, "application/json"),
+                )
+                .mount(&server)
+                .await;
+            let lookup = Lookup::with_bases(reqwest::Client::new(), &server.uri(), &server.uri());
+            let m = lookup
+                .mappings(ticker, mic, &Overrides::default(), &mut scripted(&[]))
+                .await;
+            let fi_calls = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.url.path() == FI_AUTOCOMPLETE)
+                .count();
+            assert_eq!(fi_calls, usize::from(consulted), "{mic}");
+            assert_eq!(m.fi_issuer.is_some(), consulted, "{mic}");
+        }
+    }
+
     #[tokio::test]
     async fn overrides_skip_the_lookups_and_us_listings_get_nothing() {
         let server = server_with(

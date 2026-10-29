@@ -1,0 +1,66 @@
+[
+ {
+  "date": "2023-01-01",
+  "name": "New Year's Day"
+ },
+ {
+  "date": "2023-01-06",
+  "name": "Epiphany"
+ },
+ {
+  "date": "2023-04-07",
+  "name": "Good Friday"
+ },
+ {
+  "date": "2023-04-09",
+  "name": "Easter Sunday"
+ },
+ {
+  "date": "2023-04-10",
+  "name": "Easter Monday"
+ },
+ {
+  "date": "2023-05-01",
+  "name": "International Workers' Day"
+ },
+ {
+  "date": "2023-05-18",
+  "name": "Ascension Day"
+ },
+ {
+  "date": "2023-05-28",
+  "name": "Pentecost"
+ },
+ {
+  "date": "2023-06-06",
+  "name": "National Day of Sweden"
+ },
+ {
+  "date": "2023-06-23",
+  "name": "Midsummer Eve"
+ },
+ {
+  "date": "2023-06-24",
+  "name": "Midsummer Day"
+ },
+ {
+  "date": "2023-11-04",
+  "name": "All Saints' Day"
+ },
+ {
+  "date": "2023-12-24",
+  "name": "Christmas Eve"
+ },
+ {
+  "date": "2023-12-25",
+  "name": "Christmas Day"
+ },
+ {
+  "date": "2023-12-26",
+  "name": "St. Stephen's Day"
+ },
+ {
+  "date": "2023-12-31",
+  "name": "New Year's Eve"
+ }
+]

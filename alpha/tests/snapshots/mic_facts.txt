@@ -1,0 +1,27 @@
+NORDIC = ["FNSE", "XSTO", "XCSE", "FNDK", "XHEL", "FNFI"]
+FNSE: country=Some("SE") currency=Some("SEK") timezone=Some("Europe/Stockholm") calendar_country=Some("SE") saxo=Some("SSE_FN-SE")
+XSTO: country=Some("SE") currency=Some("SEK") timezone=Some("Europe/Stockholm") calendar_country=Some("SE") saxo=Some("SSE")
+XCSE: country=Some("DK") currency=Some("DKK") timezone=Some("Europe/Copenhagen") calendar_country=Some("DK") saxo=Some("CSE")
+FNDK: country=Some("DK") currency=Some("DKK") timezone=Some("Europe/Copenhagen") calendar_country=Some("DK") saxo=Some("CSE_FN-DK")
+XHEL: country=Some("FI") currency=Some("EUR") timezone=Some("Europe/Helsinki") calendar_country=Some("FI") saxo=Some("HSE")
+FNFI: country=Some("FI") currency=Some("EUR") timezone=Some("Europe/Helsinki") calendar_country=Some("FI") saxo=Some("HSE_FN-FI")
+XNAS: country=Some("US") currency=Some("USD") timezone=None calendar_country=Some("US") saxo=None
+XNYS: country=Some("US") currency=Some("USD") timezone=None calendar_country=Some("US") saxo=None
+XOSL: country=None currency=None timezone=None calendar_country=None saxo=None
+yahoo NMS -> Some("XNAS")
+yahoo NGM -> Some("XNAS")
+yahoo NCM -> Some("XNAS")
+yahoo NYQ -> Some("XNYS")
+yahoo ASE -> Some("XASE")
+yahoo PCX -> Some("ARCX")
+yahoo BTS -> Some("XBTS")
+yahoo STO -> Some("FNSE")
+yahoo CPH -> Some("XCSE")
+yahoo HEL -> Some("XHEL")
+yahoo OSL -> Some("XOSL")
+yahoo GER -> Some("XFRA")
+yahoo FRA -> Some("XFRA")
+yahoo LSE -> Some("XLON")
+yahoo TOR -> Some("XTSE")
+yahoo VAN -> Some("XTSX")
+yahoo UNKNOWN -> None
