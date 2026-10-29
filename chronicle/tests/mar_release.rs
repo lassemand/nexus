@@ -172,3 +172,24 @@ fn garbage_is_an_error_not_a_partial_transaction() {
         .join("\n");
     assert!(parse(&truncated, "en").is_err());
 }
+
+#[test]
+fn pipe_table_layout_of_older_cision_releases() {
+    // Outotec, 2020-03-03: `| Nimi: | Härkki, Kalle |`, a date with a zone offset
+    // (`2020-02-28+02:00`) and `Euro`.
+    let tx = parse(&fixture("outotec_pipe_fi.txt"), "fi").unwrap();
+    assert_eq!(tx.len(), 1);
+    let t = &tx[0];
+    assert_eq!(t.person_name, "Kalle Härkki");
+    assert_eq!(t.person_role, "Muu ylin johto");
+    assert_eq!(
+        t.reference_number,
+        "549300R0VN9C371W0E07_20200302162714_172"
+    );
+    assert_eq!(t.transaction_date.to_string(), "2020-02-28");
+    assert_eq!(t.isin, "FI0009014575");
+    assert_eq!(t.transaction_type, T::Grant);
+    assert_eq!(t.volume.to_string(), "2332");
+    assert!(t.unit_price.unwrap().is_zero());
+    assert_eq!(t.currency, "EUR");
+}

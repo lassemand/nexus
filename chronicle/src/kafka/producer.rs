@@ -96,6 +96,8 @@ impl ChronicleProducer {
         let txn: UnifiedInsiderTransaction = txn.into();
         let source = if txn.source_registry == SourceRegistry::Sec as i32 {
             "SEC"
+        } else if txn.source_registry == SourceRegistry::FinMar as i32 {
+            "FIN_MAR"
         } else {
             "FI"
         };

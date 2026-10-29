@@ -15,5 +15,6 @@ pub mod db;
 pub mod events;
 pub mod feed;
 pub mod ingest;
+pub mod insiders;
 pub mod live;
 pub mod mar_release;

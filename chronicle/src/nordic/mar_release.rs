@@ -332,7 +332,7 @@ pub fn parse_decimal(raw: &str) -> Option<Decimal> {
 // ---------------------------------------------------------------------------
 // Scanning
 
-const BOX_CHARS: &str = "│─┬┼┴├┤┌┐└┘═║╔╗╚╝_-= ";
+const BOX_CHARS: &str = "│|─┬┼┴├┤┌┐└┘═║╔╗╚╝_-= ";
 
 fn is_space(c: char) -> bool {
     c.is_whitespace() || matches!(c, '\u{00a0}' | '\u{2009}' | '\u{202f}' | '\u{200b}')
@@ -371,8 +371,21 @@ fn tokenise(text: &str) -> Vec<Item> {
             items.push(Item::Sep);
             continue;
         }
-        if line.contains('│') {
-            let cells: Vec<String> = line.split('│').map(collapse).collect();
+        // Box-drawn (`│`) and the markdown-style pipe table (`| Nimi: | Name |`)
+        // older Cision releases use.
+        let sep = if line.contains('│') {
+            Some('│')
+        } else if line.starts_with('|') {
+            Some('|')
+        } else {
+            None
+        };
+        if let Some(sep) = sep {
+            let cells: Vec<String> = line
+                .trim_start_matches('|')
+                .split(sep)
+                .map(collapse)
+                .collect();
             let label = cells[0].trim_end_matches(':').trim().to_string();
             let value = cells.get(1).cloned().unwrap_or_default();
             items.push(if label.is_empty() {
@@ -884,6 +897,13 @@ impl Doc {
 
 fn parse_date(raw: &str) -> Result<NaiveDate, MarParseError> {
     let raw = collapse(raw);
+    // `2020-02-28+02:00`: the date with a zone offset.
+    if let Some(d) = raw
+        .get(..10)
+        .and_then(|h| NaiveDate::parse_from_str(h, "%Y-%m-%d").ok())
+    {
+        return Ok(d);
+    }
     ["%Y-%m-%d", "%d %B %Y", "%d.%m.%Y"]
         .iter()
         .find_map(|f| NaiveDate::parse_from_str(&raw, f).ok())

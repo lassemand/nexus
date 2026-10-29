@@ -627,6 +627,7 @@ mod tests {
             author_isins: vec![],
             source: None,
             attachment_urls: vec![],
+            text: None,
         };
         let metso = item(
             "metso-2",

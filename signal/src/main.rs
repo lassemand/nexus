@@ -1,6 +1,7 @@
 mod daily_bars;
 mod db;
 mod features;
+mod insider_store;
 mod reactions;
 mod reports;
 mod strategy;
@@ -538,8 +539,22 @@ async fn main() {
                         }
                     };
 
-                    if let Err(e) = upsert_insider_filing(&pool, &txn).await {
-                        warn!(ticker = %txn.ticker, error = %e, "failed to persist insider transaction");
+                    // A transient database error is retried until the row is stored,
+                    // and the offset is committed only after that (below): an
+                    // insider transaction exists nowhere else once read, so a
+                    // dropped one is lost. A row the schema itself rejects is
+                    // logged and skipped: retrying it would block the partition.
+                    if let Err(e) = insider_store::store_with_retry(
+                        "insider transaction",
+                        || upsert_insider_filing(&pool, &txn),
+                        Duration::from_secs(1),
+                        MAX_STORE_BACKOFF,
+                    )
+                    .await
+                    {
+                        error!(ticker = %txn.ticker, filer = %txn.person_name,
+                               txn_date = %txn.transaction_date, error = %e,
+                               "insider transaction rejected by the database, skipped");
                     } else {
                         info!(
                             ticker = %txn.ticker,

@@ -1,0 +1,27 @@
+OUTOTEC OYJ   PÖRSSITIEDOTE  3.3.2020 KLO 10.30
+
+| Ilmoitusvelvollinen            |
+| Nimi:                          | Härkki, Kalle                           |  |
+| Asema:                         | Muu ylin johto                          |
+|                                |                                         |  |
+| Ensimmäinen ilmoitus           |                                         |
+| Viitenumero:                   | 549300R0VN9C371W0E07_20200302162714_172 |
+|                                |                                         |  |
+| Liikkeeseenlaskija             |
+| Nimi:                          | Outotec Oyj                             |
+| LEI:                           | 549300R0VN9C371W0E07                    |
+|                                |                                         |  |
+| Liiketoimien yksityiskohtaiset |
+| tiedot                         |
+| Liiketoimen päivämäärä:        | 2020-02-28+02:00                        |
+| Liiketoimen luonne:            | Osakepalkkion vastaanottaminen          |
+|                                |
+| Instrumentti:                  | Osake                                   |
+| ISIN:                          | FI0009014575                            |
+|                                |
+| Volyymi:                       |                                    2332 |
+| Yksikköhinta:                  | 0.00 Euro                               |
+|                                |
+| Liiketoimien yhdistetyt tiedot |
+| Volyymi:                       |                                    2332 |
+| Keskihinta:                    | 0.00 Euro                               |
