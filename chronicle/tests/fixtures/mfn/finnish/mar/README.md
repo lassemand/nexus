@@ -12,3 +12,4 @@
 | `wartsila_multi_fi.txt` | Wärtsilä (`wartsila`) | `eeb15b29-5a0d-5dcd-b687-5e976bfb525a` | plain, fi, option exercise + sale |
 | `hiab_plain_en.txt` | Hiab (`cargotec`) | `7f70507d-346a-46a0-9962-1013a81b5617` | plain, source `mfn` |
 | `orion_plain_en.txt` | Orion (`orion`) | `73e4e9e6-5b7b-4d01-9ae3-53d4b486fd18` | plain, source `one` |
+| `outotec_pipe_fi.txt` | Outotec (`metso-2`, earlier name) | `1676d42b-fc7b-47f5-823b-00e3fec556cd` | markdown-style pipe table, fi, date `2020-02-28+02:00` (NEX-207) |

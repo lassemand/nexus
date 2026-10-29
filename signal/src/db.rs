@@ -631,6 +631,136 @@ mod tests {
         Ok(())
     }
 
+    /// A Finnish MAR row as chronicle publishes it.
+    fn mar_txn(
+        person: &str,
+        date: &str,
+        kind: UnifiedTransactionType,
+        volume: f64,
+        price: f64,
+    ) -> UnifiedInsiderTransaction {
+        UnifiedInsiderTransaction {
+            ticker: "METSO".into(),
+            exchange_mic: "XHEL".into(),
+            source_registry: model::generated::SourceRegistry::FinMar as i32,
+            person_name: person.into(),
+            person_role: "Chief Executive Officer".into(),
+            transaction_date: date.into(),
+            published_date: "2026-03-20".into(),
+            transaction_type: kind as i32,
+            volume,
+            price_per_unit: price,
+            currency: "EUR".into(),
+            source_detail: Some(unified_insider_transaction::SourceDetail::Mar(
+                model::generated::MarReleaseDetail {
+                    reference_number: "549300R0VN9C371W0E07_20260320093338_264".into(),
+                    volume_decimal: volume.to_string(),
+                    unit_price_decimal: price.to_string(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn finnish_incentive_is_a_grant_at_zero_price_by_a_person_without_cik(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        let t = mar_txn(
+            "Sami Takaluoma",
+            "2026-03-19",
+            UnifiedTransactionType::Grant,
+            23201.0,
+            0.0,
+        );
+        upsert_insider_filing(&pool, &t).await?;
+        let (code, shares, price, ticker, role, cik): (String, f64, f64, String, String, Option<String>) =
+            sqlx::query_as(
+                "SELECT f.transaction_code, f.shares, f.price_per_share, f.ticker, f.filer_role, p.filer_cik \
+                 FROM insider_filings f JOIN persons p ON p.id = f.person_id",
+            )
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(code, "A", "GRANT, never the buy code P");
+        assert_eq!((shares, price), (23201.0, 0.0));
+        assert_eq!(
+            (ticker.as_str(), role.as_str()),
+            ("METSO", "Chief Executive Officer")
+        );
+        assert_eq!(cik, None);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn finnish_redelivery_and_a_second_trade_of_the_same_person(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        let a = mar_txn(
+            "Anu Sirkiä",
+            "2026-07-22",
+            UnifiedTransactionType::Buy,
+            328.0,
+            30.44,
+        );
+        let b = mar_txn(
+            "Anu Sirkiä",
+            "2026-07-22",
+            UnifiedTransactionType::Buy,
+            132.0,
+            30.52,
+        );
+        for _ in 0..3 {
+            upsert_insider_filing(&pool, &a).await?;
+        }
+        upsert_insider_filing(&pool, &b).await?;
+        // Re-delivered messages add nothing; the person is matched by name.
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM persons").await, 1);
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM insider_filings").await,
+            2
+        );
+        let codes: Vec<String> = sqlx::query_scalar("SELECT transaction_code FROM insider_filings")
+            .fetch_all(&pool)
+            .await?;
+        assert_eq!(codes, ["P", "P"]);
+        Ok(())
+    }
+
+    /// Known limitation, left as is on purpose (the constraint is out of scope):
+    /// the unique key is `(person, ticker, date, shares, code)`, so two real
+    /// trades of one person on one day with the same volume and code collapse
+    /// into the first. Kesko's amendment of 2023-10-26 has such a pair: 10 shares
+    /// at 15.78 EUR and 10 shares at 15.52 EUR in one release.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn two_trades_with_the_same_volume_on_one_day_collapse(pool: PgPool) -> sqlx::Result<()> {
+        let first = mar_txn(
+            "Esa Kiiskinen",
+            "2023-10-26",
+            UnifiedTransactionType::Buy,
+            10.0,
+            15.78,
+        );
+        let second = mar_txn(
+            "Esa Kiiskinen",
+            "2023-10-26",
+            UnifiedTransactionType::Buy,
+            10.0,
+            15.52,
+        );
+        upsert_insider_filing(&pool, &first).await?;
+        upsert_insider_filing(&pool, &second).await?;
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM insider_filings").await,
+            1
+        );
+        let price: f64 = sqlx::query_scalar("SELECT price_per_share FROM insider_filings")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(price, 15.78, "the first one wins");
+        Ok(())
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn fi_transactions_get_buy_and_sell_codes(pool: PgPool) -> sqlx::Result<()> {
         upsert_insider_filing(&pool, &fi_txn("A", UnifiedTransactionType::Buy, 1.0)).await?;

@@ -297,7 +297,11 @@ async fn run(
     );
     let mut feed = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
     let mut cal = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
-    process_companies(&db.pool, &mut feed, &mut cal, sink, &companies, false).await
+    let insiders = common::VecInsiders::default();
+    process_companies(
+        &db.pool, &mut feed, &mut cal, sink, &insiders, &companies, false,
+    )
+    .await
 }
 
 async fn quiet_gomspace(server: &MockServer) {

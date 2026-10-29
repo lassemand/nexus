@@ -14,7 +14,8 @@
 use chronicle_lib::nordic::calendar::{MfnClient, MFN_BASE_URL};
 use chronicle_lib::nordic::db;
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
-use chronicle_lib::nordic::ingest::process_companies;
+use chronicle_lib::nordic::ingest::{process_companies, process_insiders_only};
+use chronicle_lib::nordic::insiders::{mar_start, KafkaInsiderSink, INSIDER_TRANSACTIONS_TOPIC};
 use chronicle_lib::nordic::NORDIC_MICS;
 use chronicle_lib::registry;
 use clap::Parser;
@@ -45,6 +46,29 @@ struct Args {
     /// Topic signal consumes special events from.
     #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = SPECIAL_EVENTS_TOPIC)]
     special_events_topic: String,
+
+    /// Topic signal consumes insider transactions from.
+    #[arg(long, env = "INSIDER_TRANSACTIONS_TOPIC", default_value = INSIDER_TRANSACTIONS_TOPIC)]
+    insider_transactions_topic: String,
+
+    /// Only re-read Finnish companies' feeds for managers' transactions and
+    /// publish those. No report events, and no cursor is read or moved. Use it
+    /// for history (`--from`) or to re-send; it is idempotent.
+    #[arg(long, env = "NORDIC_INSIDERS_ONLY")]
+    insiders_only: bool,
+
+    /// With `--insiders-only`: the oldest release to read (YYYY-MM-DD, UTC).
+    /// MAR started on 2016-07-03; earlier releases are ignored anyway.
+    #[arg(long, env = "NORDIC_INSIDERS_FROM")]
+    from: Option<chrono::NaiveDate>,
+
+    /// Only this ticker (with `--insiders-only`).
+    #[arg(long, env = "NORDIC_TICKER")]
+    ticker: Option<String>,
+
+    /// Only this MIC (with `--insiders-only`), e.g. `XHEL`.
+    #[arg(long, env = "NORDIC_MIC")]
+    mic: Option<String>,
 }
 
 #[tokio::main]
@@ -71,8 +95,34 @@ async fn run(args: Args) -> anyhow::Result<bool> {
     registry::sync_or_warn(&pool, Some(&args.kafka_brokers), &args.tickers_topic).await;
 
     let sink = KafkaSink::new(&args.kafka_brokers, &args.special_events_topic)?;
-    let companies = db::load_companies(&pool, NORDIC_MICS).await?;
+    let insider_sink =
+        KafkaInsiderSink::new(&args.kafka_brokers, &args.insider_transactions_topic)?;
+    let mut companies = db::load_companies(&pool, NORDIC_MICS).await?;
     let mut feed = MfnClient::new(args.mfn_base_url.clone(), Duration::from_secs(1))?;
+
+    if args.insiders_only {
+        companies.retain(|c| {
+            args.ticker
+                .as_deref()
+                .is_none_or(|t| c.ticker.eq_ignore_ascii_case(t))
+                && args
+                    .mic
+                    .as_deref()
+                    .is_none_or(|m| c.exchange_mic.eq_ignore_ascii_case(m))
+        });
+        let from = args.from.unwrap_or_else(mar_start);
+        let from = from.and_hms_opt(0, 0, 0).expect("midnight").and_utc();
+        let summary = process_insiders_only(&mut feed, &insider_sink, &companies, from).await;
+        info!(
+            attempted = summary.attempted,
+            failed = summary.failed,
+            insiders_published = summary.insiders_published,
+            mar_parse_errors = summary.mar_parse_errors,
+            mar_suspicious_zero_price = summary.mar_suspicious_zero_price,
+            "nordic-reports --insiders-only done"
+        );
+        return Ok(summary.is_success());
+    }
     let mut calendar = MfnClient::new(args.mfn_base_url, Duration::from_secs(2))?;
 
     let summary = process_companies(
@@ -80,6 +130,7 @@ async fn run(args: Args) -> anyhow::Result<bool> {
         &mut feed,
         &mut calendar,
         &sink,
+        &insider_sink,
         &companies,
         args.backfill,
     )
@@ -87,6 +138,9 @@ async fn run(args: Args) -> anyhow::Result<bool> {
     info!(
         attempted = summary.attempted,
         failed = summary.failed,
+        insiders_published = summary.insiders_published,
+        mar_parse_errors = summary.mar_parse_errors,
+        mar_suspicious_zero_price = summary.mar_suspicious_zero_price,
         calendars_refreshed = ?summary.calendars_refreshed,
         "nordic-reports done"
     );

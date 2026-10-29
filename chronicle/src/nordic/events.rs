@@ -211,6 +211,7 @@ mod tests {
             author_isins: vec!["SE0008348304".into()],
             source: None,
             attachment_urls: vec![],
+            text: None,
         }
     }
 

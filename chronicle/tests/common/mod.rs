@@ -2,6 +2,9 @@
 //! `TEST_DATABASE_URL` (a role allowed to CREATE DATABASE); tests skip when unset.
 #![allow(dead_code)]
 
+use async_trait::async_trait;
+use chronicle_lib::nordic::insiders::InsiderSink;
+use model::generated::UnifiedInsiderTransaction;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection, PgConnection, PgPool};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -91,5 +94,38 @@ impl TestDb {
             .execute(&mut self.admin)
             .await
             .unwrap();
+    }
+}
+
+/// Records every (key, insider transaction); fails every send once `fail_after`
+/// went out.
+#[derive(Default)]
+pub struct VecInsiders {
+    pub sent: std::sync::Mutex<Vec<(String, UnifiedInsiderTransaction)>>,
+    pub fail_after: Option<usize>,
+}
+
+impl VecInsiders {
+    pub fn failing_after(n: usize) -> Self {
+        Self {
+            fail_after: Some(n),
+            ..Default::default()
+        }
+    }
+
+    pub fn take(&self) -> Vec<(String, UnifiedInsiderTransaction)> {
+        std::mem::take(&mut self.sent.lock().unwrap())
+    }
+}
+
+#[async_trait]
+impl InsiderSink for VecInsiders {
+    async fn send(&self, key: &str, txn: &UnifiedInsiderTransaction) -> anyhow::Result<()> {
+        let mut sent = self.sent.lock().unwrap();
+        if self.fail_after.is_some_and(|n| sent.len() >= n) {
+            anyhow::bail!("broker down");
+        }
+        sent.push((key.to_string(), txn.clone()));
+        Ok(())
     }
 }

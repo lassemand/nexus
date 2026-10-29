@@ -73,6 +73,8 @@ struct RawContent {
     #[serde(default)]
     attachments: Option<Vec<RawAttachment>>,
     publish_date: String,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 /// One news item, reduced to the fields we use.
@@ -102,6 +104,8 @@ pub struct NewsItem {
     pub source: Option<String>,
     /// Links to the item's PDF attachments (`content.attachments[].url`).
     pub attachment_urls: Vec<String>,
+    /// The release as plain text (`content.text`), when the feed has it.
+    pub text: Option<String>,
 }
 
 impl NewsItem {
@@ -157,6 +161,7 @@ fn into_news_item(r: RawItem) -> Option<NewsItem> {
         author_isins: r.author.isins.unwrap_or_default(),
         source: r.source,
         attachment_urls,
+        text: r.content.text,
     })
 }
 
@@ -279,6 +284,7 @@ mod tests {
             author_isins: vec![],
             source: None,
             attachment_urls: vec![],
+            text: None,
         };
         assert!(i.is_authored_by("volvo"));
         assert!(i.is_authored_by("volvo-group"));

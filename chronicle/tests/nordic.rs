@@ -304,7 +304,11 @@ async fn run(db: &TestDb, server: &MockServer, sink: &VecSink, backfill: bool) -
     let companies = db::load_companies(&db.pool, NORDIC_MICS).await.unwrap();
     let mut feed = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
     let mut cal = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
-    process_companies(&db.pool, &mut feed, &mut cal, sink, &companies, backfill).await
+    let insiders = common::VecInsiders::default();
+    process_companies(
+        &db.pool, &mut feed, &mut cal, sink, &insiders, &companies, backfill,
+    )
+    .await
 }
 
 async fn cursor(db: &TestDb, ticker: &str) -> Option<chrono::DateTime<chrono::Utc>> {

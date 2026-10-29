@@ -126,6 +126,57 @@ the others (`NORDIC_MICS` is `model::asset::mic::NORDIC`). What is specific to t
 - **Calendar times are Stockholm time**, also for Finnish companies: MFN's
   `2027-10-25 08:00` is 06:00Z, which is 09:00 in Helsinki.
 
+### Finnish insider transactions
+
+Finland has no insider register, so each issuer's MAR Art. 19 release on MFN is the
+source. `nordic-reports` routes a Finnish company's managers' transaction releases
+(headline "Managers' transactions" / "Johtohenkilöiden liiketoimet", or the form text
+"Person subject to the notification requirement" / "Ilmoitusvelvollinen") to
+`chronicle_lib::nordic::insiders` instead of the report classifier, parses them
+(`mar_release`) and publishes one `UnifiedInsiderTransaction` per transaction to
+`insider.transactions` (`source_registry = FIN_MAR`). Signal stores them in
+`insider_filings`. Swedish companies are not touched (FI's register covers them,
+`pdmr`), Danish insiders are not collected.
+
+- Each release comes in Finnish and English with the same MAR reference number; the
+  English copy is read, the Finnish one only when no English copy with that reference
+  was. Ids are `FIN_MAR:{reference}:{index}` and re-sending is harmless.
+- `published_date` is the release date in Helsinki; `ticker` and `exchange_mic` come
+  from the registry. Releases before MAR (2016-07-03) are ignored.
+- The feed cursor moves only after the company's report events **and** insider
+  messages were acknowledged. A release that does not parse is logged (`news_id`,
+  `url`, error) and counted (`nordic_mar_parse_errors_total`,
+  `nordic_mar_suspicious_zero_price_total`, both per `exchange_mic`; the totals are
+  also in the end-of-run log line) but does not hold the cursor back.
+- A zero price on a BUY or SELL is never published; incentives and grants at 0.00 EUR
+  are normal and stored as `GRANT` (code `A`).
+
+Re-read a company's history for insiders only (no report events, the cursor is
+neither read nor moved, safe to repeat):
+
+```bash
+kubectl --context orbstack -n chronicle create job nordic-insiders-now --from=cronjob/nordic-reports \
+  --dry-run=client -o json | jq '.spec.template.spec.containers[0].env += [
+    {"name":"NORDIC_INSIDERS_ONLY","value":"true"},
+    {"name":"NORDIC_TICKER","value":"<TICKER>"},
+    {"name":"NORDIC_MIC","value":"XHEL"},
+    {"name":"NORDIC_INSIDERS_FROM","value":"2016-07-03"}]' \
+  | kubectl --context orbstack apply -f -
+```
+
+(`nordic-reports --insiders-only --ticker <TICKER> --mic XHEL --from 2016-07-03` is the
+same thing.) Check in signal's database:
+
+```sql
+SELECT date_part('year', f.transaction_date) AS year, f.transaction_code, count(*)
+FROM insider_filings f WHERE f.ticker = '<TICKER>' GROUP BY 1, 2 ORDER BY 1, 2;
+```
+
+Known limits: `insider_filings` is `UNIQUE (person_id, ticker, transaction_date, shares,
+transaction_code)`, so two trades of one person on one day with the same volume and
+code keep only the first (the price differs); a corrected (amended) notification adds a
+row instead of replacing the first; money is `DOUBLE PRECISION`.
+
 ## Unregistering
 
 `nexus unregister <yahoo-symbol>` (or `nexus unregister <TICKER> --mic <MIC>`,

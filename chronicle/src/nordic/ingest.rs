@@ -12,6 +12,7 @@ use super::classify::classify_item;
 use super::db::{self, Company};
 use super::events::{publish, release_event, EventSink};
 use super::feed::{fetch_feed_page, first_page_url, NewsItem};
+use super::insiders::{self, insider_key, InsiderSink, InsiderStats};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
 use tracing::{error, info, warn};
@@ -33,6 +34,10 @@ pub struct CompanyOutcome {
     pub pages: usize,
     /// The cursor after the run.
     pub cursor: Option<DateTime<Utc>>,
+    /// Insider transactions published (Finnish companies).
+    pub insiders_published: usize,
+    /// What the managers' transaction releases came to.
+    pub insiders: InsiderStats,
 }
 
 /// Summary of a [`process_companies`] run.
@@ -46,6 +51,12 @@ pub struct RunSummary {
     pub calendar_updated: Vec<String>,
     /// Tickers whose MFN calendar was refreshed after an announcement.
     pub calendars_refreshed: Vec<String>,
+    /// Insider transactions published.
+    pub insiders_published: usize,
+    /// Managers' transaction releases that did not parse.
+    pub mar_parse_errors: usize,
+    /// Releases rejected for a zero price on a BUY or SELL.
+    pub mar_suspicious_zero_price: usize,
 }
 
 impl RunSummary {
@@ -64,6 +75,7 @@ pub async fn ingest_company(
     pool: &PgPool,
     feed: &mut MfnClient,
     sink: &dyn EventSink,
+    insider_sink: &dyn InsiderSink,
     company: &Company,
     slug: &str,
     backfill: bool,
@@ -84,6 +96,10 @@ pub async fn ingest_company(
     let mut checked_tickers = false;
     let mut checked_isin = false;
     let mut url = first_page_url(&feed.base()?, slug)?;
+    // Managers' transactions of a Finnish company, parsed after the paging so a
+    // release and its twin are seen together.
+    let finnish = insiders::is_finnish(&company.exchange_mic);
+    let mut insider_items: Vec<NewsItem> = Vec::new();
 
     loop {
         let page = fetch_feed_page(feed, url).await?;
@@ -99,25 +115,15 @@ pub async fn ingest_company(
             }
             if !checked_tickers {
                 checked_tickers = true;
-                let problems = mapping_problems(company, &item.author_tickers, &item.author_isins);
-                // A mapping onto another company (two MFN companies can share
-                // a name) would publish its releases as this company's: refuse.
-                if !problems.is_empty() {
-                    for problem in &problems {
-                        error!(ticker = %company.ticker, slug, problem = %problem,
-                               "mapping points at the wrong company, nothing published");
-                    }
-                    anyhow::bail!(
-                        "mfn_slug '{slug}' is not {}:{}: {}",
-                        company.exchange_mic,
-                        company.ticker,
-                        problems.join("; ")
-                    );
-                }
+                refuse_wrong_company(company, slug, item)?;
             }
             if !checked_isin {
                 checked_isin = true;
                 store_isin(pool, company, slug, &item.author_isins).await;
+            }
+            if finnish && insiders::is_managers_transaction(item) {
+                insider_items.push(item.clone());
+                continue;
             }
             let c = classify_item(&item.tags, &item.title);
             if c.calendar_update && start.is_none_or(|s| item.published_at > s) {
@@ -141,12 +147,155 @@ pub async fn ingest_company(
         url = next;
     }
 
+    // Insider transactions go out before the cursor moves: a failed send leaves
+    // it where it was, and the next run re-sends (the ids are stable).
+    if !insider_items.is_empty() {
+        let refs: Vec<&NewsItem> = insider_items.iter().collect();
+        let batch = insiders::build(company, &refs);
+        for (published_at, msg) in &batch.messages {
+            insider_sink.send(&insider_key(msg), msg).await?;
+            outcome.insiders_published += 1;
+            newest_published = newest_published.max(Some(*published_at));
+        }
+        count_insider_metrics(company, &batch.stats, outcome.insiders_published);
+        outcome.insiders = batch.stats;
+        // A release that does not parse today will not parse tomorrow: it must
+        // not hold the cursor back, so every managers' transaction read counts.
+        newest_published = newest_published.max(insider_items.iter().map(|i| i.published_at).max());
+    }
+
     // Every message for the company was acknowledged: the cursor may move.
     if let Some(newest) = newest_published {
         db::advance_feed_cursor(pool, &company.ticker, &company.exchange_mic, newest).await?;
         outcome.cursor = outcome.cursor.max(Some(newest));
     }
     Ok(outcome)
+}
+
+/// Fails if the feed's first item is not this company's: two MFN companies can
+/// share a name, and publishing the other one's releases as this company's is
+/// worse than publishing nothing.
+fn refuse_wrong_company(company: &Company, slug: &str, item: &NewsItem) -> anyhow::Result<()> {
+    let problems = mapping_problems(company, &item.author_tickers, &item.author_isins);
+    if problems.is_empty() {
+        return Ok(());
+    }
+    for problem in &problems {
+        error!(ticker = %company.ticker, slug, problem = %problem,
+               "mapping points at the wrong company, nothing published");
+    }
+    anyhow::bail!(
+        "mfn_slug '{slug}' is not {}:{}: {}",
+        company.exchange_mic,
+        company.ticker,
+        problems.join("; ")
+    )
+}
+
+/// Counters for the managers' transaction releases of one company.
+fn count_insider_metrics(company: &Company, stats: &InsiderStats, published: usize) {
+    let mic = company.exchange_mic.clone();
+    metrics::counter!("nordic_mar_parse_errors_total", "exchange_mic" => mic.clone())
+        .increment(stats.parse_errors as u64);
+    metrics::counter!("nordic_mar_suspicious_zero_price_total", "exchange_mic" => mic.clone())
+        .increment(stats.suspicious_zero_price as u64);
+    metrics::counter!("nordic_mar_transactions_published_total", "exchange_mic" => mic)
+        .increment(published as u64);
+    if stats.before_mar > 0 {
+        info!(ticker = %company.ticker, before_mar = stats.before_mar,
+              "managers' transactions before MAR (2016-07-03) ignored");
+    }
+}
+
+/// Re-reads one Finnish company's feed for managers' transactions only (the
+/// history, or a re-send). Publishes no report events and touches no cursor, so
+/// it can run at any time and as often as needed: the transaction ids are
+/// stable and signal's upsert is idempotent. Pages back to `from`.
+pub async fn ingest_insiders_only(
+    feed: &mut MfnClient,
+    insider_sink: &dyn InsiderSink,
+    company: &Company,
+    slug: &str,
+    from: DateTime<Utc>,
+) -> anyhow::Result<CompanyOutcome> {
+    anyhow::ensure!(
+        insiders::is_finnish(&company.exchange_mic),
+        "{}:{} is not a Finnish listing; only Finnish insiders come from MFN",
+        company.exchange_mic,
+        company.ticker
+    );
+    let mut outcome = CompanyOutcome::default();
+    let mut items: Vec<NewsItem> = Vec::new();
+    let mut checked = false;
+    let mut url = first_page_url(&feed.base()?, slug)?;
+    loop {
+        let page = fetch_feed_page(feed, url).await?;
+        outcome.pages += 1;
+        let oldest = page.items.iter().map(|i| i.published_at).min();
+        for item in &page.items {
+            if !belongs_to(company, slug, item) {
+                continue;
+            }
+            if !checked {
+                checked = true;
+                refuse_wrong_company(company, slug, item)?;
+            }
+            if item.published_at >= from && insiders::is_managers_transaction(item) {
+                items.push(item.clone());
+            }
+        }
+        let Some(next) = page.next_url else { break };
+        if oldest.is_some_and(|o| o < from) {
+            break;
+        }
+        if outcome.pages >= MAX_PAGES {
+            error!(ticker = %company.ticker, pages = outcome.pages, "page cap reached, stopping");
+            break;
+        }
+        url = next;
+    }
+    let refs: Vec<&NewsItem> = items.iter().collect();
+    let batch = insiders::build(company, &refs);
+    for (_, msg) in &batch.messages {
+        insider_sink.send(&insider_key(msg), msg).await?;
+        outcome.insiders_published += 1;
+    }
+    count_insider_metrics(company, &batch.stats, outcome.insiders_published);
+    outcome.insiders = batch.stats;
+    Ok(outcome)
+}
+
+/// [`ingest_insiders_only`] for every Finnish company with an `mfn_slug`.
+pub async fn process_insiders_only(
+    feed: &mut MfnClient,
+    insider_sink: &dyn InsiderSink,
+    companies: &[Company],
+    from: DateTime<Utc>,
+) -> RunSummary {
+    let mut summary = RunSummary::default();
+    for c in companies {
+        let Some(slug) = c.mfn_slug.as_deref() else {
+            continue;
+        };
+        if !insiders::is_finnish(&c.exchange_mic) {
+            continue;
+        }
+        summary.attempted += 1;
+        match ingest_insiders_only(feed, insider_sink, c, slug, from).await {
+            Ok(o) => {
+                info!(ticker = %c.ticker, pages = o.pages, insiders_published = o.insiders_published,
+                      insiders = ?o.insiders, "insiders re-read");
+                summary.insiders_published += o.insiders_published;
+                summary.mar_parse_errors += o.insiders.parse_errors;
+                summary.mar_suspicious_zero_price += o.insiders.suspicious_zero_price;
+            }
+            Err(e) => {
+                summary.failed += 1;
+                error!(ticker = %c.ticker, error = %e, "insider re-read failed");
+            }
+        }
+    }
+    summary
 }
 
 /// A ticker as compared across sources: uppercase, spaces and hyphens removed
@@ -247,6 +396,7 @@ pub async fn process_companies(
     feed: &mut MfnClient,
     calendar_client: &mut MfnClient,
     sink: &dyn EventSink,
+    insider_sink: &dyn InsiderSink,
     companies: &[Company],
     backfill: bool,
 ) -> RunSummary {
@@ -258,10 +408,14 @@ pub async fn process_companies(
             continue;
         };
         summary.attempted += 1;
-        match ingest_company(pool, feed, sink, c, slug, backfill).await {
+        match ingest_company(pool, feed, sink, insider_sink, c, slug, backfill).await {
             Ok(o) => {
                 info!(ticker = %c.ticker, published = o.published, pages = o.pages,
-                      cursor = ?o.cursor, "ingested");
+                      cursor = ?o.cursor, insiders_published = o.insiders_published,
+                      insiders = ?o.insiders, "ingested");
+                summary.insiders_published += o.insiders_published;
+                summary.mar_parse_errors += o.insiders.parse_errors;
+                summary.mar_suspicious_zero_price += o.insiders.suspicious_zero_price;
                 if o.calendar_announced {
                     summary.calendar_updated.push(c.ticker.clone());
                     to_refresh.push(c);
@@ -414,6 +568,7 @@ mod mapping_tests {
             author_isins: v(entity.1),
             source: None,
             attachment_urls: vec![],
+            text: None,
         }
     }
 
