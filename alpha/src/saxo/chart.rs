@@ -385,6 +385,35 @@ mod tests {
         assert!(parse_daily_bars(body, "XNAS").unwrap().is_empty());
     }
 
+    #[test]
+    fn finnish_bars_are_dated_in_the_helsinki_zone() {
+        // 21:30Z on 21 Oct 2026 is 00:30 on the 22nd in Helsinki (EEST, UTC+3)
+        // but 23:30 on the 21st in Stockholm (CEST, UTC+2): the zones differ here.
+        let body = r#"{"Data":[
+          {"Time":"2026-10-21T21:30:00Z","Open":1,"High":1,"Low":1,"Close":1,"Volume":1},
+          {"Time":"2026-10-21T22:00:00Z","Open":1,"High":1,"Low":1,"Close":1,"Volume":1},
+          {"Time":"2026-01-15T22:00:00Z","Open":1,"High":1,"Low":1,"Close":1,"Volume":1},
+          {"Time":"2026-01-15T21:59:00Z","Open":1,"High":1,"Low":1,"Close":1,"Volume":1}]}"#;
+        let dates = |mic: &str| -> Vec<String> {
+            parse_daily_bars(body, mic)
+                .unwrap()
+                .iter()
+                .map(|r| r.date.to_string())
+                .collect()
+        };
+        for mic in ["XHEL", "FNFI"] {
+            assert_eq!(
+                dates(mic),
+                vec!["2026-01-15", "2026-01-16", "2026-10-22", "2026-10-22"], // parsed in time order,
+                "{mic}"
+            );
+        }
+        assert_eq!(
+            dates("XSTO"),
+            vec!["2026-01-15", "2026-01-15", "2026-10-21", "2026-10-22"]
+        );
+    }
+
     #[tokio::test]
     async fn an_unknown_exchange_is_refused_before_any_request() {
         let server = MockServer::start().await;
