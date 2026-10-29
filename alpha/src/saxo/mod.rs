@@ -24,6 +24,27 @@ pub fn is_transient_reqwest(e: &reqwest::Error) -> bool {
     e.status().is_none_or(is_transient_status)
 }
 
-pub use auth::{RotatedToken, SaxoAuth, SaxoToken, SharedToken, TokenStore};
+/// `err` followed by each of its sources, `": "`-separated. A source whose
+/// text the line already contains is skipped (reqwest repeats its own).
+///
+/// reqwest's `Display` is only the top line ("error sending request for
+/// url ..."); the cause (DNS, connect, TLS) is in the source chain.
+pub fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(e) = source {
+        let text = e.to_string();
+        if !out.contains(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        source = e.source();
+    }
+    out
+}
+
+pub use auth::{AuthError, RotatedToken, SaxoAuth, SaxoToken, SharedToken, TokenStore};
 pub use chart::{ChartClient, ChartError, DailyBarRow};
-pub use uic::{exchange_ids, InstrumentQuery, ResolvedUic, UicResolver, UicResolverError};
+pub use uic::{
+    exchange_ids, InstrumentQuery, ResolvedUic, RetryPolicy, UicResolver, UicResolverError,
+};

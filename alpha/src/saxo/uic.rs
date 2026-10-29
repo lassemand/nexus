@@ -185,6 +185,45 @@ pub struct UicResolver {
     api_base: String,
     cache: Mutex<HashMap<(String, String), ResolvedUic>>,
     exchange_overrides: HashMap<String, String>,
+    retry: RetryPolicy,
+}
+
+/// How a lookup that got no answer, or a transient status (408, 429, 5xx), is
+/// retried within the call. Other failures are returned at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    /// Attempts in total, including the first.
+    pub max_attempts: u32,
+    /// Wait before the second attempt; doubled for each one after.
+    pub base_backoff: Duration,
+    /// Upper bound on any wait, including one Saxo asks for (`Retry-After`).
+    pub max_wait: Duration,
+}
+
+impl RetryPolicy {
+    /// One attempt, no retry.
+    pub const NONE: RetryPolicy = RetryPolicy {
+        max_attempts: 1,
+        base_backoff: Duration::ZERO,
+        max_wait: Duration::ZERO,
+    };
+
+    fn wait(&self, attempt: u32, asked: Option<Duration>) -> Duration {
+        let backoff = self.base_backoff.saturating_mul(1 << (attempt - 1).min(16));
+        asked.unwrap_or(backoff).min(self.max_wait)
+    }
+}
+
+impl Default for RetryPolicy {
+    /// Four attempts, 1s/2s/4s apart, at most 120s when Saxo asks for longer:
+    /// the same as the chart client.
+    fn default() -> Self {
+        Self {
+            max_attempts: 4,
+            base_backoff: Duration::from_secs(1),
+            max_wait: Duration::from_secs(120),
+        }
+    }
 }
 
 /// `Retry-After` (seconds), or else the longest `X-RateLimit-*-Reset`.
@@ -222,7 +261,14 @@ impl UicResolver {
             api_base: api_base.into(),
             cache: Mutex::new(HashMap::new()),
             exchange_overrides: HashMap::new(),
+            retry: RetryPolicy::default(),
         }
+    }
+
+    /// Replaces the default [`RetryPolicy`].
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
     }
 
     /// Replaces the built-in ExchangeId of some MICs (`MIC` → Saxo ExchangeId),
@@ -240,7 +286,39 @@ impl UicResolver {
             .ok_or_else(|| UicResolverError::UnknownExchange(mic.to_string()))
     }
 
+    /// [`Self::search_once`], retried per the [`RetryPolicy`].
     async fn search(
+        &self,
+        ticker: &str,
+        keywords: &str,
+        asset_type: &str,
+        access_token: &str,
+    ) -> Result<InstrumentListResponse, UicResolverError> {
+        let mut attempt = 1;
+        loop {
+            match self
+                .search_once(ticker, keywords, asset_type, access_token)
+                .await
+            {
+                Err(e) if e.is_transient() && attempt < self.retry.max_attempts => {
+                    let wait = self.retry.wait(attempt, e.retry_after());
+                    tracing::warn!(
+                        ticker,
+                        keywords,
+                        attempt,
+                        ?wait,
+                        error = super::error_chain(&e),
+                        "Saxo instrument search failed, retrying"
+                    );
+                    tokio::time::sleep(wait).await;
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn search_once(
         &self,
         ticker: &str,
         keywords: &str,
@@ -712,6 +790,91 @@ mod tests {
             assert!(matches!(err, UicResolverError::UnknownExchange(_)));
         }
 
+        const FAST: RetryPolicy = RetryPolicy {
+            max_attempts: 4,
+            base_backoff: Duration::from_millis(1),
+            max_wait: Duration::from_millis(20),
+        };
+
+        #[tokio::test]
+        async fn a_transient_failure_is_retried_within_the_call() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(503))
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(GOMX))
+                .with_priority(2)
+                .mount(&server)
+                .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri()).with_retry(FAST);
+            let got = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
+                .await
+                .unwrap();
+            assert_eq!(got.uic, 4769462);
+            assert_eq!(server.received_requests().await.unwrap().len(), 2);
+        }
+
+        #[tokio::test]
+        async fn a_permanent_status_is_not_retried() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(400))
+                .mount(&server)
+                .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri()).with_retry(FAST);
+            let err = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
+                .await
+                .unwrap_err();
+            assert!(!err.is_transient());
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn no_answer_is_retried_then_reported_with_its_cause() {
+            // A port nothing listens on: every attempt is refused.
+            let addr = std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap();
+            let r =
+                UicResolver::new(reqwest::Client::new(), format!("http://{addr}")).with_retry(FAST);
+            let err = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
+                .await
+                .unwrap_err();
+            assert!(err.is_transient(), "{err:?}");
+            let chain = crate::saxo::error_chain(&err);
+            assert!(
+                chain.starts_with("HTTP error resolving Uic for GOMX"),
+                "{chain}"
+            );
+            assert!(
+                chain.len() > err.to_string().len(),
+                "the cause is appended: {chain}"
+            );
+        }
+
+        #[test]
+        fn waits_double_and_respect_the_cap_and_retry_after() {
+            let p = RetryPolicy::default();
+            assert_eq!(p.wait(1, None), Duration::from_secs(1));
+            assert_eq!(p.wait(3, None), Duration::from_secs(4));
+            assert_eq!(
+                p.wait(1, Some(Duration::from_secs(30))),
+                Duration::from_secs(30)
+            );
+            assert_eq!(
+                p.wait(1, Some(Duration::from_secs(3600))),
+                Duration::from_secs(120)
+            );
+        }
+
         #[tokio::test]
         async fn a_429_carries_retry_after_and_the_rate_limit_headers() {
             let server = MockServer::start().await;
@@ -724,7 +887,8 @@ mod tests {
                 )
                 .mount(&server)
                 .await;
-            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let r = UicResolver::new(reqwest::Client::new(), server.uri())
+                .with_retry(RetryPolicy::NONE);
             let err = r
                 .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
                 .await
@@ -759,7 +923,8 @@ mod tests {
                 )
                 .mount(&server)
                 .await;
-            let r = UicResolver::new(reqwest::Client::new(), server.uri());
+            let r = UicResolver::new(reqwest::Client::new(), server.uri())
+                .with_retry(RetryPolicy::NONE);
             let err = r
                 .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
                 .await
@@ -782,7 +947,8 @@ mod tests {
                     .respond_with(ResponseTemplate::new(code))
                     .mount(&server)
                     .await;
-                let r = UicResolver::new(reqwest::Client::new(), server.uri());
+                let r = UicResolver::new(reqwest::Client::new(), server.uri())
+                    .with_retry(RetryPolicy::NONE);
                 let err = r
                     .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
                     .await
