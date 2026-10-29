@@ -43,7 +43,7 @@ pub fn error_chain(err: &dyn std::error::Error) -> String {
     out
 }
 
-pub use auth::{RotatedToken, SaxoAuth, SaxoToken, SharedToken, TokenStore};
+pub use auth::{AuthError, RotatedToken, SaxoAuth, SaxoToken, SharedToken, TokenStore};
 pub use chart::{ChartClient, ChartError, DailyBarRow};
 pub use uic::{
     exchange_ids, InstrumentQuery, ResolvedUic, RetryPolicy, UicResolver, UicResolverError,

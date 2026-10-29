@@ -84,8 +84,8 @@ pub struct RotatedToken {
 ///
 /// Infallible by design: implementations are responsible for logging their
 /// own failures. A transient persistence failure must not unwind a
-/// successful rotation — the new access token is already valid and must
-/// still be used to reauthorize the WebSocket regardless.
+/// successful rotation — the new access token is already valid and is used
+/// regardless.
 #[async_trait::async_trait]
 pub trait TokenStore: Send + Sync {
     async fn save(&self, rotated: &RotatedToken);

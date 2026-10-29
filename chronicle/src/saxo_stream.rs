@@ -16,8 +16,8 @@ mod db;
 mod kafka;
 
 use alpha::saxo::{
-    ChartClient, ChartError, InstrumentQuery, RotatedToken, SaxoAuth, SaxoToken, SharedToken,
-    TokenStore, UicResolver,
+    error_chain, AuthError, ChartClient, ChartError, InstrumentQuery, RotatedToken, SaxoAuth,
+    SaxoToken, SharedToken, TokenStore, UicResolver,
 };
 use anyhow::Context;
 use chronicle_lib::daily_bars::{self, BarSink, Instrument};
@@ -98,6 +98,44 @@ const SAXO_TOKEN_SOURCE: &str = "saxo";
 
 /// Refresh the access token once it expires within this many seconds.
 const TOKEN_REFRESH_THRESHOLD_SECS: i64 = 120;
+
+/// Waits between attempts of the startup token refresh when it gets no answer
+/// or a transient status (about 3 minutes in all). Only a rejection, or every
+/// attempt failing, sends saxo-stream to wait for a new registration.
+const INITIAL_REFRESH_BACKOFF: [Duration; 7] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(16),
+    Duration::from_secs(32),
+    Duration::from_secs(60),
+];
+
+/// The startup refresh, retried after each wait in `backoff` while the error
+/// is transient (a dropped connection must not be taken for a revoked token).
+async fn initial_refresh(
+    auth: &mut SaxoAuth,
+    backoff: &[Duration],
+) -> Result<RotatedToken, AuthError> {
+    let mut waits = backoff.iter();
+    loop {
+        match auth.refresh().await {
+            Err(e) if e.is_transient() => match waits.next() {
+                Some(wait) => {
+                    warn!(
+                        error = error_chain(&e),
+                        ?wait,
+                        "initial Saxo token refresh failed, retrying"
+                    );
+                    tokio::time::sleep(*wait).await;
+                }
+                None => return Err(e),
+            },
+            result => return result,
+        }
+    }
+}
 
 struct PgTokenStore {
     pool: sqlx::PgPool,
@@ -224,7 +262,7 @@ async fn daily_bars_sweep(
                 out.failures += 1;
                 out.transient += usize::from(e.is_transient());
                 counter!("saxo_daily_bars_failures_total").increment(1);
-                error!(ticker, exchange_mic = %inst.exchange_mic, error = alpha::saxo::error_chain(&e),
+                error!(ticker, exchange_mic = %inst.exchange_mic, error = error_chain(&e),
                        transient = e.is_transient(), "daily bars: Uic resolution failed");
                 continue;
             }
@@ -831,7 +869,7 @@ async fn main() -> anyhow::Result<()> {
             refresh_token,
             token_store,
         );
-        match auth.refresh().await {
+        match initial_refresh(&mut auth, &INITIAL_REFRESH_BACKOFF).await {
             Ok(rotated) => {
                 token_expires_at_unix.store(
                     rotated.refresh_token_expires_at.timestamp(),
@@ -843,7 +881,7 @@ async fn main() -> anyhow::Result<()> {
                 // Restarting can't fix an invalid external credential, so
                 // exiting here would only crash-loop forever (NEX-107).
                 error!(
-                    error = %e,
+                    error = error_chain(&e),
                     "initial refresh of stored Saxo token failed — waiting for \
                      re-registration via `nexus saxo auth` instead of exiting"
                 );
@@ -913,12 +951,15 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Err(e) if e.is_transient() => {
                         counter!("saxo_refresh_token_failures_total").increment(1);
-                        error!(error = %e, "Saxo token refresh failed — will retry next tick");
+                        error!(
+                            error = error_chain(&e),
+                            "Saxo token refresh failed — will retry next tick"
+                        );
                     }
                     Err(e) => {
                         counter!("saxo_refresh_token_failures_total").increment(1);
                         retry_at = Some(std::time::Instant::now() + Duration::from_secs(10 * 60));
-                        error!(error = %e,
+                        error!(error = error_chain(&e),
                                "Saxo rejected the token refresh — register a new token (nexus saxo auth); retrying every 10 min");
                     }
                 }
@@ -1062,6 +1103,84 @@ mod backoff_tests {
 
 #[cfg(test)]
 mod tests {
+
+    mod initial_refresh {
+        use super::super::*;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        struct NoStore;
+        #[async_trait::async_trait]
+        impl TokenStore for NoStore {
+            async fn save(&self, _: &RotatedToken) {}
+        }
+
+        const FAST: [Duration; 3] = [Duration::from_millis(1); 3];
+        const OK: &str = r#"{"access_token":"new_acc","refresh_token":"new_ref","expires_in":1200,"refresh_token_expires_in":3600}"#;
+
+        fn auth(server: &MockServer) -> SaxoAuth {
+            SaxoAuth::new(
+                reqwest::Client::new(),
+                format!("{}/token", server.uri()),
+                "id",
+                "secret",
+                "stored".to_string(),
+                Arc::new(NoStore),
+            )
+        }
+
+        #[tokio::test]
+        async fn a_transient_failure_is_retried_instead_of_waiting_for_registration() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(ResponseTemplate::new(503))
+                .up_to_n_times(2)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(OK))
+                .with_priority(2)
+                .mount(&server)
+                .await;
+            let rotated = initial_refresh(&mut auth(&server), &FAST).await.unwrap();
+            assert_eq!(rotated.access_token.access_token, "new_acc");
+            assert_eq!(server.received_requests().await.unwrap().len(), 3);
+        }
+
+        #[tokio::test]
+        async fn a_rejected_token_is_not_retried() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(400))
+                .mount(&server)
+                .await;
+            let err = initial_refresh(&mut auth(&server), &FAST)
+                .await
+                .unwrap_err();
+            assert!(!err.is_transient());
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn transient_failures_give_up_after_the_last_wait() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(503))
+                .mount(&server)
+                .await;
+            let err = initial_refresh(&mut auth(&server), &FAST)
+                .await
+                .unwrap_err();
+            assert!(err.is_transient());
+            assert_eq!(
+                server.received_requests().await.unwrap().len(),
+                FAST.len() + 1
+            );
+        }
+    }
     use super::*;
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
