@@ -15,6 +15,9 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
+      # Finished Jobs (and their failure alert) are removed after this; pod logs
+      # stay in Loki. Without it a failed Job is kept until 3 newer failures.
+      ttlSecondsAfterFinished: {{ .Values.jobTtlSecondsAfterFinished }}
       # A page change won't heal on retry; the job exits non-zero so the failed
       # Job is visible, and the next daily run tries again.
       backoffLimit: 0
