@@ -87,6 +87,11 @@
 [] | kind=None period=None correction=false calendar=true | "Neles Oyj: Neles julkaisee tammi-joulukuun 2021 tilinpäätöstiedotteen 4. helmikuuta 2022"
 [":regulatory", "sub:report", "sub:report:interim"] | kind=Some(Interim) period=Some("2019-Q2") correction=false calendar=false | "Metso’s Half-Year Review January 1 – June 30, 2019"
 [":regulatory", "sub:report", "sub:report:interim"] | kind=Some(Interim) period=Some("2019-Q2") correction=false calendar=false | "Metson puolivuosikatsaus 1. tammikuuta – 30. kesäkuuta 2019"
+# fixtures/mfn/news_firstfarms_calendar.json
+[":regulatory", "sub:ci", "sub:ci:calendar"] | kind=None period=None correction=false calendar=true | "Finanskalender 2026 for FirstFarms A/S"
+[":regulatory", "sub:ci", "sub:ci:calendar"] | kind=None period=None correction=false calendar=true | "Financial calendar 2026 for FirstFarms A/S"
+[":regulatory"] | kind=None period=None correction=false calendar=true | "Ændring i FirstFarms’ finanskalender for 2025"
+[":regulatory"] | kind=None period=None correction=false calendar=true | "Change in FirstFarms’ financial calendar for 2025"
 # fixtures/mfn_news_gomspace.json
 [":regulatory", "sub:report", "sub:report:interim"] | kind=Some(Interim) period=None correction=false calendar=false | "Q2 Financial Reporting Confirms a Strong First Half of 2026: 30% Growth, Positive EBIT, Reinforced Balance Sheet and Guidance Maintained"
 [":regulatory"] | kind=None period=None correction=false calendar=false | "GomSpace A/S: Annual general meeting held in GomSpace Group AB (publ)"
