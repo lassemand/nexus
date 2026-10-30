@@ -255,7 +255,7 @@ results word (sales, profit, revenue, results, financial report/statement).
 ## Trading holidays (Sweden, Denmark, Finland)
 
 `trading_holidays` (signal DB) is seeded per **country**, not per MIC:
-`FNSE`/`XSTO` use `SE`, `XCSE`/`FNDK` use `DK`, `XHEL`/`FNFI` use `FI` (`alpha::calendar::EXCHANGE_TO_COUNTRY`).
+`FNSE`/`XSTO` use `SE`, `XCSE`/`FNDK` use `DK`, `XHEL`/`FNFI` use `FI` (`model::nordic`, via `alpha::calendar::country_for_exchange`).
 Session hours per MIC are in the `exchanges` table (Copenhagen: 09:00-17:00
 `Europe/Copenhagen`, no half days; Stockholm: 09:00-17:30, 13:00 half-day close;
 Helsinki: 10:00-18:30 `Europe/Helsinki`, no half days; prices in EUR).

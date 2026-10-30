@@ -16,5 +16,6 @@ pub mod events;
 pub mod feed;
 pub mod ingest;
 pub mod insiders;
+pub mod lang;
 pub mod live;
 pub mod mar_release;

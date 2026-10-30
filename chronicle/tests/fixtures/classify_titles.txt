@@ -1,0 +1,344 @@
+  KORJAUS: osavuosikatsaus
+  rättelse: Delårsrapport
+18 releases are 9 people's transactions
+9 people x fi/en
+: holiday_date.format(
+: today.format(
+AB Volvo: The Volvo Group brings forward the report for the third quarter to October 16
+AB Volvo: The Volvo Group reports preliminary financial results for the first quarter 2023
+AB Volvo: Update on the Volvo Group's financial reporting 2020
+AB Volvo: Volvo Group - the fourth quarter
+AB Volvo: Volvo Group - the fourth quarter and full year 2025
+AB Volvo: Volvo Group publishes Annual Report 2025
+AGM decisions
+AGM notice is not a report
+AGM notices, calendar notices and report documents are not published
+Chief Executive Officer
+Company changes date of Q3 report
+Correction: GomSpace Reports Strong Q2
+Correction: GomSpace Reports Strong Q2 Performance
+Correction: Novo Nordisk A/S - share repurchase programme
+DELETE FROM mfn_ingest_state
+Decisions of general meeting
+Esa Kiiskinen
+GomSpace A/S: Correction: GomSpace Reports Strong Q2
+GomSpace A/S: Correction: GomSpace Reports Strong Q2 Performance with Growth
+GomSpace A/S: Correction: GomSpace signs a 19.5 MEUR contract
+GomSpace A/S: GomSpace (provider of nanosatellites) announces its annual report for 2018
+GomSpace A/S: GomSpace (provider of nanosatellites) announces its quarterly results for the fourth quarter of 2018
+GomSpace A/S: GomSpace Reports an all-time high Q4 and a full year of growth
+GomSpace A/S: GomSpace Reports an all-time high Q4 and a full year of significant growth
+GomSpace A/S: GomSpace Secures 1.8 MEUR (19.9 MSEK) of Products order intake in Q1 2026
+GomSpace A/S: GomSpace announces 2026 market guidance with strong profitable growth
+GomSpace A/S: GomSpace is changing reporting practices for more efficient and concise market updates
+GomSpace A/S: GomSpace issues a market update highlighting a positive free cashflow in Q4, along with a new date for the Q4 2023 interim report
+GomSpace A/S: GomSpace moves up publication of quarterly results for the third quarter 2023 to November 16, 2023
+GomSpace A/S: GomSpace shows positive free cash flow during Q4 2023 report
+GomSpace A/S: GomSpace updates its financial calendar
+GomSpace A/S: GomSpace: Early publication of quarterly results for the fourth quarter 2023
+GomSpace Reports Strong Q3 Performance
+GomSpace corrects nothing
+GomSpace updates its financial calendar
+Hallituksen jäsen/varajäsen
+Hexagon AB: Hexagon Q2 2026 results announced today
+Industrial AB: Industrial AB reports strong Q2 2026
+Interim report rescheduled
+Interim report: dividends paid in January and September 2026
+Issuer A/S: Delårsrapport for 1. kvartal 2026
+Issuer A/S: Financial statement for 2025
+Issuer A/S: Halvårsrapport 2026
+Issuer A/S: Halvårsrapport H1 2026
+Issuer A/S: Indberetning af transaktioner foretaget af ledende medarbejdere i Issuer A/S
+Issuer A/S: Kvartalsrapport 3. kvartal 2026
+Issuer A/S: Kvartalsrapport for 3. kvartal 2026
+Issuer A/S: Managerial responsibilities: transactions in Q3
+Issuer A/S: Ny kontrakt og ordreindgang i 2. kvartal 2026 contract
+Issuer A/S: Opdateret finanskalender 2026
+Issuer A/S: Regnskabsmeddelelse for 2. kvartal 2026
+Issuer A/S: Resultat for 2. kvartal 2026
+Issuer A/S: Rettelse: Delårsrapport for 1. kvartal 2026
+Issuer A/S: Share buy-back programme, transactions in week 12 of the first quarter
+Issuer A/S: Stemmerettigheder og kapital i Q2
+Issuer A/S: Total number of voting rights and capital
+Issuer A/S: Årsrapport 2025
+Issuer A/S: Årsregnskabsmeddelelse 2025
+Issuer A/S: Ændret dato for offentliggørelse af delårsrapport
+Issuer A/S: Ændring i finansiel kalender for 2026
+Issuer AB - correction: updated figures
+Issuer AB: Bolaget flyttar datum för rapport
+Issuer AB: Decisions of the annual general meeting 2026
+Issuer AB: Delayed publication of annual report
+Issuer AB: Early publication of year-end report Q4 2017
+Issuer AB: Interim report for the period 2026
+Issuer AB: Invitation to conference call for the Q3 report
+Issuer AB: Issuer Q1 2027 report
+Issuer AB: Issuer Q3 report: full year outlook raised
+Issuer AB: Issuer postpones the interim report for Q3
+Issuer AB: Issuer publishes Annual Report 2025
+Issuer AB: Issuer publishes sustainability report 2025
+Issuer AB: Issuer reports strong Q2 growth in a press release
+Issuer AB: Issuer senarelägger publiceringen av delårsrapporten
+Issuer AB: Issuer updates its financial calendar for 2026
+Issuer AB: Notice of annual general meeting in Issuer AB
+Issuer AB: Q1 and Q2 report 2026
+Issuer AB: Q2 2026 report compared with 2025
+Issuer AB: Results for the period 2025
+Issuer AB: Results presentation for the period
+Issuer AB: Rättelse: Delårsrapport januari-mars
+Issuer AB: Third quarter 2026 - full year outlook raised
+Issuer AB: Year-end report 2025 and proposed dividend now out
+Issuer Oyj: Business Review January 1 - March 31, 2026
+Issuer Oyj: Ilmoitus arvopaperimarkkinalain 9 luvun 5 §:n mukaisesti osavuosikatsaus
+Issuer Oyj: Johdon liiketoimet
+Issuer Oyj: Johtohenkilöiden liiketoimet - Matti Meikäläinen
+Issuer Oyj: Johtohenkilöiden liiketoimet osavuosikatsauksen jälkeen
+Issuer Oyj: Kutsu varsinaiseen yhtiökokoukseen
+Issuer Oyj: Liiketoimintakatsaus 1. tammikuuta - 31. maaliskuuta 2026
+Issuer Oyj: Liputusilmoitus (Issuer Oyj)
+Issuer Oyj: Managers' transactions - Q3 interim report shares
+Issuer Oyj: Oikaisu: Tilinpäätöstiedote 2025
+Issuer Oyj: Oikaisu: osavuosikatsaus 1. tammikuuta - 31. maaliskuuta 2026
+Issuer Oyj: Omien osakkeiden hankinta 12.3.2026
+Issuer Oyj: Omien osakkeiden ostot osavuosikatsauskaudella
+Issuer Oyj: Share buyback 12 March 2026 report
+Issuer Oyj: Vuosikertomus 2025 julkaistu
+Issuer Oyj: Yhtiökokouksen päätökset
+Issuer Oyj: osavuosikatsaus huhti-kesäkuu 2026
+Issuer sales rose in the first nine months of 2025
+Issuer: H1 2025 and 2026 report
+Issuer: H1 2026 report
+Issuer: H1 and Q3 2026
+Issuer: Q2 report
+Issuer: report 1.1. - 31.12.2025
+Issuer: results for Q3 2026
+Issuer: results for the first quarter of 2026
+Issuer: results for the fourth quarter of 2026
+KONE Oyj: Financial reporting schedule of KONE Corporation in 2027
+KONE Oyj: KONE Corporation's Annual Review 2019 has been published
+KONE publishes January-March 2018 Interim Report on Wednesday, April 25, 2018 at 12:30 p.m. EEST
+Kalle Härkki
+Korjaus Metson 3.2.2017 julkaistuun tilinpäätöstiedotteeseen
+Korjaus: osavuosikatsaus 1. tammikuuta - 31. maaliskuuta 2026
+Korrektion: Halvårsrapport 2026
+Member of the Board
+Member of the Board/Deputy member
+Metso Corporation
+Metso Corporation: Managers' transactions - Nobody
+Metso Corporation: Managers' transactions - Sami Takaluoma
+Metso Corporation: Metso Oyj: Johtohenkilöiden liiketoimet - Niko Pakalén
+Metso Corporation: Metso julkaisee oikaistut vertailuluvut liittyen jatkuvien toimintojen uudelleenluokitteluun
+Metso Corporation: Metso's Financial Statements Review January 1 - December 31, 2025
+Metso Corporation: Metson osavuosikatsaus 1. tammikuuta - 31. maaliskuuta 2026
+Metso Corporation: Metson tilinpäätöstiedote 1. tammikuuta - 31. joulukuuta 2025
+Metso Corporation: Metson vuosikertomus 2025 on julkistettu
+Metso Outotec's Interim Report January - March 2023
+Metso Outotecin osavuosikatsaus tammi-syyskuu 2021
+Metso Outotecin tammi-kesäkuun 2022 puolivuosikatsaus
+Metso Oyj: Metso updates its segment reporting and publishes restated information based on the new structure
+Metso julkistaa tammi-syyskuun 2018 osavuosikatsauksensa perjantaina 26.10.2018
+Metso's Financial Statements Review January 1 - December 31, 2025
+Metso's Half-Year Report January 1 - June 30, 2026
+Metso's Interim Report January 1 - September 30, 2026
+Metsolta tammi-joulukuu 2025 osavuosikatsaus
+Metsolta tammi-kesäkuulta 2026 puolivuosikatsaus
+Metson osavuosikatsaus 1. tammikuuta - 30. syyskuuta 2026
+Metson osavuosikatsaus 1. tammikuuta - 31. maaliskuuta 2026
+Metson osavuosikatsaus 1.1. - 30.9.2013
+Metson osavuosikatsaus 1.1.-30.6.2011
+Metson puolivuosikatsaus 1. tammikuuta - 30. kesäkuuta 2026
+Metson tilinpäätöstiedote 1. tammikuuta - 31. joulukuuta 2025
+Metson tilinpäätöstiedote tammi-joulukuun 2025
+Muu ylin johto
+NASDAQ HELSINKI
+NORDIC_MICS includes Helsinki
+Neleksen osavuosikatsaus 1. tammikuuta - 31. joulukuuta, 2021
+Neles Oyj: Neleksen osavuosikatsaus 1. tammikuuta - 31. joulukuuta, 2021
+Neles Oyj: Neles julkaisee tammi-joulukuun 2021 tilinpäätöstiedotteen 4. helmikuuta 2022
+Neles Oyj: Neles julkaisee tammi-syyskuun 2021 osavuosikatsauksen 27. lokakuuta 2021
+Neles Oyj: Neles to publish its Financial Statements Review for January-December 2021 on February 4, 2022
+Neles Oyj: Simo Sääskilahti, CFO of Neles, appointed Neles' interim President and CEO as of January 1, 2022
+Neste raises its second quarter 2022 outlook
+Nokia Oyj:n vuoden 2026 kolmannen neljänneksen osavuosikatsaus
+Notice to annual general meeting
+Novo Nordisk A/S - share repurchase programme
+Novo Nordisk A/S: CagriSema demonstrated superior HbA1c reduction of 1.91%-points and weight loss of 14.2% in adults with type 2 diabetes in the REIMAGINE 2 trial
+Novo Nordisk A/S: Trading in Novo Nordisk shares by board members, executives and associated persons
+Novo Nordisk files annual report with the SEC
+Novo Nordisk has published its annual report for 2025
+Novo Nordisk phase 2 trial with amycretin reports significant weight loss and HbA1c reduction in type 2 diabetes
+Novo Nordisk raises adjusted sales and adjusted operating profit outlook for 2026
+Novo Nordisk reports adjusted operating profit of DKK 33,389 million for Q2 2026 and raises full-year outlook
+Novo Nordisk reports weight loss of 14.9% (16.9% if taken as intended) in STEP 1 trial
+Novo Nordisk's adjusted operating profit reached DKK 32,858 million in Q1 2026
+Novo Nordisk's sales increased by 12% in Danish kroner and by 15% at CER in the first nine months of 2025; R&D pipeline progress continues
+Novo Nordisk's sales increased by 6% in Danish kroner and by 10% at constant exchange rates to DKK 309.1 billion in 2025 
+OFF-EXCHANGE LIIKETOIMET (XOFF)
+Osakepalkkion vastaanottaminen
+Other Co: Q2 report
+Other senior manager
+Outotec's Q1-Q3 2012 Interim Report
+Outotecin tammi-syyskuun osavuosikatsauksen 2019 julkaiseminen
+PDMR notice with the word reporting
+PDMR notice, interim tag
+Person i ledande ställning
+Positiivinen tulosvaroitus: UPM täsmentää tulosnäkymiään kolmannen neljänneksen ennakkotietojen pohjalta
+Publishing of Outotec's Interim Report January-March 2019
+Q2 2026 vs 2025
+Q2 Financial Reporting Confirms a Strong First Half of 2026: 30% Growth, Positive EBIT
+Q3 interim report
+Raija-Leena Hankonen-Nybom
+Receipt of a Share-Based Incentive
+Resolutions from the Annual General Meeting of Novo Nordisk A/S
+SELECT exchange_mic, currency FROM companies WHERE ticker = $1 AND exchange_mic = 'FNSE'
+SELECT isin FROM companies WHERE ticker = 'NOVO-B'
+Sami Takaluoma
+This is to amend the Managers' Transactions
+Trading in Novo Nordisk shares by board members ...
+Uppdaterad finansiell kalender
+Volvo Group - the fourth quarter
+Volvo Group - the second quarter 2026
+Volvo: Q2 report
+Volvokoncernen - det andra kvartalet 2026
+Wärtsilä Oyj Abp - Johdon liiketoimet: Johnstone, Tom
+Wärtsiläs delårsrapport januari-mars 2020
+already ingested
+an incentive is never a buy
+an older calendar
+and no report events either
+annual report
+annual report document (GomSpace 2019)
+annual report document (Volvo)
+annual+interim without q4
+annual-only tag but year-end wording
+brings forward
+broker unavailable
+buy-backs, insider trades, AGM, the annual report document and news are not published
+closed by server
+conference call invitation
+connect failed
+correction of an excluded notice is no report correction
+correction of non-report
+cursor not moved
+danish delårsrapport
+danish finansiel kalender
+danish finanskalender
+danish halvårsrapport
+danish korrektion
+danish kvartal with news wording
+danish kvartal wording only
+danish kvartalsrapport
+danish leading employees
+danish regnskabsmeddelelse
+danish rettelse
+danish årsrapport
+danish årsregnskabsmeddelelse
+danish ændret dato
+delayed publication
+early publication quarterly
+early publication year-end tagged
+en annual review document
+en business review
+en financial statements review, untagged
+en half-year
+en interim president
+en kone publishes on
+en managers' transactions
+en managers' transactions, curly apostrophe
+en profit warning naming a quarter
+en publishing of
+en reporting schedule
+en restated comparatives
+en share buyback
+en to publish its
+english financial statement for
+everything is read again and re-published
+everything re-sent
+faq2 results
+fi annual report document
+fi annual report document, untagged
+fi buyback ostot
+fi financial statements release, untagged
+fi flagging formula
+fi general meeting
+fi half-year
+fi interim, prefixed
+fi johdon liiketoimet
+fi julkaisee osavuosikatsauksen
+fi julkaiseminen
+fi julkistaa possessive
+fi liiketoimet vs liiketoimintakatsaus
+fi liiketoimintakatsaus
+fi managers' transactions
+fi neles julkaisee
+fi neles oddity with regulatory tag
+fi neles oddity: osavuosikatsaus for the full year
+fi nokia quarter ordinal
+fi notice of meeting
+fi restated comparatives
+fi tulosvaroitus naming a quarter
+financial calendar
+financial statements review
+flyttar rapport
+första kvartalet
+half year financial report
+half-year report
+half-year review
+id 12026 and 20267
+ids must be unique within a release
+industrial is not a trial
+interim Q3 with full year outlook
+interim q-tag
+interim report
+interim review
+jointly controlled
+managerial responsibilities, Q3 mention
+managers' transactions with a report word and tags
+market guidance
+moves up publication
+new date for report
+no Finnish company registered
+no Neles release under METSO
+no colon here at all
+no cursor yet: pages to the end
+not a MAR row
+not regulatory
+novo Q1 2026
+novo Q2 2026
+novo SEC filing of the annual report
+novo annual report document
+novo insider trading notice
+novo major shareholder
+novo nine months
+novo outlook update is business news
+novo share repurchase (tagged)
+novo share repurchase, capital S
+novo trial news saying reports (2020)
+novo trial news saying reports (2025)
+novo voting rights
+novo year-end, annual tag only
+omien osakkeiden
+one key per company
+order intake
+prefixed correction
+preliminary results are a release
+reporting practices
+resolved FI company name
+results in q4
+same keys and references: idempotent downstream
+share buy-back
+sustainability report
+swedish senarelägger
+the cursor did not move
+the rest is published
+three went out before the broker failed
+timed out waiting for a connection event
+timed out waiting for a message
+total voting rights and capital
+trial news mis-tagged annual
+unprefixed correction
+untagged Q3 with full year outlook
+untagged annual report publication
+untagged year-end 2024
+update on reporting
+volvo year-end annual+interim+q4
+Ändrad rapportdag för delårsrapport

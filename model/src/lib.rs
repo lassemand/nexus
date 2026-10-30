@@ -4,6 +4,7 @@ pub mod calendar;
 pub mod exchange;
 pub mod insider;
 pub mod isin;
+pub mod nordic;
 pub mod price;
 pub mod sector;
 pub mod stockholm;

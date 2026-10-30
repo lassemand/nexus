@@ -1,0 +1,62 @@
+[
+ {
+  "date": "2017-01-01",
+  "name": "New Year's Day"
+ },
+ {
+  "date": "2017-01-06",
+  "name": "Epiphany"
+ },
+ {
+  "date": "2017-04-14",
+  "name": "Good Friday"
+ },
+ {
+  "date": "2017-04-16",
+  "name": "Easter Sunday"
+ },
+ {
+  "date": "2017-04-17",
+  "name": "Easter Monday"
+ },
+ {
+  "date": "2017-05-01",
+  "name": "May Day"
+ },
+ {
+  "date": "2017-05-25",
+  "name": "Ascension Day"
+ },
+ {
+  "date": "2017-06-04",
+  "name": "Pentecost"
+ },
+ {
+  "date": "2017-06-23",
+  "name": "Midsummer Eve"
+ },
+ {
+  "date": "2017-06-24",
+  "name": "Midsummer Day"
+ },
+ {
+  "date": "2017-11-04",
+  "name": "All Saints' Day"
+ },
+ {
+  "date": "2017-12-06",
+  "name": "Independence Day"
+ },
+ {
+  "date": "2017-12-24",
+  "name": "Christmas Eve"
+ },
+ {
+  "date": "2017-12-25",
+  "name": "Christmas Day"
+ },
+ {
+  "date": "2017-12-26",
+  "name": "St. Stephen's Day"
+ }
+]

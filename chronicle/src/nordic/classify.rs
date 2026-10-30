@@ -2,174 +2,15 @@
 //! financial-calendar notices and the fiscal period.
 //!
 //! The classifier is pure and table-tested because a wrong `report_kind`
-//! silently creates (or removes) a price reaction downstream.
+//! silently creates (or removes) a price reaction downstream. The vocabulary
+//! lives in [`super::lang`], one file per language; every language is asked and
+//! the answers are combined (any language matches / union of quarter hints), so
+//! no list's order matters.
 
-/// Words that on their own identify a periodic report headline.
-const STRONG_WORDS: &[&str] = &[
-    "report",
-    "interim",
-    "half-year",
-    "year-end",
-    "annual",
-    "rapport",
-    "bokslutskommuniké",
-    "delårsrapport",
-    // Danish: half-year / annual / quarterly report, results announcement
-    // (`årsregnskabsmeddelelse` contains `regnskabsmeddelelse`).
-    "halvårsrapport",
-    "årsrapport",
-    "regnskabsmeddelelse",
-    "kvartalsrapport",
-    "financial statement for",
-    // Finnish (also issuers' English twins): interim, half-year, financial
-    // statements release (the Q4 / full-year report), business review. The
-    // genitive forms (`osavuosikatsauksen`) are not here on purpose: they
-    // occur in calendar notices ("julkaisee ... osavuosikatsauksen").
-    "osavuosikatsaus",
-    "puolivuosikatsaus",
-    "tilinpäätöstiedote",
-    "liiketoimintakatsaus",
-    "financial statements review",
-    "business review",
-];
-
-/// Regulatory notices that are never a results release, even when MFN tags
-/// them `sub:report*` or the headline says "report" (a PDMR notice titled
-/// "Reporting of transactions made by persons discharging managerial
-/// responsibilities"). Unlike [`NON_REPORT_WORDS`] this wins over tags.
-const HARD_NON_REPORT_WORDS: &[&str] = &[
-    "persons discharging managerial responsibilities",
-    "managerial responsibilities",
-    "ledende medarbejdere",
-    "share repurchase",
-    "share buy-back",
-    "aktietilbagekøb",
-    "tilbagekøbsprogram",
-    "major shareholder",
-    "storaktionær",
-    "voting rights",
-    "stemmerettigheder",
-    "total number of voting rights and capital",
-    // Finnish: managers' transactions (also the English twins), share
-    // buy-backs, major-shareholder (flagging) notices and the legal formula
-    // that opens them. Whole phrases: `liiketoimet` is also a stem of
-    // `liiketoimintakatsaus` (business review), which IS a report.
-    "johtohenkilöiden liiketoimet",
-    "johdon liiketoimet",
-    "managers' transaction",
-    "managers\u{2019} transaction",
-    "omien osakkeiden hankinta",
-    "omien osakkeiden ostot",
-    "share buyback",
-    "liputusilmoitus",
-    "arvopaperimarkkinalain 9 luvun",
-];
-
-/// Words that mark a headline as business news that merely mentions a quarter
-/// (e.g. "Secures 1.8 MEUR of Products order intake in Q1 2026").
-const NEWS_WORDS: &[&str] = &[
-    "order intake",
-    "guidance",
-    "contract",
-    "agreement",
-    "secures",
-    "signs",
-    "market update",
-    // Profit warnings and outlook changes that name a quarter: not results.
-    "outlook",
-    "tulosvaroitus",
-    "tulosnäkym",
-    "profit warning",
-    "upgrades",
-    "withdraws",
-    "impact of",
-];
-
-/// Regulatory notices that contain a strong word ("annual general meeting",
-/// "sustainability report") but are not results releases. Only consulted by the
-/// headline heuristic; explicit `sub:report:interim*` tags are trusted.
-const NON_REPORT_WORDS: &[&str] = &[
-    "general meeting",
-    "bolagsstämma",
-    "årsstämma",
-    "nomination committee",
-    "valberedning",
-    "annual report",
-    "årsredovisning",
-    "vuosikertomus",
-    // Finnish: general meeting (`yhtiökokouksen` has no `yhtiökokous`) and notices.
-    "yhtiökokou",
-    "kutsu",
-    // Finnish issuers' notices that merely contain "report"/"interim": a
-    // schedule, restated or recast figures, a segment change, an interim
-    // President, the annual review document.
-    "reporting schedule",
-    "financial reporting",
-    "segment reporting",
-    "reporting segment",
-    "reporting structure",
-    "restated",
-    "recast",
-    "oikaist",
-    "interim president",
-    "interim ceo",
-    "interim cfo",
-    "interim evp",
-    "interim change",
-    "annual review",
-    "sustainability",
-    "hållbarhets",
-    "remuneration",
-    "ersättnings",
-    "corporate governance",
-    "bolagsstyrning",
-    "invitation",
-    "inbjudan",
-    "conference call",
-    "telephone conference",
-    "webcast",
-    "notice of",
-    "notice to",
-    "kallelse",
-    "repurchase",
-    "reporting practices",
-    "update on",
-    "treasury",
-    "återköp",
-];
-
-/// Clinical-trial and regulatory-approval wording, matched at the start of a
-/// word ("industrial" is not a "trial"). Pharma headlines such as "Novo Nordisk
-/// phase 2 trial with amycretin reports significant weight loss" contain
-/// "reports" but are not results releases. Only the headline heuristic uses it.
-const CLINICAL_WORDS: &[&str] = &[
-    "trial", "phase 1", "phase 2", "phase 3", "clinical", "fda", "chmp",
-];
-
-const CALENDAR_PHRASES: &[&str] = &[
-    "financial calendar",
-    "finansiell kalender",
-    "finanskalender",
-    "finansiel kalender",
-    "ændret dato",
-    "ändrad rapportdag",
-    "changes date of",
-    "rescheduled",
-    "reporting date",
-    "report date",
-];
-
-/// Extra phrases for calendar notices that don't use "calendar" wording.
-const CALENDAR_NOTICE_PHRASES: &[&str] = &[
-    "early publication",
-    "delayed publication",
-    "postpone",
-    "tidigarelägger",
-    "senarelägger",
-    "brings forward",
-    "moves up publication",
-    "new date for",
-];
+use super::lang::{
+    any_contains, fiscal_period_in, has_quarter_token, languages, month_range, starts_a_word,
+    years, RangePeriod, ReportLanguage,
+};
 
 const MAX_PREFIX_CHARS: usize = 80;
 const MIN_REMAINDER_CHARS: usize = 15;
@@ -221,35 +62,22 @@ pub fn strip_issuer_prefix(title: &str) -> &str {
     t
 }
 
-/// True if `lower` has a standalone token `q<digit>` for the given digit.
-fn has_quarter_token(lower: &str, digit: u8) -> bool {
-    let b = lower.as_bytes();
-    (0..b.len().saturating_sub(1)).any(|i| {
-        b[i] == b'q'
-            && b[i + 1] == digit
-            && (i == 0 || !b[i - 1].is_ascii_alphanumeric())
-            && b.get(i + 2).is_none_or(|c| !c.is_ascii_alphanumeric())
-    })
-}
-
-/// True if the headline contains a standalone quarter token `Q1`..`Q4` or the
-/// words `quarter` / `kvartal`.
+/// True if the headline contains a standalone quarter token `Q1`..`Q4` or a
+/// language's word for "quarter".
 fn mentions_quarter(lower: &str) -> bool {
-    lower.contains("kvartal")
-        || lower.contains("quarter")
-        || (b'1'..=b'4').any(|d| has_quarter_token(lower, d))
+    any_contains(lower, |l| l.quarter_words()) || (b'1'..=b'4').any(|d| has_quarter_token(lower, d))
 }
 
 /// The headline heuristic: strong report wording, or a quarter mention without
 /// business-news wording; never for regulatory notices that only look similar.
 fn headline_looks_like_report(lower: &str) -> bool {
-    if NON_REPORT_WORDS.iter().any(|w| lower.contains(w))
-        || CLINICAL_WORDS.iter().any(|w| starts_a_word(lower, w))
+    if any_contains(lower, |l| l.non_report_words())
+        || languages().any(|l| l.clinical_words().iter().any(|w| starts_a_word(lower, w)))
     {
         return false;
     }
-    STRONG_WORDS.iter().any(|w| lower.contains(w))
-        || (mentions_quarter(lower) && !NEWS_WORDS.iter().any(|w| lower.contains(w)))
+    any_contains(lower, |l| l.report_words())
+        || (mentions_quarter(lower) && !any_contains(lower, |l| l.news_words()))
 }
 
 /// True for correction notices (`Correction:`, `Rättelse:`, `Rettelse:`,
@@ -258,19 +86,12 @@ fn headline_looks_like_report(lower: &str) -> bool {
 pub fn is_correction(title: &str) -> bool {
     fn check(s: &str) -> bool {
         let lower = s.trim().to_lowercase();
-        const MARKERS: [&str; 6] = [
-            "correction:",
-            "rättelse:",
-            "rettelse:",
-            "korrektion:",
-            "oikaisu:",
-            "korjaus:",
-        ];
-        if MARKERS.iter().any(|m| lower.starts_with(m)) {
+        let markers = || languages().flat_map(|l| l.correction_markers().iter().copied());
+        if markers().any(|m| lower.starts_with(m)) {
             return true;
         }
         let head: String = lower.chars().take(MAX_PREFIX_CHARS).collect();
-        MARKERS.iter().any(|m| head.contains(&format!(" {m}")))
+        markers().any(|m| head.contains(&format!(" {m}")))
     }
     check(title) || check(strip_issuer_prefix(title))
 }
@@ -278,134 +99,44 @@ pub fn is_correction(title: &str) -> bool {
 /// True if the headline announces a change to the financial calendar.
 pub fn is_calendar_update(headline: &str) -> bool {
     let l = headline.to_lowercase();
-    CALENDAR_PHRASES.iter().any(|p| l.contains(p))
+    any_contains(&l, |l| l.calendar_phrases())
 }
 
-/// [`is_calendar_update`] plus early/delayed publication and postponement notices.
+/// [`is_calendar_update`] plus early/delayed publication and postponement
+/// notices and each language's own announcement wording.
 fn is_calendar_notice(title: &str) -> bool {
     let l = title.to_lowercase();
     is_calendar_update(title)
-        || CALENDAR_NOTICE_PHRASES.iter().any(|p| l.contains(p))
-        || (l.contains("flyttar") && l.contains("rapport"))
-        || is_finnish_calendar_notice(&l)
-}
-
-/// "Neles julkaisee tammi-joulukuun 2021 tilinpäätöstiedotteen 4. helmikuuta":
-/// announces when a report will come out. The accusative forms
-/// (`osavuosikatsauksen`) differ from the nominative the report titles use.
-fn is_finnish_calendar_notice(lower: &str) -> bool {
-    const ANNOUNCES: &[&str] = &["julkaisee", "julkistaa", "julkaiseminen"];
-    // Stems of the accusative / possessive forms (`osavuosikatsauksen`,
-    // `osavuosikatsauksensa`); the nominative `osavuosikatsaus` of a report
-    // title does not contain them.
-    const REPORTS: &[&str] = &[
-        "osavuosikatsauks",
-        "puolivuosikatsauks",
-        "osavuotiskatsauks",
-        "puolivuotiskatsauks",
-        "tilinpäätöstiedotte",
-        "liiketoimintakatsauks",
-    ];
-    if ANNOUNCES.iter().any(|a| lower.contains(a)) && REPORTS.iter().any(|r| lower.contains(r)) {
-        return true;
-    }
-    // English: "Neles to publish its Interim Review ... on February 4, 2022",
-    // "Publishing of Outotec's Interim Report ...", "KONE publishes ... on
-    // Thursday, October 25". A date follows.
-    const ENGLISH_ANNOUNCES: &[&str] = &["to publish", "publishing of", "publishes"];
-    const ENGLISH_REPORTS: &[&str] = &[
-        "interim",
-        "half-year",
-        "half year",
-        "financial statements",
-        "year-end",
-    ];
-    ENGLISH_REPORTS.iter().any(|r| lower.contains(r))
-        && (lower.contains("publishing of")
-            || (ENGLISH_ANNOUNCES.iter().any(|a| lower.contains(a))
-                && lower.contains(" on ")
-                && EN_MONTHS.iter().any(|m| lower.contains(m))))
-}
-
-/// True if `needle` occurs in `lower` at the start of a word.
-fn starts_a_word(lower: &str, needle: &str) -> bool {
-    lower.match_indices(needle).any(|(i, _)| {
-        lower[..i]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !c.is_alphabetic())
-    })
+        || any_contains(&l, |l| l.calendar_notice_phrases())
+        || languages().any(|lang| lang.is_calendar_notice(&l))
 }
 
 /// Mentions the fourth quarter / the full year.
 fn mentions_year_end(lower: &str) -> bool {
     // Q1–Q3 or half-year wording means a "full year" mention is an outlook.
     let early_quarter = (b'1'..=b'3').any(|d| has_quarter_token(lower, d))
-        || [
-            "first quarter",
-            "second quarter",
-            "third quarter",
-            "första kvartalet",
-            "andra kvartalet",
-            "tredje kvartalet",
-            "half-year",
-            "puolivuosikatsaus",
-            "first half",
-            "halvår",
-            "1. kvartal",
-            "2. kvartal",
-            "3. kvartal",
-            "first three months",
-            "first six months",
-            "first nine months",
-        ]
-        .iter()
-        .any(|p| lower.contains(p));
+        || any_contains(lower, |l| l.early_period_words());
     has_quarter_token(lower, b'4')
-        || [
-            "fourth quarter",
-            "fjärde kvartalet",
-            "year-end",
-            "bokslutskommuniké",
-            "årsregnskabsmeddelelse",
-            "financial statement for",
-            "tilinpäätöstiedote",
-            "financial statements review",
-            "viimeisen neljänneksen",
-            "neljännen neljänneksen",
-        ]
-        .iter()
-        .any(|p| lower.contains(p))
+        || any_contains(lower, |l| l.year_end_words())
         // Not inside "delårsrapport" / "halvårsrapport".
-        || starts_a_word(lower, "årsrapport")
-        || (!early_quarter && ["full year", "helår"].iter().any(|p| lower.contains(p)))
+        || languages().any(|l| l.year_end_word_starts().iter().any(|w| starts_a_word(lower, w)))
+        || (!early_quarter && any_contains(lower, |l| l.full_year_words()))
 }
 
 /// A year-end results headline on an item tagged only `sub:report:annual`:
 /// not the annual report document, one standalone year, and a results word.
 fn is_annual_results_headline(lower: &str) -> bool {
-    const DOCUMENT: &[&str] = &[
-        "annual report",
-        "årsredovisning",
-        "årsrapport",
-        "vuosikertomus",
-        "20-f",
-    ];
-    const RESULTS: &[&str] = &[
-        "sales",
-        "profit",
-        "revenue",
-        "results",
-        "financial report",
-        "financial statement",
-        "regnskab",
-    ];
     let mut ys = years(lower);
     ys.sort_unstable();
     ys.dedup();
     ys.len() == 1
-        && !DOCUMENT.iter().any(|w| lower.contains(w))
-        && RESULTS.iter().any(|w| lower.contains(w))
+        && !any_contains(lower, |l| l.document_words())
+        && any_contains(lower, |l| l.results_words())
+}
+
+/// The languages as a slice, for the shared range and quarter helpers.
+fn all_languages() -> Vec<&'static dyn ReportLanguage> {
+    languages().collect()
 }
 
 /// Rules 3–6 of the classification, for a title already known not to be a
@@ -425,7 +156,7 @@ fn kind_from(tags: &[String], lower: &str) -> Option<ReportKind> {
         || (report_test && !early_quarter_tag && mentions_year_end(lower))
         // The period wins over the word: a Finnish "osavuosikatsaus 1. tammikuuta
         // - 31. joulukuuta" is a full-year report.
-        || (report_test && month_range(lower) == Some(RangePeriod::YearEnd))
+        || (report_test && month_range(&all_languages(), lower) == Some(RangePeriod::YearEnd))
     {
         return Some(ReportKind::Annual);
     }
@@ -447,289 +178,9 @@ fn kind_from(tags: &[String], lower: &str) -> Option<ReportKind> {
     None
 }
 
-/// What a "from month to month" range in a title says about the period.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RangePeriod {
-    /// The first (or only) three, six or nine months, or a single quarter:
-    /// quarter 1 to 3.
-    Quarter(u8),
-    /// January to December (or the last quarter): the year-end report.
-    YearEnd,
-}
-
-/// Finnish month stems; every case form starts with one
-/// (`tammikuuta`, `tammikuun`, `tammikuulta`).
-const FI_MONTHS: [&str; 12] = [
-    "tammikuu",
-    "helmikuu",
-    "maaliskuu",
-    "huhtikuu",
-    "toukokuu",
-    "kesäkuu",
-    "heinäkuu",
-    "elokuu",
-    "syyskuu",
-    "lokakuu",
-    "marraskuu",
-    "joulukuu",
-];
-
-/// The short forms used before a hyphen: `tammi-kesäkuulta`.
-const FI_MONTHS_SHORT: [&str; 12] = [
-    "tammi", "helmi", "maalis", "huhti", "touko", "kesä", "heinä", "elo", "syys", "loka", "marras",
-    "joulu",
-];
-
-const EN_MONTHS: [&str; 12] = [
-    "january",
-    "february",
-    "march",
-    "april",
-    "may",
-    "june",
-    "july",
-    "august",
-    "september",
-    "october",
-    "november",
-    "december",
-];
-
-/// Swedish month names (`januari-mars`), used by Finnish issuers' Swedish copies.
-const SV_MONTHS: [&str; 12] = [
-    "januari",
-    "februari",
-    "mars",
-    "april",
-    "maj",
-    "juni",
-    "juli",
-    "augusti",
-    "september",
-    "oktober",
-    "november",
-    "december",
-];
-
-/// The month (1-12) a word names. A short Finnish form only counts when a
-/// dash follows it, so `loka` or `kesä` elsewhere are not months.
-fn month_of(word: &str, next: Option<char>) -> Option<u8> {
-    let dash = matches!(next, Some('-' | '\u{2013}' | '\u{2014}'));
-    (0..12).find_map(|i| {
-        let hit = word == EN_MONTHS[i]
-            || word == SV_MONTHS[i]
-            || word.starts_with(FI_MONTHS[i])
-            || (dash && word == FI_MONTHS_SHORT[i]);
-        hit.then_some(i as u8 + 1)
-    })
-}
-
-/// The period named by a "month - month" range: `1. tammikuuta - 30.
-/// syyskuuta 2026`, `tammi-kesäkuulta 2026`, `January 1 - September 30, 2026`.
-/// Exactly two months joined by a dash (or "to"); anything else is `None`.
-fn month_range(lower: &str) -> Option<RangePeriod> {
-    month_name_range(lower).or_else(|| numeric_range(lower))
-}
-
-/// The period of a numeric range such as `1.1. - 30.9.2013` or `1.1.-31.12.2011`.
-fn numeric_range(lower: &str) -> Option<RangePeriod> {
-    /// `d.m.` at the start of `s`: the month and the rest.
-    fn day_month(s: &str) -> Option<(u8, &str)> {
-        let s = s.trim_start();
-        let day_end = s.find(|c: char| !c.is_ascii_digit())?;
-        let (day, rest) = s.split_at(day_end);
-        let rest = rest.strip_prefix('.')?;
-        let month_end = rest.find(|c: char| !c.is_ascii_digit())?;
-        let (month, rest) = rest.split_at(month_end);
-        let rest = rest.strip_prefix('.')?;
-        let (day, month): (u8, u8) = (day.parse().ok()?, month.parse().ok()?);
-        ((1..=31).contains(&day) && (1..=12).contains(&month)).then_some((month, rest))
-    }
-    lower
-        .char_indices()
-        .filter(|(_, c)| c.is_ascii_digit())
-        .find_map(|(i, _)| {
-            if i > 0 && lower.as_bytes()[i - 1].is_ascii_digit() {
-                return None;
-            }
-            let (a, rest) = day_month(&lower[i..])?;
-            let rest = rest
-                .trim_start()
-                .strip_prefix(['-', '\u{2013}', '\u{2014}'])?;
-            let (b, _) = day_month(rest)?;
-            range_period(a, b)
-        })
-}
-
-/// A range of two month names.
-fn month_name_range(lower: &str) -> Option<RangePeriod> {
-    let mut months: Vec<(u8, usize, usize)> = Vec::new();
-    let mut start = None;
-    let push = |s: usize, e: usize, months: &mut Vec<(u8, usize, usize)>| {
-        if let Some(m) = month_of(&lower[s..e], lower[e..].chars().next()) {
-            months.push((m, s, e));
-        }
-    };
-    for (i, c) in lower.char_indices() {
-        match (c.is_alphabetic(), start) {
-            (true, None) => start = Some(i),
-            (false, Some(s)) => {
-                push(s, i, &mut months);
-                start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(s) = start {
-        push(s, lower.len(), &mut months);
-    }
-    let [(a, _, end_a), (b, start_b, _)] = months.as_slice() else {
-        return None;
-    };
-    let between: String = lower[*end_a..*start_b]
-        .chars()
-        .filter(|c| !c.is_ascii_digit() && !c.is_whitespace() && !matches!(c, '.' | ','))
-        .collect();
-    if !matches!(between.as_str(), "-" | "\u{2013}" | "\u{2014}" | "to") {
-        return None;
-    }
-    range_period(*a, *b)
-}
-
-/// What "from month `a` to month `b`" is: a year-end, or a quarter.
-fn range_period(a: u8, b: u8) -> Option<RangePeriod> {
-    match (a, b) {
-        (1 | 10, 12) => Some(RangePeriod::YearEnd),
-        (1, 3 | 6 | 9) | (4, 6) | (7, 9) => Some(RangePeriod::Quarter(b / 3)),
-        _ => None,
-    }
-}
-
-/// Four-digit years `20xx` that stand alone in the text.
-fn years(text: &str) -> Vec<&str> {
-    let b = text.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i + 4 <= b.len() {
-        let standalone = (i == 0 || !b[i - 1].is_ascii_alphanumeric())
-            && b.get(i + 4).is_none_or(|c| !c.is_ascii_alphanumeric());
-        if standalone
-            && b[i] == b'2'
-            && b[i + 1] == b'0'
-            && b[i + 2..i + 4].iter().all(u8::is_ascii_digit)
-        {
-            out.push(&text[i..i + 4]);
-            i += 4;
-        } else {
-            i += 1;
-        }
-    }
-    out
-}
-
-/// True if `lower` has a standalone token `h1`.
-fn has_h1_token(lower: &str) -> bool {
-    let b = lower.as_bytes();
-    (0..b.len().saturating_sub(1)).any(|i| {
-        b[i] == b'h'
-            && b[i + 1] == b'1'
-            && (i == 0 || !b[i - 1].is_ascii_alphanumeric())
-            && b.get(i + 2).is_none_or(|c| !c.is_ascii_alphanumeric())
-    })
-}
-
-/// The quarter (1–4) named by a tag or the headline, if exactly one.
-fn quarter_of(tags: &[String], lower: &str) -> Option<u8> {
-    if let Some(n) = (1..=4u8).find(|n| {
-        tags.iter()
-            .any(|t| *t == format!("sub:report:interim:q{n}"))
-    }) {
-        return Some(n);
-    }
-    let mut found: Vec<u8> = (1..=4u8)
-        .filter(|n| has_quarter_token(lower, b'0' + n))
-        .collect();
-    let ordinals: [(&str, &str, u8); 8] = [
-        ("first quarter", "första kvartalet", 1),
-        ("second quarter", "andra kvartalet", 2),
-        ("third quarter", "tredje kvartalet", 3),
-        ("fourth quarter", "fjärde kvartalet", 4),
-        ("ensimmäisen neljänneksen", "ensimmäinen neljännes", 1),
-        ("toisen neljänneksen", "toinen neljännes", 2),
-        ("kolmannen neljänneksen", "kolmas neljännes", 3),
-        ("viimeisen neljänneksen", "neljännen neljänneksen", 4),
-    ];
-    for (en, sv, n) in ordinals {
-        if (lower.contains(en) || lower.contains(sv)) && !found.contains(&n) {
-            found.push(n);
-        }
-    }
-    // Danish "1. kvartal 2026", English "first/... quarter of 2026" (above),
-    // "H1 2026" (the half-year report is the second quarter's), and the
-    // cumulative wording of year-to-date reports.
-    let extra: [(&[&str], u8); 5] = [
-        (&["1. kvartal", "first three months"], 1),
-        (
-            &[
-                "2. kvartal",
-                "first half",
-                "first six months",
-                "puolivuosikatsaus",
-                "half-year report",
-                "half year financial report",
-                "half-year review",
-            ],
-            2,
-        ),
-        (&["3. kvartal", "first nine months"], 3),
-        (&["4. kvartal"], 4),
-        (&[], 2), // `H1`, below
-    ];
-    for (needles, n) in extra {
-        let hit = if needles.is_empty() {
-            has_h1_token(lower)
-        } else {
-            needles.iter().any(|w| lower.contains(w))
-        };
-        if hit && !found.contains(&n) {
-            found.push(n);
-        }
-    }
-    // `Q1-Q3 2012`: the cumulative report of the last quarter named.
-    for (span, n) in [
-        ("q1-q2", 2),
-        ("q1-q3", 3),
-        ("q1\u{2013}q2", 2),
-        ("q1\u{2013}q3", 3),
-    ] {
-        if lower.contains(span) {
-            return Some(n);
-        }
-    }
-    if let Some(RangePeriod::Quarter(n)) = month_range(lower) {
-        if !found.contains(&n) {
-            found.push(n);
-        }
-    }
-    if found.len() == 1 {
-        Some(found[0])
-    } else {
-        None
-    }
-}
-
 /// `YYYY-Qn` for interim reports, `YYYY` for year-end reports; never a guess.
 fn fiscal_period(tags: &[String], title: &str, kind: ReportKind) -> Option<String> {
-    let mut ys = years(title);
-    ys.sort_unstable();
-    ys.dedup();
-    let [year] = ys.as_slice() else { return None };
-    match kind {
-        ReportKind::Annual => Some((*year).to_string()),
-        ReportKind::Interim => {
-            quarter_of(tags, &title.to_lowercase()).map(|q| format!("{year}-Q{q}"))
-        }
-    }
+    fiscal_period_in(&all_languages(), tags, title, kind).map(|p| p.render())
 }
 
 /// Classify an MFN item from its tags and title, applying the rules in order:
@@ -740,9 +191,11 @@ pub fn classify_item(tags: &[String], title: &str) -> Classification {
     // Regulatory notices that are never reports (and so never report corrections).
     let excluded = {
         let (a, b) = (t.to_lowercase(), title.to_lowercase());
-        HARD_NON_REPORT_WORDS
-            .iter()
-            .any(|w| a.contains(w) || b.contains(w))
+        languages().any(|l| {
+            l.hard_non_report_words()
+                .iter()
+                .any(|w| a.contains(w) || b.contains(w))
+        })
     };
     let is_correction = !excluded && is_correction(title);
     let report_kind = if excluded || calendar_update || is_correction {
@@ -763,6 +216,14 @@ pub fn classify_item(tags: &[String], title: &str) -> Classification {
 mod tests {
     use super::*;
     use ReportKind::{Annual, Interim};
+
+    fn month_range(lower: &str) -> Option<RangePeriod> {
+        super::super::lang::month_range(&all_languages(), lower)
+    }
+
+    fn month_of(word: &str, next: Option<char>) -> Option<u8> {
+        super::super::lang::month_of(&all_languages(), word, next)
+    }
 
     fn tags(t: &[&str]) -> Vec<String> {
         t.iter().map(|s| s.to_string()).collect()

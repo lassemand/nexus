@@ -1,0 +1,379 @@
+SE 2015-01-01 closed New Year's Day
+SE 2015-04-03 closed Good Friday
+SE 2015-04-06 closed Easter Monday
+SE 2015-05-01 closed International Workers' Day
+SE 2015-05-14 closed Ascension Day
+SE 2015-06-19 closed Midsummer Eve
+SE 2015-12-24 half_day Christmas Eve
+SE 2015-12-25 closed Christmas Day
+SE 2015-12-31 half_day New Year's Eve
+SE 2016-01-01 closed New Year's Day
+SE 2016-03-25 closed Good Friday
+SE 2016-03-28 closed Easter Monday
+SE 2016-05-05 closed Ascension Day
+SE 2016-06-06 closed National Day of Sweden
+SE 2016-06-24 closed Midsummer Eve
+SE 2016-12-26 closed St. Stephen's Day
+SE 2017-04-14 closed Good Friday
+SE 2017-04-17 closed Easter Monday
+SE 2017-05-01 closed International Workers' Day
+SE 2017-05-25 closed Ascension Day
+SE 2017-06-06 closed National Day of Sweden
+SE 2017-06-23 closed Midsummer Eve
+SE 2017-12-25 closed Christmas Day
+SE 2017-12-26 closed St. Stephen's Day
+SE 2018-01-01 closed New Year's Day
+SE 2018-03-30 closed Good Friday
+SE 2018-04-02 closed Easter Monday
+SE 2018-05-01 closed International Workers' Day
+SE 2018-05-10 closed Ascension Day
+SE 2018-06-06 closed National Day of Sweden
+SE 2018-06-22 closed Midsummer Eve
+SE 2018-12-24 half_day Christmas Eve
+SE 2018-12-25 closed Christmas Day
+SE 2018-12-26 closed St. Stephen's Day
+SE 2018-12-31 half_day New Year's Eve
+SE 2019-01-01 closed New Year's Day
+SE 2019-04-19 closed Good Friday
+SE 2019-04-22 closed Easter Monday
+SE 2019-05-01 closed International Workers' Day
+SE 2019-05-30 closed Ascension Day
+SE 2019-06-06 closed National Day of Sweden
+SE 2019-06-21 closed Midsummer Eve
+SE 2019-12-24 half_day Christmas Eve
+SE 2019-12-25 closed Christmas Day
+SE 2019-12-26 closed St. Stephen's Day
+SE 2019-12-31 half_day New Year's Eve
+SE 2020-01-01 closed New Year's Day
+SE 2020-04-10 closed Good Friday
+SE 2020-04-13 closed Easter Monday
+SE 2020-05-01 closed International Workers' Day
+SE 2020-05-21 closed Ascension Day
+SE 2020-06-19 closed Midsummer Eve
+SE 2020-12-24 half_day Christmas Eve
+SE 2020-12-25 closed Christmas Day
+SE 2020-12-31 half_day New Year's Eve
+SE 2021-01-01 closed New Year's Day
+SE 2021-04-02 closed Good Friday
+SE 2021-04-05 closed Easter Monday
+SE 2021-05-13 closed Ascension Day
+SE 2021-06-25 closed Midsummer Eve
+SE 2021-12-24 half_day Christmas Eve
+SE 2021-12-31 half_day New Year's Eve
+SE 2022-04-15 closed Good Friday
+SE 2022-04-18 closed Easter Monday
+SE 2022-05-26 closed Ascension Day
+SE 2022-06-06 closed National Day of Sweden
+SE 2022-06-24 closed Midsummer Eve
+SE 2022-12-26 closed St. Stephen's Day
+SE 2023-04-07 closed Good Friday
+SE 2023-04-10 closed Easter Monday
+SE 2023-05-01 closed International Workers' Day
+SE 2023-05-18 closed Ascension Day
+SE 2023-06-06 closed National Day of Sweden
+SE 2023-06-23 closed Midsummer Eve
+SE 2023-12-25 closed Christmas Day
+SE 2023-12-26 closed St. Stephen's Day
+SE 2024-01-01 closed New Year's Day
+SE 2024-03-29 closed Good Friday
+SE 2024-04-01 closed Easter Monday
+SE 2024-05-01 closed International Workers' Day
+SE 2024-05-09 closed Ascension Day
+SE 2024-06-06 closed National Day of Sweden
+SE 2024-06-21 closed Midsummer Eve
+SE 2024-12-24 half_day Christmas Eve
+SE 2024-12-25 closed Christmas Day
+SE 2024-12-26 closed St. Stephen's Day
+SE 2024-12-31 half_day New Year's Eve
+SE 2025-01-01 closed New Year's Day
+SE 2025-04-18 closed Good Friday
+SE 2025-04-21 closed Easter Monday
+SE 2025-05-01 closed International Workers' Day
+SE 2025-05-29 closed Ascension Day
+SE 2025-06-06 closed National Day of Sweden
+SE 2025-06-20 closed Midsummer Eve
+SE 2025-12-24 half_day Christmas Eve
+SE 2025-12-25 closed Christmas Day
+SE 2025-12-26 closed St. Stephen's Day
+SE 2025-12-31 half_day New Year's Eve
+SE 2026-01-01 closed New Year's Day
+SE 2026-04-03 closed Good Friday
+SE 2026-04-06 closed Easter Monday
+SE 2026-05-01 closed International Workers' Day
+SE 2026-05-14 closed Ascension Day
+SE 2026-06-19 closed Midsummer Eve
+SE 2026-12-24 half_day Christmas Eve
+SE 2026-12-25 closed Christmas Day
+SE 2026-12-31 half_day New Year's Eve
+SE 2027-01-01 closed New Year's Day
+SE 2027-03-26 closed Good Friday
+SE 2027-03-29 closed Easter Monday
+SE 2027-05-06 closed Ascension Day
+SE 2027-06-25 closed Midsummer Eve
+SE 2027-12-24 half_day Christmas Eve
+SE 2027-12-31 half_day New Year's Eve
+DK 2015-01-01 closed New Year's Day
+DK 2015-04-02 closed Maundy Thursday
+DK 2015-04-03 closed Good Friday
+DK 2015-04-06 closed Easter Monday
+DK 2015-05-01 closed General Prayer Day
+DK 2015-05-14 closed Ascension Day
+DK 2015-05-15 closed Bank closing day
+DK 2015-05-25 closed Whit Monday
+DK 2015-06-05 closed Constitution Day
+DK 2015-12-24 closed Christmas Eve
+DK 2015-12-25 closed Christmas Day
+DK 2015-12-31 closed New Year's Eve
+DK 2016-01-01 closed New Year's Day
+DK 2016-03-24 closed Maundy Thursday
+DK 2016-03-25 closed Good Friday
+DK 2016-03-28 closed Easter Monday
+DK 2016-04-22 closed General Prayer Day
+DK 2016-05-05 closed Ascension Day
+DK 2016-05-06 closed Bank closing day
+DK 2016-05-16 closed Whit Monday
+DK 2016-12-26 closed St. Stephen's Day
+DK 2017-04-13 closed Maundy Thursday
+DK 2017-04-14 closed Good Friday
+DK 2017-04-17 closed Easter Monday
+DK 2017-05-12 closed General Prayer Day
+DK 2017-05-25 closed Ascension Day
+DK 2017-05-26 closed Bank closing day
+DK 2017-06-05 closed Constitution Day
+DK 2017-12-25 closed Christmas Day
+DK 2017-12-26 closed St. Stephen's Day
+DK 2018-01-01 closed New Year's Day
+DK 2018-03-29 closed Maundy Thursday
+DK 2018-03-30 closed Good Friday
+DK 2018-04-02 closed Easter Monday
+DK 2018-04-27 closed General Prayer Day
+DK 2018-05-10 closed Ascension Day
+DK 2018-05-11 closed Bank closing day
+DK 2018-05-21 closed Whit Monday
+DK 2018-06-05 closed Constitution Day
+DK 2018-12-24 closed Christmas Eve
+DK 2018-12-25 closed Christmas Day
+DK 2018-12-26 closed St. Stephen's Day
+DK 2018-12-31 closed New Year's Eve
+DK 2019-01-01 closed New Year's Day
+DK 2019-04-18 closed Maundy Thursday
+DK 2019-04-19 closed Good Friday
+DK 2019-04-22 closed Easter Monday
+DK 2019-05-17 closed General Prayer Day
+DK 2019-05-30 closed Ascension Day
+DK 2019-05-31 closed Bank closing day
+DK 2019-06-05 closed Constitution Day
+DK 2019-06-10 closed Whit Monday
+DK 2019-12-24 closed Christmas Eve
+DK 2019-12-25 closed Christmas Day
+DK 2019-12-26 closed St. Stephen's Day
+DK 2019-12-31 closed New Year's Eve
+DK 2020-01-01 closed New Year's Day
+DK 2020-04-09 closed Maundy Thursday
+DK 2020-04-10 closed Good Friday
+DK 2020-04-13 closed Easter Monday
+DK 2020-05-08 closed General Prayer Day
+DK 2020-05-21 closed Ascension Day
+DK 2020-05-22 closed Bank closing day
+DK 2020-06-01 closed Whit Monday
+DK 2020-06-05 closed Constitution Day
+DK 2020-12-24 closed Christmas Eve
+DK 2020-12-25 closed Christmas Day
+DK 2020-12-31 closed New Year's Eve
+DK 2021-01-01 closed New Year's Day
+DK 2021-04-01 closed Maundy Thursday
+DK 2021-04-02 closed Good Friday
+DK 2021-04-05 closed Easter Monday
+DK 2021-04-30 closed General Prayer Day
+DK 2021-05-13 closed Ascension Day
+DK 2021-05-14 closed Bank closing day
+DK 2021-05-24 closed Whit Monday
+DK 2021-12-24 closed Christmas Eve
+DK 2021-12-31 closed New Year's Eve
+DK 2022-04-14 closed Maundy Thursday
+DK 2022-04-15 closed Good Friday
+DK 2022-04-18 closed Easter Monday
+DK 2022-05-13 closed General Prayer Day
+DK 2022-05-26 closed Ascension Day
+DK 2022-05-27 closed Bank closing day
+DK 2022-06-06 closed Whit Monday
+DK 2022-12-26 closed St. Stephen's Day
+DK 2023-04-06 closed Maundy Thursday
+DK 2023-04-07 closed Good Friday
+DK 2023-04-10 closed Easter Monday
+DK 2023-05-05 closed General Prayer Day
+DK 2023-05-18 closed Ascension Day
+DK 2023-05-19 closed Bank closing day
+DK 2023-05-29 closed Whit Monday
+DK 2023-06-05 closed Constitution Day
+DK 2023-12-25 closed Christmas Day
+DK 2023-12-26 closed St. Stephen's Day
+DK 2024-01-01 closed New Year's Day
+DK 2024-03-28 closed Maundy Thursday
+DK 2024-03-29 closed Good Friday
+DK 2024-04-01 closed Easter Monday
+DK 2024-05-09 closed Ascension Day
+DK 2024-05-10 closed Bank closing day
+DK 2024-05-20 closed Whit Monday
+DK 2024-06-05 closed Constitution Day
+DK 2024-12-24 closed Christmas Eve
+DK 2024-12-25 closed Christmas Day
+DK 2024-12-26 closed St. Stephen's Day
+DK 2024-12-31 closed New Year's Eve
+DK 2025-01-01 closed New Year's Day
+DK 2025-04-17 closed Maundy Thursday
+DK 2025-04-18 closed Good Friday
+DK 2025-04-21 closed Easter Monday
+DK 2025-05-29 closed Ascension Day
+DK 2025-05-30 closed Bank closing day
+DK 2025-06-05 closed Constitution Day
+DK 2025-06-09 closed Whit Monday
+DK 2025-12-24 closed Christmas Eve
+DK 2025-12-25 closed Christmas Day
+DK 2025-12-26 closed St. Stephen's Day
+DK 2025-12-31 closed New Year's Eve
+DK 2026-01-01 closed New Year's Day
+DK 2026-04-02 closed Maundy Thursday
+DK 2026-04-03 closed Good Friday
+DK 2026-04-06 closed Easter Monday
+DK 2026-05-14 closed Ascension Day
+DK 2026-05-15 closed Bank closing day
+DK 2026-05-25 closed Whit Monday
+DK 2026-06-05 closed Constitution Day
+DK 2026-12-24 closed Christmas Eve
+DK 2026-12-25 closed Christmas Day
+DK 2026-12-31 closed New Year's Eve
+DK 2027-01-01 closed New Year's Day
+DK 2027-03-25 closed Maundy Thursday
+DK 2027-03-26 closed Good Friday
+DK 2027-03-29 closed Easter Monday
+DK 2027-05-06 closed Ascension Day
+DK 2027-05-07 closed Bank closing day
+DK 2027-05-17 closed Whit Monday
+DK 2027-12-24 closed Christmas Eve
+DK 2027-12-31 closed New Year's Eve
+FI 2015-01-01 closed New Year's Day
+FI 2015-01-06 closed Epiphany
+FI 2015-04-03 closed Good Friday
+FI 2015-04-06 closed Easter Monday
+FI 2015-05-01 closed May Day
+FI 2015-05-14 closed Ascension Day
+FI 2015-06-19 closed Midsummer Eve
+FI 2015-12-24 closed Christmas Eve
+FI 2015-12-25 closed Christmas Day
+FI 2015-12-31 closed New Year's Eve
+FI 2016-01-01 closed New Year's Day
+FI 2016-01-06 closed Epiphany
+FI 2016-03-25 closed Good Friday
+FI 2016-03-28 closed Easter Monday
+FI 2016-05-05 closed Ascension Day
+FI 2016-06-24 closed Midsummer Eve
+FI 2016-12-06 closed Independence Day
+FI 2016-12-26 closed St. Stephen's Day
+FI 2017-01-06 closed Epiphany
+FI 2017-04-14 closed Good Friday
+FI 2017-04-17 closed Easter Monday
+FI 2017-05-01 closed May Day
+FI 2017-05-25 closed Ascension Day
+FI 2017-06-23 closed Midsummer Eve
+FI 2017-12-06 closed Independence Day
+FI 2017-12-25 closed Christmas Day
+FI 2017-12-26 closed St. Stephen's Day
+FI 2018-01-01 closed New Year's Day
+FI 2018-03-30 closed Good Friday
+FI 2018-04-02 closed Easter Monday
+FI 2018-05-01 closed May Day
+FI 2018-05-10 closed Ascension Day
+FI 2018-06-22 closed Midsummer Eve
+FI 2018-12-06 closed Independence Day
+FI 2018-12-24 closed Christmas Eve
+FI 2018-12-25 closed Christmas Day
+FI 2018-12-26 closed St. Stephen's Day
+FI 2018-12-31 closed New Year's Eve
+FI 2019-01-01 closed New Year's Day
+FI 2019-04-19 closed Good Friday
+FI 2019-04-22 closed Easter Monday
+FI 2019-05-01 closed May Day
+FI 2019-05-30 closed Ascension Day
+FI 2019-06-21 closed Midsummer Eve
+FI 2019-12-06 closed Independence Day
+FI 2019-12-24 closed Christmas Eve
+FI 2019-12-25 closed Christmas Day
+FI 2019-12-26 closed St. Stephen's Day
+FI 2019-12-31 closed New Year's Eve
+FI 2020-01-01 closed New Year's Day
+FI 2020-01-06 closed Epiphany
+FI 2020-04-10 closed Good Friday
+FI 2020-04-13 closed Easter Monday
+FI 2020-05-01 closed May Day
+FI 2020-05-21 closed Ascension Day
+FI 2020-06-19 closed Midsummer Eve
+FI 2020-12-24 closed Christmas Eve
+FI 2020-12-25 closed Christmas Day
+FI 2020-12-31 closed New Year's Eve
+FI 2021-01-01 closed New Year's Day
+FI 2021-01-06 closed Epiphany
+FI 2021-04-02 closed Good Friday
+FI 2021-04-05 closed Easter Monday
+FI 2021-05-13 closed Ascension Day
+FI 2021-06-25 closed Midsummer Eve
+FI 2021-12-06 closed Independence Day
+FI 2021-12-24 closed Christmas Eve
+FI 2021-12-31 closed New Year's Eve
+FI 2022-01-06 closed Epiphany
+FI 2022-04-15 closed Good Friday
+FI 2022-04-18 closed Easter Monday
+FI 2022-05-26 closed Ascension Day
+FI 2022-06-24 closed Midsummer Eve
+FI 2022-12-06 closed Independence Day
+FI 2022-12-26 closed St. Stephen's Day
+FI 2023-01-06 closed Epiphany
+FI 2023-04-07 closed Good Friday
+FI 2023-04-10 closed Easter Monday
+FI 2023-05-01 closed May Day
+FI 2023-05-18 closed Ascension Day
+FI 2023-06-23 closed Midsummer Eve
+FI 2023-12-06 closed Independence Day
+FI 2023-12-25 closed Christmas Day
+FI 2023-12-26 closed St. Stephen's Day
+FI 2024-01-01 closed New Year's Day
+FI 2024-03-29 closed Good Friday
+FI 2024-04-01 closed Easter Monday
+FI 2024-05-01 closed May Day
+FI 2024-05-09 closed Ascension Day
+FI 2024-06-21 closed Midsummer Eve
+FI 2024-12-06 closed Independence Day
+FI 2024-12-24 closed Christmas Eve
+FI 2024-12-25 closed Christmas Day
+FI 2024-12-26 closed St. Stephen's Day
+FI 2024-12-31 closed New Year's Eve
+FI 2025-01-01 closed New Year's Day
+FI 2025-01-06 closed Epiphany
+FI 2025-04-18 closed Good Friday
+FI 2025-04-21 closed Easter Monday
+FI 2025-05-01 closed May Day
+FI 2025-05-29 closed Ascension Day
+FI 2025-06-20 closed Midsummer Eve
+FI 2025-12-24 closed Christmas Eve
+FI 2025-12-25 closed Christmas Day
+FI 2025-12-26 closed St. Stephen's Day
+FI 2025-12-31 closed New Year's Eve
+FI 2026-01-01 closed New Year's Day
+FI 2026-01-06 closed Epiphany
+FI 2026-04-03 closed Good Friday
+FI 2026-04-06 closed Easter Monday
+FI 2026-05-01 closed May Day
+FI 2026-05-14 closed Ascension Day
+FI 2026-06-19 closed Midsummer Eve
+FI 2026-12-24 closed Christmas Eve
+FI 2026-12-25 closed Christmas Day
+FI 2026-12-31 closed New Year's Eve
+FI 2027-01-01 closed New Year's Day
+FI 2027-01-06 closed Epiphany
+FI 2027-03-26 closed Good Friday
+FI 2027-03-29 closed Easter Monday
+FI 2027-05-06 closed Ascension Day
+FI 2027-06-25 closed Midsummer Eve
+FI 2027-12-06 closed Independence Day
+FI 2027-12-24 closed Christmas Eve
+FI 2027-12-31 closed New Year's Eve

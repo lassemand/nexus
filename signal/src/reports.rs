@@ -278,16 +278,22 @@ async fn record_in(tx: &mut PgConnection, r: &Release<'_>) -> sqlx::Result<Recor
 
     // 3. A results release fills the closest scheduled row (ties: earlier date).
     if r.is_report() {
-        let candidate = sqlx::query(
+        let candidate = sqlx::query(concat!(
             "SELECT id, expected_date FROM special_events \
              WHERE ticker = $1 AND exchange_mic = $2 AND status = 'scheduled' \
                AND expected_date BETWEEN \
-                   (($3::timestamptz AT TIME ZONE 'Europe/Stockholm')::date - $4::int) AND \
-                   (($3::timestamptz AT TIME ZONE 'Europe/Stockholm')::date + $4::int) \
-             ORDER BY abs(expected_date - ($3::timestamptz AT TIME ZONE 'Europe/Stockholm')::date), \
+                   (($3::timestamptz AT TIME ZONE '",
+            model::mfn_timezone!(),
+            "')::date - $4::int) AND \
+                   (($3::timestamptz AT TIME ZONE '",
+            model::mfn_timezone!(),
+            "')::date + $4::int) \
+             ORDER BY abs(expected_date - ($3::timestamptz AT TIME ZONE '",
+            model::mfn_timezone!(),
+            "')::date), \
                       expected_date \
-             LIMIT 1 FOR UPDATE",
-        )
+             LIMIT 1 FOR UPDATE"
+        ))
         .bind(r.ticker)
         .bind(r.exchange_mic)
         .bind(r.occurred_at)
@@ -360,7 +366,7 @@ async fn record_in(tx: &mut PgConnection, r: &Release<'_>) -> sqlx::Result<Recor
 /// report of the same company becomes a `report_correction` (the earliest
 /// instant stays the release the market reacted to). Idempotent.
 pub async fn flag_resends(conn: &mut PgConnection, ticker: &str, mic: &str) -> sqlx::Result<u64> {
-    let res = sqlx::query(
+    let res = sqlx::query(concat!(
         "UPDATE special_events r SET is_correction = true, event_type = $3 \
          WHERE r.ticker = $1 AND r.exchange_mic = $2 AND r.status = 'occurred' \
            AND r.event_type IN ($4, $5) AND NOT r.is_correction \
@@ -369,14 +375,18 @@ pub async fn flag_resends(conn: &mut PgConnection, ticker: &str, mic: &str) -> s
                WHERE e.ticker = r.ticker AND e.exchange_mic = r.exchange_mic \
                  AND e.status = 'occurred' AND e.event_type IN ($4, $5) AND NOT e.is_correction \
                  AND e.occurred_at < r.occurred_at \
-                 AND (e.occurred_at AT TIME ZONE 'Europe/Stockholm')::date \
-                     = (r.occurred_at AT TIME ZONE 'Europe/Stockholm')::date) \
+                 AND (e.occurred_at AT TIME ZONE '",
+        model::mfn_timezone!(),
+        "')::date \
+                     = (r.occurred_at AT TIME ZONE '",
+        model::mfn_timezone!(),
+        "')::date) \
            AND NOT EXISTS ( \
                SELECT 1 FROM special_events c \
                WHERE c.ticker = r.ticker AND c.exchange_mic = r.exchange_mic \
                  AND c.status = 'occurred' AND c.event_type = $3 \
-                 AND c.occurred_at = r.occurred_at)",
-    )
+                 AND c.occurred_at = r.occurred_at)"
+    ))
     .bind(ticker)
     .bind(mic)
     .bind(CORRECTION)
@@ -479,16 +489,20 @@ pub async fn apply_report_calendar(
     .rows_affected();
 
     for e in &c.entries {
-        let occurred = sqlx::query(
+        let occurred = sqlx::query(concat!(
             "SELECT id FROM special_events \
              WHERE ticker = $1 AND exchange_mic = $2 AND status = 'occurred' \
                AND event_type IN ($5, $6) AND NOT is_correction AND expected_date IS NULL \
-               AND (occurred_at AT TIME ZONE 'Europe/Stockholm')::date \
+               AND (occurred_at AT TIME ZONE '",
+            model::mfn_timezone!(),
+            "')::date \
                    BETWEEN ($3::date - $4::int) AND ($3::date + $4::int) \
-             ORDER BY abs((occurred_at AT TIME ZONE 'Europe/Stockholm')::date - $3::date), \
+             ORDER BY abs((occurred_at AT TIME ZONE '",
+            model::mfn_timezone!(),
+            "')::date - $3::date), \
                       occurred_at \
-             LIMIT 1 FOR UPDATE",
-        )
+             LIMIT 1 FOR UPDATE"
+        ))
         .bind(c.ticker)
         .bind(c.exchange_mic)
         .bind(e.expected_date)
@@ -520,16 +534,18 @@ pub async fn apply_report_calendar(
         } else {
             QUARTERLY
         };
-        out.scheduled += sqlx::query(
+        out.scheduled += sqlx::query(concat!(
             "INSERT INTO special_events \
                (ticker, exchange_mic, event_type, occurred_at, description, status, source, \
                 report_kind, fiscal_period, company_name, expected_date, expected_time, \
                 calendar_label, calendar_fetched_at) \
              VALUES ($1, $2, $3, \
-                     ($4::date + COALESCE($5::time, TIME '00:00')) AT TIME ZONE 'Europe/Stockholm', \
+                     ($4::date + COALESCE($5::time, TIME '00:00')) AT TIME ZONE '",
+            model::mfn_timezone!(),
+            "', \
                      $6, 'scheduled', $7, $8, $9, $10, $4, $5, $6, $11) \
-             ON CONFLICT DO NOTHING",
-        )
+             ON CONFLICT DO NOTHING"
+        ))
         .bind(c.ticker)
         .bind(c.exchange_mic)
         .bind(event_type)
@@ -549,11 +565,15 @@ pub async fn apply_report_calendar(
     Ok(out)
 }
 
-/// Today's date in Europe/Stockholm, from the database clock.
+/// Today's date in the MFN calendar's time zone (`model::nordic::MFN_TIMEZONE`), from the database clock.
 pub async fn stockholm_today(pool: &PgPool) -> sqlx::Result<NaiveDate> {
-    sqlx::query_scalar("SELECT (now() AT TIME ZONE 'Europe/Stockholm')::date")
-        .fetch_one(pool)
-        .await
+    sqlx::query_scalar(concat!(
+        "SELECT (now() AT TIME ZONE '",
+        model::mfn_timezone!(),
+        "')::date"
+    ))
+    .fetch_one(pool)
+    .await
 }
 
 /// Stores a validated message: a release, or a calendar snapshot.

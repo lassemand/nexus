@@ -6,7 +6,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use model::asset::mic;
+use model::nordic::{self, InsiderSourceKind};
 use serde::Deserialize;
 
 const MFN_BASE: &str = "https://mfn.se";
@@ -69,13 +69,14 @@ impl MfnCompany {
 
 /// Whether a listing on `exchange_mic` has Nordic report sources.
 pub fn is_nordic(exchange_mic: &str) -> bool {
-    mic::NORDIC.contains(&exchange_mic)
+    nordic::country_for_mic(exchange_mic).is_some()
 }
 
 /// Whether a listing on `exchange_mic` is covered by FI's insider register
-/// (Sweden only: Finnish insider trades come from issuers' MFN releases).
-fn is_swedish(exchange_mic: &str) -> bool {
-    mic::country(exchange_mic) == Some("SE")
+/// (Finnish insider trades come from issuers' MFN releases instead).
+fn uses_fi_register(exchange_mic: &str) -> bool {
+    nordic::country_for_mic(exchange_mic)
+        .is_some_and(|c| c.insider_source == InsiderSourceKind::FiRegister)
 }
 
 /// Uppercase without spaces or hyphens, as `nordic-reports` compares tickers
@@ -242,7 +243,7 @@ impl Lookup {
             out.isin = isin;
         }
 
-        if is_swedish(exchange_mic) {
+        if uses_fi_register(exchange_mic) {
             out.fi_issuer = match (&overrides.fi_issuer, &out.name) {
                 (Some(issuer), _) => Some(issuer.clone()),
                 (None, Some(name)) => match self.fi_issuers(name).await {
@@ -384,9 +385,9 @@ mod tests {
             assert!(is_nordic(m), "{m}");
         }
         assert!(!is_nordic("XNAS") && !is_nordic("XOSL"));
-        assert!(is_swedish("FNSE") && is_swedish("XSTO"));
+        assert!(uses_fi_register("FNSE") && uses_fi_register("XSTO"));
         for m in ["XHEL", "FNFI", "XCSE", "FNDK", "XNAS"] {
-            assert!(!is_swedish(m), "{m}");
+            assert!(!uses_fi_register(m), "{m}");
         }
     }
 
@@ -513,6 +514,43 @@ mod tests {
         assert_eq!(m.fi_issuer.as_deref(), Some("AB Volvo (publ)"));
         assert_eq!(m.isin, None, "two share classes, so no ISIN");
         assert_eq!(chooser.asked.len(), 1, "only the FI issuer was ambiguous");
+    }
+
+    /// NEX-211 snapshot: only a Swedish listing consults FI's insider register.
+    #[tokio::test]
+    async fn only_swedish_listings_consult_the_fi_register() {
+        for (ticker, mic, name, consulted) in [
+            ("VOLV-B", "XSTO", "Volvo", true),
+            ("NOVO-B", "XCSE", "Novo", false),
+            ("METSO", "XHEL", "Metso", false),
+        ] {
+            let body = format!(
+                r#"[{{"slug":"co","name":"{name}","tickers":["{mic}:{}"]}}]"#,
+                ticker.replace('-', " ")
+            );
+            let server = server_with(ticker, &body).await;
+            Mock::given(method("GET"))
+                .and(path(FI_AUTOCOMPLETE))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_raw(r#"["Only Issuer"]"#, "application/json"),
+                )
+                .mount(&server)
+                .await;
+            let lookup = Lookup::with_bases(reqwest::Client::new(), &server.uri(), &server.uri());
+            let m = lookup
+                .mappings(ticker, mic, &Overrides::default(), &mut scripted(&[]))
+                .await;
+            let fi_calls = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.url.path() == FI_AUTOCOMPLETE)
+                .count();
+            assert_eq!(fi_calls, usize::from(consulted), "{mic}");
+            assert_eq!(m.fi_issuer.is_some(), consulted, "{mic}");
+        }
     }
 
     #[tokio::test]

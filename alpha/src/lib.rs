@@ -11,7 +11,7 @@ pub mod yahoo;
 
 pub use bar_provider::BarProvider;
 pub use calendar::{
-    country_for_exchange, CalendarEntry, CalendarError, CalendarProvider, EXCHANGE_TO_COUNTRY,
+    country_for_exchange, CalendarEntry, CalendarError, CalendarProvider, ExtraClosure,
 };
 pub use company::CompanyProvider;
 pub use earnings::{EarningsProvider, QuarterlyEarnings};

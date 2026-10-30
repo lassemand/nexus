@@ -24,27 +24,17 @@
 mod db;
 mod kafka;
 
+use chronicle_lib::insider_source::{fi_register::MAR_START, insider_source, SourceContext};
+use chronicle_lib::nordic::db::Company;
 use chronicle_lib::registry;
-use chrono::{Duration, NaiveDate, NaiveDateTime, Utc};
+use chrono::{Duration, NaiveDate, Utc};
 use clap::Parser;
 use kafka::ChronicleProducer;
-use model::{
-    generated::{
-        unified_insider_transaction, FiDetail, SourceRegistry, UnifiedInsiderTransaction,
-        UnifiedTransactionType,
-    },
-    insider::transaction_id,
-};
+use model::asset::mic;
+use model::nordic;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
 use tracing::{error, info, warn};
-
-const FI_BASE: &str = "https://marknadssok.fi.se/Publiceringsklient/sv-SE/Search/Search";
-const FI_AUTOCOMPLETE: &str =
-    "https://marknadssok.fi.se/Publiceringsklient/sv-SE/AutoComplete/H\u{00e4}mtaAutoCompleteListaFull";
-
-/// Pre-MAR data boundary. FI's MAR register reliably covers from this date.
-const MAR_START: &str = "2016-07-03";
 
 // ── Args ──────────────────────────────────────────────────────────────────
 
@@ -75,6 +65,8 @@ struct Args {
 
 // ── Registry query ────────────────────────────────────────────────────────
 
+// FIXME(pdmr-xsto, no bug id yet): only `FNSE` companies are loaded, so Swedish
+// main-market (`XSTO`) companies get no insider data. Kept as is (NEX-211).
 /// Load all FNSE-tagged tickers, with their FI issuer name when mapped.
 async fn load_fnse_companies(pool: &sqlx::PgPool) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let rows = sqlx::query(
@@ -87,210 +79,6 @@ async fn load_fnse_companies(pool: &sqlx::PgPool) -> anyhow::Result<Vec<(String,
         .into_iter()
         .map(|r| (r.get("ticker"), r.get("fi_issuer")))
         .collect())
-}
-
-// ── FI API ────────────────────────────────────────────────────────────────
-
-/// Resolve a ticker to the exact FI issuer name via the autocomplete endpoint.
-async fn resolve_issuer(client: &reqwest::Client, ticker: &str) -> anyhow::Result<Option<String>> {
-    let url = format!(
-        "{}?sokfunktion=Insyn&falt=Utgivare&sokterm={}",
-        FI_AUTOCOMPLETE,
-        urlencoding::encode(ticker)
-    );
-    let names: Vec<String> = client
-        .get(&url)
-        .header("User-Agent", "nexus lasse.alm@gsfleet.io")
-        .send()
-        .await?
-        .json()
-        .await?;
-    Ok(names.into_iter().next())
-}
-
-// ── CSV parsing ───────────────────────────────────────────────────────────
-
-/// A parsed row from FI's UTF-16 LE semicolon-delimited CSV export, before
-/// conversion into the wire-level `UnifiedInsiderTransaction`. Keeping CSV
-/// parsing decoupled from the proto type means `fetch_pdmr_rows` doesn't need
-/// to know about `SourceDetail`/`FiDetail` wrapping at all — mirrors the same
-/// raw-struct pattern used for SEC (`SecFormFourTransaction` in `filings.rs`).
-#[derive(Debug, Clone)]
-struct FiRow {
-    ticker: String,
-    publication_date: NaiveDateTime,
-    lei: String,
-    reporting_person: String,
-    role: String,
-    is_close_associate: bool,
-    is_correction: bool,
-    correction_description: String,
-    transaction_type: String, // "Förvärv", "Avyttring", etc.
-    instrument_type: String,
-    isin: String,
-    transaction_date: NaiveDateTime,
-    volume: f64,
-    price: f64,
-    currency: String,
-}
-
-impl From<FiRow> for UnifiedInsiderTransaction {
-    fn from(r: FiRow) -> Self {
-        let transaction_date = r.transaction_date.format("%Y-%m-%d").to_string();
-        let published_date = r.publication_date.format("%Y-%m-%d").to_string();
-
-        // Corrections share the same key as the original so log-compacted
-        // consumers overwrite rather than accumulate duplicate records.
-        let amended_transaction_id = if r.is_correction {
-            transaction_id("FI", &r.ticker, &r.reporting_person, &transaction_date)
-        } else {
-            String::new()
-        };
-
-        UnifiedInsiderTransaction {
-            ticker: r.ticker,
-            exchange_mic: "FNSE".to_string(),
-            source_registry: SourceRegistry::Fi as i32,
-            person_name: r.reporting_person,
-            person_role: r.role,
-            transaction_date,
-            published_date,
-            transaction_type: map_transaction_type(&r.transaction_type),
-            volume: r.volume,
-            price_per_unit: r.price,
-            currency: r.currency,
-            is_amendment: r.is_correction,
-            amended_transaction_id,
-            source_detail: Some(unified_insider_transaction::SourceDetail::Fi(FiDetail {
-                lei: r.lei,
-                isin: r.isin,
-                instrument_type: r.instrument_type,
-                is_close_associate: r.is_close_associate,
-                correction_description: r.correction_description,
-            })),
-        }
-    }
-}
-
-fn parse_swedish_f64(s: &str) -> f64 {
-    s.trim().replace(',', ".").parse().unwrap_or(0.0)
-}
-
-fn parse_fi_datetime(s: &str) -> Option<NaiveDateTime> {
-    NaiveDateTime::parse_from_str(s.trim(), "%Y-%m-%d %H:%M:%S").ok()
-}
-
-fn map_transaction_type(karaktar: &str) -> i32 {
-    if karaktar.contains("Förvärv") {
-        UnifiedTransactionType::Buy as i32
-    } else if karaktar.contains("Avyttring") {
-        UnifiedTransactionType::Sell as i32
-    } else {
-        UnifiedTransactionType::Other as i32
-    }
-}
-
-/// Fetch and parse the PDMR CSV for a given ticker/FI issuer name and date range.
-async fn fetch_pdmr_rows(
-    client: &reqwest::Client,
-    ticker: &str,
-    issuer: &str,
-    from: NaiveDate,
-    to: NaiveDate,
-) -> anyhow::Result<Vec<FiRow>> {
-    let url = format!(
-        "{}?SearchFunctionType=Insyn&Utgivare={}&PersonILedandeStällningNamn=\
-         &Transaktionsdatum.From={}&Transaktionsdatum.To={}\
-         &Publiceringsdatum.From=&Publiceringsdatum.To=&button=export",
-        FI_BASE,
-        urlencoding::encode(issuer),
-        from.format("%Y-%m-%d"),
-        to.format("%Y-%m-%d"),
-    );
-
-    let bytes = client
-        .get(&url)
-        .header("User-Agent", "nexus lasse.alm@gsfleet.io")
-        .send()
-        .await?
-        .bytes()
-        .await?;
-
-    // Response is UTF-16 LE.
-    let text = String::from_utf16_lossy(
-        &bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|b| u16::from_le_bytes(*b))
-            .collect::<Vec<_>>(),
-    );
-
-    let mut rows = Vec::new();
-    let mut lines = text.lines();
-
-    // Header row: build column index map.
-    let Some(header) = lines.next() else {
-        return Ok(rows);
-    };
-    let cols: Vec<&str> = header.split(';').collect();
-    let idx = |name: &str| cols.iter().position(|&c| c.trim() == name);
-
-    let i_pub = idx("Publiceringsdatum").unwrap_or(0);
-    let i_lei = idx("LEI-kod").unwrap_or(2);
-    let i_rep = idx("Anmälningsskyldig").unwrap_or(3);
-    let i_role = idx("Befattning").unwrap_or(5);
-    let i_near = idx("Närstående").unwrap_or(6);
-    let i_corr = idx("Korrigering").unwrap_or(7);
-    let i_corr_desc = idx("Beskrivning av korrigering").unwrap_or(8);
-    let i_char = idx("Karaktär").unwrap_or(11);
-    let i_itype = idx("Instrumenttyp").unwrap_or(12);
-    let i_isin = idx("ISIN").unwrap_or(14);
-    let i_date = idx("Transaktionsdatum").unwrap_or(15);
-    let i_vol = idx("Volym").unwrap_or(16);
-    let i_price = idx("Pris").unwrap_or(18);
-    let i_cur = idx("Valuta").unwrap_or(19);
-    let i_status = idx("Status").unwrap_or(21);
-
-    for line in lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let fields: Vec<&str> = line.split(';').collect();
-        let get = |i: usize| fields.get(i).copied().unwrap_or("").trim();
-
-        // Only include active (non-superseded) rows.
-        if get(i_status) != "Aktuell" {
-            continue;
-        }
-
-        let Some(pub_dt) = parse_fi_datetime(get(i_pub)) else {
-            continue;
-        };
-        let Some(txn_dt) = parse_fi_datetime(get(i_date)) else {
-            continue;
-        };
-
-        rows.push(FiRow {
-            ticker: ticker.to_string(),
-            publication_date: pub_dt,
-            lei: get(i_lei).to_string(),
-            reporting_person: get(i_rep).to_string(),
-            role: get(i_role).to_string(),
-            is_close_associate: !get(i_near).is_empty(),
-            is_correction: !get(i_corr).is_empty(),
-            correction_description: get(i_corr_desc).to_string(),
-            transaction_type: get(i_char).to_string(),
-            instrument_type: get(i_itype).to_string(),
-            isin: get(i_isin).to_string(),
-            transaction_date: txn_dt,
-            volume: parse_swedish_f64(get(i_vol)),
-            price: parse_swedish_f64(get(i_price)),
-            currency: get(i_cur).to_string(),
-        });
-    }
-
-    Ok(rows)
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
@@ -350,153 +138,64 @@ async fn main() {
     // Pre-MAR data is unavailable — clamp from to 2016-07-03.
     let from = (to - Duration::days(args.lookback_days)).max(mar_start);
 
+    // The source comes from the venue's country, not from a country code here.
+    let Some(source) =
+        nordic::country_for_mic(mic::FNSE).and_then(|c| insider_source(c.insider_source))
+    else {
+        error!("{} has no insider source", mic::FNSE);
+        return;
+    };
+
     for (i, (ticker, fi_issuer)) in tickers.iter().enumerate() {
         if i > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
-        // The mapped FI issuer name, else search FI's issuer names with the
-        // ticker (only works where the ticker is part of the name).
-        let resolved = match fi_issuer {
-            Some(name) => Ok(Some(name.clone())),
-            None => resolve_issuer(&client, ticker).await,
+        info!(ticker, source = source.name(), from = %from, to = %to, "fetching insider transactions");
+        let company = Company {
+            ticker: ticker.clone(),
+            exchange_mic: mic::FNSE.to_string(),
+            mfn_slug: None,
+            name: None,
+            isin: None,
         };
-        let issuer = match resolved {
-            Ok(Some(name)) => name,
-            Ok(None) => {
-                warn!(
-                    ticker,
-                    "no FI issuer found for ticker, skipping — set companies.fi_issuer"
-                );
-                continue;
-            }
-            Err(e) => {
-                error!(ticker, error = %e, "FI autocomplete request failed");
-                continue;
-            }
+        let mut ctx = SourceContext {
+            http: &client,
+            feed: None,
+            fi_issuer: fi_issuer.as_deref(),
         };
-
-        info!(ticker, issuer, from = %from, to = %to, "fetching PDMR transactions from FI");
-
-        let rows = match fetch_pdmr_rows(&client, ticker, &issuer, from, to).await {
-            Ok(r) => r,
+        let transactions = match source.fetch(&mut ctx, &company, from).await {
+            Ok(t) => t,
             Err(e) => {
-                error!(ticker, issuer, error = %e, "failed to fetch PDMR data from FI");
+                error!(ticker, error = %e, "failed to fetch insider transactions");
                 continue;
             }
         };
 
         info!(
             ticker,
-            issuer,
-            count = rows.len(),
+            count = transactions.len(),
             "fetched PDMR transactions"
         );
 
-        for row in &rows {
+        for txn in transactions {
             if let Err(e) = producer
-                .publish_unified_insider_transaction(&args.kafka_topic, row.clone())
+                .publish_unified_insider_transaction(&args.kafka_topic, txn.clone())
                 .await
             {
                 error!(ticker, error = %e, "failed to publish UnifiedInsiderTransaction");
             } else {
                 info!(
                     ticker,
-                    pdmr = %row.reporting_person,
-                    txn_type = %row.transaction_type,
-                    volume = row.volume,
-                    price = row.price,
-                    currency = %row.currency,
-                    amendment = row.is_correction,
+                    pdmr = %txn.person_name,
+                    txn_type = txn.transaction_type,
+                    volume = txn.volume,
+                    price = txn.price_per_unit,
+                    currency = %txn.currency,
+                    amendment = txn.is_amendment,
                     "published UnifiedInsiderTransaction (FI)"
                 );
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod fi_row_conversion_tests {
-    use super::*;
-
-    fn sample_row(is_correction: bool) -> FiRow {
-        FiRow {
-            ticker: "GOMX".to_string(),
-            publication_date: parse_fi_datetime("2024-03-18 09:00:00").unwrap(),
-            lei: "549300ABCDEF1234567".to_string(),
-            reporting_person: "Jane Doe".to_string(),
-            role: "VD".to_string(),
-            is_close_associate: false,
-            is_correction,
-            correction_description: if is_correction {
-                "Corrected volume".to_string()
-            } else {
-                String::new()
-            },
-            transaction_type: "Förvärv".to_string(),
-            instrument_type: "Aktie".to_string(),
-            isin: "SE0008348304".to_string(),
-            transaction_date: parse_fi_datetime("2024-03-15 00:00:00").unwrap(),
-            volume: 1500.0,
-            price: 8.75,
-            currency: "SEK".to_string(),
-        }
-    }
-
-    #[test]
-    fn converts_original_transaction_with_no_amendment_id() {
-        let txn: UnifiedInsiderTransaction = sample_row(false).into();
-
-        assert_eq!(txn.ticker, "GOMX");
-        assert_eq!(txn.exchange_mic, "FNSE");
-        assert_eq!(txn.source_registry, SourceRegistry::Fi as i32);
-        assert_eq!(txn.person_name, "Jane Doe");
-        assert_eq!(txn.person_role, "VD");
-        assert_eq!(txn.transaction_date, "2024-03-15");
-        assert_eq!(txn.published_date, "2024-03-18");
-        assert_eq!(txn.transaction_type, UnifiedTransactionType::Buy as i32);
-        assert_eq!(txn.volume, 1500.0);
-        assert_eq!(txn.price_per_unit, 8.75);
-        assert_eq!(txn.currency, "SEK");
-        assert!(!txn.is_amendment);
-        assert!(txn.amended_transaction_id.is_empty());
-
-        match txn.source_detail {
-            Some(unified_insider_transaction::SourceDetail::Fi(detail)) => {
-                assert_eq!(detail.lei, "549300ABCDEF1234567");
-                assert_eq!(detail.isin, "SE0008348304");
-                assert_eq!(detail.instrument_type, "Aktie");
-                assert!(!detail.is_close_associate);
-            }
-            other => panic!("expected FiDetail, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn correction_gets_a_non_empty_amendment_id_matching_the_original() {
-        let original: UnifiedInsiderTransaction = sample_row(false).into();
-        let correction: UnifiedInsiderTransaction = sample_row(true).into();
-
-        assert!(correction.is_amendment);
-        assert!(!correction.amended_transaction_id.is_empty());
-
-        // The amendment id is derived from (source, ticker, person, transaction_date),
-        // none of which differ between the original and its correction, so a
-        // consumer keyed on this id will correctly overwrite the original.
-        let expected_id = transaction_id(
-            "FI",
-            &original.ticker,
-            &original.person_name,
-            &original.transaction_date,
-        );
-        assert_eq!(correction.amended_transaction_id, expected_id);
-    }
-
-    #[test]
-    fn sell_karaktar_maps_to_sell_transaction_type() {
-        let mut row = sample_row(false);
-        row.transaction_type = "Avyttring".to_string();
-        let txn: UnifiedInsiderTransaction = row.into();
-        assert_eq!(txn.transaction_type, UnifiedTransactionType::Sell as i32);
     }
 }

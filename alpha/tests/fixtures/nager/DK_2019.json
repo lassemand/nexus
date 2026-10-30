@@ -1,0 +1,62 @@
+[
+ {
+  "date": "2019-01-01",
+  "name": "New Year's Day"
+ },
+ {
+  "date": "2019-04-18",
+  "name": "Maundy Thursday"
+ },
+ {
+  "date": "2019-04-19",
+  "name": "Good Friday"
+ },
+ {
+  "date": "2019-04-21",
+  "name": "Easter Sunday"
+ },
+ {
+  "date": "2019-04-22",
+  "name": "Easter Monday"
+ },
+ {
+  "date": "2019-05-17",
+  "name": "General Prayer Day"
+ },
+ {
+  "date": "2019-05-30",
+  "name": "Ascension Day"
+ },
+ {
+  "date": "2019-05-31",
+  "name": "Bank closing day"
+ },
+ {
+  "date": "2019-06-05",
+  "name": "Constitution Day"
+ },
+ {
+  "date": "2019-06-09",
+  "name": "Pentecost"
+ },
+ {
+  "date": "2019-06-10",
+  "name": "Whit Monday"
+ },
+ {
+  "date": "2019-12-24",
+  "name": "Christmas Eve"
+ },
+ {
+  "date": "2019-12-25",
+  "name": "Christmas Day"
+ },
+ {
+  "date": "2019-12-26",
+  "name": "St. Stephen's Day"
+ },
+ {
+  "date": "2019-12-31",
+  "name": "New Year's Eve"
+ }
+]
