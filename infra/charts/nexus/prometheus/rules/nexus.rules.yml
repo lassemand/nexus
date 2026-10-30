@@ -40,19 +40,23 @@ groups:
             dark. Immediate manual re-authentication required.
           runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
 
-      # Any failed refresh in the last 10 minutes (several rotation attempts
-      # per access-token lifetime), so one failure is visible before the
-      # refresh token expires. Fires immediately (for: 0m).
+      # Repeated refresh failures: an early warning before ExpiringSoon. A
+      # transient failure is retried on the next 30s tick and almost always
+      # succeeds, so a single one is noise (NEX-224: 9 a day, each recovered
+      # 30s later). Three within 30 minutes means it is not recovering:
+      # continuous failures (retried every 30s) fire after ~1 min, a rejected
+      # token (retried every 10 min) after ~20 min, before the token expires.
       - alert: SaxoRefreshTokenFailure
-        expr: increase(saxo_refresh_token_failures_total[10m]) > 0
+        expr: increase(saxo_refresh_token_failures_total[30m]) >= 3
         for: 0m
         labels:
           severity: warning
         annotations:
-          summary: "Saxo token refresh failed"
+          summary: "Saxo token refresh keeps failing"
           description: >-
-            The saxo_stream service encountered a token refresh failure.
-            If this persists the refresh token chain will break within ~1 hour.
+            The saxo_stream service failed to refresh its Saxo token
+            {{ $value | humanize }} times in the last 30 minutes. If this
+            persists the refresh token chain will break within ~1 hour.
           runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
 
   - name: nexus.ingestion
