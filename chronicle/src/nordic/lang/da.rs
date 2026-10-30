@@ -3,8 +3,23 @@
 use super::ReportLanguage;
 use model::nordic::Lang;
 
-/// Danish headline vocabulary. Danish issuers write no month ranges in titles,
-/// so there are no month names here.
+/// Danish month names (`marts` differs from Swedish `mars`).
+const MONTHS: [&str; 12] = [
+    "januar",
+    "februar",
+    "marts",
+    "april",
+    "maj",
+    "juni",
+    "juli",
+    "august",
+    "september",
+    "oktober",
+    "november",
+    "december",
+];
+
+/// Danish headline vocabulary.
 pub struct Danish;
 
 impl ReportLanguage for Danish {
@@ -60,6 +75,10 @@ impl ReportLanguage for Danish {
 
     fn results_words(&self) -> &'static [&'static str] {
         &["regnskab"]
+    }
+
+    fn month_names(&self) -> &'static [&'static str] {
+        &MONTHS
     }
 
     fn quarter_phrases(&self) -> &'static [(&'static str, u8)] {

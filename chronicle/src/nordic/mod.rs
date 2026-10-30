@@ -10,6 +10,7 @@ use model::asset::mic;
 pub const NORDIC_MICS: &[&str] = mic::NORDIC;
 
 pub mod calendar;
+pub mod calendar_release;
 pub mod classify;
 pub mod db;
 pub mod events;

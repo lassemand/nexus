@@ -39,18 +39,39 @@ const IGNORED_LABELS: &[&str] = &[
     "analytiker",
     "split",
     "annual general meeting",
+    "generalforsamling",
+    "yhtiökokous",
+    "extraordinary general meeting",
+    "dividend",
+    "udbytte",
+    "osinko",
+    "proposals from the shareholders",
+    "forslag fra aktionærer",
 ];
 
-/// (needle, kind) pairs for report labels, Swedish and English, lower-case.
+/// (needle, kind) pairs for report labels (Swedish, Danish, Finnish, English), lower-case.
+/// Order matters: the first match wins.
 const REPORT_LABELS: &[(&str, ReportKind)] = &[
     ("kvartalsrapport", ReportKind::Interim),
     ("delårsrapport", ReportKind::Interim),
     ("halvårsrapport", ReportKind::Interim),
+    ("kvartalsuppdatering", ReportKind::Interim),
+    ("kvartalsopdatering", ReportKind::Interim),
+    ("osavuosikatsaus", ReportKind::Interim),
+    ("puolivuosikatsaus", ReportKind::Interim),
     ("interim report", ReportKind::Interim),
+    ("interim financial report", ReportKind::Interim),
     ("quarterly report", ReportKind::Interim),
+    ("quarterly update", ReportKind::Interim),
+    ("trading statement", ReportKind::Interim),
     ("half-year report", ReportKind::Interim),
     ("bokslutskommuniké", ReportKind::Annual),
     ("årsredovisning", ReportKind::Annual),
+    ("årsregnskab", ReportKind::Annual),
+    // After `delårsrapport` / `halvårsrapport`, which contain it.
+    ("årsrapport", ReportKind::Annual),
+    ("tilinpäätöstiedote", ReportKind::Annual),
+    ("vuosikertomus", ReportKind::Annual),
     ("year-end report", ReportKind::Annual),
     ("annual report", ReportKind::Annual),
 ];
