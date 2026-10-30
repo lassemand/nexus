@@ -7,8 +7,9 @@
 //!
 //! * an MFN item is stored once (`(source, source_id)`), its display fields
 //!   refreshed on re-delivery;
-//! * the sv/en twin of a release (same company, instant and type) is merged,
-//!   English preferred;
+//! * the other-language twin of a release (same company and type, same instant
+//!   or, for a different `lang` with the same tags, within [`TWIN_WINDOW_SECS`])
+//!   is merged, English preferred;
 //! * a release fills the closest scheduled row within ±[`MATCH_WINDOW_DAYS`]
 //!   of its Stockholm date, keeping the expected fields;
 //! * a same-day re-send becomes a `report_correction`, and every report links
@@ -31,6 +32,10 @@ pub const SOURCE_MFN: &str = "mfn";
 /// Days either side of a release's Stockholm date within which a scheduled
 /// report counts as the same report.
 pub const MATCH_WINDOW_DAYS: i32 = 7;
+
+/// Seconds within which items of different `lang` with the same tags are
+/// translations of one release (MFN publishes some twins 23-30 s apart).
+pub const TWIN_WINDOW_SECS: i32 = 120;
 
 const QUARTERLY: &str = "quarterly_report";
 const ANNUAL: &str = "annual_report";
@@ -240,14 +245,20 @@ async fn record_in(tx: &mut PgConnection, r: &Release<'_>) -> sqlx::Result<Recor
         return Ok(Recorded::Updated);
     }
 
-    // 2. Language twin: same company, instant and type. A report that was
+    // 2. Language twin: same company and type, at the same instant or, in
+    // another language with the same tags, within TWIN_WINDOW_SECS. A report that was
     // re-typed as a same-day re-send still matches its own twins through
     // report_kind, so the order of arrival doesn't matter.
     let twin = sqlx::query(
         "SELECT id, lang FROM special_events \
-         WHERE ticker = $1 AND exchange_mic = $2 AND occurred_at = $3 AND status = 'occurred' \
+         WHERE ticker = $1 AND exchange_mic = $2 AND status = 'occurred' \
+           AND (occurred_at = $3 OR ( \
+                occurred_at BETWEEN $3 - make_interval(secs => $7) \
+                                AND $3 + make_interval(secs => $7) \
+                AND lang IS NOT NULL AND $8::text IS NOT NULL AND lang <> $8 \
+                AND tags @> $9 AND tags <@ $9)) \
            AND (event_type = $4 OR (event_type = $5 AND report_kind IS NOT DISTINCT FROM $6)) \
-         ORDER BY id LIMIT 1 FOR UPDATE",
+         ORDER BY abs(extract(epoch FROM occurred_at - $3)), id LIMIT 1 FOR UPDATE",
     )
     .bind(r.ticker)
     .bind(r.exchange_mic)
@@ -255,6 +266,9 @@ async fn record_in(tx: &mut PgConnection, r: &Release<'_>) -> sqlx::Result<Recor
     .bind(r.event_type)
     .bind(CORRECTION)
     .bind(r.report_kind)
+    .bind(f64::from(TWIN_WINDOW_SECS))
+    .bind(r.lang)
+    .bind(r.tags)
     .fetch_optional(&mut *tx)
     .await?;
     if let Some(row) = twin {
@@ -730,6 +744,42 @@ mod tests {
                     .unwrap();
             assert_eq!((id.as_str(), lang.as_str()), ("en", "en"));
         }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn twins_published_seconds_apart_merge_to_english(pool: PgPool) {
+        let da = item("da", QUARTERLY, at(2026, 8, 26, 5, 29), "da");
+        let mut en = item("en", QUARTERLY, at(2026, 8, 26, 5, 29), "en");
+        en.occurred_at_unix_secs += 27;
+        for order in [[&da, &en], [&en, &da]] {
+            sqlx::query("DELETE FROM special_events")
+                .execute(&pool)
+                .await
+                .unwrap();
+            for e in order {
+                store(&pool, e).await;
+            }
+            let rows: Vec<(String, String, bool)> =
+                sqlx::query_as("SELECT source_id, event_type, is_correction FROM special_events")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(rows, vec![("en".to_string(), QUARTERLY.to_string(), false)]);
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn same_language_items_seconds_apart_are_not_twins(pool: PgPool) {
+        let a = item("a", QUARTERLY, at(2026, 8, 26, 5, 29), "en");
+        let mut b = item("b", QUARTERLY, at(2026, 8, 26, 5, 29), "en");
+        b.occurred_at_unix_secs += 27;
+        store(&pool, &a).await;
+        store(&pool, &b).await;
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM special_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
     }
 
     /// Metso's Q3 2026 release as MFN published it: one Finnish and one English
