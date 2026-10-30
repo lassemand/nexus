@@ -1,6 +1,6 @@
 image:
   repository: "lmapwns/nexus"
-  tag: "0.7.1"
+  tag: "0.7.2"
 replicaCount: 1
 service:
   enabled: true
