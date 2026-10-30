@@ -50,7 +50,6 @@ The system communicates between services and workers through domain events, not 
 - Publishers emit events after a successful state change — never speculatively
 - Consumers are idempotent — receiving the same event twice must not cause duplicate side effects
 - Do not couple producers to consumers — a producer must not import a consumer crate
-- Only comment on public methods or clearly obfuscure code
 ---
  
 ## Database — sqlx
@@ -58,17 +57,18 @@ The system communicates between services and workers through domain events, not 
 - Use `sqlx` for all database access; no ORM
 - Write queries as `sqlx::query!` or `sqlx::query_as!` macros for compile-time checking
 - Migrations go in `<PROJECT>/migrations/` and follow the naming format: `YYYYMMDDHHMMSS_description.sql`
-- Never run raw SQL strings without the macro unless the query is truly dynamic, and document why
+- Never run raw SQL strings without the macro unless the query is truly dynamic, and explain why in the PR description
 - Keep transactions explicit — pass a `&mut Transaction` when multiple writes must be atomic
 ---
  
 ## Code Conventions
  
 - Use `thiserror` for error types (if already in workspace)
-- Propagate errors with `?`; avoid `unwrap()` except in tests or where a panic is truly intentional (add a comment)
+- Propagate errors with `?`; avoid `unwrap()` except in tests or where a panic is truly intentional (use `expect("why it cannot fail")`)
 - Prefer `async`/`await` throughout; do not block the async runtime
 - Use `tracing` for structured logging — not `println!` or `eprintln!`
-- All public types and functions require doc comments
+- Do not add code comments (`//`, `/* */`) unless the Linear issue or a reviewer explicitly asks for them. Rust docs (`///`, `//!`) are not included in this rule
+- All public types and functions require Rust doc comments (`///`)
 - Tests live alongside code in `#[cfg(test)]` modules; integration tests in `tests/`
 ---
  
