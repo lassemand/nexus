@@ -56,6 +56,7 @@ rdkafka = { version = "0.36", features = ["cmake-build", "tokio"] }
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid"] }
 chrono = "0.4"
+chrono-tz = "0.10"
 rust_decimal = { version = "1.43.0", default-features = false, features = ["std"] }
 prost = "0.13"
 thiserror = "1"
