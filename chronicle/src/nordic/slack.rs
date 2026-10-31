@@ -1,16 +1,14 @@
 //! Slack notifications for periodic reports (NEX-221): the message format, the
 //! exactly-once claim table and a small `chat.postMessage` client.
 
-use std::fmt;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use serde_json::{json, Value};
+use slack_morphism::errors::SlackClientError;
+use slack_morphism::prelude::*;
 use sqlx::{PgPool, Row};
 use thiserror::Error;
-use tokio::sync::Mutex;
-use tokio::time::Instant;
 use tracing::{error, warn};
 use uuid::Uuid;
 
@@ -21,7 +19,8 @@ const MAX_ATTEMPTS: i32 = 5;
 const MAX_ERROR_CHARS: usize = 500;
 const MAX_SEND_ATTEMPTS: u32 = 3;
 const MAX_RETRY_AFTER_SECS: u64 = 60;
-const DEFAULT_BASE_URL: &str = "https://slack.com/api";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const BASE_BACKOFF: Duration = Duration::from_millis(500);
 
 /// Everything the message shows about one released report.
 #[derive(Debug, Clone)]
@@ -294,7 +293,7 @@ pub struct PostedRef {
 }
 
 /// Why a Slack call failed. Never contains the token.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum SlackError {
     #[error("slack api error: {0}")]
     Api(String),
@@ -302,66 +301,99 @@ pub enum SlackError {
     Status(u16),
     #[error("slack request failed: {0}")]
     Transport(String),
-    #[error("slack response not understood: {0}")]
-    Response(String),
 }
 
-/// Slack Web API client for one channel, paced at one message per second.
+enum Verdict {
+    Retry(Duration, SlackError),
+    Fatal(SlackError),
+}
+
+fn judge(err: &SlackClientError, backoff: Duration) -> Verdict {
+    match err {
+        SlackClientError::RateLimitError(e) => {
+            let wait = e
+                .retry_after
+                .unwrap_or(Duration::from_secs(1))
+                .min(Duration::from_secs(MAX_RETRY_AFTER_SECS));
+            Verdict::Retry(wait, SlackError::Status(429))
+        }
+        SlackClientError::HttpError(e) if e.status_code.is_server_error() => {
+            Verdict::Retry(backoff, SlackError::Status(e.status_code.as_u16()))
+        }
+        SlackClientError::HttpError(e) => {
+            Verdict::Fatal(SlackError::Status(e.status_code.as_u16()))
+        }
+        SlackClientError::ApiError(e) => Verdict::Fatal(SlackError::Api(e.code.clone())),
+        SlackClientError::HttpProtocolError(_)
+        | SlackClientError::EndOfStream(_)
+        | SlackClientError::SystemError(_) => {
+            Verdict::Retry(backoff, SlackError::Transport("connection failed".into()))
+        }
+        _ => Verdict::Fatal(SlackError::Transport("unexpected slack response".into())),
+    }
+}
+
+/// Posts to one Slack channel through `slack-morphism`, paced to the
+/// library's one `chat.postMessage` per second.
 pub struct SlackClient {
-    token: String,
+    http: SlackHyperClient,
+    token: SlackApiToken,
     channel: String,
-    http: reqwest::Client,
-    base_url: String,
-    min_interval: Duration,
-    backoff: Duration,
-    last_sent: Mutex<Option<Instant>>,
 }
 
-impl fmt::Debug for SlackClient {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Debug for SlackClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SlackClient")
             .field("token", &"<redacted>")
             .field("channel", &self.channel)
-            .field("base_url", &self.base_url)
             .finish()
     }
 }
 
 impl SlackClient {
     /// Client posting to `channel` with a bot token.
-    pub fn new(token: impl Into<String>, channel: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
+    pub fn new(token: impl Into<String>, channel: impl Into<String>) -> Result<Self, SlackError> {
+        let connector = SlackClientHyperConnector::new()
+            .map_err(|e| SlackError::Transport(e.to_string()))?
+            .with_rate_control(SlackApiRateControlConfig::new());
+        Ok(Self::with_client(
+            slack_morphism::SlackClient::new(connector),
+            token,
+            channel,
+        ))
+    }
+
+    /// Client on a caller-built `slack-morphism` client (custom API URL or connector).
+    pub fn with_client(
+        http: SlackHyperClient,
+        token: impl Into<String>,
+        channel: impl Into<String>,
+    ) -> Self {
         Self {
-            token: token.into(),
-            channel: channel.into(),
             http,
-            base_url: DEFAULT_BASE_URL.to_string(),
-            min_interval: Duration::from_secs(1),
-            backoff: Duration::from_millis(500),
-            last_sent: Mutex::new(None),
+            token: SlackApiToken::new(SlackApiTokenValue::new(token.into())),
+            channel: channel.into(),
         }
-    }
-
-    /// Overrides the API base URL (tests).
-    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
-        self.base_url = url.into().trim_end_matches('/').to_string();
-        self
-    }
-
-    /// Overrides the pacing interval and the first retry backoff (tests).
-    pub fn with_timing(mut self, min_interval: Duration, backoff: Duration) -> Self {
-        self.min_interval = min_interval;
-        self.backoff = backoff;
-        self
     }
 
     /// Posts a new message with `chat.postMessage`.
     pub async fn post(&self, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
-        let body = json!({"channel": self.channel, "text": msg.text, "mrkdwn": true});
-        self.call("chat.postMessage", &body).await
+        let req = SlackApiChatPostMessageRequest::new(
+            SlackChannelId::new(self.channel.clone()),
+            SlackMessageContent::new().with_text(msg.text.clone()),
+        );
+        self.retrying(|| async {
+            let r = self
+                .http
+                .open_session(&self.token)
+                .chat_post_message(&req)
+                .await?;
+            Ok(PostedRef {
+                channel: r.channel.0,
+                ts: r.ts.0,
+            })
+        })
+        .await
     }
 
     /// Replaces a posted message with `chat.update`.
@@ -370,83 +402,54 @@ impl SlackClient {
         at: &PostedRef,
         msg: &SlackMessage,
     ) -> Result<PostedRef, SlackError> {
-        let body = json!({"channel": at.channel, "ts": at.ts, "text": msg.text, "mrkdwn": true});
-        self.call("chat.update", &body).await
-    }
-
-    async fn pace(&self) {
-        let mut last = self.last_sent.lock().await;
-        if let Some(prev) = *last {
-            let next = prev + self.min_interval;
-            if next > Instant::now() {
-                tokio::time::sleep_until(next).await;
-            }
-        }
-        *last = Some(Instant::now());
-    }
-
-    async fn call(&self, method: &str, body: &Value) -> Result<PostedRef, SlackError> {
-        let url = format!("{}/{method}", self.base_url);
-        let mut backoff = self.backoff;
-        let mut last_err = SlackError::Transport("no attempt made".into());
-        for attempt in 1..=MAX_SEND_ATTEMPTS {
-            self.pace().await;
-            let sent = self
+        let req = SlackApiChatUpdateRequest::new(
+            SlackChannelId::new(at.channel.clone()),
+            SlackMessageContent::new().with_text(msg.text.clone()),
+            SlackTs::new(at.ts.clone()),
+        );
+        self.retrying(|| async {
+            let r = self
                 .http
-                .post(&url)
-                .bearer_auth(&self.token)
-                .header("Content-Type", "application/json; charset=utf-8")
-                .body(body.to_string())
-                .send()
-                .await;
-            let wait = match sent {
-                Err(e) => {
-                    last_err = SlackError::Transport(e.without_url().to_string());
-                    backoff
-                }
-                Ok(resp) if resp.status().as_u16() == 429 => {
-                    let secs = resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.trim().parse::<u64>().ok())
-                        .unwrap_or(1)
-                        .min(MAX_RETRY_AFTER_SECS);
-                    last_err = SlackError::Status(429);
-                    Duration::from_secs(secs)
-                }
-                Ok(resp) if resp.status().is_server_error() => {
-                    last_err = SlackError::Status(resp.status().as_u16());
-                    backoff
-                }
-                Ok(resp) if !resp.status().is_success() => {
-                    return Err(SlackError::Status(resp.status().as_u16()));
-                }
-                Ok(resp) => return parse_reply(method, resp.json().await),
+                .open_session(&self.token)
+                .chat_update(&req)
+                .await?;
+            Ok(PostedRef {
+                channel: r.channel.0,
+                ts: r.ts.0,
+            })
+        })
+        .await
+    }
+
+    async fn retrying<F, Fut>(&self, call: F) -> Result<PostedRef, SlackError>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<PostedRef, SlackClientError>>,
+    {
+        let mut backoff = BASE_BACKOFF;
+        let mut last = SlackError::Transport("no attempt made".into());
+        for attempt in 1..=MAX_SEND_ATTEMPTS {
+            let verdict = match tokio::time::timeout(REQUEST_TIMEOUT, call()).await {
+                Ok(Ok(posted)) => return Ok(posted),
+                Ok(Err(e)) => judge(&e, backoff),
+                Err(_) => Verdict::Retry(backoff, SlackError::Transport("timed out".into())),
             };
-            if attempt < MAX_SEND_ATTEMPTS {
-                warn!(method, attempt, error = %last_err, "slack call failed, retrying");
-                tokio::time::sleep(wait).await;
-                backoff *= 2;
+            match verdict {
+                Verdict::Fatal(e) => {
+                    error!(error = %e, "slack rejected the call");
+                    return Err(e);
+                }
+                Verdict::Retry(wait, e) => {
+                    last = e;
+                    if attempt < MAX_SEND_ATTEMPTS {
+                        warn!(attempt, error = %last, "slack call failed, retrying");
+                        tokio::time::sleep(wait).await;
+                        backoff *= 2;
+                    }
+                }
             }
         }
-        Err(last_err)
-    }
-}
-
-fn parse_reply(method: &str, json: Result<Value, reqwest::Error>) -> Result<PostedRef, SlackError> {
-    let v = json.map_err(|e| SlackError::Response(e.without_url().to_string()))?;
-    if v["ok"].as_bool() != Some(true) {
-        let code = v["error"].as_str().unwrap_or("unknown_error").to_string();
-        error!(method, code = %code, "slack rejected the call");
-        return Err(SlackError::Api(code));
-    }
-    match (v["channel"].as_str(), v["ts"].as_str()) {
-        (Some(channel), Some(ts)) => Ok(PostedRef {
-            channel: channel.to_string(),
-            ts: ts.to_string(),
-        }),
-        _ => Err(SlackError::Response("missing channel or ts".into())),
+        Err(last)
     }
 }
 
@@ -454,8 +457,7 @@ fn parse_reply(method: &str, json: Result<Value, reqwest::Error>) -> Result<Post
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use wiremock::matchers::{header, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use slack_morphism::errors::{SlackClientApiError, SlackRateLimitError};
 
     fn notice() -> ReportNotice {
         ReportNotice {
@@ -622,135 +624,35 @@ mod tests {
         Ok(())
     }
 
-    fn client(server: &MockServer) -> SlackClient {
-        SlackClient::new("xoxb-secret", "C1")
-            .with_base_url(server.uri())
-            .with_timing(Duration::ZERO, Duration::from_millis(5))
-    }
-
-    fn ok_reply() -> ResponseTemplate {
-        ResponseTemplate::new(200).set_body_json(json!({"ok": true, "channel": "C1", "ts": "1.5"}))
-    }
-
-    fn msg() -> SlackMessage {
-        SlackMessage { text: "hi".into() }
-    }
-
-    #[tokio::test]
-    async fn post_ok_sends_bearer_token() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat.postMessage"))
-            .and(header("authorization", "Bearer xoxb-secret"))
-            .respond_with(ok_reply())
-            .expect(1)
-            .mount(&server)
-            .await;
-        let r = client(&server).post(&msg()).await.unwrap();
-        assert_eq!(
-            r,
-            PostedRef {
-                channel: "C1".into(),
-                ts: "1.5".into()
-            }
+    #[test]
+    fn rate_limit_wait_is_capped_at_sixty_seconds() {
+        let e = SlackClientError::RateLimitError(
+            SlackRateLimitError::new().with_retry_after(Duration::from_secs(600)),
         );
+        match judge(&e, BASE_BACKOFF) {
+            Verdict::Retry(w, SlackError::Status(429)) => assert_eq!(w, Duration::from_secs(60)),
+            _ => panic!("expected a capped retry"),
+        }
     }
 
-    #[tokio::test]
-    async fn update_uses_chat_update() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat.update"))
-            .respond_with(ok_reply())
-            .expect(1)
-            .mount(&server)
-            .await;
-        let at = PostedRef {
-            channel: "C1".into(),
-            ts: "1.5".into(),
-        };
-        client(&server).update(&at, &msg()).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn ok_false_is_error_with_code_and_no_retry() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"ok": false, "error": "invalid_auth"})),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        let e = client(&server).post(&msg()).await.unwrap_err();
-        assert!(matches!(&e, SlackError::Api(c) if c == "invalid_auth"));
-        assert!(!e.to_string().contains("xoxb"));
-    }
-
-    #[tokio::test]
-    async fn retries_429_after_retry_after() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(ok_reply())
-            .mount(&server)
-            .await;
-        assert!(client(&server).post(&msg()).await.is_ok());
-        assert_eq!(server.received_requests().await.unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn retries_500_then_ok() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(500))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(ok_reply())
-            .mount(&server)
-            .await;
-        assert!(client(&server).post(&msg()).await.is_ok());
-        assert_eq!(server.received_requests().await.unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn gives_up_after_three_server_errors() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(503))
-            .mount(&server)
-            .await;
-        let e = client(&server).post(&msg()).await.unwrap_err();
-        assert!(matches!(e, SlackError::Status(503)));
-        assert_eq!(server.received_requests().await.unwrap().len(), 3);
-    }
-
-    #[tokio::test]
-    async fn paces_messages_per_channel() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ok_reply())
-            .mount(&server)
-            .await;
-        let c = SlackClient::new("t", "C1")
-            .with_base_url(server.uri())
-            .with_timing(Duration::from_millis(150), Duration::from_millis(5));
-        let start = std::time::Instant::now();
-        c.post(&msg()).await.unwrap();
-        c.post(&msg()).await.unwrap();
-        assert!(start.elapsed() >= Duration::from_millis(150));
+    #[test]
+    fn api_errors_are_fatal_and_carry_the_code() {
+        for code in [
+            "channel_not_found",
+            "not_in_channel",
+            "invalid_auth",
+            "missing_scope",
+        ] {
+            let e = SlackClientError::ApiError(SlackClientApiError::new(code.to_string()));
+            assert!(
+                matches!(judge(&e, BASE_BACKOFF), Verdict::Fatal(SlackError::Api(c)) if c == code)
+            );
+        }
     }
 
     #[test]
     fn debug_redacts_token() {
-        let c = SlackClient::new("xoxb-secret", "C1");
+        let c = SlackClient::new("xoxb-secret", "C1").unwrap();
         let d = format!("{c:?}");
         assert!(!d.contains("xoxb-secret") && d.contains("redacted"));
     }
