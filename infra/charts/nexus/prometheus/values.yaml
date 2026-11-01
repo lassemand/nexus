@@ -164,16 +164,12 @@ kube-prometheus-stack:
       probeSelectorNilUsesHelmValues: false
       scrapeConfigSelectorNilUsesHelmValues: false
 
-      # Scrape saxo_stream Prometheus metrics from its /metrics endpoint.
-      additionalScrapeConfigs:
-        - job_name: saxo-stream
-          static_configs:
-            - targets:
-                - saxo-stream.chronicle.svc.cluster.local:8080
-          metrics_path: /metrics
-        # nordic-live: nordic_slack_posts_total (NEX-222).
-        - job_name: nordic-live
-          static_configs:
-            - targets:
-                - nordic-live.chronicle.svc.cluster.local:8080
-          metrics_path: /metrics
+      # An unset namespace selector means "the Prometheus namespace only", so
+      # set them empty (= every namespace): PodMonitors, ServiceMonitors,
+      # Probes and ScrapeConfigs in signal, chronicle, insight, conductor and
+      # nexus are all discovered. Long-running services are scraped through
+      # PodMonitors in their own chart; see docs/guides/metrics.md.
+      podMonitorNamespaceSelector: {}
+      serviceMonitorNamespaceSelector: {}
+      probeNamespaceSelector: {}
+      scrapeConfigNamespaceSelector: {}

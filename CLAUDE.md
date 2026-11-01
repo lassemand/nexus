@@ -15,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `chronicle` | Ingestion binaries: `chronicle` (SEC EDGAR → `earnings.calendar`), `market` (Polygon EOD bars → `market.bars`), `earnings` (Polygon quarterly earnings → `earnings.calendar`), `nordic-reports` (MFN JSON news feed `mfn.se/all/a/<slug>.json` → `special.events`: publishes every report and correction as a `SpecialEvent`, keyed `ticker:exchange_mic`, and every financial-calendar release as a `report_calendar_release` event; Finnish companies' managers' transaction releases are parsed and published to `insider.transactions` (`FIN_MAR`), see `docs/guides/nordic-companies.md`; incremental from a per-company cursor in `mfn_ingest_state`, `--backfill` pages the full history; daily 22:00 Europe/Stockholm CronJob, after a calendar announcement it also refreshes that company's calendar), `nordic-live` (Deployment: logs and posts results releases to Slack live from MFN's unofficial WebSocket; the poll stays the writer of reports and the fallback), and `nordic-calendar` (MFN company page "Kalender" → one `report_calendar` snapshot per company on `special.events`, only when changed; daily 06:30 Europe/Stockholm CronJob). Reports are stored only by signal, in `special_events`; see `docs/guides/nordic-companies.md`. Shared Nordic code lives in the `chronicle_lib` library target. |
 | `signal` | Consumes Kafka topics, derives trading signals, and persists results to Postgres. |
 | `insight` | MCP server exposing derived results from `signal` to LLM clients. |
+| `telemetry` | Shared metrics setup: `serve(service, port)` exposes `/metrics` for long-running services, `batch(job)` pushes a CronJob's metrics to the Pushgateway at the end of the run. Conventions in `docs/guides/metrics.md`. |
 | `conductor` | Webhook router on the cluster: receives Linear/GitHub webhooks via in-pod Hookdeck sidecars and runs one Claude Code session per task set, each in its own worktree. |
 
 Calendar sources: chronicle only emits source data (`report_calendar` for the MFN page, `report_calendar_release` for each calendar release); signal keeps each source's scheduled rows in `special_events` and resolves which wins, newest source (`calendar_fetched_at`) first (`docs/guides/nordic-companies.md`).
@@ -92,6 +93,7 @@ infra/
       external-secrets/      # External Secrets Operator + ClusterSecretStore (Vault backend)
       prometheus/            # kube-prometheus-stack umbrella (operator, Prometheus, Alertmanager, node-exporter, kube-state-metrics, nexus alert rules; Grafana disabled)
       loki/                  # Grafana Loki (SingleBinary) umbrella on Backblaze B2, 30-day retention; see docs/guides/loki.md
+      pushgateway/           # Prometheus Pushgateway umbrella (CronJob metrics, ServiceMonitor, persistent); see docs/guides/metrics.md
       alloy/                 # Grafana Alloy DaemonSet shipping all pod logs to Loki; see docs/guides/loki.md
       servicelb/             # label-only Node manifest that turns off k3s ServiceLB (MetalLB serves LoadBalancers)
     signal/
@@ -121,6 +123,7 @@ Node metrics (`node_*` from node-exporter) describe the OrbStack Linux VM that h
 | Prometheus | `prometheus-kube-prometheus-prometheus.nexus.svc.cluster.local:9090` | `localhost:32090` |
 | Alertmanager (ClusterIP, not exposed) | `prometheus-kube-prometheus-alertmanager.nexus.svc.cluster.local:9093` | — |
 | Loki (ClusterIP, not exposed; Grafana datasource `Loki`) | `loki.nexus.svc.cluster.local:3100` | — |
+| Pushgateway (ClusterIP, not exposed; CronJobs POST to `/metrics/job/<job>`) | `pushgateway.nexus.svc.cluster.local:9091` | — |
 | Grafana | — | `localhost:32300` |
 | ArgoCD | — | `localhost:30443` |
 

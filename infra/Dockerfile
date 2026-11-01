@@ -24,6 +24,7 @@ COPY signal/Cargo.toml   signal/Cargo.toml
 COPY insight/Cargo.toml  insight/Cargo.toml
 COPY cli/Cargo.toml      cli/Cargo.toml
 COPY conductor/Cargo.toml conductor/Cargo.toml
+COPY telemetry/Cargo.toml telemetry/Cargo.toml
 
 # Create placeholder sources so Cargo can parse the workspace.
 #
@@ -37,8 +38,8 @@ COPY conductor/Cargo.toml conductor/Cargo.toml
 # have broken the next nexus release the same way.
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src \
-      conductor/src conductor/tests/fixtures/fake-claude-tty \
-    && touch model/src/lib.rs alpha/src/lib.rs chronicle/src/lib.rs conductor/src/lib.rs \
+      conductor/src conductor/tests/fixtures/fake-claude-tty telemetry/src \
+    && touch model/src/lib.rs alpha/src/lib.rs chronicle/src/lib.rs conductor/src/lib.rs telemetry/src/lib.rs \
     && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
         chronicle/src/market.rs \
@@ -73,6 +74,7 @@ RUN sed -i "s/version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml \
         insight/src/*.rs \
         cli/src/*.rs \
         conductor/src/*.rs \
+        telemetry/src/*.rs \
     && cargo build --frozen --release
 
 # sqlx-cli for initContainer-driven migrations (kept off the runtime image's

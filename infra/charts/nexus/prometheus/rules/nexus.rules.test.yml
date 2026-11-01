@@ -658,3 +658,62 @@ tests:
         alertname: NordicSlackPostsFailing
         exp_alerts: []
 
+
+  # ── NexusScrapeTargetDown: up == 0 for 5m in the app namespaces ──────────
+  - name: NexusScrapeTargetDown fires after 5m down
+    input_series:
+      - series: 'up{job="signal", namespace="signal", pod="signal-0"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: NexusScrapeTargetDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: NexusScrapeTargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: signal
+              namespace: signal
+              pod: signal-0
+            exp_annotations:
+              summary: "Scrape target signal is down"
+              description: "Prometheus cannot scrape signal (signal/signal-0) for 5 minutes, so its metrics and alerts are blind. Check the pod and its /metrics port."
+
+  - name: NexusScrapeTargetDown is silent when up or in other namespaces
+    input_series:
+      - series: 'up{job="signal", namespace="signal", pod="signal-0"}'
+        values: '1+0x20'
+      - series: 'up{job="kubelet", namespace="kube-system", pod="x"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NexusScrapeTargetDown
+        exp_alerts: []
+
+  # ── NexusJobLastRunFailed: pushed nexus_job_last_run_success == 0 ────────
+  - name: NexusJobLastRunFailed fires for a failed job only
+    input_series:
+      - series: 'nexus_job_last_run_success{job="market"}'
+        values: '0+0x10'
+      - series: 'nexus_job_last_run_success{job="earnings"}'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: NexusJobLastRunFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: market
+            exp_annotations:
+              summary: "Job market failed on its last run"
+              description: "The last run of job market failed. See its pod logs (kubectl logs -n chronicle -l job-name=<name>) and the Loki logs."
+
+  - name: NexusJobLastRunFailed resolves after a successful run
+    input_series:
+      - series: 'nexus_job_last_run_success{job="market"}'
+        values: '0+0x3 1+0x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: NexusJobLastRunFailed
+        exp_alerts: []

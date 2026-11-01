@@ -1,0 +1,16 @@
+# Scrapes saxo-stream's /metrics on the `health` port. jobLabel makes the
+# `job` label the pod's `app` label value (`saxo-stream`).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: saxo-stream
+  labels:
+    app: saxo-stream
+spec:
+  jobLabel: app
+  selector:
+    matchLabels:
+      app: saxo-stream
+  podMetricsEndpoints:
+    - port: health
+      path: /metrics

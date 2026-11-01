@@ -260,3 +260,33 @@ groups:
             Loki is discarding log lines because of its limits ({{ $labels.reason }}).
             Find the noisy stream in Grafana Explore (Loki) and either quieten
             it or raise the limit in infra/charts/nexus/loki/values.yaml.
+
+  - name: nexus.telemetry
+    rules:
+      # Generic alerts that cover every service scraped through a PodMonitor or
+      # ServiceMonitor (see docs/guides/metrics.md), including future ones.
+      - alert: NexusScrapeTargetDown
+        expr: up{namespace=~"signal|chronicle|insight|conductor|nexus"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scrape target {{ $labels.job }} is down"
+          description: >-
+            Prometheus cannot scrape {{ $labels.job }}
+            ({{ $labels.namespace }}/{{ $labels.pod }}) for 5 minutes, so its
+            metrics and alerts are blind. Check the pod and its /metrics port.
+
+      # Pushed by telemetry::batch (CronJobs) to the Pushgateway; the series
+      # keeps its last value until the next run, so this fires until a run
+      # succeeds. Per-job staleness thresholds live with each job's alerts.
+      - alert: NexusJobLastRunFailed
+        expr: nexus_job_last_run_success == 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Job {{ $labels.job }} failed on its last run"
+          description: >-
+            The last run of job {{ $labels.job }} failed. See its pod logs
+            (kubectl logs -n chronicle -l job-name=<name>) and the Loki logs.
