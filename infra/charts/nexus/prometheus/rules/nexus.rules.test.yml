@@ -639,6 +639,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
+              result: failed
             exp_annotations:
               summary: "nordic-live failed to post to Slack"
               description: "nordic-live failed to post 1 results release(s) to Slack in the last 30 minutes. See `slack post failed` in the nordic-live logs for the Slack error code."
