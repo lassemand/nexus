@@ -59,6 +59,8 @@ pub struct Registered {
     pub ticker: String,
     pub exchange_mic: String,
     pub mfn_slug: String,
+    /// Display name from the registry (`companies.name`).
+    pub name: Option<String>,
 }
 
 /// Lookup of registered companies by MFN slug.
@@ -163,8 +165,14 @@ pub struct LiveItem {
     pub source: Option<String>,
     /// `interim`, `annual`, or `None` for anything that is not a results release.
     pub report_kind: Option<&'static str>,
+    /// `2026-Q3` or `2026`, from the classifier.
+    pub fiscal_period: Option<String>,
     pub is_correction: bool,
     pub calendar_update: bool,
+    /// The registry's name for the company.
+    pub company_name: Option<String>,
+    /// MFN's `author.name`.
+    pub author_name: Option<String>,
     pub title: String,
     pub url: Option<String>,
     pub attachment_urls: Vec<String>,
@@ -186,8 +194,34 @@ impl LiveItem {
         }
     }
 
+    /// True for results releases that go to Slack: not corrections, not company news.
+    pub fn is_slack_candidate(&self) -> bool {
+        self.report_kind.is_some() && !self.is_correction
+    }
+
+    /// The name shown in Slack: the registry name without a trailing
+    /// ` (TICKER)` (the message adds the ticker itself), else MFN's author name,
+    /// else the ticker.
+    pub fn display_name(&self) -> String {
+        let suffix = format!(" ({})", self.ticker);
+        [self.company_name.as_deref(), self.author_name.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(|n| n.trim())
+            .map(|n| n.strip_suffix(suffix.as_str()).unwrap_or(n).trim())
+            .find(|n| !n.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.ticker.clone())
+    }
+
     /// Logs the item once, as one structured event.
     pub fn log(&self) {
+        self.log_with(None);
+    }
+
+    /// Like [`LiveItem::log`], with the `slack` field (`disabled` or `queued`)
+    /// when Slack posting applies to this item.
+    pub fn log_with(&self, slack: Option<&str>) {
         let tags = serde_json::to_string(&self.tags).unwrap_or_default();
         let attachments = serde_json::to_string(&self.attachment_urls).unwrap_or_default();
         info!(
@@ -208,6 +242,7 @@ impl LiveItem {
             title = %self.title,
             url = self.url.as_deref().unwrap_or(""),
             attachment_urls = %attachments,
+            slack = slack.unwrap_or(""),
             "nordic-live item"
         );
     }
@@ -267,8 +302,11 @@ pub fn process_message(
             tags: item.tags,
             source: item.source,
             report_kind: c.report_kind.map(|k| k.as_str()),
+            fiscal_period: c.fiscal_period,
             is_correction: c.is_correction,
             calendar_update: c.calendar_update,
+            company_name: company.name.clone(),
+            author_name: item.author_name,
             title: item.title,
             url: item.url,
             attachment_urls: item.attachment_urls,
@@ -329,9 +367,28 @@ pub async fn dispose(item: LiveItem, check: Option<&dyn IngestedCheck>) -> Dispo
     Disposition::New(Box::new(item))
 }
 
+/// Whether results releases are handed to the Slack worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlackMode {
+    /// No token or channel: log only.
+    Disabled,
+    /// Report items are queued for Slack.
+    Enabled,
+}
+
 /// Logs a disposition: the item itself, or `already ingested by poll`.
 pub fn report(d: &Disposition) {
+    report_with(d, SlackMode::Disabled)
+}
+
+/// [`report`] with the Slack mode: results releases get `slack = "disabled"` or
+/// `"queued"`; the worker logs the outcome in its own `slack_post` event.
+pub fn report_with(d: &Disposition, mode: SlackMode) {
     match d {
+        Disposition::New(item) if item.is_slack_candidate() => item.log_with(Some(match mode {
+            SlackMode::Disabled => "disabled",
+            SlackMode::Enabled => "queued",
+        })),
         Disposition::New(item) => item.log(),
         Disposition::AlreadyIngested(id) => info!(news_id = %id, "already ingested by poll"),
     }
@@ -363,6 +420,26 @@ pub async fn handle_message(
     seen: &mut SeenSet,
     check: Option<&dyn IngestedCheck>,
 ) -> (Counters, Vec<Disposition>) {
+    handle_message_with(
+        msg,
+        received_at,
+        companies,
+        seen,
+        check,
+        SlackMode::Disabled,
+    )
+    .await
+}
+
+/// [`handle_message`] that also tells the log lines whether Slack is on.
+pub async fn handle_message_with(
+    msg: &str,
+    received_at: DateTime<Utc>,
+    companies: &Companies,
+    seen: &mut SeenSet,
+    check: Option<&dyn IngestedCheck>,
+    mode: SlackMode,
+) -> (Counters, Vec<Disposition>) {
     let processed = process_message(msg, received_at, companies, seen);
     if let Some(why) = &processed.malformed {
         let head: String = msg.chars().take(300).collect();
@@ -379,7 +456,7 @@ pub async fn handle_message(
     let mut out = Vec::new();
     for item in processed.relevant {
         let d = dispose(item, check).await;
-        report(&d);
+        report_with(&d, mode);
         out.push(d);
     }
     (counters, out)
@@ -592,6 +669,7 @@ mod tests {
             ticker: "GOMX".into(),
             exchange_mic: "FNSE".into(),
             mfn_slug: "gomspace-group".into(),
+            name: None,
         }])
     }
 
@@ -606,12 +684,14 @@ mod tests {
                 ticker: "METSO".into(),
                 exchange_mic: "XHEL".into(),
                 mfn_slug: "metso-2".into(),
+                name: None,
             },
             Registered {
                 ticker: "WRONG".into(),
                 exchange_mic: "XHEL".into(),
                 // A misconfigured row on the old Metso / Neles slug.
                 mfn_slug: "metso".into(),
+                name: None,
             },
         ]);
         let item = |slug: &str, slugs: &[&str], tickers: &[&str]| NewsItem {
@@ -622,6 +702,7 @@ mod tests {
             title: "t".into(),
             published_at: Utc::now(),
             author_slug: slug.into(),
+            author_name: None,
             author_slugs: slugs.iter().map(|s| s.to_string()).collect(),
             author_tickers: tickers.iter().map(|s| s.to_string()).collect(),
             author_isins: vec![],
@@ -650,6 +731,7 @@ mod tests {
             ticker: "ABC".into(),
             exchange_mic: "FNFI".into(),
             mfn_slug: "abc".into(),
+            name: None,
         }]);
         assert!(fnfi.find(&item("abc", &["abc"], &["FNFI:ABC"])).is_some());
         assert!(fnfi.find(&item("abc", &["abc"], &["XHEL:ABC"])).is_none());
@@ -707,6 +789,7 @@ mod tests {
             ticker: "VOLV B".into(),
             exchange_mic: "XSTO".into(),
             mfn_slug: "volvo-group".into(),
+            name: None,
         }]);
         // `author.slug` is "volvo"; the registered slug is only among `author.slugs`.
         let mut doc: serde_json::Value = serde_json::from_str(VOLVO).unwrap();

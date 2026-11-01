@@ -590,6 +590,7 @@ mod mapping_tests {
             title: "t".into(),
             published_at: Utc::now(),
             author_slug: slug.into(),
+            author_name: None,
             author_slugs: v(slugs),
             author_tickers: v(entity.0),
             author_isins: v(entity.1),
