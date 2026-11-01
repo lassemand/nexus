@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use slack_morphism::errors::SlackClientError;
@@ -462,6 +463,158 @@ impl SlackClient {
             }
         }
         Err(last)
+    }
+}
+
+/// What the worker needs of Slack. [`SlackClient`] implements it; tests use a fake.
+#[async_trait]
+pub trait SlackApi: Send + Sync {
+    /// Posts a new message.
+    async fn post(&self, msg: &SlackMessage) -> Result<PostedRef, SlackError>;
+    /// Replaces a posted message.
+    async fn update(&self, at: &PostedRef, msg: &SlackMessage) -> Result<PostedRef, SlackError>;
+}
+
+#[async_trait]
+impl SlackApi for SlackClient {
+    async fn post(&self, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
+        SlackClient::post(self, msg).await
+    }
+
+    async fn update(&self, at: &PostedRef, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
+        SlackClient::update(self, at, msg).await
+    }
+}
+
+/// What happened to a job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Posted,
+    Updated,
+    SkippedAlreadyPosted,
+    /// Another poster holds a fresh claim; nothing to do.
+    InFlight,
+    Failed,
+}
+
+impl Outcome {
+    /// Value of the `slack` log field.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Posted => "posted",
+            Outcome::Updated => "updated",
+            Outcome::SkippedAlreadyPosted => "skipped_already_posted",
+            Outcome::InFlight => "in_flight",
+            Outcome::Failed => "failed",
+        }
+    }
+}
+
+/// The exchange's IANA zone for a MIC (UTC for an unknown one).
+pub fn notice_time_zone(mic: &str) -> Tz {
+    model::exchange::timezone(mic)
+        .and_then(|n| n.parse::<Tz>().ok())
+        .unwrap_or(chrono_tz::UTC)
+}
+
+/// The name shown in Slack: the registry name without a trailing ` (TICKER)`
+/// (the message adds the ticker itself), else MFN's author name, else the ticker.
+pub fn display_name(registry: Option<&str>, author: Option<&str>, ticker: &str) -> String {
+    let suffix = format!(" ({ticker})");
+    [registry, author]
+        .into_iter()
+        .flatten()
+        .map(|n| n.trim())
+        .map(|n| n.strip_suffix(suffix.as_str()).unwrap_or(n).trim())
+        .find(|n| !n.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| ticker.to_string())
+}
+
+/// Claims, posts and records one report, or upgrades a posted non-English twin
+/// to English. Shared by `nordic-live` and the `nordic-reports` fallback.
+pub async fn deliver_notice(
+    pool: &PgPool,
+    api: &dyn SlackApi,
+    notice: &ReportNotice,
+    poster: Poster,
+) -> Outcome {
+    let key = notice.report_key();
+    let message = format_report_message(notice);
+    match claim(pool, notice, poster).await {
+        Err(e) => {
+            error!(report_key = %key, error = %e, "slack claim failed");
+            Outcome::Failed
+        }
+        Ok(Claim::InFlight) => Outcome::InFlight,
+        Ok(Claim::Acquired) => match api.post(&message).await {
+            Ok(posted) => {
+                if let Err(e) = mark_posted(
+                    pool,
+                    &key,
+                    &posted.channel,
+                    &posted.ts,
+                    notice.news_id,
+                    notice.lang.as_deref(),
+                )
+                .await
+                {
+                    error!(report_key = %key, error = %e, "recording the slack post failed");
+                }
+                Outcome::Posted
+            }
+            Err(e) => {
+                error!(report_key = %key, error = %e, "slack post failed");
+                if let Err(db) = mark_failed(pool, &key, &e.to_string()).await {
+                    error!(report_key = %key, error = %db, "recording the slack failure failed");
+                }
+                Outcome::Failed
+            }
+        },
+        Ok(Claim::AlreadyPosted) => {
+            let stored = match posted_ref(pool, &key).await {
+                Ok(s) => s,
+                Err(e) => {
+                    error!(report_key = %key, error = %e, "reading the posted slack message failed");
+                    return Outcome::Failed;
+                }
+            };
+            let Some(stored) = stored else {
+                return Outcome::SkippedAlreadyPosted;
+            };
+            if !prefer_replacement(stored.lang.as_deref(), notice.lang.as_deref()) {
+                return Outcome::SkippedAlreadyPosted;
+            }
+            let at = PostedRef {
+                channel: stored.channel,
+                ts: stored.ts,
+            };
+            let upgraded = format_report_message(&ReportNotice {
+                late: false,
+                ..notice.clone()
+            });
+            match api.update(&at, &upgraded).await {
+                Ok(_) => {
+                    if let Err(e) = mark_posted(
+                        pool,
+                        &key,
+                        &at.channel,
+                        &at.ts,
+                        notice.news_id,
+                        notice.lang.as_deref(),
+                    )
+                    .await
+                    {
+                        error!(report_key = %key, error = %e, "recording the slack update failed");
+                    }
+                    Outcome::Updated
+                }
+                Err(e) => {
+                    error!(report_key = %key, error = %e, "slack update failed");
+                    Outcome::Failed
+                }
+            }
+        }
     }
 }
 

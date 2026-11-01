@@ -14,6 +14,7 @@ use super::db::{self, Company};
 use super::events::{calendar_release_event, publish, release_event, EventSink};
 use super::feed::{fetch_feed_page, first_page_url, NewsItem};
 use super::insiders::{self, insider_key, InsiderSink, InsiderStats};
+use super::poll_slack::{PollSlack, SlackStats};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
 use tracing::{error, info, warn};
@@ -41,6 +42,8 @@ pub struct CompanyOutcome {
     pub insiders_published: usize,
     /// What the managers' transaction releases came to.
     pub insiders: InsiderStats,
+    /// What the Slack fallback did for this company.
+    pub slack: SlackStats,
 }
 
 /// Summary of a [`process_companies`] run.
@@ -60,6 +63,8 @@ pub struct RunSummary {
     pub mar_parse_errors: usize,
     /// Releases rejected for a zero price on a BUY or SELL.
     pub mar_suspicious_zero_price: usize,
+    /// What the Slack fallback did over the run.
+    pub slack: SlackStats,
 }
 
 impl RunSummary {
@@ -83,6 +88,33 @@ pub async fn ingest_company(
     slug: &str,
     backfill: bool,
 ) -> anyhow::Result<CompanyOutcome> {
+    ingest_company_with(
+        pool,
+        feed,
+        sink,
+        insider_sink,
+        company,
+        slug,
+        backfill,
+        None,
+    )
+    .await
+}
+
+/// [`ingest_company`] that also posts new results releases to Slack (late) when
+/// `slack` is given. Never posts on `backfill`.
+#[allow(clippy::too_many_arguments)]
+pub async fn ingest_company_with(
+    pool: &PgPool,
+    feed: &mut MfnClient,
+    sink: &dyn EventSink,
+    insider_sink: &dyn InsiderSink,
+    company: &Company,
+    slug: &str,
+    backfill: bool,
+    slack: Option<&PollSlack>,
+) -> anyhow::Result<CompanyOutcome> {
+    let slack = slack.filter(|_| !backfill);
     let start = db::load_state(pool, &company.ticker, &company.exchange_mic)
         .await?
         .feed_cursor;
@@ -146,6 +178,10 @@ pub async fn ingest_company(
                 publish(sink, company, &event).await?;
                 outcome.published += 1;
                 newest_published = newest_published.max(Some(item.published_at));
+                // Only after the publish succeeded: a failed one is retried next run.
+                if let Some(slack) = slack {
+                    slack.handle(company, item, &c, &mut outcome.slack).await;
+                }
             }
         }
 
@@ -427,6 +463,32 @@ pub async fn process_companies(
     companies: &[Company],
     backfill: bool,
 ) -> RunSummary {
+    process_companies_with(
+        pool,
+        feed,
+        calendar_client,
+        sink,
+        insider_sink,
+        companies,
+        backfill,
+        None,
+    )
+    .await
+}
+
+/// [`process_companies`] with the Slack fallback. Slack problems are counted in
+/// the summary and never make the run fail.
+#[allow(clippy::too_many_arguments)]
+pub async fn process_companies_with(
+    pool: &PgPool,
+    feed: &mut MfnClient,
+    calendar_client: &mut MfnClient,
+    sink: &dyn EventSink,
+    insider_sink: &dyn InsiderSink,
+    companies: &[Company],
+    backfill: bool,
+    slack: Option<&PollSlack>,
+) -> RunSummary {
     let mut summary = RunSummary::default();
     let mut to_refresh: Vec<&Company> = Vec::new();
     for c in companies {
@@ -435,7 +497,7 @@ pub async fn process_companies(
             continue;
         };
         summary.attempted += 1;
-        match ingest_company(pool, feed, sink, insider_sink, c, slug, backfill).await {
+        match ingest_company_with(pool, feed, sink, insider_sink, c, slug, backfill, slack).await {
             Ok(o) => {
                 info!(ticker = %c.ticker, published = o.published, pages = o.pages,
                       cursor = ?o.cursor, insiders_published = o.insiders_published,
@@ -443,6 +505,7 @@ pub async fn process_companies(
                 summary.insiders_published += o.insiders_published;
                 summary.mar_parse_errors += o.insiders.parse_errors;
                 summary.mar_suspicious_zero_price += o.insiders.suspicious_zero_price;
+                summary.slack.add(&o.slack);
                 if o.calendar_announced {
                     summary.calendar_updated.push(c.ticker.clone());
                     to_refresh.push(c);

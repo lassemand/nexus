@@ -203,15 +203,11 @@ impl LiveItem {
     /// ` (TICKER)` (the message adds the ticker itself), else MFN's author name,
     /// else the ticker.
     pub fn display_name(&self) -> String {
-        let suffix = format!(" ({})", self.ticker);
-        [self.company_name.as_deref(), self.author_name.as_deref()]
-            .into_iter()
-            .flatten()
-            .map(|n| n.trim())
-            .map(|n| n.strip_suffix(suffix.as_str()).unwrap_or(n).trim())
-            .find(|n| !n.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| self.ticker.clone())
+        super::slack::display_name(
+            self.company_name.as_deref(),
+            self.author_name.as_deref(),
+            &self.ticker,
+        )
     }
 
     /// Logs the item once, as one structured event.

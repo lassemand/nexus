@@ -439,8 +439,9 @@ Not posted: company news, corrections, calendar notices, insider releases, and i
 
 1. Create the channel and `/invite` the Argo CD notifications Slack app (the bot token is that app's: Vault
    `nexus/argocd-notifications`, property `SLACK_TOKEN`, scope `chat:write`; posts show under the app's name).
-2. Copy the channel **ID** (channel details, bottom), not the name, into `nordicLive.slackChannel` in
-   `infra/charts/chronicle/chronicle/values.yaml`. Empty keeps Slack off (`Slack disabled` is logged once at startup).
+2. Copy the channel **ID** (channel details, bottom), not the name, into `nordicSlack.channel` in
+   `infra/charts/chronicle/chronicle/values.yaml` (also used by the `nordic-reports` fallback below). Empty keeps Slack
+   off (`Slack disabled` is logged once at startup).
 
 **How it behaves**
 
@@ -460,3 +461,14 @@ Not posted: company news, corrections, calendar notices, insider releases, and i
   The alert `NordicSlackPostsFailing` fires on any failed post in 30 minutes; look for `slack post failed` in the logs for
   Slack's error code (`invalid_auth`, `missing_scope`, `channel_not_found` or `not_in_channel` mean the token, the scope or
   the channel invite).
+
+**Fallback in the daily poll.** The WebSocket has no replay, so a release published while `nordic-live` is down is never
+posted by it. The `nordic-reports` poll (22:00) therefore posts each results release it publishes that has no `posted`
+row in `slack_report_posts`, with the extra line `⏱ posted late by the daily poll (live listener missed it)` (no
+session label: the poll has no access to signal's database). Only releases published within the last **48 hours** are
+posted; older ones (a long outage, a new company's first sync, a cursor reset) are skipped and counted in the run
+summary (`slack_skipped_old`). `--backfill` never posts. It uses the same claim, so a release already posted by
+`nordic-live` is not posted again, and an English twin still replaces a non-English post. Slack problems never fail the
+run (the CronJob exits 0 and `ChronicleJobFailed` stays quiet); they are counted in `nordic-reports done`
+(`slack_posted`, `slack_updated`, `slack_failed`, `slack_skipped_old`) and logged at `error` (`slack post failed` with
+the Slack error code). The backfill CronJob gets no Slack settings.

@@ -9,20 +9,23 @@
 ///
 /// Incremental from the feed cursor by default; `--backfill` pages to the end
 /// of each feed. Companies that announced a calendar change get their MFN
-/// calendar refreshed at the end of the run. Exits non-zero if any company
-/// failed.
+/// calendar refreshed at the end of the run. Results releases that
+/// `nordic-live` did not post to Slack are posted late (NEX-223; never on
+/// `--backfill`). Exits non-zero if any company failed, never because of Slack.
 use chronicle_lib::nordic::calendar::{MfnClient, MFN_BASE_URL};
 use chronicle_lib::nordic::db;
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
-use chronicle_lib::nordic::ingest::{process_companies, process_insiders_only};
+use chronicle_lib::nordic::ingest::{process_companies_with, process_insiders_only};
 use chronicle_lib::nordic::insiders::{mar_start, KafkaInsiderSink, INSIDER_TRANSACTIONS_TOPIC};
+use chronicle_lib::nordic::poll_slack::PollSlack;
+use chronicle_lib::nordic::slack::{SlackClient, DEFAULT_API_URL};
 use chronicle_lib::nordic::NORDIC_MICS;
 use chronicle_lib::registry;
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
 use std::process::ExitCode;
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Parser)]
 #[command(about = "Publish Nordic report releases from MFN's news feed as special events")]
@@ -69,6 +72,42 @@ struct Args {
     /// Only this MIC (with `--insiders-only`), e.g. `XHEL`.
     #[arg(long, env = "NORDIC_MIC")]
     mic: Option<String>,
+
+    /// Slack bot token (`chat:write`). Without it, or without `SLACK_CHANNEL`,
+    /// nothing is posted to Slack.
+    #[arg(long, env = "SLACK_BOT_TOKEN", hide_env_values = true)]
+    slack_bot_token: Option<String>,
+
+    /// Slack channel ID, the same as `nordic-live`'s.
+    #[arg(long, env = "SLACK_CHANNEL")]
+    slack_channel: Option<String>,
+
+    /// Slack Web API base URL.
+    #[arg(long, env = "SLACK_API_URL", default_value = DEFAULT_API_URL)]
+    slack_api_url: String,
+}
+
+/// The Slack fallback, or `None` when it is off: `--backfill` never posts, and
+/// a missing token or channel (or a client that cannot start) disables it.
+fn slack_fallback(args: &Args, pool: &sqlx::PgPool) -> Option<PollSlack> {
+    if args.backfill {
+        return None;
+    }
+    let (Some(token), Some(channel)) = (&args.slack_bot_token, &args.slack_channel) else {
+        warn!("Slack disabled: SLACK_BOT_TOKEN or SLACK_CHANNEL is not set");
+        return None;
+    };
+    if token.is_empty() || channel.is_empty() {
+        warn!("Slack disabled: SLACK_BOT_TOKEN or SLACK_CHANNEL is empty");
+        return None;
+    }
+    match SlackClient::with_api_url(token, channel, &args.slack_api_url) {
+        Ok(client) => Some(PollSlack::new(pool.clone(), Box::new(client))),
+        Err(e) => {
+            warn!(error = %e, "Slack disabled: the client could not start");
+            None
+        }
+    }
 }
 
 #[tokio::main]
@@ -123,9 +162,10 @@ async fn run(args: Args) -> anyhow::Result<bool> {
         );
         return Ok(summary.is_success());
     }
-    let mut calendar = MfnClient::new(args.mfn_base_url, Duration::from_secs(2))?;
+    let mut calendar = MfnClient::new(args.mfn_base_url.clone(), Duration::from_secs(2))?;
+    let slack = slack_fallback(&args, &pool);
 
-    let summary = process_companies(
+    let summary = process_companies_with(
         &pool,
         &mut feed,
         &mut calendar,
@@ -133,8 +173,21 @@ async fn run(args: Args) -> anyhow::Result<bool> {
         &insider_sink,
         &companies,
         args.backfill,
+        slack.as_ref(),
     )
     .await;
+    if summary.slack.skipped_old > 0 {
+        info!(
+            skipped_old = summary.slack.skipped_old,
+            "results releases older than 48 hours were not posted to Slack"
+        );
+    }
+    if summary.slack.failed > 0 {
+        error!(
+            slack_failed = summary.slack.failed,
+            "some Slack posts failed; the run itself is unaffected"
+        );
+    }
     info!(
         attempted = summary.attempted,
         failed = summary.failed,
@@ -142,6 +195,10 @@ async fn run(args: Args) -> anyhow::Result<bool> {
         mar_parse_errors = summary.mar_parse_errors,
         mar_suspicious_zero_price = summary.mar_suspicious_zero_price,
         calendars_refreshed = ?summary.calendars_refreshed,
+        slack_posted = summary.slack.posted,
+        slack_updated = summary.slack.updated,
+        slack_failed = summary.slack.failed,
+        slack_skipped_old = summary.slack.skipped_old,
         "nordic-reports done"
     );
     Ok(summary.is_success())

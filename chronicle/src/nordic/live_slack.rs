@@ -4,11 +4,8 @@
 
 use super::classify::{strip_issuer_prefix, ReportKind};
 use super::live::LiveItem;
-use super::slack::{
-    claim, format_report_message, mark_failed, mark_posted, posted_ref, prefer_replacement, Claim,
-    PostedRef, Poster, ReportNotice, SlackClient, SlackError, SlackMessage,
-};
-use async_trait::async_trait;
+use super::slack::{deliver_notice, notice_time_zone, Poster, ReportNotice};
+pub use super::slack::{Outcome, SlackApi};
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use chrono_tz::Tz;
 use metrics::counter;
@@ -127,56 +124,12 @@ impl Sessions {
     }
 }
 
-/// What the worker needs of Slack. [`SlackClient`] implements it; tests use a fake.
-#[async_trait]
-pub trait SlackApi: Send + Sync {
-    /// Posts a new message.
-    async fn post(&self, msg: &SlackMessage) -> Result<PostedRef, SlackError>;
-    /// Replaces a posted message.
-    async fn update(&self, at: &PostedRef, msg: &SlackMessage) -> Result<PostedRef, SlackError>;
-}
-
-#[async_trait]
-impl SlackApi for SlackClient {
-    async fn post(&self, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
-        SlackClient::post(self, msg).await
-    }
-
-    async fn update(&self, at: &PostedRef, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
-        SlackClient::update(self, at, msg).await
-    }
-}
-
 /// One report to deliver.
 #[derive(Debug, Clone)]
 pub struct SlackJob {
     pub item: LiveItem,
     /// Computed when the item arrived; `None` when unknown.
     pub session: Option<&'static str>,
-}
-
-/// What happened to a job.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
-    Posted,
-    Updated,
-    SkippedAlreadyPosted,
-    /// Another poster holds a fresh claim; nothing to do.
-    InFlight,
-    Failed,
-}
-
-impl Outcome {
-    /// Value of the `slack` log field.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Outcome::Posted => "posted",
-            Outcome::Updated => "updated",
-            Outcome::SkippedAlreadyPosted => "skipped_already_posted",
-            Outcome::InFlight => "in_flight",
-            Outcome::Failed => "failed",
-        }
-    }
 }
 
 /// The notice for a job, or `None` for an item that is not a results release.
@@ -187,9 +140,7 @@ pub fn build_notice(job: &SlackJob) -> Option<ReportNotice> {
         "annual" => ReportKind::Annual,
         _ => return None,
     };
-    let time_zone = model::exchange::timezone(&item.exchange_mic)
-        .and_then(|n| n.parse::<Tz>().ok())
-        .unwrap_or(chrono_tz::UTC);
+    let time_zone = notice_time_zone(&item.exchange_mic);
     Some(ReportNotice {
         company_name: item.display_name(),
         ticker: item.ticker.clone(),
@@ -210,81 +161,9 @@ pub fn build_notice(job: &SlackJob) -> Option<ReportNotice> {
 
 /// Claims, posts and records one report (or upgrades a posted twin to English).
 pub async fn deliver(pool: &PgPool, api: &dyn SlackApi, job: &SlackJob) -> Outcome {
-    let Some(notice) = build_notice(job) else {
-        return Outcome::SkippedAlreadyPosted;
-    };
-    let key = notice.report_key();
-    let message = format_report_message(&notice);
-    match claim(pool, &notice, Poster::Live).await {
-        Err(e) => {
-            error!(report_key = %key, error = %e, "slack claim failed");
-            Outcome::Failed
-        }
-        Ok(Claim::InFlight) => Outcome::InFlight,
-        Ok(Claim::Acquired) => match api.post(&message).await {
-            Ok(posted) => {
-                if let Err(e) = mark_posted(
-                    pool,
-                    &key,
-                    &posted.channel,
-                    &posted.ts,
-                    notice.news_id,
-                    notice.lang.as_deref(),
-                )
-                .await
-                {
-                    error!(report_key = %key, error = %e, "recording the slack post failed");
-                }
-                Outcome::Posted
-            }
-            Err(e) => {
-                error!(report_key = %key, error = %e, "slack post failed");
-                if let Err(db) = mark_failed(pool, &key, &e.to_string()).await {
-                    error!(report_key = %key, error = %db, "recording the slack failure failed");
-                }
-                Outcome::Failed
-            }
-        },
-        Ok(Claim::AlreadyPosted) => {
-            let stored = match posted_ref(pool, &key).await {
-                Ok(s) => s,
-                Err(e) => {
-                    error!(report_key = %key, error = %e, "reading the posted slack message failed");
-                    return Outcome::Failed;
-                }
-            };
-            let Some(stored) = stored else {
-                return Outcome::SkippedAlreadyPosted;
-            };
-            if !prefer_replacement(stored.lang.as_deref(), notice.lang.as_deref()) {
-                return Outcome::SkippedAlreadyPosted;
-            }
-            let at = PostedRef {
-                channel: stored.channel,
-                ts: stored.ts,
-            };
-            match api.update(&at, &message).await {
-                Ok(_) => {
-                    if let Err(e) = mark_posted(
-                        pool,
-                        &key,
-                        &at.channel,
-                        &at.ts,
-                        notice.news_id,
-                        notice.lang.as_deref(),
-                    )
-                    .await
-                    {
-                        error!(report_key = %key, error = %e, "recording the slack update failed");
-                    }
-                    Outcome::Updated
-                }
-                Err(e) => {
-                    error!(report_key = %key, error = %e, "slack update failed");
-                    Outcome::Failed
-                }
-            }
-        }
+    match build_notice(job) {
+        Some(notice) => deliver_notice(pool, api, &notice, Poster::Live).await,
+        None => Outcome::SkippedAlreadyPosted,
     }
 }
 
@@ -362,6 +241,8 @@ pub fn enqueue(tx: &mpsc::Sender<SlackJob>, job: SlackJob) -> bool {
 mod tests {
     use super::*;
     use crate::nordic::live::Disposition;
+    use crate::nordic::slack::{PostedRef, SlackError, SlackMessage};
+    use async_trait::async_trait;
     use chrono::{NaiveTime, TimeZone};
     use std::sync::Mutex;
     use uuid::Uuid;

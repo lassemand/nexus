@@ -33,6 +33,19 @@ spec:
               env:
                 - name: RUST_LOG
                   value: {{ .Values.logLevel | quote }}
+                {{- if .Values.nordicSlack.channel }}
+                # Late Slack fallback (NEX-223): posts results releases nordic-live missed.
+                # The token is nordic-live's (Argo CD notifications bot token); without the
+                # secret, or with an empty channel, Slack stays off.
+                - name: SLACK_CHANNEL
+                  value: {{ .Values.nordicSlack.channel | quote }}
+                - name: SLACK_BOT_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: nordic-live-secret
+                      key: SLACK_BOT_TOKEN
+                      optional: true
+                {{- end }}
               envFrom:
                 - secretRef:
                     name: chronicle-secret

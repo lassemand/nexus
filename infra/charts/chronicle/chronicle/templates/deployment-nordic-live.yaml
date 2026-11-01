@@ -1,5 +1,5 @@
 # Live MFN listener (NEX-170): logs Nordic releases the moment they are published and,
-# when nordicLive.slackChannel is set, posts results releases to Slack (NEX-222). Its
+# when nordicSlack.channel is set, posts results releases to Slack (NEX-222). Its
 # only write is the slack_report_posts claim in chronicle's database; the nordic-reports
 # poll stays the only writer of reports and the fallback for anything missed while the
 # socket is down.
@@ -35,10 +35,10 @@ spec:
           env:
             - name: RUST_LOG
               value: {{ .Values.nordicLive.logLevel | quote }}
-            {{- if .Values.nordicLive.slackChannel }}
+            {{- if .Values.nordicSlack.channel }}
             # Slack channel ID (not the name); empty/unset disables Slack posting.
             - name: SLACK_CHANNEL
-              value: {{ .Values.nordicLive.slackChannel | quote }}
+              value: {{ .Values.nordicSlack.channel | quote }}
             {{- end }}
           envFrom:
             # DATABASE_URL: chronicle's database (the registered companies).

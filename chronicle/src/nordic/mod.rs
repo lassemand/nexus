@@ -21,4 +21,5 @@ pub mod lang;
 pub mod live;
 pub mod live_slack;
 pub mod mar_release;
+pub mod poll_slack;
 pub mod slack;
