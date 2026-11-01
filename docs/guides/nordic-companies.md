@@ -314,7 +314,7 @@ signal's rules (`signal/src/reports.rs`):
 3. A report (not a correction) fills the closest **scheduled** row of the company whose `expected_date` is within ±7 days of the release's Stockholm date (tie: the earlier date), keeping the expected fields.
 4. Otherwise a new `occurred` row.
 5. A report on the same Stockholm date as an earlier report of the company becomes a `report_correction`; the earliest instant is the release the market reacted to.
-6. A calendar snapshot (ignored if older than one already applied) replaces the company's scheduled rows with `expected_date >= today`; an entry matching an occurred report without expected fields (±7 days) fills them instead. Past scheduled rows stay ("expected, not seen"). An empty snapshot clears the future ones.
+6. A page calendar snapshot is diffed against the company's future page rows (see "Calendar sources" below); an entry matching an occurred report without expected fields (±7 days) fills them instead. Past scheduled rows stay ("expected, not seen"). An empty snapshot clears the future ones.
 
 A database error in signal is retried with backoff before the offset is
 committed, so no report event is lost.
@@ -346,6 +346,20 @@ apart, 20 s timeout, `429` honours `Retry-After`.
 - Rows without `grey-background` are upcoming. Report labels (`Kvartalsrapport`, `Delårsrapport`, `Halvårsrapport`, `Bokslutskommuniké`, `Årsredovisning`, `Interim report`, `Quarterly report`, `Half-year report`, `Year-end report`, `Annual report`) become entries with `report_kind`, `fiscal_period` (`2026-Q3` / `2026`), `calendar_label` (original text), `expected_date` and the estimated `expected_time` (empty when MFN shows `-`). Non-report events (AGM, ex-dividend date, …) are ignored; unknown upcoming labels are logged at `warn`.
 - The parsed calendar is published as one `report_calendar` snapshot (possibly empty), **unless** its hash equals `mfn_ingest_state.calendar_hash` (the last snapshot published); `--force` publishes regardless. The hash is stored after Kafka acknowledged the snapshot.
 - **A parse failure publishes nothing** and keeps the stored hash; it is logged at `error` and the job exits non-zero.
+
+## Calendar sources (signal)
+
+chronicle only emits source data; signal decides which source wins. No extra tables: the sources live in `special_events` as scheduled rows.
+
+| Event | Rows | Timestamp (`calendar_fetched_at`) |
+|---|---|---|
+| `report_calendar` (the MFN page) | `source = 'mfn'` | the snapshot's `fetched_at`, **per report** |
+| `report_calendar_release` (one financial-calendar release; `source_id` = MFN news id, `url`, `lang`, `description` = title) | `source = 'mfn_release'`, `url` = the release, `source_id` stays NULL | the release's publish instant |
+
+- A page snapshot is a **diff per report**: a report whose date did not move keeps its row and timestamp, a moved or new report gets the snapshot's `fetched_at`, a future page row missing from the snapshot is deleted. A snapshot older than the newest page row's timestamp is ignored (release rows do not count).
+- A release adds rows of its own. Language twins (same publish instant) count once, English preferred; a later release replaces an earlier release's row for the same report; an older one is dropped. Re-delivery gives the same rows.
+- **Same report** = same `report_kind` and, when both periods are known, the same `fiscal_period`; otherwise the same kind within ±7 days. Same report and same date: the page row wins (it has a time) and the release fills a missing period. **Different dates: the row with the newer `calendar_fetched_at` wins** (a tie goes to the page) and is logged at `warn`.
+- The loser keeps its row and points at the winner with `superseded_by` (on scheduled rows; on occurred rows the same column still means "corrected by"). The links are cleared and recomputed after every page snapshot or release. **Readers use scheduled rows with `superseded_by IS NULL`** (`source IN ('mfn','mfn_release')`). When the released report arrives it fills the winning row and the losing rows are deleted.
 
 ## After deploying NEX-171
 

@@ -8,8 +8,15 @@ package nexus;
 //   "quarterly_report"  Nordic interim report (report_kind = "interim").
 //   "annual_report"     Nordic year-end report (report_kind = "annual").
 //   "report_correction" correction (or same-day re-send) of a report.
-//   "report_calendar"   snapshot of a company's upcoming reports, in `calendar`;
-//                       not stored as a row itself.
+//   "report_calendar"   snapshot of a company's upcoming reports on its MFN
+//                       page, in `calendar`; not stored as a row itself.
+//   "report_calendar_release"
+//                       one financial-calendar release the company published:
+//                       source = "mfn", source_id = MFN news_id, url, lang,
+//                       description = its title; occurred_at = its publish
+//                       instant; `calendar` = its entries, with fetched_at =
+//                       the publish instant. Stored as scheduled rows of
+//                       source "mfn_release"; not a row itself.
 //
 // Producers key Kafka messages by "{ticker}:{exchange_mic}" so one company's
 // events stay in order on one partition.
@@ -29,7 +36,7 @@ message SpecialEvent {
   string fiscal_period  = 12;  // "2026-Q3", "2026" or ""
   bool   is_correction  = 13;
   string company_name   = 14;  // display name from companies.name, "" if unknown
-  ReportCalendar calendar = 15; // only when event_type == "report_calendar"
+  ReportCalendar calendar = 15; // only when event_type is "report_calendar" or "report_calendar_release"
 }
 
 // A company's upcoming reports as listed on its MFN page at fetched_at.

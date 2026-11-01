@@ -14,17 +14,22 @@
 //!   of its Stockholm date, keeping the expected fields;
 //! * a same-day re-send becomes a `report_correction`, and every report links
 //!   to its latest correction within 7 days (`superseded_by`);
-//! * a calendar snapshot replaces the company's future scheduled rows.
+//! * a page snapshot is diffed against the company's future page rows per
+//!   report, a calendar release adds rows of its own (`mfn_release`), and where
+//!   the two give the same report different dates the newer one wins
+//!   ([`crate::calendar_sources`]).
 //!
 //! Delivery is at least once and only ordered per company (the producer keys
 //! by `ticker:exchange_mic`), so every rule is idempotent and gives the same
 //! rows whatever the duplicate count.
 
+use crate::calendar_sources::{resolve_detailed, SchedRow, SOURCE_RELEASE};
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use model::generated::SpecialEvent;
 use sqlx::{PgConnection, PgPool, Row};
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
-use tracing::info;
+use tracing::{info, warn};
 
 /// `source` of events published by chronicle's Nordic jobs.
 pub const SOURCE_MFN: &str = "mfn";
@@ -41,6 +46,7 @@ const QUARTERLY: &str = "quarterly_report";
 const ANNUAL: &str = "annual_report";
 const CORRECTION: &str = "report_correction";
 const CALENDAR: &str = "report_calendar";
+const CALENDAR_RELEASE: &str = "report_calendar_release";
 
 /// Why a message was rejected. Logged and skipped (offset committed): a
 /// redelivery would be rejected the same way.
@@ -60,6 +66,8 @@ pub enum Invalid {
     Timestamp(i64),
     #[error("report_calendar without a calendar")]
     NoCalendar,
+    #[error("report_calendar_release source_id {0:?} is not a UUID")]
+    SourceIdNotUuid(String),
     #[error("calendar entry with invalid {0}")]
     CalendarEntry(&'static str),
 }
@@ -109,11 +117,63 @@ pub struct Calendar<'a> {
     pub entries: Vec<Scheduled>,
 }
 
+/// One company calendar release (`report_calendar_release`), validated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarRelease<'a> {
+    pub ticker: &'a str,
+    pub exchange_mic: &'a str,
+    pub company_name: Option<&'a str>,
+    pub news_id: &'a str,
+    pub published_at: DateTime<Utc>,
+    pub lang: Option<&'a str>,
+    pub url: Option<&'a str>,
+    pub title: Option<&'a str>,
+    pub entries: Vec<Scheduled>,
+}
+
 /// A decoded `source = "mfn"` message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message<'a> {
     Release(Release<'a>),
     Calendar(Calendar<'a>),
+    CalendarRelease(CalendarRelease<'a>),
+}
+
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
+fn scheduled_entries(cal: &model::generated::ReportCalendar) -> Result<Vec<Scheduled>, Invalid> {
+    cal.entries
+        .iter()
+        .map(|s| {
+            let expected_date = NaiveDate::parse_from_str(&s.expected_date, "%Y-%m-%d")
+                .map_err(|_| Invalid::CalendarEntry("expected_date"))?;
+            let expected_time = match s.expected_time.as_str() {
+                "" => None,
+                t => Some(
+                    NaiveTime::parse_from_str(t, "%H:%M")
+                        .map_err(|_| Invalid::CalendarEntry("expected_time"))?,
+                ),
+            };
+            let report_kind = match s.report_kind.as_str() {
+                "interim" => "interim",
+                "annual" => "annual",
+                _ => return Err(Invalid::CalendarEntry("report_kind")),
+            };
+            Ok(Scheduled {
+                expected_date,
+                expected_time,
+                calendar_label: s.calendar_label.clone(),
+                report_kind,
+                fiscal_period: non_empty(&s.fiscal_period).map(str::to_string),
+            })
+        })
+        .collect()
 }
 
 fn non_empty(s: &str) -> Option<&str> {
@@ -139,40 +199,31 @@ pub fn parse(e: &SpecialEvent) -> Result<Message<'_>, Invalid> {
     let exchange_mic = non_empty(&e.exchange_mic).ok_or(Invalid::NoExchange)?;
     let company_name = non_empty(&e.company_name);
 
-    if e.event_type == CALENDAR {
+    if e.event_type == CALENDAR || e.event_type == CALENDAR_RELEASE {
         let cal = e.calendar.as_ref().ok_or(Invalid::NoCalendar)?;
-        let entries = cal
-            .entries
-            .iter()
-            .map(|s| {
-                let expected_date = NaiveDate::parse_from_str(&s.expected_date, "%Y-%m-%d")
-                    .map_err(|_| Invalid::CalendarEntry("expected_date"))?;
-                let expected_time = match s.expected_time.as_str() {
-                    "" => None,
-                    t => Some(
-                        NaiveTime::parse_from_str(t, "%H:%M")
-                            .map_err(|_| Invalid::CalendarEntry("expected_time"))?,
-                    ),
-                };
-                let report_kind = match s.report_kind.as_str() {
-                    "interim" => "interim",
-                    "annual" => "annual",
-                    _ => return Err(Invalid::CalendarEntry("report_kind")),
-                };
-                Ok(Scheduled {
-                    expected_date,
-                    expected_time,
-                    calendar_label: s.calendar_label.clone(),
-                    report_kind,
-                    fiscal_period: non_empty(&s.fiscal_period).map(str::to_string),
-                })
-            })
-            .collect::<Result<_, _>>()?;
-        return Ok(Message::Calendar(Calendar {
+        let entries = scheduled_entries(cal)?;
+        if e.event_type == CALENDAR {
+            return Ok(Message::Calendar(Calendar {
+                ticker,
+                exchange_mic,
+                company_name,
+                fetched_at: timestamp(cal.fetched_at_unix_secs)?,
+                entries,
+            }));
+        }
+        let news_id = non_empty(&e.source_id).ok_or(Invalid::NoSourceId)?;
+        if !is_uuid(news_id) {
+            return Err(Invalid::SourceIdNotUuid(news_id.to_string()));
+        }
+        return Ok(Message::CalendarRelease(CalendarRelease {
             ticker,
             exchange_mic,
             company_name,
-            fetched_at: timestamp(cal.fetched_at_unix_secs)?,
+            news_id,
+            published_at: timestamp(e.occurred_at_unix_secs)?,
+            lang: non_empty(&e.lang),
+            url: non_empty(&e.url),
+            title: non_empty(&e.description),
             entries,
         }));
     }
@@ -295,6 +346,7 @@ async fn record_in(tx: &mut PgConnection, r: &Release<'_>) -> sqlx::Result<Recor
         let candidate = sqlx::query(concat!(
             "SELECT id, expected_date FROM special_events \
              WHERE ticker = $1 AND exchange_mic = $2 AND status = 'scheduled' \
+               AND superseded_by IS NULL AND source IN ('mfn', 'mfn_release') \
                AND expected_date BETWEEN \
                    (($3::timestamptz AT TIME ZONE '",
             model::mfn_timezone!(),
@@ -336,6 +388,13 @@ async fn record_in(tx: &mut PgConnection, r: &Release<'_>) -> sqlx::Result<Recor
             .bind(r.report_kind)
             .bind(r.fiscal_period)
             .bind(r.company_name)
+            .execute(&mut *tx)
+            .await?;
+            let id: i64 = row.get("id");
+            sqlx::query(
+                "DELETE FROM special_events WHERE status = 'scheduled' AND superseded_by = $1",
+            )
+            .bind(id)
             .execute(&mut *tx)
             .await?;
             info!(ticker = r.ticker, expected_date = %expected, occurred_at = %r.occurred_at,
@@ -443,12 +502,13 @@ pub async fn link_corrections(
     Ok(res.rows_affected())
 }
 
-/// What [`apply_report_calendar`] did.
+/// What [`apply_report_calendar`] / [`apply_calendar_release`] did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CalendarOutcome {
     /// The snapshot was older than one already applied, and ignored.
     pub stale: bool,
-    /// Future scheduled rows removed before applying.
+    /// Future scheduled rows of the source removed (page: not in the snapshot;
+    /// release: replaced by a newer release).
     pub replaced: u64,
     /// Scheduled rows inserted.
     pub scheduled: usize,
@@ -456,15 +516,163 @@ pub struct CalendarOutcome {
     pub matched_occurred: usize,
 }
 
-/// Applies a company's calendar snapshot in one transaction.
+async fn lock_company(tx: &mut PgConnection, ticker: &str, mic: &str) -> sqlx::Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("calendar:{ticker}:{mic}"))
+        .execute(tx)
+        .await?;
+    Ok(())
+}
+
+async fn clear_links(tx: &mut PgConnection, ticker: &str, mic: &str) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE special_events SET superseded_by = NULL \
+         WHERE ticker = $1 AND exchange_mic = $2 AND status = 'scheduled' \
+           AND superseded_by IS NOT NULL",
+    )
+    .bind(ticker)
+    .bind(mic)
+    .execute(tx)
+    .await?;
+    Ok(())
+}
+
+/// Fills the expected fields of an occurred report within ±[`MATCH_WINDOW_DAYS`]
+/// of the entry whose `expected_date` is NULL (closest wins, ties the earlier).
+async fn fill_occurred(
+    tx: &mut PgConnection,
+    ticker: &str,
+    mic: &str,
+    e: &Scheduled,
+    fetched_at: DateTime<Utc>,
+) -> sqlx::Result<bool> {
+    let occurred = sqlx::query(concat!(
+        "SELECT id FROM special_events \
+         WHERE ticker = $1 AND exchange_mic = $2 AND status = 'occurred' \
+           AND event_type IN ($5, $6) AND NOT is_correction AND expected_date IS NULL \
+           AND (occurred_at AT TIME ZONE '",
+        model::mfn_timezone!(),
+        "')::date \
+               BETWEEN ($3::date - $4::int) AND ($3::date + $4::int) \
+         ORDER BY abs((occurred_at AT TIME ZONE '",
+        model::mfn_timezone!(),
+        "')::date - $3::date), \
+                  occurred_at \
+         LIMIT 1 FOR UPDATE"
+    ))
+    .bind(ticker)
+    .bind(mic)
+    .bind(e.expected_date)
+    .bind(MATCH_WINDOW_DAYS)
+    .bind(QUARTERLY)
+    .bind(ANNUAL)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(row) = occurred else {
+        return Ok(false);
+    };
+    sqlx::query(
+        "UPDATE special_events SET expected_date = $2, expected_time = $3, \
+                calendar_label = $4, fiscal_period = COALESCE(fiscal_period, $5), \
+                calendar_fetched_at = $6 \
+         WHERE id = $1",
+    )
+    .bind(row.get::<i64, _>("id"))
+    .bind(e.expected_date)
+    .bind(e.expected_time)
+    .bind(&e.calendar_label)
+    .bind(&e.fiscal_period)
+    .bind(fetched_at)
+    .execute(tx)
+    .await?;
+    Ok(true)
+}
+
+/// Whether an occurred report already took this entry's date as its expected
+/// date, so a redelivered entry must not schedule it again.
+async fn already_released(
+    tx: &mut PgConnection,
+    ticker: &str,
+    mic: &str,
+    e: &Scheduled,
+) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM special_events \
+         WHERE ticker = $1 AND exchange_mic = $2 AND status = 'occurred' \
+           AND report_kind = $3 AND expected_date = $4)",
+    )
+    .bind(ticker)
+    .bind(mic)
+    .bind(e.report_kind)
+    .bind(e.expected_date)
+    .fetch_one(tx)
+    .await
+}
+
+/// Inserts a scheduled row of `source`. Returns whether a row was inserted
+/// (not when the same date and label exist already).
+#[allow(clippy::too_many_arguments)]
+async fn insert_scheduled(
+    tx: &mut PgConnection,
+    ticker: &str,
+    mic: &str,
+    company_name: Option<&str>,
+    source: &str,
+    e: &Scheduled,
+    fetched_at: DateTime<Utc>,
+    description: Option<&str>,
+    url: Option<&str>,
+    lang: Option<&str>,
+) -> sqlx::Result<bool> {
+    let event_type = if e.report_kind == "annual" {
+        ANNUAL
+    } else {
+        QUARTERLY
+    };
+    let res = sqlx::query(concat!(
+        "INSERT INTO special_events \
+           (ticker, exchange_mic, event_type, occurred_at, description, status, source, \
+            report_kind, fiscal_period, company_name, expected_date, expected_time, \
+            calendar_label, calendar_fetched_at, url, lang) \
+         VALUES ($1, $2, $3, \
+                 ($4::date + COALESCE($5::time, TIME '00:00')) AT TIME ZONE '",
+        model::mfn_timezone!(),
+        "', \
+                 COALESCE($13, $6), 'scheduled', $7, $8, $9, $10, $4, $5, $6, $11, $12, $14) \
+         ON CONFLICT DO NOTHING"
+    ))
+    .bind(ticker)
+    .bind(mic)
+    .bind(event_type)
+    .bind(e.expected_date)
+    .bind(e.expected_time)
+    .bind(&e.calendar_label)
+    .bind(source)
+    .bind(e.report_kind)
+    .bind(&e.fiscal_period)
+    .bind(company_name)
+    .bind(fetched_at)
+    .bind(url)
+    .bind(description)
+    .bind(lang)
+    .execute(tx)
+    .await?;
+    Ok(res.rows_affected() == 1)
+}
+
+/// Applies a company's page snapshot in one transaction.
 ///
-/// Ignored if older than the newest snapshot already applied for the company.
-/// Otherwise the company's scheduled rows with `expected_date >= today`
-/// (Stockholm) are deleted, and each entry either fills the expected fields of
-/// an occurred report within ±[`MATCH_WINDOW_DAYS`] whose `expected_date` is
-/// NULL (closest wins, ties the earlier) or becomes a scheduled row. Other
-/// occurred rows are never changed; past scheduled rows ("expected, not seen")
-/// stay. An empty snapshot clears the future scheduled rows.
+/// Ignored if older than the newest page row's `calendar_fetched_at`. Otherwise
+/// the company's page rows are diffed against the snapshot per report, so a
+/// report that did not move keeps its row and its timestamp: rows with
+/// `expected_date >= today` (Stockholm) that the snapshot no longer lists are
+/// deleted, rows it still lists keep their `calendar_fetched_at` (time and
+/// period are refreshed), and every other entry either fills the expected
+/// fields of an occurred report within ±[`MATCH_WINDOW_DAYS`] whose
+/// `expected_date` is NULL or becomes a scheduled row stamped with the
+/// snapshot's `fetched_at`. Past scheduled rows ("expected, not seen") stay.
+/// Rows of other sources are untouched; the company's winners are then
+/// recomputed, see [`reevaluate`].
 pub async fn apply_report_calendar(
     pool: &PgPool,
     c: &Calendar<'_>,
@@ -472,17 +680,14 @@ pub async fn apply_report_calendar(
 ) -> sqlx::Result<CalendarOutcome> {
     let mut tx = pool.begin().await?;
     let mut out = CalendarOutcome::default();
-
-    // Serialise snapshots of one company against each other.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-        .bind(format!("calendar:{}:{}", c.ticker, c.exchange_mic))
-        .execute(&mut *tx)
-        .await?;
+    lock_company(&mut tx, c.ticker, c.exchange_mic).await?;
     let newest: Option<DateTime<Utc>> = sqlx::query_scalar(
-        "SELECT max(calendar_fetched_at) FROM special_events WHERE ticker = $1 AND exchange_mic = $2",
+        "SELECT max(calendar_fetched_at) FROM special_events \
+         WHERE ticker = $1 AND exchange_mic = $2 AND source = $3",
     )
     .bind(c.ticker)
     .bind(c.exchange_mic)
+    .bind(SOURCE_MFN)
     .fetch_one(&mut *tx)
     .await?;
     if newest.is_some_and(|n| n > c.fetched_at) {
@@ -490,93 +695,269 @@ pub async fn apply_report_calendar(
         tx.commit().await?;
         return Ok(out);
     }
+    clear_links(&mut tx, c.ticker, c.exchange_mic).await?;
 
-    out.replaced = sqlx::query(
-        "DELETE FROM special_events \
-         WHERE ticker = $1 AND exchange_mic = $2 AND status = 'scheduled' AND expected_date >= $3",
+    let existing = sqlx::query(
+        "SELECT id, expected_date, calendar_label FROM special_events \
+         WHERE ticker = $1 AND exchange_mic = $2 AND status = 'scheduled' AND source = $3 \
+           AND expected_date >= $4 FOR UPDATE",
     )
     .bind(c.ticker)
     .bind(c.exchange_mic)
+    .bind(SOURCE_MFN)
     .bind(today)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut by_key: HashMap<(NaiveDate, &str), &Scheduled> = HashMap::new();
+    for e in &c.entries {
+        by_key
+            .entry((e.expected_date, e.calendar_label.as_str()))
+            .or_insert(e);
+    }
+    let mut kept: HashSet<(NaiveDate, String)> = HashSet::new();
+    for row in existing {
+        let date: NaiveDate = row.get("expected_date");
+        let label: String = row.get("calendar_label");
+        let id: i64 = row.get("id");
+        match by_key.get(&(date, label.as_str())) {
+            Some(e) => {
+                sqlx::query(concat!(
+                    "UPDATE special_events SET expected_time = $2, report_kind = $3, \
+                            event_type = $4, fiscal_period = COALESCE($5, fiscal_period), \
+                            occurred_at = ($6::date + COALESCE($2::time, TIME '00:00')) AT TIME ZONE '",
+                    model::mfn_timezone!(),
+                    "', \
+                            company_name = COALESCE($7, company_name) \
+                     WHERE id = $1"
+                ))
+                .bind(id)
+                .bind(e.expected_time)
+                .bind(e.report_kind)
+                .bind(if e.report_kind == "annual" { ANNUAL } else { QUARTERLY })
+                .bind(&e.fiscal_period)
+                .bind(date)
+                .bind(c.company_name)
+                .execute(&mut *tx)
+                .await?;
+                kept.insert((date, label));
+            }
+            None => {
+                sqlx::query("DELETE FROM special_events WHERE id = $1")
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+                out.replaced += 1;
+            }
+        }
+    }
 
     for e in &c.entries {
-        let occurred = sqlx::query(concat!(
-            "SELECT id FROM special_events \
-             WHERE ticker = $1 AND exchange_mic = $2 AND status = 'occurred' \
-               AND event_type IN ($5, $6) AND NOT is_correction AND expected_date IS NULL \
-               AND (occurred_at AT TIME ZONE '",
-            model::mfn_timezone!(),
-            "')::date \
-                   BETWEEN ($3::date - $4::int) AND ($3::date + $4::int) \
-             ORDER BY abs((occurred_at AT TIME ZONE '",
-            model::mfn_timezone!(),
-            "')::date - $3::date), \
-                      occurred_at \
-             LIMIT 1 FOR UPDATE"
-        ))
-        .bind(c.ticker)
-        .bind(c.exchange_mic)
-        .bind(e.expected_date)
-        .bind(MATCH_WINDOW_DAYS)
-        .bind(QUARTERLY)
-        .bind(ANNUAL)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some(row) = occurred {
-            sqlx::query(
-                "UPDATE special_events SET expected_date = $2, expected_time = $3, \
-                        calendar_label = $4, fiscal_period = COALESCE(fiscal_period, $5), \
-                        calendar_fetched_at = $6 \
-                 WHERE id = $1",
-            )
-            .bind(row.get::<i64, _>("id"))
-            .bind(e.expected_date)
-            .bind(e.expected_time)
-            .bind(&e.calendar_label)
-            .bind(&e.fiscal_period)
-            .bind(c.fetched_at)
-            .execute(&mut *tx)
-            .await?;
+        if kept.contains(&(e.expected_date, e.calendar_label.clone())) {
+            continue;
+        }
+        if fill_occurred(&mut tx, c.ticker, c.exchange_mic, e, c.fetched_at).await? {
             out.matched_occurred += 1;
             continue;
         }
-        let event_type = if e.report_kind == "annual" {
-            ANNUAL
-        } else {
-            QUARTERLY
-        };
-        out.scheduled += sqlx::query(concat!(
-            "INSERT INTO special_events \
-               (ticker, exchange_mic, event_type, occurred_at, description, status, source, \
-                report_kind, fiscal_period, company_name, expected_date, expected_time, \
-                calendar_label, calendar_fetched_at) \
-             VALUES ($1, $2, $3, \
-                     ($4::date + COALESCE($5::time, TIME '00:00')) AT TIME ZONE '",
-            model::mfn_timezone!(),
-            "', \
-                     $6, 'scheduled', $7, $8, $9, $10, $4, $5, $6, $11) \
-             ON CONFLICT DO NOTHING"
-        ))
-        .bind(c.ticker)
-        .bind(c.exchange_mic)
-        .bind(event_type)
-        .bind(e.expected_date)
-        .bind(e.expected_time)
-        .bind(&e.calendar_label)
-        .bind(SOURCE_MFN)
-        .bind(e.report_kind)
-        .bind(&e.fiscal_period)
-        .bind(c.company_name)
-        .bind(c.fetched_at)
-        .execute(&mut *tx)
+        if already_released(&mut tx, c.ticker, c.exchange_mic, e).await? {
+            continue;
+        }
+        if insert_scheduled(
+            &mut tx,
+            c.ticker,
+            c.exchange_mic,
+            c.company_name,
+            SOURCE_MFN,
+            e,
+            c.fetched_at,
+            None,
+            None,
+            None,
+        )
         .await?
-        .rows_affected() as usize;
+        {
+            out.scheduled += 1;
+        }
     }
+    reevaluate(&mut tx, c.ticker, c.exchange_mic, today).await?;
     tx.commit().await?;
     Ok(out)
+}
+
+/// Applies one calendar release in one transaction.
+///
+/// Each entry of `from today on` becomes a scheduled row of source
+/// `mfn_release` stamped with the release's publish instant. For a report that
+/// already has release rows: an older row is replaced, a newer one wins and the
+/// entry is dropped, and a row from the same instant (a language twin, or a
+/// redelivery) is kept, except that an English twin replaces the label, url and
+/// language. Entries before `today` only retire older rows. The result depends
+/// on the rows and their timestamps, not on arrival order. Winners are then
+/// recomputed, see [`reevaluate`].
+pub async fn apply_calendar_release(
+    pool: &PgPool,
+    r: &CalendarRelease<'_>,
+    today: NaiveDate,
+) -> sqlx::Result<CalendarOutcome> {
+    let mut tx = pool.begin().await?;
+    let mut out = CalendarOutcome::default();
+    lock_company(&mut tx, r.ticker, r.exchange_mic).await?;
+    clear_links(&mut tx, r.ticker, r.exchange_mic).await?;
+
+    for e in &r.entries {
+        let rows = sqlx::query(
+            "SELECT id, calendar_fetched_at, lang, expected_date FROM special_events \
+             WHERE ticker = $1 AND exchange_mic = $2 AND status = 'scheduled' AND source = $3 \
+               AND report_kind = $4 \
+               AND ((fiscal_period IS NOT NULL AND $5::text IS NOT NULL AND fiscal_period = $5) \
+                    OR ((fiscal_period IS NULL OR $5::text IS NULL) \
+                        AND abs(expected_date - $6::date) <= $7::int)) \
+             ORDER BY abs(expected_date - $6::date), id FOR UPDATE",
+        )
+        .bind(r.ticker)
+        .bind(r.exchange_mic)
+        .bind(SOURCE_RELEASE)
+        .bind(e.report_kind)
+        .bind(&e.fiscal_period)
+        .bind(e.expected_date)
+        .bind(MATCH_WINDOW_DAYS)
+        .fetch_all(&mut *tx)
+        .await?;
+        let stored: Vec<(i64, Option<DateTime<Utc>>, Option<String>)> = rows
+            .iter()
+            .map(|x| (x.get("id"), x.get("calendar_fetched_at"), x.get("lang")))
+            .collect();
+        if stored.iter().any(|(_, at, _)| *at > Some(r.published_at)) {
+            continue;
+        }
+        if let Some((id, _, lang)) = stored.iter().find(|(_, at, _)| *at == Some(r.published_at)) {
+            if r.lang == Some("en") && lang.as_deref() != Some("en") {
+                sqlx::query(concat!(
+                    "UPDATE special_events SET calendar_label = $2, url = $3, lang = $4, \
+                            description = COALESCE($5, description), \
+                            fiscal_period = COALESCE($6, fiscal_period), expected_time = $7, \
+                            occurred_at = ($8::date + COALESCE($7::time, TIME '00:00')) AT TIME ZONE '",
+                    model::mfn_timezone!(),
+                    "' \
+                     WHERE id = $1 AND NOT EXISTS ( \
+                         SELECT 1 FROM special_events o WHERE o.id <> $1 \
+                           AND o.ticker = $9 AND o.exchange_mic = $10 AND o.status = 'scheduled' \
+                           AND o.expected_date = $8 AND o.calendar_label = $2)"
+                ))
+                .bind(id)
+                .bind(&e.calendar_label)
+                .bind(r.url)
+                .bind(r.lang)
+                .bind(r.title)
+                .bind(&e.fiscal_period)
+                .bind(e.expected_time)
+                .bind(e.expected_date)
+                .bind(r.ticker)
+                .bind(r.exchange_mic)
+                .execute(&mut *tx)
+                .await?;
+            }
+            continue;
+        }
+        for (id, _, _) in &stored {
+            sqlx::query("DELETE FROM special_events WHERE id = $1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            out.replaced += 1;
+        }
+        if e.expected_date < today {
+            continue;
+        }
+        if fill_occurred(&mut tx, r.ticker, r.exchange_mic, e, r.published_at).await? {
+            out.matched_occurred += 1;
+            continue;
+        }
+        if already_released(&mut tx, r.ticker, r.exchange_mic, e).await? {
+            continue;
+        }
+        if insert_scheduled(
+            &mut tx,
+            r.ticker,
+            r.exchange_mic,
+            r.company_name,
+            SOURCE_RELEASE,
+            e,
+            r.published_at,
+            r.title,
+            r.url,
+            r.lang,
+        )
+        .await?
+        {
+            out.scheduled += 1;
+        }
+    }
+    reevaluate(&mut tx, r.ticker, r.exchange_mic, today).await?;
+    tx.commit().await?;
+    Ok(out)
+}
+
+/// Recomputes which scheduled rows win: the rows of the page and of calendar
+/// releases that are the same report are compared and the loser's
+/// `superseded_by` is pointed at the winner (see
+/// [`crate::calendar_sources::resolve`]); a release also fills a page row's
+/// missing fiscal period. The caller has cleared the links.
+async fn reevaluate(
+    tx: &mut PgConnection,
+    ticker: &str,
+    mic: &str,
+    today: NaiveDate,
+) -> sqlx::Result<()> {
+    let rows: Vec<SchedRow> = sqlx::query(
+        "SELECT id, source, report_kind, fiscal_period, expected_date, calendar_fetched_at \
+         FROM special_events \
+         WHERE ticker = $1 AND exchange_mic = $2 AND status = 'scheduled' \
+           AND source IN ('mfn', 'mfn_release') AND expected_date >= $3",
+    )
+    .bind(ticker)
+    .bind(mic)
+    .bind(today)
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .map(|r| SchedRow {
+        id: r.get("id"),
+        source: r.get("source"),
+        report_kind: r.get("report_kind"),
+        fiscal_period: r.get("fiscal_period"),
+        expected_date: r.get("expected_date"),
+        fetched_at: r.get("calendar_fetched_at"),
+    })
+    .collect();
+    let resolution = resolve_detailed(&rows, today);
+    for c in &resolution.conflicts {
+        warn!(
+            ticker,
+            report_key = %c.report_key,
+            page_date = %c.page_date,
+            release_date = %c.release_date,
+            winner = c.winner,
+            "calendar page and release disagree"
+        );
+    }
+    for (id, period) in &resolution.period_fills {
+        sqlx::query(
+            "UPDATE special_events SET fiscal_period = $2 WHERE id = $1 AND fiscal_period IS NULL",
+        )
+        .bind(id)
+        .bind(period)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for (loser, winner) in &resolution.links {
+        sqlx::query("UPDATE special_events SET superseded_by = $2 WHERE id = $1")
+            .bind(loser)
+            .bind(winner)
+            .execute(&mut *tx)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Today's date in the MFN calendar's time zone (`model::nordic::MFN_TIMEZONE`), from the database clock.
@@ -609,6 +990,11 @@ pub async fn handle(pool: &PgPool, m: &Message<'_>) -> sqlx::Result<String> {
         Message::Calendar(c) => {
             let today = stockholm_today(pool).await?;
             let outcome = apply_report_calendar(pool, c, today).await?;
+            Ok(format!("{outcome:?}"))
+        }
+        Message::CalendarRelease(r) => {
+            let today = stockholm_today(pool).await?;
+            let outcome = apply_calendar_release(pool, r, today).await?;
             Ok(format!("{outcome:?}"))
         }
     }
@@ -684,7 +1070,7 @@ mod tests {
     async fn apply(pool: &PgPool, e: &SpecialEvent, today: NaiveDate) -> CalendarOutcome {
         match parse(e).unwrap() {
             Message::Calendar(c) => apply_report_calendar(pool, &c, today).await.unwrap(),
-            Message::Release(_) => panic!("not a calendar"),
+            _ => panic!("not a page snapshot"),
         }
     }
 
@@ -1139,6 +1525,382 @@ mod tests {
         assert_eq!(gomx_rows[0].4.as_deref(), Some("en"));
         assert!(gomx_rows[0].5 && gomx_rows[0].6);
         assert!(gomx_rows[1..].iter().all(|r| r.1 == CORRECTION));
+    }
+
+    const NEWS_Q3: &str = "fa0cc072-6e67-4dc5-82c0-0bb587966b31";
+    const NEWS_Q3_DA: &str = "deb62621-8ec3-45fe-b034-7764ad2dc30b";
+    const NEWS_MOVED: &str = "697d740a-4914-43b5-b4e8-ffe2f5133871";
+
+    fn nov1() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()
+    }
+
+    fn period_entry(
+        date: &str,
+        time: &str,
+        label: &str,
+        kind: &str,
+        period: &str,
+    ) -> ScheduledReport {
+        ScheduledReport {
+            fiscal_period: period.into(),
+            ..entry(date, time, label, kind)
+        }
+    }
+
+    fn release_event(
+        news_id: &str,
+        published: DateTime<Utc>,
+        lang: &str,
+        entries: Vec<ScheduledReport>,
+    ) -> SpecialEvent {
+        SpecialEvent {
+            ticker: "FFARMS".into(),
+            exchange_mic: "XCSE".into(),
+            event_type: CALENDAR_RELEASE.into(),
+            occurred_at_unix_secs: published.timestamp(),
+            description: format!("Financial calendar ({lang})"),
+            source: SOURCE_MFN.into(),
+            source_id: news_id.into(),
+            url: format!("https://mfn.se/one/a/firstfarms/{news_id}"),
+            lang: lang.into(),
+            calendar: Some(model::generated::ReportCalendar {
+                fetched_at_unix_secs: published.timestamp(),
+                entries,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn q3(date: &str) -> ScheduledReport {
+        period_entry(
+            date,
+            "",
+            "Quarterly update 1 January - 30 September 2026",
+            "interim",
+            "2026-Q3",
+        )
+    }
+
+    async fn apply_release(pool: &PgPool, e: &SpecialEvent, today: NaiveDate) -> CalendarOutcome {
+        match parse(e).unwrap() {
+            Message::CalendarRelease(r) => apply_calendar_release(pool, &r, today).await.unwrap(),
+            _ => panic!("not a release"),
+        }
+    }
+
+    type Sched = (
+        i64,
+        String,
+        NaiveDate,
+        Option<String>,
+        Option<i64>,
+        Option<DateTime<Utc>>,
+    );
+
+    async fn sched(pool: &PgPool, ticker: &str) -> Vec<Sched> {
+        sqlx::query_as(
+            "SELECT id, source, expected_date, fiscal_period, superseded_by, calendar_fetched_at \
+             FROM special_events WHERE ticker = $1 AND status = 'scheduled' \
+             ORDER BY expected_date, source",
+        )
+        .bind(ticker)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    fn winners(rows: &[Sched]) -> Vec<(&str, String)> {
+        rows.iter()
+            .filter(|r| r.4.is_none())
+            .map(|r| (r.1.as_str(), r.2.to_string()))
+            .collect()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_release_row_survives_a_page_snapshot_without_it(pool: PgPool) {
+        let rel = release_event(
+            NEWS_Q3,
+            at(2025, 12, 23, 9, 38),
+            "en",
+            vec![q3("2026-11-24")],
+        );
+        assert_eq!(apply_release(&pool, &rel, nov1()).await.scheduled, 1);
+        let page = calendar_event("FFARMS", "XCSE", at(2026, 11, 1, 4, 30), vec![]);
+        apply(&pool, &page, nov1()).await;
+        let rows = sched(&pool, "FFARMS").await;
+        assert_eq!(
+            winners(&rows),
+            vec![("mfn_release", "2026-11-24".to_string())]
+        );
+        assert_eq!(rows[0].3.as_deref(), Some("2026-Q3"));
+        let (url, description): (String, String) = sqlx::query_as(
+            "SELECT url, description FROM special_events WHERE status = 'scheduled'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(url.ends_with(NEWS_Q3));
+        assert_eq!(description, "Financial calendar (en)");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_page_snapshot_moving_only_q4_keeps_q3_timestamp(pool: PgPool) {
+        let q3p = period_entry(
+            "2026-11-24",
+            "08:00",
+            "Kvartalsrapport 2026-Q3",
+            "interim",
+            "2026-Q3",
+        );
+        let q4 = |d| period_entry(d, "08:00", "Bokslutskommuniké 2026", "annual", "2026");
+        let first = calendar_event(
+            "GOMX",
+            "FNSE",
+            at(2026, 10, 1, 4, 30),
+            vec![q3p.clone(), q4("2027-02-18")],
+        );
+        apply(&pool, &first, nov1()).await;
+        let second = calendar_event(
+            "GOMX",
+            "FNSE",
+            at(2026, 10, 20, 4, 30),
+            vec![q3p, q4("2027-02-20")],
+        );
+        let out = apply(&pool, &second, nov1()).await;
+        assert_eq!((out.replaced, out.scheduled), (1, 1));
+        let rows = sched(&pool, "GOMX").await;
+        assert_eq!(rows[0].2, NaiveDate::from_ymd_opt(2026, 11, 24).unwrap());
+        assert_eq!(rows[0].5, Some(at(2026, 10, 1, 4, 30)));
+        assert_eq!(rows[1].5, Some(at(2026, 10, 20, 4, 30)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn release_rows_do_not_make_an_older_page_snapshot_stale(pool: PgPool) {
+        let rel = release_event(
+            NEWS_Q3,
+            at(2026, 10, 30, 9, 0),
+            "en",
+            vec![q3("2026-11-24")],
+        );
+        apply_release(&pool, &rel, nov1()).await;
+        let snap = calendar_event(
+            "FFARMS",
+            "XCSE",
+            at(2026, 10, 1, 4, 30),
+            vec![entry("2026-11-24", "08:00", "Kvartalsrapport", "interim")],
+        );
+        assert!(!apply(&pool, &snap, nov1()).await.stale);
+        let newer = calendar_event(
+            "FFARMS",
+            "XCSE",
+            at(2026, 10, 5, 4, 30),
+            vec![entry("2026-11-25", "08:00", "Kvartalsrapport", "interim")],
+        );
+        apply(&pool, &newer, nov1()).await;
+        assert!(apply(&pool, &snap, nov1()).await.stale);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_redelivered_release_gives_the_same_rows(pool: PgPool) {
+        let rel = release_event(
+            NEWS_Q3,
+            at(2025, 12, 23, 9, 38),
+            "en",
+            vec![q3("2026-11-24")],
+        );
+        apply_release(&pool, &rel, nov1()).await;
+        let first = sched(&pool, "FFARMS").await;
+        for _ in 0..2 {
+            apply_release(&pool, &rel, nov1()).await;
+        }
+        assert_eq!(sched(&pool, "FFARMS").await, first);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn language_twins_count_once_and_english_replaces_the_label_and_url(pool: PgPool) {
+        let published = at(2025, 12, 23, 9, 38);
+        let da = release_event(
+            NEWS_Q3_DA,
+            published,
+            "da",
+            vec![period_entry(
+                "2026-11-24",
+                "",
+                "Kvartalsopdatering",
+                "interim",
+                "",
+            )],
+        );
+        let en = release_event(NEWS_Q3, published, "en", vec![q3("2026-11-24")]);
+        for order in [[&da, &en], [&en, &da]] {
+            sqlx::query("DELETE FROM special_events")
+                .execute(&pool)
+                .await
+                .unwrap();
+            for e in order {
+                apply_release(&pool, e, nov1()).await;
+            }
+            let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+                "SELECT calendar_label, lang, fiscal_period FROM special_events WHERE status = 'scheduled'",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(rows[0].1, "en");
+            assert!(rows[0].0.starts_with("Quarterly update"));
+            assert_eq!(rows[0].2.as_deref(), Some("2026-Q3"));
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_newest_of_two_releases_has_the_row_whatever_the_order(pool: PgPool) {
+        let old = release_event(
+            NEWS_Q3,
+            at(2025, 12, 23, 9, 0),
+            "en",
+            vec![q3("2026-11-24")],
+        );
+        let new = release_event(
+            NEWS_MOVED,
+            at(2026, 6, 1, 9, 0),
+            "en",
+            vec![q3("2026-11-26")],
+        );
+        for order in [[&old, &new], [&new, &old]] {
+            sqlx::query("DELETE FROM special_events")
+                .execute(&pool)
+                .await
+                .unwrap();
+            for e in order {
+                apply_release(&pool, e, nov1()).await;
+            }
+            let rows = sched(&pool, "FFARMS").await;
+            assert_eq!(
+                winners(&rows),
+                vec![("mfn_release", "2026-11-26".to_string())],
+                "{rows:?}"
+            );
+            assert_eq!(rows.len(), 1);
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn newest_source_wins_between_page_and_release(pool: PgPool) {
+        let page_q3 = |d| period_entry(d, "08:00", "Kvartalsrapport 2026-Q3", "interim", "2026-Q3");
+        apply(
+            &pool,
+            &calendar_event(
+                "FFARMS",
+                "XCSE",
+                at(2026, 9, 1, 4, 30),
+                vec![page_q3("2026-11-24")],
+            ),
+            nov1(),
+        )
+        .await;
+        let rel = release_event(NEWS_Q3, at(2026, 9, 15, 8, 0), "en", vec![q3("2026-11-20")]);
+        apply_release(&pool, &rel, nov1()).await;
+        let rows = sched(&pool, "FFARMS").await;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            winners(&rows),
+            vec![("mfn_release", "2026-11-20".to_string())]
+        );
+
+        apply(
+            &pool,
+            &calendar_event(
+                "FFARMS",
+                "XCSE",
+                at(2026, 10, 1, 4, 30),
+                vec![page_q3("2026-11-26")],
+            ),
+            nov1(),
+        )
+        .await;
+        let rows = sched(&pool, "FFARMS").await;
+        assert_eq!(winners(&rows), vec![("mfn", "2026-11-26".to_string())]);
+
+        apply(
+            &pool,
+            &calendar_event(
+                "FFARMS",
+                "XCSE",
+                at(2026, 10, 2, 4, 30),
+                vec![page_q3("2026-11-26")],
+            ),
+            nov1(),
+        )
+        .await;
+        assert_eq!(
+            winners(&sched(&pool, "FFARMS").await),
+            vec![("mfn", "2026-11-26".to_string())]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_released_report_fills_the_winner_and_deletes_the_loser(pool: PgPool) {
+        let page_q3 = period_entry(
+            "2026-11-24",
+            "08:00",
+            "Kvartalsrapport 2026-Q3",
+            "interim",
+            "2026-Q3",
+        );
+        apply(
+            &pool,
+            &calendar_event("FFARMS", "XCSE", at(2026, 9, 1, 4, 30), vec![page_q3]),
+            nov1(),
+        )
+        .await;
+        let rel = release_event(NEWS_Q3, at(2026, 9, 15, 8, 0), "en", vec![q3("2026-11-20")]);
+        apply_release(&pool, &rel, nov1()).await;
+        assert_eq!(sched(&pool, "FFARMS").await.len(), 2);
+
+        let mut report = item("q3", QUARTERLY, at(2026, 11, 20, 6, 30), "en");
+        report.ticker = "FFARMS".into();
+        report.exchange_mic = "XCSE".into();
+        let out = store(&pool, &report).await;
+        assert!(out.starts_with("Matched"), "{out}");
+        assert!(sched(&pool, "FFARMS").await.is_empty());
+        let rows: Vec<(String, Option<NaiveDate>)> = sqlx::query_as(
+            "SELECT status, expected_date FROM special_events WHERE ticker = 'FFARMS'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![(
+                "occurred".to_string(),
+                NaiveDate::from_ymd_opt(2026, 11, 20)
+            )]
+        );
+    }
+
+    #[test]
+    fn release_events_are_validated() {
+        let ok = release_event(
+            NEWS_Q3,
+            at(2025, 12, 23, 9, 38),
+            "en",
+            vec![q3("2026-11-24")],
+        );
+        assert!(matches!(parse(&ok), Ok(Message::CalendarRelease(_))));
+        let mut e = ok.clone();
+        e.calendar = None;
+        assert_eq!(parse(&e).unwrap_err(), Invalid::NoCalendar);
+        let mut e = ok.clone();
+        e.source_id = "not-a-uuid".into();
+        assert_eq!(
+            parse(&e).unwrap_err(),
+            Invalid::SourceIdNotUuid("not-a-uuid".into())
+        );
+        let mut e = ok;
+        e.source_id.clear();
+        assert_eq!(parse(&e).unwrap_err(), Invalid::NoSourceId);
     }
 
     #[test]
