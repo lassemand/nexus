@@ -1,0 +1,16 @@
+# Prometheus scrapes nordic_slack_posts_total from nordic-live's /metrics
+# (static job `nordic-live` in infra/charts/nexus/prometheus/values.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: nordic-live
+  labels:
+    app: nordic-live
+spec:
+  type: ClusterIP
+  selector:
+    app: nordic-live
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics

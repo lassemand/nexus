@@ -219,6 +219,7 @@ async fn the_listener_hands_over_messages_that_process_end_to_end() {
         ticker: "GOMX".into(),
         exchange_mic: "FNSE".into(),
         mfn_slug: "gomspace-group".into(),
+        name: None,
     }]);
     let (counters, out) = handle_message(
         &msg.text,
@@ -249,6 +250,7 @@ async fn an_item_the_poll_already_stored_is_not_logged_as_new() {
         ticker: "GOMX".into(),
         exchange_mic: "FNSE".into(),
         mfn_slug: "gomspace-group".into(),
+        name: None,
     }]);
     let check = SignalDb(db.pool.clone());
 

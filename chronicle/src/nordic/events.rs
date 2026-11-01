@@ -261,6 +261,7 @@ mod tests {
             title: "GomSpace: Interim report Q3".into(),
             published_at: Utc.with_ymd_and_hms(2026, 11, 12, 6, 30, 0).unwrap(),
             author_slug: "gomspace-group".into(),
+            author_name: None,
             author_slugs: vec![],
             author_tickers: vec!["FNSE:GOMX".into()],
             author_isins: vec!["SE0008348304".into()],

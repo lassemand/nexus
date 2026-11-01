@@ -7,6 +7,7 @@ pub mod isin;
 pub mod nordic;
 pub mod price;
 pub mod sector;
+pub mod session;
 pub mod stockholm;
 
 pub mod generated {

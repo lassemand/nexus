@@ -171,3 +171,9 @@ kube-prometheus-stack:
             - targets:
                 - saxo-stream.chronicle.svc.cluster.local:8080
           metrics_path: /metrics
+        # nordic-live: nordic_slack_posts_total (NEX-222).
+        - job_name: nordic-live
+          static_configs:
+            - targets:
+                - nordic-live.chronicle.svc.cluster.local:8080
+          metrics_path: /metrics

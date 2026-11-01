@@ -41,6 +41,8 @@ struct RawItem {
 #[derive(Debug, Deserialize)]
 struct RawAuthor {
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     slug: String,
     #[serde(default)]
     slugs: Option<Vec<String>>,
@@ -92,6 +94,8 @@ pub struct NewsItem {
     pub title: String,
     /// Publication instant (UTC).
     pub published_at: DateTime<Utc>,
+    /// `author.name`, when MFN sends it.
+    pub author_name: Option<String>,
     /// `author.slug`.
     pub author_slug: String,
     /// `author.slugs`.
@@ -155,6 +159,7 @@ fn into_news_item(r: RawItem) -> Option<NewsItem> {
         tags: r.properties.tags.unwrap_or_default(),
         title: r.content.title,
         published_at,
+        author_name: r.author.name.filter(|n| !n.trim().is_empty()),
         author_slug: r.author.slug,
         author_slugs: r.author.slugs.unwrap_or_default(),
         author_tickers: r.author.tickers.unwrap_or_default(),
@@ -279,6 +284,7 @@ mod tests {
             title: String::new(),
             published_at: Utc::now(),
             author_slug: "volvo".into(),
+            author_name: None,
             author_slugs: vec!["volvo".into(), "volvo-group".into()],
             author_tickers: vec![],
             author_isins: vec![],

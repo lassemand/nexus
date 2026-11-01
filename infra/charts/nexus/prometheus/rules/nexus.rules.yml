@@ -61,6 +61,23 @@ groups:
 
   - name: nexus.ingestion
     rules:
+      # nordic-live could not post a results release to Slack (NEX-222). The poll
+      # fallback does not retry a failed live post for 10 minutes and gives up after
+      # 5 attempts, so a failure that persists means releases are not reaching Slack:
+      # check the bot token, `chat:write`, and that the app is invited to the channel
+      # (the Slack error code is in the nordic-live logs, `slack post failed`).
+      - alert: NordicSlackPostsFailing
+        expr: increase(nordic_slack_posts_total{result="failed"}[30m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "nordic-live failed to post to Slack"
+          description: >-
+            nordic-live failed to post {{ $value | humanize }} results
+            release(s) to Slack in the last 30 minutes. See `slack post failed`
+            in the nordic-live logs for the Slack error code.
+
       # saxo-stream (Saxo token keeper + daily-bar sync) has been not-ready for >2m.
       - alert: SaxoStreamDown
         expr: |

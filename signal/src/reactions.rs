@@ -50,14 +50,14 @@
 //! only so absurd data can never overflow the column. `move_pct` is NULL unless
 //! the status is `ok`; `needs_review` is set when `|move_pct| > 40`.
 
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+#[cfg(test)]
+use chrono::NaiveTime;
+use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
-use model::calendar::{DynamicCalendar, TradingCalendar, TradingStatus};
 use rust_decimal::Decimal;
 use sqlx::{PgConnection, PgPool, Row};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
-use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -71,27 +71,6 @@ pub const CORRECTION_WINDOW_DAYS: i64 = 10;
 
 const QUALIFYING: &str = "source = 'mfn' AND status = 'occurred' \
      AND event_type IN ('quarterly_report', 'annual_report') AND NOT is_correction";
-
-/// Where the release falls relative to the exchange's session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Session {
-    PreOpen,
-    Intraday,
-    AfterClose,
-    NonTradingDay,
-}
-
-impl Session {
-    /// Value stored in `release_session`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Session::PreOpen => "pre_open",
-            Session::Intraday => "intraday",
-            Session::AfterClose => "after_close",
-            Session::NonTradingDay => "non_trading_day",
-        }
-    }
-}
 
 /// Why a reaction could or could not be computed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -122,27 +101,18 @@ impl DataStatus {
     }
 }
 
-/// One row of the `exchanges` table: where and when a MIC trades.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Exchange {
-    /// ISO 10383 MIC.
-    pub mic: String,
-    /// Country whose `trading_holidays` apply.
-    pub country: String,
-    /// The exchange's own IANA time zone.
-    pub timezone: Tz,
-    /// Regular session open, local time.
-    pub open: NaiveTime,
-    /// Regular session close, local time.
-    pub close: NaiveTime,
-    /// Early close on `half_day` dates, if the exchange has any.
-    pub half_day_close: Option<NaiveTime>,
-}
+pub use model::session::{plan, Calendar, Exchange, Session};
 
-impl Exchange {
+/// Loading an [`Exchange`] from the `exchanges` table.
+#[allow(async_fn_in_trait)]
+pub trait LoadExchange: Sized {
     /// Loads the row for `mic`. `None` if the MIC is not in `exchanges` or its
     /// time zone is not an IANA name (logged): both mean `calendar_unknown`.
-    pub async fn load(conn: &mut PgConnection, mic: &str) -> sqlx::Result<Option<Self>> {
+    async fn load(conn: &mut PgConnection, mic: &str) -> sqlx::Result<Option<Self>>;
+}
+
+impl LoadExchange for Exchange {
+    async fn load(conn: &mut PgConnection, mic: &str) -> sqlx::Result<Option<Self>> {
         let Some(r) = sqlx::query(
             "SELECT country, timezone, open_local, close_local, half_day_close_local \
              FROM exchanges WHERE mic = $1",
@@ -167,33 +137,6 @@ impl Exchange {
             half_day_close: r.get("half_day_close_local"),
         }))
     }
-
-    /// The release instant in the exchange's local time.
-    fn local(&self, at: DateTime<Utc>) -> NaiveDateTime {
-        at.with_timezone(&self.timezone).naive_local()
-    }
-
-    /// The session close on a day with the given status.
-    fn close_on(&self, status: TradingStatus) -> NaiveTime {
-        match (status, self.half_day_close) {
-            (TradingStatus::HalfDay, Some(early)) => early,
-            (TradingStatus::HalfDay, None) => {
-                // Logged once per MIC, not once per report.
-                static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-                let first = WARNED
-                    .get_or_init(Default::default)
-                    .lock()
-                    .map(|mut w| w.insert(self.mic.clone()))
-                    .unwrap_or(false);
-                if first {
-                    warn!(mic = %self.mic,
-                          "half_day in trading_holidays but the exchange has no half-day close; treated as a full day");
-                }
-                self.close
-            }
-            _ => self.close,
-        }
-    }
 }
 
 /// An exchange together with its country's calendar.
@@ -201,128 +144,6 @@ impl Exchange {
 pub struct Market {
     pub exchange: Exchange,
     pub calendar: Calendar,
-}
-
-/// A country's trading calendar plus the date range it is known for.
-#[derive(Debug, Clone)]
-pub struct Calendar {
-    days: DynamicCalendar,
-    covered_from: NaiveDate,
-    covered_to: NaiveDate,
-}
-
-impl Calendar {
-    /// Builds a calendar from holiday rows. Coverage is the whole years from the
-    /// first to the last holiday year. Returns `None` for no rows at all.
-    pub fn from_holidays(
-        closed: HashSet<NaiveDate>,
-        half_days: HashSet<NaiveDate>,
-    ) -> Option<Self> {
-        let years: Vec<i32> = closed
-            .iter()
-            .chain(half_days.iter())
-            .map(|d| d.year())
-            .collect();
-        let (first, last) = (*years.iter().min()?, *years.iter().max()?);
-        Some(Self {
-            covered_from: NaiveDate::from_ymd_opt(first, 1, 1)?,
-            covered_to: NaiveDate::from_ymd_opt(last, 12, 31)?,
-            days: DynamicCalendar::new(closed, half_days),
-        })
-    }
-
-    fn covers(&self, d: NaiveDate) -> bool {
-        d >= self.covered_from && d <= self.covered_to
-    }
-
-    fn is_trading_day(&self, d: NaiveDate) -> bool {
-        self.days.is_trading_day(d)
-    }
-
-    /// The first trading day after `d`, if still inside the covered range.
-    pub fn next_trading_day(&self, d: NaiveDate) -> Option<NaiveDate> {
-        let mut day = d;
-        loop {
-            day = day.succ_opt()?;
-            if !self.covers(day) {
-                return None;
-            }
-            if self.is_trading_day(day) {
-                return Some(day);
-            }
-        }
-    }
-
-    /// The last trading day before `d`, if still inside the covered range.
-    pub fn prev_trading_day(&self, d: NaiveDate) -> Option<NaiveDate> {
-        let mut day = d;
-        loop {
-            day = day.pred_opt()?;
-            if !self.covers(day) {
-                return None;
-            }
-            if self.is_trading_day(day) {
-                return Some(day);
-            }
-        }
-    }
-
-    /// Trading days in `(after, up_to]`.
-    pub fn trading_days_between(&self, after: NaiveDate, up_to: NaiveDate) -> i64 {
-        let mut n = 0;
-        let mut d = after;
-        while d < up_to {
-            d = d.succ_opt().expect("valid date");
-            if self.is_trading_day(d) {
-                n += 1;
-            }
-        }
-        n
-    }
-}
-
-/// The dates a release maps to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Plan {
-    pub session: Session,
-    /// The exchange's local date of the release (`d`).
-    pub release_date: NaiveDate,
-    /// First trading day the market could react (`r`).
-    pub reaction_date: NaiveDate,
-    /// Last trading day before `r` (`b`).
-    pub base_date: NaiveDate,
-}
-
-/// Classifies a release instant on `ex`. `None` means `calendar_unknown`: `d`,
-/// `r` or `b` falls outside the calendar's covered range.
-pub fn plan(occurred_at: DateTime<Utc>, cal: &Calendar, ex: &Exchange) -> Option<Plan> {
-    let local = ex.local(occurred_at);
-    let (d, t) = (local.date(), local.time());
-    if !cal.covers(d) {
-        return None;
-    }
-    let session = match cal.days.trading_status(d) {
-        TradingStatus::Closed => Session::NonTradingDay,
-        status => {
-            if t < ex.open {
-                Session::PreOpen
-            } else if t < ex.close_on(status) {
-                Session::Intraday
-            } else {
-                Session::AfterClose
-            }
-        }
-    };
-    let reaction_date = match session {
-        Session::PreOpen | Session::Intraday => d,
-        Session::AfterClose | Session::NonTradingDay => cal.next_trading_day(d)?,
-    };
-    Some(Plan {
-        session,
-        release_date: d,
-        reaction_date,
-        base_date: cal.prev_trading_day(reaction_date)?,
-    })
 }
 
 /// How many reports ended in each status.

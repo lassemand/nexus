@@ -20,6 +20,8 @@ const MAX_ERROR_CHARS: usize = 500;
 const MAX_SEND_ATTEMPTS: u32 = 3;
 const MAX_RETRY_AFTER_SECS: u64 = 60;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Slack's Web API base URL.
+pub const DEFAULT_API_URL: &str = "https://slack.com/api";
 const BASE_BACKOFF: Duration = Duration::from_millis(500);
 
 /// Everything the message shows about one released report.
@@ -353,8 +355,18 @@ impl std::fmt::Debug for SlackClient {
 impl SlackClient {
     /// Client posting to `channel` with a bot token.
     pub fn new(token: impl Into<String>, channel: impl Into<String>) -> Result<Self, SlackError> {
+        Self::with_api_url(token, channel, DEFAULT_API_URL)
+    }
+
+    /// Like [`SlackClient::new`] against another Slack API base URL (no trailing slash).
+    pub fn with_api_url(
+        token: impl Into<String>,
+        channel: impl Into<String>,
+        api_url: &str,
+    ) -> Result<Self, SlackError> {
         let connector = SlackClientHyperConnector::new()
             .map_err(|e| SlackError::Transport(e.to_string()))?
+            .with_slack_api_url(api_url.trim_end_matches('/'))
             .with_rate_control(SlackApiRateControlConfig::new());
         Ok(Self::with_client(
             slack_morphism::SlackClient::new(connector),

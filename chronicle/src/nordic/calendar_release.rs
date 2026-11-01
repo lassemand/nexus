@@ -668,6 +668,7 @@ mod tests {
             title: title.to_string(),
             published_at: "2025-12-23T09:38:59Z".parse().unwrap(),
             author_slug: "x".into(),
+            author_name: None,
             author_slugs: vec![],
             author_tickers: vec![],
             author_isins: vec![],

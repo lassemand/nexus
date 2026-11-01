@@ -18,6 +18,9 @@ saxo:
 nordicLive:
   # RUST_LOG for the live listener (info logs every new relevant item).
   logLevel: "info"
+  # Slack channel ID (for example "C0123456789") that results releases are posted to.
+  # Empty disables Slack posting. Invite the Argo CD notifications Slack app first.
+  slackChannel: ""
 filings:
   lookbackDays: "90"
 resources:
