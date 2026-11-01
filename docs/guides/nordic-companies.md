@@ -347,6 +347,14 @@ apart, 20 s timeout, `429` honours `Retry-After`.
 - The parsed calendar is published as one `report_calendar` snapshot (possibly empty), **unless** its hash equals `mfn_ingest_state.calendar_hash` (the last snapshot published); `--force` publishes regardless. The hash is stored after Kafka acknowledged the snapshot.
 - **A parse failure publishes nothing** and keeps the stored hash; it is logged at `error` and the job exits non-zero.
 
+## Calendar sources (chronicle)
+
+`nordic-reports` and `nordic-calendar` emit two independent calendar sources on `special.events`, keyed `ticker:exchange_mic`; they never merge or rank them (signal does, see below).
+
+- **The MFN page** (`nordic-calendar`, and `nordic-reports` after a calendar announcement): one `report_calendar` snapshot, only when its hash changed.
+- **Calendar releases** (`nordic-reports`): for every feed item that is a financial-calendar release (tag `sub:ci:calendar` or a calendar-update headline; `parse_calendar_release`), one `report_calendar_release` event with `source_id` = the MFN news id, `url`, `lang`, `tags`, `description` = the title, `occurred_at` = the publish instant and `calendar` = its dated report lines (`fetched_at` = the publish instant). Both language twins are sent, each with its own news id, and a release with no readable dates is sent with no entries. Release events go out while the feed is read, before the calendar-announcement refresh of the page snapshot. Times in a release are issuer-local and are converted to Stockholm time (Helsinki 08:00 becomes 07:00); date-only entries stay date-only. chronicle keeps no state for releases: signal upserts per news id, so re-sending is harmless.
+- **`nordic-calendar --scan-releases[=<months>]`** (default 18) first pages each mapped company's news feed back that far and sends a `report_calendar_release` for every calendar release found, then runs the normal page refresh. Run it once after signal can handle the event type, and whenever a company is registered late.
+
 ## Calendar sources (signal)
 
 chronicle only emits source data; signal decides which source wins. No extra tables: the sources live in `special_events` as scheduled rows.
