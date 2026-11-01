@@ -17,6 +17,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `insight` | MCP server exposing derived results from `signal` to LLM clients. |
 | `conductor` | Webhook router on the cluster: receives Linear/GitHub webhooks via in-pod Hookdeck sidecars and runs one Claude Code session per task set, each in its own worktree. |
 
+Calendar sources: chronicle only emits source data (`report_calendar` for the MFN page, `report_calendar_release` for each calendar release); signal keeps each source's scheduled rows in `special_events` and resolves which wins, newest source (`calendar_fetched_at`) first (`docs/guides/nordic-companies.md`).
+
 Every Nordic country fact (currency, time zone, venues and session hours, Yahoo/Saxo ids, holiday rules, insider-source kind, languages) lives in `model/src/nordic/` (one file per country, `COUNTRIES` is the list); see `docs/guides/adding-a-nordic-country.md`.
 
 ## Data flow
