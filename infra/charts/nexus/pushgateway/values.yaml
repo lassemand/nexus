@@ -1,0 +1,36 @@
+# Values for the prometheus-pushgateway sub-chart (keys are prefixed with the
+# dependency name). In-cluster address:
+#   pushgateway.nexus.svc.cluster.local:9091
+# Jobs push with HTTP POST to /metrics/job/<job>; see docs/guides/metrics.md.
+prometheus-pushgateway:
+  # Stable Service name for PUSHGATEWAY_URL: http://pushgateway.nexus.svc.cluster.local:9091
+  fullnameOverride: pushgateway
+
+  # ClusterIP only: never a NodePort or LoadBalancer.
+  service:
+    type: ClusterIP
+    port: 9091
+
+  # Keep pushed groups (and so every job's last-success time) across restarts.
+  persistentVolume:
+    enabled: true
+    storageClass: local-path
+    size: 1Gi
+    mountPath: /data
+
+  extraArgs:
+    - --persistence.file=/data/pushgateway.data
+    - --persistence.interval=1m
+
+  serviceMonitor:
+    enabled: true
+    namespace: nexus
+    # Keep the `job` (and `instance`) labels the jobs pushed.
+    honorLabels: true
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi

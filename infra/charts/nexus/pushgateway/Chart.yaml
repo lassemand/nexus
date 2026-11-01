@@ -1,0 +1,13 @@
+apiVersion: v2
+name: pushgateway
+description: >-
+  Umbrella chart for the Prometheus Pushgateway. Short-lived jobs (chronicle
+  CronJobs) push their metrics here at the end of each run; Prometheus scrapes
+  the Pushgateway. In-cluster only. See docs/guides/metrics.md.
+type: application
+version: 0.1.0
+appVersion: "v1.11.4"
+dependencies:
+  - name: prometheus-pushgateway
+    version: "3.10.1"
+    repository: https://prometheus-community.github.io/helm-charts

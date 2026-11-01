@@ -1,0 +1,26 @@
+# Scrapes the Strimzi Kafka Exporter (kafka_consumergroup_lag etc.).
+# The PodMonitor CRD comes from the prometheus chart, so this syncs after the
+# Kafka CR and tolerates a missing CRD on the first sync.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: kafka-exporter
+  namespace: nexus
+  labels:
+    app: kafka-exporter
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  jobLabel: strimzi.io/name
+  selector:
+    matchLabels:
+      strimzi.io/cluster: nexus
+      strimzi.io/kind: Kafka
+      strimzi.io/name: nexus-kafka-exporter
+  namespaceSelector:
+    matchNames:
+      - nexus
+  podMetricsEndpoints:
+    - port: tcp-prometheus
+      path: /metrics
