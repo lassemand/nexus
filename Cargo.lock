@@ -1859,6 +1859,7 @@ dependencies = [
  "chrono-tz",
  "prost",
  "prost-build",
+ "tracing",
 ]
 
 [[package]]
