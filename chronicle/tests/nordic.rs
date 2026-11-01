@@ -326,7 +326,7 @@ async fn cursor(db: &TestDb, ticker: &str) -> Option<chrono::DateTime<chrono::Ut
 fn releases(sent: &[(String, SpecialEvent)]) -> Vec<(String, String, String)> {
     let mut out: Vec<_> = sent
         .iter()
-        .filter(|(_, e)| e.event_type != "report_calendar")
+        .filter(|(_, e)| !e.event_type.starts_with("report_calendar"))
         .map(|(_, e)| {
             let at = chrono::DateTime::from_timestamp(e.occurred_at_unix_secs, 0).unwrap();
             (
@@ -375,6 +375,11 @@ async fn first_run_publishes_reports_and_corrections_and_a_rerun_only_the_overla
     assert!(
         sent.iter().all(|(key, _)| key == "GOMX:FNSE"),
         "one key per company"
+    );
+    assert_eq!(
+        calendar_releases(&sent).len(),
+        1,
+        "the calendar notice is also emitted as a calendar-release source"
     );
     assert_eq!(
         releases(&sent),
@@ -737,4 +742,259 @@ async fn a_failed_calendar_publish_keeps_the_old_hash() {
         .unwrap();
     assert!(matches!(retried, Refresh::Published(_)));
     db.drop_db().await;
+}
+
+const FIRSTFARMS_CALENDAR: &str = include_str!("fixtures/mfn/news_firstfarms_calendar.json");
+
+fn firstfarms_items() -> Vec<Value> {
+    let doc: Value = serde_json::from_str(FIRSTFARMS_CALENDAR).unwrap();
+    doc["items"].as_array().unwrap().clone()
+}
+
+fn firstfarms() -> Company {
+    Company {
+        ticker: "FFARMS".into(),
+        exchange_mic: "XCSE".into(),
+        mfn_slug: Some("firstfarms".into()),
+        name: Some("FirstFarms A/S".into()),
+        isin: None,
+    }
+}
+
+fn empty_upcoming_page() -> &'static str {
+    "<html><body><table class=\"table-calender\"><tbody>\
+     <tr class=\"grey-background\"><td>2026-08-26</td><td>-</td><td>Kvartalsrapport 2026-Q2</td></tr>\
+     </tbody></table></body></html>"
+}
+
+fn calendar_releases(sent: &[(String, SpecialEvent)]) -> Vec<&SpecialEvent> {
+    sent.iter()
+        .map(|(_, e)| e)
+        .filter(|e| e.event_type == "report_calendar_release")
+        .collect()
+}
+
+async fn ingest_firstfarms(db: &TestDb, server: &MockServer, sink: &VecSink) {
+    let insiders = common::VecInsiders::default();
+    let mut feed = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
+    chronicle_lib::nordic::ingest::ingest_company(
+        &db.pool,
+        &mut feed,
+        sink,
+        &insiders,
+        &firstfarms(),
+        "firstfarms",
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn each_calendar_release_is_emitted_as_a_source_event_before_the_page_snapshot() {
+    let Some(db) = TestDb::create().await else {
+        return;
+    };
+    db.add_company("FFARMS", "XCSE", "firstfarms").await;
+    let server = MockServer::start().await;
+    serve_feed(&server, "firstfarms", &firstfarms_items(), 48).await;
+    Mock::given(method("GET"))
+        .and(path("/all/a/gomspace-group.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": []})))
+        .mount(&server)
+        .await;
+    serve_calendar(&server, "firstfarms", empty_upcoming_page()).await;
+    serve_calendar(&server, "gomspace-group", MFN_FIXTURE).await;
+    let sink = VecSink::default();
+    run(&db, &server, &sink, false).await;
+    let sent = sink.take();
+
+    let ffarms: Vec<&(String, SpecialEvent)> =
+        sent.iter().filter(|(k, _)| k == "FFARMS:XCSE").collect();
+    let kinds: Vec<&str> = ffarms.iter().map(|(_, e)| e.event_type.as_str()).collect();
+    let snapshot = kinds.iter().position(|k| *k == "report_calendar").unwrap();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| **k == "report_calendar_release")
+            .count(),
+        4,
+        "both languages of both releases"
+    );
+    assert!(kinds[..snapshot]
+        .iter()
+        .all(|k| *k == "report_calendar_release"));
+    assert_eq!(
+        snapshot, 4,
+        "every release goes out before the page snapshot"
+    );
+
+    let releases = calendar_releases(&sent);
+    let en = releases
+        .iter()
+        .find(|e| e.source_id == "fa0cc072-6e67-4dc5-82c0-0bb587966b31")
+        .unwrap();
+    assert_eq!((en.lang.as_str(), en.source.as_str()), ("en", "mfn"));
+    assert_eq!(en.occurred_at_unix_secs, 1766482739);
+    let cal = en.calendar.as_ref().unwrap();
+    assert_eq!(cal.fetched_at_unix_secs, 1766482739);
+    let got: Vec<(&str, &str, &str)> = cal
+        .entries
+        .iter()
+        .map(|e| {
+            (
+                e.expected_date.as_str(),
+                e.report_kind.as_str(),
+                e.fiscal_period.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("2026-03-25", "annual", "2025"),
+            ("2026-05-27", "interim", "2026-Q1"),
+            ("2026-08-26", "interim", "2026-Q2"),
+            ("2026-11-24", "interim", "2026-Q3"),
+        ]
+    );
+    assert!(releases.iter().any(|e| e.lang == "da"));
+
+    let page = ffarms
+        .iter()
+        .find(|(_, e)| e.event_type == "report_calendar")
+        .unwrap();
+    assert!(
+        page.1.calendar.as_ref().unwrap().entries.is_empty(),
+        "no release data in the page snapshot"
+    );
+}
+
+#[tokio::test]
+async fn items_that_are_not_calendar_releases_emit_no_release_event() {
+    let Some(db) = TestDb::create().await else {
+        return;
+    };
+    db.add_company("FFARMS", "XCSE", "firstfarms").await;
+    let server = MockServer::start().await;
+    let report = json!({
+        "news_id": "22222222-2222-4222-8222-222222222222",
+        "url": "https://mfn.se/one/a/firstfarms/q2",
+        "author": {"slug": "firstfarms", "slugs": ["firstfarms"], "tickers": ["XCSE:FFARMS"]},
+        "properties": {"lang": "en", "tags": [":regulatory", "sub:report", "sub:report:interim"]},
+        "content": {"title": "FirstFarms A/S: Interim report Q2 2026", "publish_date": "2026-08-26T06:00:00Z", "text": "26 August 2026 Interim report"}
+    });
+    serve_feed(&server, "firstfarms", &[report], 48).await;
+    let sink = VecSink::default();
+    ingest_firstfarms(&db, &server, &sink).await;
+    let sent = sink.take();
+    assert!(calendar_releases(&sent).is_empty());
+    assert_eq!(sent.len(), 1);
+}
+
+#[tokio::test]
+async fn a_release_without_readable_dates_is_emitted_with_no_entries() {
+    let Some(db) = TestDb::create().await else {
+        return;
+    };
+    db.add_company("FFARMS", "XCSE", "firstfarms").await;
+    let server = MockServer::start().await;
+    let mut items = firstfarms_items();
+    items.truncate(1);
+    items[0]["content"]["text"] = json!("See the attachment.");
+    serve_feed(&server, "firstfarms", &items, 48).await;
+    let sink = VecSink::default();
+    ingest_firstfarms(&db, &server, &sink).await;
+    let sent = sink.take();
+    let releases = calendar_releases(&sent);
+    assert_eq!(releases.len(), 1);
+    assert!(releases[0].calendar.as_ref().unwrap().entries.is_empty());
+}
+
+#[tokio::test]
+async fn scanning_releases_stops_at_the_window_and_emits_only_calendar_releases() {
+    let Some(db) = TestDb::create().await else {
+        return;
+    };
+    let _ = db;
+    let server = MockServer::start().await;
+    let item = |id: &str, date: &str, title: &str, tags: Value| {
+        json!({
+            "news_id": id,
+            "url": format!("https://mfn.se/one/a/firstfarms/{id}"),
+            "author": {"slug": "firstfarms", "slugs": ["firstfarms"], "tickers": ["XCSE:FFARMS"]},
+            "properties": {"lang": "en", "tags": tags},
+            "content": {"title": title, "publish_date": date, "text": "24 November 2026 Interim report Q3 2026"}
+        })
+    };
+    let cal_tags = json!([":regulatory", "sub:ci:calendar"]);
+    let items = vec![
+        item(
+            "00000000-0000-4000-8000-000000000001",
+            "2026-10-01T06:00:00Z",
+            "Financial calendar 2026 update",
+            cal_tags.clone(),
+        ),
+        item(
+            "00000000-0000-4000-8000-000000000002",
+            "2026-09-01T06:00:00Z",
+            "Some news",
+            json!([":regulatory"]),
+        ),
+        item(
+            "00000000-0000-4000-8000-000000000003",
+            "2026-05-01T06:00:00Z",
+            "Financial calendar 2026",
+            cal_tags.clone(),
+        ),
+        item(
+            "00000000-0000-4000-8000-000000000004",
+            "2024-01-01T06:00:00Z",
+            "Financial calendar 2024",
+            cal_tags.clone(),
+        ),
+        item(
+            "00000000-0000-4000-8000-000000000005",
+            "2023-01-01T06:00:00Z",
+            "Financial calendar 2023",
+            cal_tags,
+        ),
+        item(
+            "00000000-0000-4000-8000-000000000006",
+            "2022-01-01T06:00:00Z",
+            "Some old news",
+            json!([":regulatory"]),
+        ),
+    ];
+    serve_feed(&server, "firstfarms", &items, 2).await;
+    let sink = VecSink::default();
+    let mut feed = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
+    let from = "2025-10-30T00:00:00Z".parse().unwrap();
+    let (sent, pages) = chronicle_lib::nordic::ingest::scan_calendar_releases(
+        &mut feed,
+        &sink,
+        &firstfarms(),
+        "firstfarms",
+        from,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (sent, pages),
+        (2, 2),
+        "stops after the page that reaches the window"
+    );
+    let events = sink.take();
+    let ids: Vec<&str> = events.iter().map(|(_, e)| e.source_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000003"
+        ]
+    );
+    assert!(events
+        .iter()
+        .all(|(_, e)| e.event_type == "report_calendar_release"));
+    assert_eq!(requests_to(&server, "/all/").await, 2);
 }

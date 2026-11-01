@@ -10,7 +10,9 @@
 use chronicle_lib::nordic::calendar::{refresh_company, MfnClient, MFN_BASE_URL};
 use chronicle_lib::nordic::db;
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
+use chronicle_lib::nordic::ingest::scan_calendar_releases;
 use chronicle_lib::registry;
+use chrono::Utc;
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
 use std::process::ExitCode;
@@ -29,6 +31,18 @@ struct Args {
     /// Publish every calendar, even when unchanged since the last snapshot.
     #[arg(long, env = "NORDIC_CALENDAR_FORCE")]
     force: bool,
+
+    /// Before refreshing, page each company's MFN news feed back this many
+    /// months (default 18) and publish a `report_calendar_release` event for
+    /// every calendar release found.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "18",
+        value_name = "MONTHS"
+    )]
+    scan_releases: Option<u32>,
 
     #[arg(long, env = "KAFKA_BROKERS")]
     kafka_brokers: String,
@@ -70,6 +84,19 @@ async fn run(args: Args) -> anyhow::Result<bool> {
 
     let mut failed = 0;
     for c in &companies {
+        if let (Some(months), Some(slug)) = (args.scan_releases, c.mfn_slug.as_deref()) {
+            let from = Utc::now() - chrono::Months::new(months);
+            match scan_calendar_releases(&mut client, &sink, c, slug, from).await {
+                Ok((sent, pages)) => {
+                    info!(ticker = %c.ticker, sent, pages, "calendar releases scanned")
+                }
+                Err(e) => {
+                    failed += 1;
+                    error!(ticker = %c.ticker, error = %e, "calendar release scan failed");
+                    continue;
+                }
+            }
+        }
         match refresh_company(&pool, &mut client, &sink, c, args.force).await {
             Ok(outcome) => info!(ticker = %c.ticker, ?outcome, "calendar checked"),
             Err(e) => {

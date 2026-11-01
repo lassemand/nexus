@@ -8,9 +8,10 @@
 //! message for the company was acknowledged, so a failed publish loses nothing.
 
 use super::calendar::{self, MfnClient, Refresh};
+use super::calendar_release::parse_calendar_release;
 use super::classify::classify_item;
 use super::db::{self, Company};
-use super::events::{publish, release_event, EventSink};
+use super::events::{calendar_release_event, publish, release_event, EventSink};
 use super::feed::{fetch_feed_page, first_page_url, NewsItem};
 use super::insiders::{self, insider_key, InsiderSink, InsiderStats};
 use chrono::{DateTime, Duration, Utc};
@@ -30,6 +31,8 @@ pub struct CompanyOutcome {
     pub published: usize,
     /// A calendar notice newer than the cursor at the start of the run.
     pub calendar_announced: bool,
+    /// `report_calendar_release` events published.
+    pub calendar_releases: usize,
     /// Pages fetched.
     pub pages: usize,
     /// The cursor after the run.
@@ -120,6 +123,16 @@ pub async fn ingest_company(
             if !checked_isin {
                 checked_isin = true;
                 store_isin(pool, company, slug, &item.author_isins).await;
+            }
+            if let Some(release) = parse_calendar_release(item) {
+                publish(
+                    sink,
+                    company,
+                    &calendar_release_event(company, item, &release),
+                )
+                .await?;
+                outcome.calendar_releases += 1;
+                newest_published = newest_published.max(Some(item.published_at));
             }
             if finnish && insiders::is_managers_transaction(item) {
                 insider_items.push(item.clone());
@@ -622,4 +635,57 @@ mod mapping_tests {
             "{p:?}"
         );
     }
+}
+
+/// Pages one company's feed back to `from` and publishes a
+/// `report_calendar_release` event for every calendar release in it. Publishes
+/// nothing else and touches no cursor, so it can run any time: signal upserts
+/// per news id. Returns the number of events sent and pages read.
+pub async fn scan_calendar_releases(
+    feed: &mut MfnClient,
+    sink: &dyn EventSink,
+    company: &Company,
+    slug: &str,
+    from: DateTime<Utc>,
+) -> anyhow::Result<(usize, usize)> {
+    let mut pages = 0;
+    let mut sent = 0;
+    let mut checked = false;
+    let mut url = first_page_url(&feed.base()?, slug)?;
+    loop {
+        let page = fetch_feed_page(feed, url).await?;
+        pages += 1;
+        let oldest = page.items.iter().map(|i| i.published_at).min();
+        for item in &page.items {
+            if !belongs_to(company, slug, item) {
+                continue;
+            }
+            if !checked {
+                checked = true;
+                refuse_wrong_company(company, slug, item)?;
+            }
+            if item.published_at < from {
+                continue;
+            }
+            if let Some(release) = parse_calendar_release(item) {
+                publish(
+                    sink,
+                    company,
+                    &calendar_release_event(company, item, &release),
+                )
+                .await?;
+                sent += 1;
+            }
+        }
+        let Some(next) = page.next_url else { break };
+        if oldest.is_some_and(|o| o < from) {
+            break;
+        }
+        if pages >= MAX_PAGES {
+            error!(ticker = %company.ticker, pages, "page cap reached, stopping");
+            break;
+        }
+        url = next;
+    }
+    Ok((sent, pages))
 }

@@ -6,12 +6,15 @@
 //! company's events stay in order on one partition.
 
 use super::calendar::CalendarEntry;
+use super::calendar_release::ReleaseCalendar;
 use super::classify::Classification;
 use super::db::Company;
 use super::feed::NewsItem;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono_tz::Tz;
 use model::generated::{ReportCalendar, ScheduledReport, SpecialEvent};
+use model::nordic::MFN_TIMEZONE;
 use prost::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
@@ -153,6 +156,58 @@ pub fn calendar_event(
     }
 }
 
+/// An issuer-local `time` on `date` as Stockholm time (`MFN_TIMEZONE`), the zone
+/// of every `ScheduledReport`. `None` when the exchange or its zone is unknown
+/// or the local time does not exist on that date.
+pub fn to_mfn_time(exchange_mic: &str, date: NaiveDate, time: NaiveTime) -> Option<NaiveTime> {
+    let issuer: Tz = model::exchange::timezone(exchange_mic)?.parse().ok()?;
+    let mfn: Tz = MFN_TIMEZONE.parse().ok()?;
+    let local = issuer
+        .from_local_datetime(&date.and_time(time))
+        .earliest()?;
+    Some(local.with_timezone(&mfn).time())
+}
+
+/// One `report_calendar_release` event for a calendar release `item` of
+/// `company`: its report lines, with times converted to Stockholm time. Sent
+/// even when `release` has no entries. `occurred_at` and the calendar's
+/// `fetched_at` are the publish instant. Signal stores it as a source and
+/// decides against the MFN page; nothing is merged here.
+pub fn calendar_release_event(
+    company: &Company,
+    item: &NewsItem,
+    release: &ReleaseCalendar,
+) -> SpecialEvent {
+    let entries: Vec<CalendarEntry> = release
+        .entries
+        .iter()
+        .map(|e| CalendarEntry {
+            time: e
+                .time
+                .and_then(|t| to_mfn_time(&company.exchange_mic, e.date, t)),
+            ..e.clone()
+        })
+        .collect();
+    SpecialEvent {
+        ticker: company.ticker.clone(),
+        exchange_mic: company.exchange_mic.clone(),
+        event_type: "report_calendar_release".into(),
+        occurred_at_unix_secs: release.published_at.timestamp(),
+        description: item.title.clone(),
+        source: SOURCE_MFN.into(),
+        source_id: release.news_id.to_string(),
+        url: item.url.clone().unwrap_or_default(),
+        lang: release.lang.clone().unwrap_or_default(),
+        tags: item.tags.clone(),
+        company_name: company.name.clone().unwrap_or_default(),
+        calendar: Some(ReportCalendar {
+            fetched_at_unix_secs: release.published_at.timestamp(),
+            entries: entries.iter().map(scheduled).collect(),
+        }),
+        ..Default::default()
+    }
+}
+
 /// Hash of a calendar's entries for change detection: FNV-1a 64 over a sorted,
 /// field-separated serialisation, so it is stable across runs, entry order and
 /// Rust versions. `fetched_at` is not part of it.
@@ -261,6 +316,65 @@ mod tests {
         );
         assert!(release_event(&c, &item(), &class(None, false, false)).is_none());
         assert!(release_event(&c, &item(), &class(None, false, true)).is_none());
+    }
+
+    fn release_of(entries: Vec<CalendarEntry>) -> ReleaseCalendar {
+        ReleaseCalendar {
+            news_id: Uuid::nil(),
+            published_at: Utc.with_ymd_and_hms(2025, 12, 23, 9, 38, 59).unwrap(),
+            lang: Some("en".into()),
+            entries,
+        }
+    }
+
+    fn entry_at(date: &str, time: Option<(u32, u32)>) -> CalendarEntry {
+        CalendarEntry {
+            date: date.parse().unwrap(),
+            time: time.and_then(|(h, m)| NaiveTime::from_hms_opt(h, m, 0)),
+            label: "Quarterly update".into(),
+            kind: ReportKind::Interim,
+            fiscal_period: Some("2026-Q3".into()),
+        }
+    }
+
+    #[test]
+    fn release_event_carries_the_source_fields_and_converts_times() {
+        let mut fi = company();
+        fi.exchange_mic = "XHEL".into();
+        let release = release_of(vec![
+            entry_at("2026-11-24", Some((8, 0))),
+            entry_at("2026-08-26", None),
+        ]);
+        let e = calendar_release_event(&fi, &item(), &release);
+        assert_eq!(e.event_type, "report_calendar_release");
+        assert_eq!(e.source, "mfn");
+        assert_eq!(e.source_id, Uuid::nil().to_string());
+        assert_eq!(e.lang, "en");
+        assert_eq!(e.occurred_at_unix_secs, release.published_at.timestamp());
+        let cal = e.calendar.unwrap();
+        assert_eq!(cal.fetched_at_unix_secs, release.published_at.timestamp());
+        assert_eq!(cal.entries[0].expected_time, "07:00");
+        assert_eq!(cal.entries[0].fiscal_period, "2026-Q3");
+        assert_eq!(cal.entries[1].expected_time, "");
+    }
+
+    #[test]
+    fn danish_times_are_unchanged_and_unknown_exchanges_drop_the_time() {
+        let release = release_of(vec![entry_at("2026-11-24", Some((8, 0)))]);
+        let mut dk = company();
+        dk.exchange_mic = "XCSE".into();
+        let e = calendar_release_event(&dk, &item(), &release);
+        assert_eq!(e.calendar.unwrap().entries[0].expected_time, "08:00");
+        let mut other = company();
+        other.exchange_mic = "XNAS".into();
+        let e = calendar_release_event(&other, &item(), &release);
+        assert_eq!(e.calendar.unwrap().entries[0].expected_time, "");
+    }
+
+    #[test]
+    fn a_release_without_entries_is_still_an_event() {
+        let e = calendar_release_event(&company(), &item(), &release_of(vec![]));
+        assert!(e.calendar.unwrap().entries.is_empty());
     }
 
     #[test]
