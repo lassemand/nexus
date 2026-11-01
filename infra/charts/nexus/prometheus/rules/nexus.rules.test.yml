@@ -622,3 +622,38 @@ tests:
       - eval_time: 30m
         alertname: LokiRequestRateLimited
         exp_alerts: []
+
+  # ── NordicSlackPostsFailing: any failed Slack post in 30m ───────────────
+  - name: Slack failures fire, then clear
+    input_series:
+      - series: 'nordic_slack_posts_total{result="failed"}'
+        values: '0+0x4 1+0x60'
+      - series: 'nordic_slack_posts_total{result="posted"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: NordicSlackPostsFailing
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: NordicSlackPostsFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "nordic-live failed to post to Slack"
+              description: "nordic-live failed to post 1 results release(s) to Slack in the last 30 minutes. See `slack post failed` in the nordic-live logs for the Slack error code."
+      - eval_time: 50m # the failure has left the 30m window
+        alertname: NordicSlackPostsFailing
+        exp_alerts: []
+
+  - name: Successful Slack posts alone never alert
+    input_series:
+      - series: 'nordic_slack_posts_total{result="failed"}'
+        values: '0+0x60'
+      - series: 'nordic_slack_posts_total{result="posted"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: NordicSlackPostsFailing
+        exp_alerts: []
+

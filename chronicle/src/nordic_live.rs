@@ -175,6 +175,9 @@ async fn run(args: Args) -> anyhow::Result<()> {
         .max_connections(3)
         .connect(&args.database_url)
         .await?;
+    // The Slack claim table lives in chronicle's migrations; like the other
+    // binaries, apply them so a fresh database works without waiting for the poll.
+    sqlx::migrate!("./migrations").run(&pool).await?;
     let mut companies = load_companies(&pool).await?;
     info!(companies = companies.len(), url = %args.ws_url, "nordic-live starting");
 
