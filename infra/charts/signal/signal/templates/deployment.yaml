@@ -20,6 +20,11 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["/usr/local/bin/signal"]
 
+          # Prometheus scrapes /metrics here (templates/podmonitor.yaml).
+          ports:
+            - name: metrics
+              containerPort: 9464
+
           # All runtime configuration is injected from the ESO-managed secret.
           # No env vars are hardcoded here; see templates/external-secret.yaml.
           envFrom:

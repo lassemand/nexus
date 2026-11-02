@@ -371,3 +371,45 @@ groups:
           description: >-
             The last run of job {{ $labels.job }} failed. See its pod logs
             (kubectl logs -n chronicle -l job-name=<name>) and the Loki logs.
+
+  - name: nexus.signal
+    rules:
+      # The Nordic store loop retries a failed DB write with backoff and blocks
+      # the whole consumer until it succeeds, so every topic is delayed.
+      - alert: SignalStoreBlocked
+        expr: signal_store_blocked == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "signal's consumer is blocked retrying a store"
+          description: >-
+            The Nordic report store has been failing for 10 minutes and blocks
+            every topic. Check the database and `failed to store Nordic report
+            event` in the signal logs.
+
+      # A database error on the insider path is logged and the offset committed.
+      - alert: SignalInsiderDataLoss
+        expr: increase(signal_insider_db_errors_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "signal dropped insider transactions"
+          description: >-
+            {{ $value | humanize }} insider transaction(s) were rejected by the
+            database and committed without being stored in the last hour. See
+            `insider transaction rejected by the database` in the signal logs.
+
+      # The threshold 1000 is a first guess; tune it from the lag seen in normal
+      # operation (a backfill of daily bars legitimately exceeds it for a while).
+      - alert: SignalConsumerLagHigh
+        expr: sum(kafka_consumergroup_lag{consumergroup="signal"}) > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "signal's consumer lag stays high"
+          description: >-
+            signal's consumer group is {{ $value | humanize }} messages behind
+            and has been for 15 minutes. Check the signal dashboard.

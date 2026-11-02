@@ -82,16 +82,18 @@ struct Args {
 /// - Resolves the sector with [`resolve_sector`]; logs an error and returns
 ///   on API failure, but the caller should still commit the offset.
 /// - On success, persists the mapping to Postgres.
+///
+/// Returns how the message ended, for the metrics.
 async fn handle_ticker_registration<P: CompanyProvider>(
     payload: &[u8],
     pool: &PgPool,
     sector_provider: &P,
-) {
+) -> &'static str {
     let msg = match TickerRegistration::decode(payload) {
         Ok(m) => m,
         Err(e) => {
             warn!("malformed TickerRegistration protobuf, skipping: {e}");
-            return;
+            return "skipped_malformed";
         }
     };
 
@@ -103,15 +105,21 @@ async fn handle_ticker_registration<P: CompanyProvider>(
         msg.exchange_mic.clone()
     };
     if msg.unregister {
-        match delete_company(pool, &ticker, &exchange_mic).await {
+        return match delete_company(pool, &ticker, &exchange_mic).await {
             Ok(true) => {
-                info!(ticker = %ticker, exchange_mic = %exchange_mic, "ticker unregistered")
+                info!(ticker = %ticker, exchange_mic = %exchange_mic, "ticker unregistered");
+                "stored"
             }
-            Ok(false) => info!(ticker = %ticker, exchange_mic = %exchange_mic,
-                               "unregistration for a ticker that is not registered, nothing to do"),
-            Err(e) => error!(ticker = %ticker, error = %e, "failed to delete company from DB"),
-        }
-        return;
+            Ok(false) => {
+                info!(ticker = %ticker, exchange_mic = %exchange_mic,
+                      "unregistration for a ticker that is not registered, nothing to do");
+                "skipped_invalid"
+            }
+            Err(e) => {
+                error!(ticker = %ticker, error = %e, "failed to delete company from DB");
+                "db_error_committed"
+            }
+        };
     }
     // Resolve currency: use explicit proto value if present, else derive from MIC.
     let currency = if msg.currency.is_empty() {
@@ -120,7 +128,7 @@ async fn handle_ticker_registration<P: CompanyProvider>(
             None => {
                 warn!(ticker = %ticker, exchange_mic = %exchange_mic,
                       "registration has no currency and MIC has no known currency, skipping");
-                return;
+                return "skipped_invalid";
             }
         }
     } else {
@@ -134,17 +142,18 @@ async fn handle_ticker_registration<P: CompanyProvider>(
         Err(e) => {
             error!(ticker = %ticker, exchange_mic = %exchange_mic, error = %e,
                    "Polygon sector lookup failed, skipping ticker");
-            return;
+            return "skipped_invalid";
         }
     };
 
     if let Err(e) = upsert_company(pool, &ticker, &exchange_mic, &currency, sector).await {
         error!(ticker = %ticker, error = %e, "failed to persist company to DB");
-        return;
+        return "db_error_committed";
     }
 
     info!(ticker = %ticker, exchange_mic = %exchange_mic, currency = %currency,
           "ticker registered and sector persisted");
+    "stored"
 }
 
 /// Longest wait between retries of a failed Nordic report store.
@@ -173,6 +182,11 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
+
+    // Metrics must not take signal down: a port that cannot bind is only logged.
+    if let Err(e) = telemetry::serve("signal", 9464).await {
+        error!(error = %e, "metrics endpoint unavailable, continuing without it");
+    }
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -238,324 +252,341 @@ async fn main() {
             Err(e) => error!("kafka recv error: {e}"),
             Ok(msg) => {
                 let topic = msg.topic();
-                let Some(payload) = msg.payload() else {
-                    warn!(topic, "empty payload, skipping");
-                    consumer.commit_message(&msg, CommitMode::Async).ok();
-                    continue;
-                };
-
-                if topic == args.tickers_topic {
-                    handle_ticker_registration(payload, &pool, &sector_provider).await;
-                } else if topic == args.topic {
-                    let event = match EarningsEvent::decode(payload) {
-                        Ok(e) => e,
-                        Err(e) => {
-                            error!("protobuf decode failed: {e}");
-                            consumer.commit_message(&msg, CommitMode::Async).ok();
-                            continue;
-                        }
+                let started = std::time::Instant::now();
+                // Every exit of this block yields the message's outcome label.
+                let outcome: &str = 'handled: {
+                    let mut outcome = "stored";
+                    let Some(payload) = msg.payload() else {
+                        warn!(topic, "empty payload, skipping");
+                        break 'handled "skipped_empty";
                     };
 
-                    let ticker = event.ticker.to_uppercase();
-                    match is_registered(&pool, &ticker).await {
-                        Ok(false) => {
-                            debug!(ticker = %ticker, "skipping unregistered ticker");
-                            consumer.commit_message(&msg, CommitMode::Async).ok();
-                            continue;
-                        }
-                        Err(e) => {
-                            error!(ticker = %ticker, error = %e, "DB registration check failed, skipping");
-                            consumer.commit_message(&msg, CommitMode::Async).ok();
-                            continue;
-                        }
-                        Ok(true) => {}
-                    }
-
-                    info!("evaluating earnings strategy for {ticker}");
-
-                    match strategy::evaluate(&pricer, &event).await {
-                        Ok(result) => {
-                            info!(
-                                ticker = %result.ticker,
-                                buy_date = %result.buy_date,
-                                earnings_date = %result.earnings_date,
-                                buy_price = result.buy_price,
-                                sell_price = result.sell_price,
-                                pnl = result.pnl,
-                                pnl_pct = result.pnl_pct,
-                                "trade simulated"
-                            );
-
-                            if let Err(e) = insert_trade_result(&pool, &result).await {
-                                error!("db insert failed for {}: {e}", result.ticker);
-                            }
-                        }
-                        Err(e) => error!("strategy evaluation failed for {}: {e}", event.ticker),
-                    }
-
-                    // Compute and store pre-event features regardless of strategy outcome.
-                    let event_date =
-                        chrono::DateTime::from_timestamp(event.announced_at_unix_secs, 0)
-                            .map(|dt| dt.date_naive());
-
-                    if let Some(event_date) = event_date {
-                        match fetch_bars_before(&pool, &ticker, event_date, 80).await {
-                            Ok(bars) => {
-                                let features = compute_pre_event_features(&bars);
-                                if let Err(e) = insert_event_signal(
-                                    &pool, &ticker, "earnings", event_date, &features,
-                                )
-                                .await
-                                {
-                                    error!(ticker = %ticker, error = %e, "failed to insert event signal");
-                                }
-                            }
+                    if topic == args.tickers_topic {
+                        outcome =
+                            handle_ticker_registration(payload, &pool, &sector_provider).await;
+                    } else if topic == args.topic {
+                        let event = match EarningsEvent::decode(payload) {
+                            Ok(e) => e,
                             Err(e) => {
-                                error!(ticker = %ticker, error = %e, "failed to fetch bars for feature computation");
-                            }
-                        }
-                    }
-                } else if topic == args.special_events_topic {
-                    let event = match SpecialEvent::decode(payload) {
-                        Ok(e) => e,
-                        Err(e) => {
-                            warn!("malformed SpecialEvent protobuf, skipping: {e}");
-                            consumer.commit_message(&msg, CommitMode::Async).ok();
-                            continue;
-                        }
-                    };
-
-                    if event.source == reports::SOURCE_MFN {
-                        let message = match reports::parse(&event) {
-                            Ok(m) => m,
-                            Err(e) => {
-                                warn!(ticker = %event.ticker, event_type = %event.event_type,
-                                      error = %e, "invalid Nordic report event, skipping");
-                                consumer.commit_message(&msg, CommitMode::Async).ok();
-                                continue;
+                                error!("protobuf decode failed: {e}");
+                                break 'handled "skipped_malformed";
                             }
                         };
-                        // Nordic reports exist only here and the producer won't
-                        // resend them, so a DB error must not lose the event:
-                        // retry with backoff and only then fall through to the
-                        // commit. This blocks the consumer, which keeps each
-                        // company's events in order.
-                        let mut backoff = Duration::from_secs(1);
-                        loop {
-                            match reports::handle(&pool, &message).await {
-                                Ok(outcome) => {
-                                    info!(ticker = %event.ticker, event_type = %event.event_type,
-                                          source_id = %event.source_id, %outcome,
-                                          "Nordic report event stored");
-                                    break;
+
+                        let ticker = event.ticker.to_uppercase();
+                        match is_registered(&pool, &ticker).await {
+                            Ok(false) => {
+                                debug!(ticker = %ticker, "skipping unregistered ticker");
+                                break 'handled "skipped_invalid";
+                            }
+                            Err(e) => {
+                                error!(ticker = %ticker, error = %e, "DB registration check failed, skipping");
+                                break 'handled "db_error_committed";
+                            }
+                            Ok(true) => {}
+                        }
+
+                        info!("evaluating earnings strategy for {ticker}");
+
+                        match strategy::evaluate(&pricer, &event).await {
+                            Ok(result) => {
+                                info!(
+                                    ticker = %result.ticker,
+                                    buy_date = %result.buy_date,
+                                    earnings_date = %result.earnings_date,
+                                    buy_price = result.buy_price,
+                                    sell_price = result.sell_price,
+                                    pnl = result.pnl,
+                                    pnl_pct = result.pnl_pct,
+                                    "trade simulated"
+                                );
+
+                                if let Err(e) = insert_trade_result(&pool, &result).await {
+                                    error!("db insert failed for {}: {e}", result.ticker);
+                                    outcome = "db_error_committed";
+                                }
+                            }
+                            Err(e) => {
+                                error!("strategy evaluation failed for {}: {e}", event.ticker)
+                            }
+                        }
+
+                        // Compute and store pre-event features regardless of strategy outcome.
+                        let event_date =
+                            chrono::DateTime::from_timestamp(event.announced_at_unix_secs, 0)
+                                .map(|dt| dt.date_naive());
+
+                        if let Some(event_date) = event_date {
+                            match fetch_bars_before(&pool, &ticker, event_date, 80).await {
+                                Ok(bars) => {
+                                    let features = compute_pre_event_features(&bars);
+                                    if let Err(e) = insert_event_signal(
+                                        &pool, &ticker, "earnings", event_date, &features,
+                                    )
+                                    .await
+                                    {
+                                        error!(ticker = %ticker, error = %e, "failed to insert event signal");
+                                        outcome = "db_error_committed";
+                                    }
                                 }
                                 Err(e) => {
-                                    error!(ticker = %event.ticker, event_type = %event.event_type,
-                                           error = %e, retry_in = ?backoff,
-                                           "failed to store Nordic report event, retrying");
-                                    tokio::time::sleep(backoff).await;
-                                    backoff = (backoff * 2).min(MAX_STORE_BACKOFF);
+                                    error!(ticker = %ticker, error = %e, "failed to fetch bars for feature computation");
+                                    outcome = "db_error_committed";
                                 }
                             }
                         }
-                    } else {
-                        let Some(occurred_at) =
-                            DateTime::from_timestamp(event.occurred_at_unix_secs, 0)
+                    } else if topic == args.special_events_topic {
+                        let event = match SpecialEvent::decode(payload) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                warn!("malformed SpecialEvent protobuf, skipping: {e}");
+                                break 'handled "skipped_malformed";
+                            }
+                        };
+
+                        if event.source == reports::SOURCE_MFN {
+                            let message = match reports::parse(&event) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    warn!(ticker = %event.ticker, event_type = %event.event_type,
+                                      error = %e, "invalid Nordic report event, skipping");
+                                    break 'handled "skipped_invalid";
+                                }
+                            };
+                            // Nordic reports exist only here and the producer won't
+                            // resend them, so a DB error must not lose the event:
+                            // retry with backoff and only then fall through to the
+                            // commit. This blocks the consumer, which keeps each
+                            // company's events in order.
+                            let mut backoff = Duration::from_secs(1);
+                            loop {
+                                match reports::handle(&pool, &message).await {
+                                    Ok(outcome) => {
+                                        info!(ticker = %event.ticker, event_type = %event.event_type,
+                                          source_id = %event.source_id, %outcome,
+                                          "Nordic report event stored");
+                                        metrics::gauge!("signal_store_blocked").set(0.0);
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        error!(ticker = %event.ticker, event_type = %event.event_type,
+                                           error = %e, retry_in = ?backoff,
+                                           "failed to store Nordic report event, retrying");
+                                        metrics::counter!("signal_messages_total", "topic" => topic.to_string(), "outcome" => "db_error_retried").increment(1);
+                                        metrics::counter!("signal_store_retries_total", "topic" => topic.to_string()).increment(1);
+                                        metrics::gauge!("signal_store_blocked").set(1.0);
+                                        tokio::time::sleep(backoff).await;
+                                        backoff = (backoff * 2).min(MAX_STORE_BACKOFF);
+                                    }
+                                }
+                            }
+                        } else {
+                            let Some(occurred_at) =
+                                DateTime::from_timestamp(event.occurred_at_unix_secs, 0)
+                            else {
+                                warn!(
+                                    ticker = %event.ticker,
+                                    secs = event.occurred_at_unix_secs,
+                                    "invalid occurred_at timestamp, skipping"
+                                );
+                                break 'handled "skipped_invalid";
+                            };
+
+                            let description = if event.description.is_empty() {
+                                None
+                            } else {
+                                Some(event.description.as_str())
+                            };
+
+                            if let Err(e) = upsert_special_event(
+                                &pool,
+                                &event.ticker,
+                                &event.event_type,
+                                occurred_at,
+                                description,
+                            )
+                            .await
+                            {
+                                warn!(ticker = %event.ticker, error = %e, "failed to persist special event");
+                                outcome = "db_error_committed";
+                            } else {
+                                info!(
+                                    ticker = %event.ticker,
+                                    event_type = %event.event_type,
+                                    occurred_at = %occurred_at,
+                                    "special event persisted"
+                                );
+                            }
+                        }
+                    } else if topic == args.market_bars_topic {
+                        let event = match MarketEvent::decode(payload) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                warn!("malformed MarketEvent protobuf, skipping: {e}");
+                                break 'handled "skipped_malformed";
+                            }
+                        };
+
+                        let Some(date) = DateTime::from_timestamp(event.timestamp_unix_secs, 0)
+                            .map(|dt| dt.date_naive())
                         else {
                             warn!(
                                 ticker = %event.ticker,
-                                secs = event.occurred_at_unix_secs,
-                                "invalid occurred_at timestamp, skipping"
+                                secs = event.timestamp_unix_secs,
+                                "invalid bar timestamp, skipping"
                             );
-                            consumer.commit_message(&msg, CommitMode::Async).ok();
-                            continue;
+                            break 'handled "skipped_invalid";
                         };
 
-                        let description = if event.description.is_empty() {
-                            None
-                        } else {
-                            Some(event.description.as_str())
-                        };
-
-                        if let Err(e) = upsert_special_event(
+                        if let Err(e) = upsert_bar(
                             &pool,
                             &event.ticker,
-                            &event.event_type,
-                            occurred_at,
-                            description,
+                            date,
+                            event.open,
+                            event.high,
+                            event.low,
+                            event.close,
+                            event.volume as i64,
                         )
                         .await
                         {
-                            warn!(ticker = %event.ticker, error = %e, "failed to persist special event");
+                            warn!(ticker = %event.ticker, date = %date, error = %e, "failed to persist bar");
+                            outcome = "db_error_committed";
                         } else {
-                            info!(
-                                ticker = %event.ticker,
-                                event_type = %event.event_type,
-                                occurred_at = %occurred_at,
-                                "special event persisted"
-                            );
+                            info!(ticker = %event.ticker, date = %date, "bar persisted");
                         }
-                    }
-                } else if topic == args.market_bars_topic {
-                    let event = match MarketEvent::decode(payload) {
-                        Ok(e) => e,
-                        Err(e) => {
-                            warn!("malformed MarketEvent protobuf, skipping: {e}");
-                            consumer.commit_message(&msg, CommitMode::Async).ok();
-                            continue;
-                        }
-                    };
 
-                    let Some(date) = DateTime::from_timestamp(event.timestamp_unix_secs, 0)
-                        .map(|dt| dt.date_naive())
-                    else {
-                        warn!(
-                            ticker = %event.ticker,
-                            secs = event.timestamp_unix_secs,
-                            "invalid bar timestamp, skipping"
-                        );
-                        consumer.commit_message(&msg, CommitMode::Async).ok();
-                        continue;
-                    };
-
-                    if let Err(e) = upsert_bar(
-                        &pool,
-                        &event.ticker,
-                        date,
-                        event.open,
-                        event.high,
-                        event.low,
-                        event.close,
-                        event.volume as i64,
-                    )
-                    .await
-                    {
-                        warn!(ticker = %event.ticker, date = %date, error = %e, "failed to persist bar");
-                    } else {
-                        info!(ticker = %event.ticker, date = %date, "bar persisted");
-                    }
-
-                    // Lazy truth labeling: check if this bar completes the
-                    // post-event window for any unlabeled event_signals rows.
-                    match fetch_unlabeled_events_needing_bar(&pool, &event.ticker, date).await {
-                        Err(e) => {
-                            warn!(ticker = %event.ticker, error = %e, "failed to fetch unlabeled events")
-                        }
-                        Ok(unlabeled_events) => {
-                            for unlabeled in unlabeled_events {
-                                // Fetch baseline + pre-event bars, then post-event bars separately
-                                // so we don't need a date field on Bar to split them.
-                                let pre_bars = match fetch_bars_before(
-                                    &pool,
-                                    &event.ticker,
-                                    unlabeled.event_date,
-                                    80,
-                                )
-                                .await
-                                {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to fetch pre-event bars for truth labeling");
-                                        continue;
-                                    }
-                                };
-                                let post_bars = match fetch_bars_after(
-                                    &pool,
-                                    &event.ticker,
-                                    unlabeled.event_date,
-                                    5,
-                                )
-                                .await
-                                {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to fetch post-event bars for truth labeling");
-                                        continue;
-                                    }
-                                };
-                                let event_idx = pre_bars.len();
-                                let mut combined = pre_bars;
-                                combined.extend(post_bars);
-                                if let Some(ar) = compute_post_event_ar(&combined, event_idx) {
-                                    if let Err(e) =
-                                        label_event_truth(&pool, unlabeled.id, ar.ar_1d, ar.ar_5d)
-                                            .await
+                        // Lazy truth labeling: check if this bar completes the
+                        // post-event window for any unlabeled event_signals rows.
+                        match fetch_unlabeled_events_needing_bar(&pool, &event.ticker, date).await {
+                            Err(e) => {
+                                warn!(ticker = %event.ticker, error = %e, "failed to fetch unlabeled events")
+                            }
+                            Ok(unlabeled_events) => {
+                                for unlabeled in unlabeled_events {
+                                    // Fetch baseline + pre-event bars, then post-event bars separately
+                                    // so we don't need a date field on Bar to split them.
+                                    let pre_bars = match fetch_bars_before(
+                                        &pool,
+                                        &event.ticker,
+                                        unlabeled.event_date,
+                                        80,
+                                    )
+                                    .await
                                     {
-                                        warn!(id = unlabeled.id, error = %e, "failed to label event truth");
-                                    } else {
-                                        info!(
-                                            id = unlabeled.id,
-                                            event_date = %unlabeled.event_date,
-                                            ticker = %event.ticker,
-                                            ar_1d = ar.ar_1d,
-                                            ar_5d = ar.ar_5d,
-                                            "event truth labeled"
-                                        );
+                                        Ok(b) => b,
+                                        Err(e) => {
+                                            warn!(error = %e, "failed to fetch pre-event bars for truth labeling");
+                                            continue;
+                                        }
+                                    };
+                                    let post_bars = match fetch_bars_after(
+                                        &pool,
+                                        &event.ticker,
+                                        unlabeled.event_date,
+                                        5,
+                                    )
+                                    .await
+                                    {
+                                        Ok(b) => b,
+                                        Err(e) => {
+                                            warn!(error = %e, "failed to fetch post-event bars for truth labeling");
+                                            continue;
+                                        }
+                                    };
+                                    let event_idx = pre_bars.len();
+                                    let mut combined = pre_bars;
+                                    combined.extend(post_bars);
+                                    if let Some(ar) = compute_post_event_ar(&combined, event_idx) {
+                                        if let Err(e) = label_event_truth(
+                                            &pool,
+                                            unlabeled.id,
+                                            ar.ar_1d,
+                                            ar.ar_5d,
+                                        )
+                                        .await
+                                        {
+                                            warn!(id = unlabeled.id, error = %e, "failed to label event truth");
+                                        } else {
+                                            info!(
+                                                id = unlabeled.id,
+                                                event_date = %unlabeled.event_date,
+                                                ticker = %event.ticker,
+                                                ar_1d = ar.ar_1d,
+                                                ar_5d = ar.ar_5d,
+                                                "event truth labeled"
+                                            );
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                } else if topic == args.daily_bars_topic {
-                    let message = match DailyBar::decode(payload) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            warn!("malformed DailyBar protobuf, skipping: {e}");
-                            consumer.commit_message(&msg, CommitMode::Async).ok();
-                            continue;
-                        }
-                    };
-                    let bar = match daily_bars::parse(&message) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            warn!(ticker = %message.ticker, date = %message.date, error = %e,
+                    } else if topic == args.daily_bars_topic {
+                        let message = match DailyBar::decode(payload) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                warn!("malformed DailyBar protobuf, skipping: {e}");
+                                break 'handled "skipped_malformed";
+                            }
+                        };
+                        let bar = match daily_bars::parse(&message) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                warn!(ticker = %message.ticker, date = %message.date, error = %e,
                                   "invalid daily bar, skipping");
-                            consumer.commit_message(&msg, CommitMode::Async).ok();
-                            continue;
-                        }
-                    };
-                    // Same pattern as the other bar topics: a DB error is logged and the
-                    // offset committed. saxo-stream republishes the last ten trading days
-                    // every day, so a dropped bar heals itself.
-                    if let Err(e) = daily_bars::store(&pool, &bar).await {
-                        warn!(ticker = %bar.ticker, date = %bar.date, error = %e,
+                                break 'handled "skipped_invalid";
+                            }
+                        };
+                        // Same pattern as the other bar topics: a DB error is logged and the
+                        // offset committed. saxo-stream republishes the last ten trading days
+                        // every day, so a dropped bar heals itself.
+                        if let Err(e) = daily_bars::store(&pool, &bar).await {
+                            warn!(ticker = %bar.ticker, date = %bar.date, error = %e,
                               "failed to persist daily bar");
-                    } else {
-                        debug!(ticker = %bar.ticker, mic = %bar.exchange_mic, date = %bar.date,
+                            outcome = "db_error_committed";
+                        } else {
+                            debug!(ticker = %bar.ticker, mic = %bar.exchange_mic, date = %bar.date,
                                "daily bar persisted");
-                        reaction_queue.add(
-                            &bar.ticker,
-                            &bar.exchange_mic,
-                            bar.date,
-                            std::time::Instant::now(),
-                        );
-                    }
-                } else if topic == args.insider_transactions_topic {
-                    let txn = match UnifiedInsiderTransaction::decode(payload) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            warn!("malformed UnifiedInsiderTransaction protobuf, skipping: {e}");
-                            consumer.commit_message(&msg, CommitMode::Async).ok();
-                            continue;
+                            reaction_queue.add(
+                                &bar.ticker,
+                                &bar.exchange_mic,
+                                bar.date,
+                                std::time::Instant::now(),
+                            );
                         }
-                    };
+                    } else if topic == args.insider_transactions_topic {
+                        let txn = match UnifiedInsiderTransaction::decode(payload) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warn!(
+                                    "malformed UnifiedInsiderTransaction protobuf, skipping: {e}"
+                                );
+                                break 'handled "skipped_malformed";
+                            }
+                        };
 
-                    // A transient database error is retried until the row is stored,
-                    // and the offset is committed only after that (below): an
-                    // insider transaction exists nowhere else once read, so a
-                    // dropped one is lost. A row the schema itself rejects is
-                    // logged and skipped: retrying it would block the partition.
-                    if let Err(e) = insider_store::store_with_retry(
+                        // A transient database error is retried until the row is stored,
+                        // and the offset is committed only after that (below): an
+                        // insider transaction exists nowhere else once read, so a
+                        // dropped one is lost. A row the schema itself rejects is
+                        // logged and skipped: retrying it would block the partition.
+                        if let Err(e) = insider_store::store_with_retry_counted(
                         "insider transaction",
                         || upsert_insider_filing(&pool, &txn),
                         Duration::from_secs(1),
                         MAX_STORE_BACKOFF,
+                        || {
+                            metrics::counter!("signal_messages_total", "topic" => topic.to_string(), "outcome" => "db_error_retried").increment(1);
+                            metrics::counter!("signal_store_retries_total", "topic" => topic.to_string()).increment(1);
+                        },
                     )
                     .await
                     {
                         error!(ticker = %txn.ticker, filer = %txn.person_name,
                                txn_date = %txn.transaction_date, error = %e,
                                "insider transaction rejected by the database, skipped");
+                        metrics::counter!("signal_insider_db_errors_total").increment(1);
+                        outcome = "db_error_committed";
                     } else {
                         info!(
                             ticker = %txn.ticker,
@@ -568,10 +599,24 @@ async fn main() {
                             "insider transaction persisted"
                         );
                     }
-                } else {
-                    warn!(topic, "message from unknown topic, skipping");
-                }
+                    } else {
+                        warn!(topic, "message from unknown topic, skipping");
+                        outcome = "skipped_invalid";
+                    }
 
+                    outcome
+                };
+
+                metrics::counter!("signal_messages_total", "topic" => topic.to_string(), "outcome" => outcome)
+                    .increment(1);
+                metrics::histogram!("signal_store_duration_seconds", "topic" => topic.to_string())
+                    .record(started.elapsed().as_secs_f64());
+                metrics::gauge!("signal_last_processed_timestamp_seconds", "topic" => topic.to_string())
+                    .set(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0.0, |d| d.as_secs_f64()),
+                    );
                 consumer.commit_message(&msg, CommitMode::Async).ok();
             }
         }

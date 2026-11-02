@@ -33,11 +33,27 @@ pub fn is_transient(e: &sqlx::Error) -> bool {
 
 /// Runs `op` until it succeeds, sleeping `initial` (doubling up to `max`)
 /// between transient failures. Returns the first non-transient error.
+#[cfg(test)]
 pub async fn store_with_retry<F, Fut>(
+    what: &str,
+    op: F,
+    initial: Duration,
+    max: Duration,
+) -> sqlx::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = sqlx::Result<()>>,
+{
+    store_with_retry_counted(what, op, initial, max, || {}).await
+}
+
+/// Like [`store_with_retry`], calling `on_retry` before each wait.
+pub async fn store_with_retry_counted<F, Fut>(
     what: &str,
     mut op: F,
     initial: Duration,
     max: Duration,
+    mut on_retry: impl FnMut(),
 ) -> sqlx::Result<()>
 where
     F: FnMut() -> Fut,
@@ -49,6 +65,7 @@ where
             Ok(()) => return Ok(()),
             Err(e) if is_transient(&e) => {
                 error!(what, error = %e, retry_in = ?backoff, "failed to store, retrying");
+                on_retry();
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(max);
             }
