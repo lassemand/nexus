@@ -374,6 +374,12 @@ pub struct Group {
     pub branches: BTreeSet<String>,
     pub issues: Vec<String>,
     pub pending: VecDeque<QueuedEvent>,
+    /// Effective model of the last start or resume; `None` means no `--model`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Whether `model` came from the set's label rather than the global default.
+    #[serde(default)]
+    pub model_from_set: bool,
     pub last_active: DateTime<Utc>,
     pub last_run: Option<RunOutcome>,
     pub created_at: DateTime<Utc>,
@@ -534,8 +540,6 @@ pub struct Registry {
     pool: PgPool,
     clock: Arc<dyn Clock>,
     idle_days: i64,
-    /// Model recorded on turn outcomes; see `with_model`.
-    model: Option<String>,
 }
 
 impl Registry {
@@ -545,25 +549,7 @@ impl Registry {
             pool,
             clock,
             idle_days,
-            model: None,
         }
-    }
-
-    /// Sets the model recorded on each turn's outcome.
-    ///
-    /// A builder rather than a `new` parameter because the model is the
-    /// dispatcher's concern and every other caller — the CLI, the tests — has
-    /// no opinion on it.
-    ///
-    /// This is the *currently configured* model, not one stored per session. A
-    /// session started before the configuration changed would have its later
-    /// turns recorded under the new value; every start and resume passes the
-    /// current `--model`, so that only misreports a turn a human typed into a
-    /// session older than the change.
-    #[must_use]
-    pub fn with_model(mut self, model: Option<String>) -> Self {
-        self.model = model;
-        self
     }
 
     /// Connects using `DATABASE_URL`, with the idle window from
@@ -596,7 +582,6 @@ impl Registry {
             tx,
             now: self.clock.now(),
             idle_days: self.idle_days,
-            model: self.model.clone(),
         })
     }
 
@@ -916,6 +901,8 @@ fn group_from_row(row: &PgRow, pending: VecDeque<QueuedEvent>) -> Result<Group, 
             .collect(),
         issues: row.try_get("issues")?,
         pending,
+        model: row.try_get("model")?,
+        model_from_set: row.try_get("model_from_set")?,
         last_active: row.try_get("last_active")?,
         last_run: row
             .try_get::<Option<Json<RunOutcome>>, _>("last_run")?
@@ -936,13 +923,36 @@ pub struct RegistryTxn<'a> {
     tx: Transaction<'a, Postgres>,
     now: DateTime<Utc>,
     idle_days: i64,
-    model: Option<String>,
 }
 
 impl RegistryTxn<'_> {
     /// The time this transaction is operating at.
     pub fn now(&self) -> DateTime<Utc> {
         self.now
+    }
+
+    /// The model the group's session was last started or resumed with.
+    async fn group_model(&mut self, slug: &str) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT model FROM session_groups WHERE slug = $1")
+            .bind(slug)
+            .fetch_one(&mut *self.tx)
+            .await
+    }
+
+    /// Records the effective model a session is being started or resumed with.
+    pub async fn set_model(
+        &mut self,
+        key: &GroupKey,
+        model: Option<&str>,
+        from_set: bool,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE session_groups SET model = $2, model_from_set = $3 WHERE slug = $1")
+            .bind(key.slug())
+            .bind(model)
+            .bind(from_set)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
     }
 
     /// Commits, releasing the advisory lock.
@@ -1249,7 +1259,10 @@ impl RegistryTxn<'_> {
                 result: RunResult::Lost,
                 finished_at: self.now,
                 duration: (self.now - started_at).to_std().unwrap_or_default(),
-                model: None,
+                model: sqlx::query_scalar("SELECT model FROM session_groups WHERE slug = $1")
+                    .bind(&slug)
+                    .fetch_one(&mut *self.tx)
+                    .await?,
             };
             sqlx::query("UPDATE session_groups SET state = $2, last_run = $3 WHERE slug = $1")
                 .bind(&slug)
@@ -1386,10 +1399,7 @@ impl RegistryTxn<'_> {
             result,
             finished_at: self.now,
             duration: (self.now - since).to_std().unwrap_or_default(),
-            // Recorded per turn so `sessions list` can show what a set ran
-            // with. Taken from the dispatcher's configuration, which is also
-            // what every start and resume passes as `--model`.
-            model: self.model.clone(),
+            model: self.group_model(slug).await?,
         };
         sqlx::query("UPDATE session_groups SET last_run = $2 WHERE slug = $1")
             .bind(slug)
@@ -1495,9 +1505,7 @@ impl RegistryTxn<'_> {
             result: RunResult::StartFailed,
             finished_at: self.now,
             duration: (self.now - since).to_std().unwrap_or_default(),
-            // Worth recording precisely here: a start that never came up is
-            // when the requested model matters most.
-            model: self.model.clone(),
+            model: self.group_model(&slug).await?,
         };
         sqlx::query("UPDATE session_groups SET state = $2, last_run = $3 WHERE slug = $1")
             .bind(&slug)

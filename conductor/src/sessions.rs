@@ -267,6 +267,10 @@ async fn list(
                 .map_err(|e| SessionsError::Failed(format!("serialising groups: {e}")))?;
             if let Some(obj) = v.as_object_mut() {
                 obj.insert("clients".into(), clients[&g.key.slug()].into());
+                obj.insert(
+                    "model_source".into(),
+                    if g.model_from_set { "set" } else { "default" }.into(),
+                );
             }
             items.push(v);
         }
@@ -311,10 +315,7 @@ async fn list(
             g.issues.last().cloned().unwrap_or_else(|| "-".into()),
             format!("{} ago", human_duration(now - g.last_active)),
             describe_outcome(g.last_run.as_ref()),
-            g.last_run
-                .as_ref()
-                .and_then(|o| o.model.clone())
-                .unwrap_or_else(|| "-".into()),
+            describe_model(g),
             // Enough to correlate with a log line without filling the row.
             g.session_id.to_string()[..8].to_string(),
             display_path(&g.worktree),
@@ -335,6 +336,15 @@ fn state_rank(state: &GroupState) -> u8 {
 }
 
 /// The STATE column: the session state, then any marker an operator must see.
+/// The group's effective model and where it came from.
+fn describe_model(g: &Group) -> String {
+    match (&g.model, g.model_from_set) {
+        (Some(m), true) => format!("{m} (set)"),
+        (Some(m), false) => format!("{m} (default)"),
+        (None, _) => "- (default)".into(),
+    }
+}
+
 fn describe_group_state(g: &Group, now: DateTime<Utc>) -> String {
     let mut text = describe_state(&g.state, now);
     if let Some(reason) = &g.delivery_blocked {
