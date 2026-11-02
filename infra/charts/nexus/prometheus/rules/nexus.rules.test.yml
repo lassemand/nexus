@@ -939,3 +939,147 @@ tests:
       - eval_time: 25m
         alertname: SignalConsumerLagHigh
         exp_alerts: []
+
+  # ── NordicLiveDisconnected: connected == 0 for 10m ────────────────────────
+  - name: NordicLiveDisconnected fires after 10 minutes down
+    input_series:
+      - series: 'nordic_live_connected{job="nordic-live"}'
+        values: '1+0x5 0+0x30'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: NordicLiveDisconnected
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NordicLiveDisconnected
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: nordic-live
+            exp_annotations:
+              summary: "nordic-live has been disconnected from MFN for 10 minutes"
+              description: "The MFN WebSocket has no replay, so live releases are being missed. The 22:00 nordic-reports poll is the fallback. See the Nordic Live dashboard and the nordic-live pod logs."
+
+  - name: NordicLiveDisconnected is silent across the normal 300 s reconnect
+    input_series:
+      - series: 'nordic_live_connected{job="nordic-live"}'
+        values: '1 1 1 0 1 1 1 1 0 1 1 1 1 1 0 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NordicLiveDisconnected
+        exp_alerts: []
+
+  # ── NordicLiveSilent: 30m without a message, Mon-Fri 06:00-20:00 UTC ─────
+  # promtool time 0 is 1970-01-01 00:00 UTC, a Thursday. The last message is
+  # at 07:00 UTC (25200 s); eval_time is relative to 00:00.
+  - name: NordicLiveSilent fires on a weekday afternoon
+    input_series:
+      - series: 'nordic_live_last_message_timestamp_seconds{job="nordic-live"}'
+        values: '25200x1200'
+    alert_rule_test:
+      - eval_time: 7h20m
+        alertname: NordicLiveSilent
+        exp_alerts: []
+      - eval_time: 8h
+        alertname: NordicLiveSilent
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: nordic-live
+            exp_annotations:
+              summary: "nordic-live has received no MFN message for 30 minutes"
+              description: "Nothing has arrived on the MFN WebSocket during working hours. The socket may be connected but dead, or MFN changed the feed. The 22:00 poll is the fallback."
+
+  - name: NordicLiveSilent is silent at night
+    input_series:
+      - series: 'nordic_live_last_message_timestamp_seconds{job="nordic-live"}'
+        values: '25200x1500'
+    alert_rule_test:
+      - eval_time: 21h
+        alertname: NordicLiveSilent
+        exp_alerts: []
+      - eval_time: 23h
+        alertname: NordicLiveSilent
+        exp_alerts: []
+
+  - name: NordicLiveSilent is silent right after the window opens
+    input_series:
+      - series: 'nordic_live_last_message_timestamp_seconds{job="nordic-live"}'
+        values: '0x1500'
+    alert_rule_test:
+      - eval_time: 6h10m
+        alertname: NordicLiveSilent
+        exp_alerts: []
+
+  - name: NordicLiveSilent is silent at the weekend
+    # 1970-01-03 is a Saturday: 2 days = 172800 s.
+    input_series:
+      - series: 'nordic_live_last_message_timestamp_seconds{job="nordic-live"}'
+        values: '172800x1500'
+    alert_rule_test:
+      - eval_time: 58h
+        alertname: NordicLiveSilent
+        exp_alerts: []
+
+  - name: NordicLiveSilent is silent while messages arrive
+    input_series:
+      - series: 'nordic_live_last_message_timestamp_seconds{job="nordic-live"}'
+        values: '25200+60x1200'
+    alert_rule_test:
+      - eval_time: 10h
+        alertname: NordicLiveSilent
+        exp_alerts: []
+
+  # ── NordicLiveSlowReleases: p95 latency > 60s over 30m with traffic ───────
+  - name: NordicLiveSlowReleases fires when releases arrive late
+    input_series:
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="30"}'
+        values: '0+0x60'
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="60"}'
+        values: '0+0x60'
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="300"}'
+        values: '0+1x60'
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="+Inf"}'
+        values: '0+1x60'
+      - series: 'nordic_live_items_total{job="nordic-live",relevance="relevant"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: NordicLiveSlowReleases
+        exp_alerts:
+          - exp_labels:
+              severity: info
+            exp_annotations:
+              summary: "nordic-live releases arrive more than 60 s after publication (p95)"
+              description: "The 95th percentile of receive time minus MFN publish_date has been 4m 47s over 30 minutes. MFN may be delaying the stream, or clocks are skewed."
+
+  - name: NordicLiveSlowReleases is silent when releases are fast
+    input_series:
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="30"}'
+        values: '0+1x60'
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="60"}'
+        values: '0+1x60'
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="300"}'
+        values: '0+1x60'
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="+Inf"}'
+        values: '0+1x60'
+      - series: 'nordic_live_items_total{job="nordic-live",relevance="relevant"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: NordicLiveSlowReleases
+        exp_alerts: []
+
+  - name: NordicLiveSlowReleases is silent without relevant traffic
+    input_series:
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="60"}'
+        values: '0+0x60'
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="300"}'
+        values: '5+0x60'
+      - series: 'nordic_live_release_latency_seconds_bucket{job="nordic-live",le="+Inf"}'
+        values: '5+0x60'
+      - series: 'nordic_live_items_total{job="nordic-live",relevance="relevant"}'
+        values: '5+0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: NordicLiveSlowReleases
+        exp_alerts: []

@@ -471,3 +471,49 @@ groups:
           description: >-
             Webhooks failed signature verification in the last 15 minutes: a
             misconfigured webhook secret, or someone probing the endpoint.
+
+  - name: nexus.nordic-live
+    rules:
+      - alert: NordicLiveDisconnected
+        expr: nordic_live_connected{job="nordic-live"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "nordic-live has been disconnected from MFN for 10 minutes"
+          description: >-
+            The MFN WebSocket has no replay, so live releases are being missed.
+            The 22:00 nordic-reports poll is the fallback. See the Nordic Live
+            dashboard and the nordic-live pod logs.
+
+      # MFN is quiet at night and at weekends, so only Mon-Fri 06:00-20:00 UTC.
+      # The window is also applied to 30 minutes ago (vector(time() - 1800)),
+      # so the silence must have started inside the window: no false alert at
+      # 06:00 after a quiet night.
+      - alert: NordicLiveSilent
+        expr: >
+          (time() - nordic_live_last_message_timestamp_seconds{job="nordic-live"} > 1800)
+          and on() (day_of_week(vector(time() - 1800)) >= 1 and day_of_week(vector(time() - 1800)) <= 5)
+          and on() (hour(vector(time() - 1800)) >= 6 and hour() < 20)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "nordic-live has received no MFN message for 30 minutes"
+          description: >-
+            Nothing has arrived on the MFN WebSocket during working hours. The
+            socket may be connected but dead, or MFN changed the feed. The
+            22:00 poll is the fallback.
+
+      - alert: NordicLiveSlowReleases
+        expr: >
+          histogram_quantile(0.95, sum by (le) (rate(nordic_live_release_latency_seconds_bucket{job="nordic-live"}[30m]))) > 60
+          and on() sum(increase(nordic_live_items_total{job="nordic-live",relevance="relevant"}[30m])) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "nordic-live releases arrive more than 60 s after publication (p95)"
+          description: >-
+            The 95th percentile of receive time minus MFN publish_date has been
+            {{ $value | humanizeDuration }} over 30 minutes. MFN may be
+            delaying the stream, or clocks are skewed.

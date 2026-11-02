@@ -13,7 +13,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -22,8 +22,14 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn install() -> Result<PrometheusHandle> {
-    PrometheusBuilder::new()
+fn install(buckets: &[(&str, &[f64])]) -> Result<PrometheusHandle> {
+    let mut builder = PrometheusBuilder::new();
+    for (name, bounds) in buckets {
+        builder = builder
+            .set_buckets_for_metric(Matcher::Full((*name).to_string()), bounds)
+            .context("invalid histogram buckets")?;
+    }
+    builder
         .install_recorder()
         .context("a global metrics recorder is already installed")
 }
@@ -38,14 +44,29 @@ fn set_build_info(service: &'static str) {
 /// server runs on a spawned task for the lifetime of the runtime. Errors if a global
 /// recorder is already installed or the port cannot be bound.
 pub async fn serve(service: &'static str, port: u16) -> Result<()> {
+    serve_with_buckets(service, port, &[]).await
+}
+
+/// [`serve`] that renders the named histograms with explicit bucket bounds
+/// (`(metric name, upper bounds)`), so `histogram_quantile` works on them.
+/// Histograms without an entry are exported as summaries.
+pub async fn serve_with_buckets(
+    service: &'static str,
+    port: u16,
+    buckets: &[(&str, &[f64])],
+) -> Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .await
         .with_context(|| format!("failed to bind metrics port {port}"))?;
-    serve_listener(service, listener)
+    serve_listener(service, listener, buckets)
 }
 
-fn serve_listener(service: &'static str, listener: TcpListener) -> Result<()> {
-    let handle = install()?;
+fn serve_listener(
+    service: &'static str,
+    listener: TcpListener,
+    buckets: &[(&str, &[f64])],
+) -> Result<()> {
+    let handle = install(buckets)?;
     set_build_info(service);
     if let Ok(addr) = listener.local_addr() {
         tracing::info!(%addr, service, "metrics endpoint listening");
@@ -105,7 +126,7 @@ async fn respond(mut stream: TcpStream, handle: &PrometheusHandle) -> std::io::R
 ///
 /// Errors if a global recorder is already installed.
 pub fn batch(job: &'static str) -> Result<BatchMetrics> {
-    Ok(BatchMetrics::new(job, install()?))
+    Ok(BatchMetrics::new(job, install(&[])?))
 }
 
 /// Metrics of one CronJob run; see [`batch`].

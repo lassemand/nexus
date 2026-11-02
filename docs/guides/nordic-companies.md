@@ -456,7 +456,7 @@ Not posted: company news, corrections, calendar notices, insider releases, and i
 - The company name is `companies.name` without a trailing ` (TICKER)`, else MFN's `author.name`, else the ticker.
 - Logs: the `report_released` line is unchanged and gets `slack = "queued"` (or `"disabled"`); the outcome follows in a
   `slack_post` event with `slack` = `posted`, `updated`, `skipped_already_posted`, `in_flight` or `failed`.
-- Metrics (`:8080/metrics`, scraped by the `nordic-live` job): `nordic_slack_posts_total{result="posted|updated|failed|dropped"}`.
+- Metrics (`:9464/metrics`, scraped by the `nordic-live` job; the full list is in `docs/guides/metrics.md`): `nordic_slack_posts_total{result="posted|updated|failed|dropped"}`.
   The alert `NordicSlackPostsFailing` fires on any failed post in 30 minutes; look for `slack post failed` in the logs for
   Slack's error code (`invalid_auth`, `missing_scope`, `channel_not_found` or `not_in_channel` mean the token, the scope or
   the channel invite).

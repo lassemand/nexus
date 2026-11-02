@@ -30,7 +30,7 @@ spec:
           command: ["/usr/local/bin/nordic-live"]
           ports:
             - name: metrics
-              containerPort: 8080
+              containerPort: 9464
               protocol: TCP
           env:
             - name: RUST_LOG

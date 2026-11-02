@@ -1,4 +1,4 @@
-# Scrapes nordic-live's /metrics (nordic_slack_posts_total) on the `metrics`
+# Scrapes nordic-live's /metrics (nordic_live_*, nordic_slack_posts_total) on the `metrics`
 # port. jobLabel makes the `job` label `nordic-live`.
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor

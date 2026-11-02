@@ -1,0 +1,530 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-nordic-live
+  namespace: nexus
+  annotations:
+    # Folder in Grafana (sidecar folderAnnotation, see values.yaml).
+    grafana_folder: Nexus
+  labels:
+    grafana_dashboard: "1"
+data:
+  nordic-live.json: |
+    {
+      "uid": "nexus-nordic-live",
+      "title": "Nordic Live",
+      "tags": [
+        "nexus",
+        "nordic",
+        "chronicle"
+      ],
+      "timezone": "browser",
+      "time": {
+        "from": "now-24h",
+        "to": "now"
+      },
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "templating": {
+        "list": []
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "state-timeline",
+          "title": "Connected",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": {
+                      "text": "down",
+                      "color": "red"
+                    },
+                    "1": {
+                      "text": "up",
+                      "color": "green"
+                    }
+                  }
+                }
+              ],
+              "color": {
+                "mode": "thresholds"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "showValue": "never",
+            "mergeValues": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "nordic_live_connected{job=\"nordic-live\"}",
+              "legendFormat": "connected"
+            }
+          ],
+          "description": "1 while the MFN WebSocket is open. MFN closes it every 300 s, so short dips are normal."
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Reconnects by reason (per 5 min)",
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (reason) (increase(nordic_live_reconnects_total{job=\"nordic-live\"}[5m]))",
+              "legendFormat": "{{ "{{" }}reason{{ "}}" }}"
+            }
+          ],
+          "description": "server_close_3000 is MFN's normal 300 s close; error, timeout and other are failures."
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Messages per minute",
+          "gridPos": {
+            "x": 0,
+            "y": 7,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(rate(nordic_live_messages_total{job=\"nordic-live\"}[5m])) * 60",
+              "legendFormat": "messages"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(rate(nordic_live_message_parse_errors_total{job=\"nordic-live\"}[5m])) * 60",
+              "legendFormat": "parse errors"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Items and releases (per hour)",
+          "gridPos": {
+            "x": 12,
+            "y": 7,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (relevance) (increase(nordic_live_items_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "items {{ "{{" }}relevance{{ "}}" }}"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (event) (increase(nordic_live_releases_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "releases {{ "{{" }}event{{ "}}" }}"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(increase(nordic_live_already_ingested_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "already ingested by poll"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Release latency (receive time - publish_date)",
+          "gridPos": {
+            "x": 0,
+            "y": 14,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(nordic_live_release_latency_seconds_bucket{job=\"nordic-live\"}[30m])))",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(nordic_live_release_latency_seconds_bucket{job=\"nordic-live\"}[30m])))",
+              "legendFormat": "p95"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(1, sum by (le) (rate(nordic_live_release_latency_seconds_bucket{job=\"nordic-live\"}[30m])))",
+              "legendFormat": "max (bucket bound)"
+            }
+          ],
+          "description": "Quantiles are interpolated from buckets 1, 2, 5, 10, 30, 60, 300 and 1800 s. Negative skew is clamped to 0."
+        },
+        {
+          "id": 6,
+          "type": "stat",
+          "title": "Time since the last message",
+          "gridPos": {
+            "x": 12,
+            "y": 14,
+            "w": 6,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 900
+                  },
+                  {
+                    "color": "red",
+                    "value": 1800
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "time() - nordic_live_last_message_timestamp_seconds{job=\"nordic-live\"}",
+              "legendFormat": ""
+            }
+          ],
+          "description": "MFN is quiet at night and at weekends; the NordicLiveSilent alert only counts Mon-Fri 06:00-20:00 UTC."
+        },
+        {
+          "id": 7,
+          "type": "stat",
+          "title": "Registered companies",
+          "gridPos": {
+            "x": 18,
+            "y": 14,
+            "w": 6,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "nordic_live_registered_companies{job=\"nordic-live\"}",
+              "legendFormat": ""
+            }
+          ],
+          "description": "Companies with an mfn_slug; reloaded every 10 minutes."
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Slack posts (per hour)",
+          "gridPos": {
+            "x": 0,
+            "y": 21,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (result) (increase(nordic_slack_posts_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "{{ "{{" }}result{{ "}}" }}"
+            }
+          ],
+          "description": "From nordic_slack_posts_total (NEX-222)."
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Failures (per hour)",
+          "gridPos": {
+            "x": 12,
+            "y": 21,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(increase(nordic_live_company_reload_failures_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "company reload"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(increase(nordic_live_signal_check_failures_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "signal check"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(increase(nordic_live_negative_latency_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "negative latency"
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Pod restarts (per hour)",
+          "gridPos": {
+            "x": 0,
+            "y": 28,
+            "w": 24,
+            "h": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace=\"chronicle\",pod=~\"nordic-live.*\"}[1h]))",
+              "legendFormat": "{{ "{{" }}pod{{ "}}" }}"
+            }
+          ]
+        }
+      ]
+    }
