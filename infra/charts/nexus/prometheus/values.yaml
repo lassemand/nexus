@@ -134,19 +134,40 @@ kube-prometheus-stack:
 
   # ── Prometheus ──────────────────────────────────────────────────────────
   prometheus:
+    # Headless gRPC Service for Thanos Query to find the sidecar, and a
+    # ServiceMonitor for the sidecar's own metrics.
+    thanosService:
+      enabled: true
+    thanosServiceMonitor:
+      enabled: true
+
     service:
       type: LoadBalancer
       # TODO: pin with metallb.universe.tf/loadBalancerIPs once the current
       # IP of prometheus-server is supplied (see PR checklist). Never guess it.
 
     prometheusSpec:
-      # Keep 30 days of metrics on a 20Gi local-path volume so history survives
-      # pod restarts (reboots, ArgoCD syncs, evictions).
-      retention: 30d
+      # Keep 14 days of full-detail metrics on a 20Gi local-path volume so
+      # history survives pod restarts. Older data lives in Backblaze B2 (Thanos
+      # sidecar below, up to 90 days).
+      retention: 14d
       # local-path volumes are plain directories in the OrbStack VM and the PVC
       # size is NOT enforced, so cap the TSDB below the volume size. Prometheus
-      # deletes the oldest blocks first when either limit is reached.
-      retentionSize: 18GB
+      # deletes the oldest blocks first when either limit is reached. The PVC
+      # stays 20Gi: local-path volumes cannot be shrunk.
+      retentionSize: 9GB
+
+      # Thanos sidecar: uploads each finished 2h block to B2. The operator then
+      # also sets min/max block duration to 2h (local compaction off). The
+      # Secret is rendered by the thanos chart (ExternalSecret thanos-objstore).
+      thanos:
+        objectStorageConfig:
+          existingSecret:
+            name: thanos-objstore
+            key: objstore.yml
+        resources:
+          requests: {cpu: 20m, memory: 64Mi}
+          limits: {memory: 256Mi}
 
       storageSpec:
         volumeClaimTemplate:

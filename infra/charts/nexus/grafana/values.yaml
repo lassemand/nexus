@@ -38,6 +38,14 @@ grafana:
           isDefault: true
           editable: false
 
+        # Thanos Query: local Prometheus data plus B2 history up to 90 days
+        # (docs/guides/metrics-longterm.md). Not the default yet.
+        - name: Thanos
+          uid: nexus-thanos
+          type: prometheus
+          url: http://thanos-query.nexus.svc.cluster.local:10902
+          editable: false
+
         - name: Nexus Postgres
           uid: nexus-postgres
           type: grafana-postgresql-datasource

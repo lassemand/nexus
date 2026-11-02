@@ -198,4 +198,4 @@ Never silently ignore a comment. Always reply.
 
 ## Metrics retention
 
-Prometheus keeps 30 days of metrics (`retention: 30d`, plus `retentionSize: 18GB` as a hard cap) on a 20Gi `local-path` PVC; Alertmanager has a 1Gi PVC. Data survives pod restarts. **Deleting the PVC deletes the history.** `local-path` does not enforce PVC size, hence the size cap.
+Prometheus keeps 14 days of full-detail metrics (`retention: 14d`, plus `retentionSize: 9GB` as a hard cap) on a 20Gi `local-path` PVC; Alertmanager has a 1Gi PVC. A Thanos sidecar uploads every 2-hour block to the Backblaze B2 bucket `nexus-metrics`, where the compactor keeps raw data 14 days, 5-minute data 30 days and 1-hour data 90 days, then deletes it (`docs/guides/metrics-longterm.md`). Grafana datasource `Thanos` (`nexus-thanos`) queries both; `Prometheus` stays the default. Data survives pod restarts. **Deleting the PVC deletes the last 14 days of local history** (B2 keeps everything uploaded). `local-path` does not enforce PVC size, hence the size cap.

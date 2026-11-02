@@ -261,6 +261,87 @@ groups:
             Find the noisy stream in Grafana Explore (Loki) and either quieten
             it or raise the limit in infra/charts/nexus/loki/values.yaml.
 
+  - name: nexus.metrics-longterm
+    rules:
+      # Long-term metrics: Prometheus (14d local) -> Thanos sidecar -> B2 ->
+      # Thanos store gateway / compactor / query. Job names are the Service
+      # names: prometheus-kube-prometheus-thanos-discovery, thanos-store-gateway,
+      # thanos-compact. Metric names read from Thanos v0.42.4 source; re-check
+      # on the running pods after deploying (docs/guides/metrics-longterm.md).
+
+      - alert: ThanosSidecarUploadFailing
+        expr: >
+          time() - max(thanos_objstore_bucket_last_successful_upload_time{job=~".*thanos-discovery"}) > 4 * 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Thanos sidecar has not uploaded a block to B2 for 4h"
+          description: >-
+            Blocks are cut every 2 hours, so no successful upload in 4 hours
+            means uploads are failing. Local data is safe for 14 days. Check
+            `kubectl -n nexus logs prometheus-prometheus-kube-prometheus-prometheus-0 -c thanos-sidecar`
+            and the thanos-objstore secret.
+
+      - alert: ThanosCompactorHalted
+        expr: max(thanos_compact_halted{job=~".*thanos-compact"}) == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Thanos compactor halted"
+          description: >-
+            The compactor stopped after an unexpected error (usually an
+            overlapping or corrupt block) and does not apply retention or
+            downsampling, so B2 grows. Check
+            `kubectl -n nexus logs statefulset/thanos-compact`.
+
+      - alert: ThanosCompactorNotRunning
+        expr: >
+          increase(thanos_compact_iterations_total{job=~".*thanos-compact"}[24h]) == 0
+          and on (job, instance)
+          (time() - process_start_time_seconds{job=~".*thanos-compact"}) > 86400
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Thanos compactor has had no successful run in 24h"
+          description: >-
+            The compactor runs every 30 minutes. With no successful iteration
+            for a day, retention and downsampling are not applied. Check
+            `kubectl -n nexus get pods -l app.kubernetes.io/component=compact`.
+
+      - alert: ThanosStoreGatewayBucketErrors
+        expr: >
+          sum(rate(thanos_objstore_bucket_operation_failures_total{job=~".*thanos-store-gateway"}[5m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Thanos store gateway is failing to read from B2"
+          description: >-
+            Object-store operations are failing, so data older than 12 days is
+            missing from Thanos queries (partial response). Check B2 status and
+            `kubectl -n nexus logs statefulset/thanos-store-gateway`.
+
+      # The store gateway serves only data older than 12 days. If the 9GB size
+      # cap cuts local data below that, the days between are in neither place.
+      - alert: PrometheusLocalRetentionShort
+        expr: >
+          (time() - prometheus_tsdb_lowest_timestamp_seconds{job=~".*kube-prometheus-prometheus"}) / 86400 < 12
+          and on (job, instance)
+          (time() - process_start_time_seconds{job=~".*kube-prometheus-prometheus"}) > 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus holds less than 12 days locally"
+          description: >-
+            retentionSize is cutting local data below the store gateway's
+            12-day boundary, so the most recent B2 data is missing from
+            queries. Raise retentionSize (the PVC is 20Gi) in
+            infra/charts/nexus/prometheus/values.yaml.
+
   - name: nexus.telemetry
     rules:
       # Generic alerts that cover every service scraped through a PodMonitor or
