@@ -1,0 +1,638 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-conductor
+  namespace: nexus
+  annotations:
+    # Folder in Grafana (sidecar folderAnnotation, see values.yaml).
+    grafana_folder: Nexus
+  labels:
+    grafana_dashboard: "1"
+data:
+  conductor.json: |
+    {
+      "uid": "nexus-conductor",
+      "title": "Conductor",
+      "tags": [
+        "nexus",
+        "conductor"
+      ],
+      "timezone": "browser",
+      "time": {
+        "from": "now-24h",
+        "to": "now"
+      },
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "templating": {
+        "list": []
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Sets by state",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "custom": {
+                "stacking": {
+                  "mode": "normal"
+                },
+                "fillOpacity": 40
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "conductor_sets{job=\"conductor\"}",
+              "legendFormat": "{{ "{{" }}state{{ "}}" }}"
+            }
+          ],
+          "description": "Recomputed from the registry on every scheduling pass."
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Session slots used vs max",
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "conductor_session_slots{job=\"conductor\",kind=\"used\"}",
+              "legendFormat": "{{ "{{" }}limit{{ "}}" }} used"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "conductor_session_slots{job=\"conductor\",kind=\"max\"}",
+              "legendFormat": "{{ "{{" }}limit{{ "}}" }} max"
+            }
+          ],
+          "description": "sessions = concurrent turns (maxSessions); live = tmux sessions (maxLiveSessions)."
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Queue depth",
+          "gridPos": {
+            "x": 0,
+            "y": 7,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "conductor_queued_events{job=\"conductor\"}",
+              "legendFormat": "queued events"
+            }
+          ],
+          "description": "Events waiting for a set or a free session slot."
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Webhooks by source and outcome",
+          "gridPos": {
+            "x": 12,
+            "y": 7,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (source, outcome) (increase(conductor_webhooks_total{job=\"conductor\"}[$__rate_interval]))",
+              "legendFormat": "{{ "{{" }}source{{ "}}" }} {{ "{{" }}outcome{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Hook events",
+          "gridPos": {
+            "x": 0,
+            "y": 14,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (event) (increase(conductor_hook_events_total{job=\"conductor\"}[$__rate_interval]))",
+              "legendFormat": "{{ "{{" }}event{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Runs by result",
+          "gridPos": {
+            "x": 12,
+            "y": 14,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "custom": {
+                "stacking": {
+                  "mode": "normal"
+                },
+                "fillOpacity": 40
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (result) (increase(conductor_runs_total{job=\"conductor\"}[$__rate_interval]))",
+              "legendFormat": "{{ "{{" }}result{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Run duration p50 / p95",
+          "gridPos": {
+            "x": 0,
+            "y": 21,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max(conductor_run_duration_seconds{job=\"conductor\",quantile=\"0.5\"})",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max(conductor_run_duration_seconds{job=\"conductor\",quantile=\"0.95\"})",
+              "legendFormat": "p95"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Delivery latency p50 / p95",
+          "gridPos": {
+            "x": 12,
+            "y": 21,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max(conductor_delivery_seconds{job=\"conductor\",quantile=\"0.5\"})",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max(conductor_delivery_seconds{job=\"conductor\",quantile=\"0.95\"})",
+              "legendFormat": "p95"
+            }
+          ],
+          "description": "Paste to UserPromptSubmit."
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Delivery blocked",
+          "gridPos": {
+            "x": 0,
+            "y": 28,
+            "w": 8,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "increase(conductor_delivery_blocked_total{job=\"conductor\"}[$__range])",
+              "legendFormat": "blocked in range"
+            }
+          ],
+          "description": "Needs `scripts/conductor sessions release <set>`."
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Set closes by outcome",
+          "gridPos": {
+            "x": 8,
+            "y": 28,
+            "w": 8,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (outcome) (increase(conductor_set_closes_total{job=\"conductor\"}[$__rate_interval]))",
+              "legendFormat": "{{ "{{" }}outcome{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "API errors",
+          "gridPos": {
+            "x": 16,
+            "y": 28,
+            "w": 8,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "increase(conductor_linear_api_errors_total{job=\"conductor\"}[$__rate_interval])",
+              "legendFormat": "Linear"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "increase(conductor_github_api_errors_total{job=\"conductor\"}[$__rate_interval])",
+              "legendFormat": "GitHub"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Pod CPU",
+          "gridPos": {
+            "x": 0,
+            "y": 35,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"conductor\",container!=\"\",container!=\"POD\"}[5m]))",
+              "legendFormat": "{{ "{{" }}container{{ "}}" }}"
+            }
+          ],
+          "description": "CPU cores. The pod runs cargo builds."
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Pod memory vs limit",
+          "gridPos": {
+            "x": 8,
+            "y": 35,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"conductor\",container!=\"\",container!=\"POD\"})",
+              "legendFormat": "{{ "{{" }}container{{ "}}" }} working set"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"conductor\",resource=\"memory\"})",
+              "legendFormat": "{{ "{{" }}container{{ "}}" }} limit"
+            }
+          ],
+          "description": "Limits were tuned in lassemand/nexus#194/#197."
+        },
+        {
+          "id": 14,
+          "type": "timeseries",
+          "title": "Pod restarts (per hour)",
+          "gridPos": {
+            "x": 16,
+            "y": 35,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace=\"conductor\"}[1h]))",
+              "legendFormat": "{{ "{{" }}pod{{ "}}" }}"
+            }
+          ]
+        }
+      ]
+    }

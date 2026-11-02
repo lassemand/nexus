@@ -1,0 +1,17 @@
+# Scrapes conductor's /metrics on the `metrics` port (9464). That port is
+# separate from the webhook port (8788), which Hookdeck delivers external
+# traffic to. jobLabel makes the `job` label `conductor`.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: conductor
+  labels:
+    app: conductor
+spec:
+  jobLabel: app
+  selector:
+    matchLabels:
+      app: conductor
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics

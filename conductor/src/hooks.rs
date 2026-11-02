@@ -137,6 +137,13 @@ pub async fn process(state: &HookState, payload: &HookPayload) -> StatusCode {
     }
     .unwrap_or(0);
 
+    let event_label = match event {
+        HookEvent::SessionStart => "SessionStart",
+        HookEvent::UserPromptSubmit => "UserPromptSubmit",
+        HookEvent::Stop => "Stop",
+        HookEvent::SessionEnd => "SessionEnd",
+    };
+    metrics::counter!("conductor_hook_events_total", "event" => event_label).increment(1);
     match state.registry.apply_hook(session_id, event, pane_pid).await {
         Ok(Some((slug, from, to))) => {
             tracing::info!(group = %slug, hook = %payload.hook_event_name, ?from, ?to, "hook applied");

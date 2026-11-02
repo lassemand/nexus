@@ -413,3 +413,61 @@ groups:
           description: >-
             signal's consumer group is {{ $value | humanize }} messages behind
             and has been for 15 minutes. Check the signal dashboard.
+
+  - name: nexus.conductor
+    rules:
+      # Work is waiting on maxSessions. Informational: the limit is a deliberate
+      # fit to the VM's memory (infra/charts/conductor/conductor/values.yaml).
+      - alert: ConductorQueueBacklog
+        expr: >
+          conductor_queued_events{job="conductor"} > 0
+          and on (job)
+          (
+            conductor_session_slots{job="conductor",limit="sessions",kind="used"}
+            == ignoring (kind)
+            conductor_session_slots{job="conductor",limit="sessions",kind="max"}
+          )
+        for: 60m
+        labels:
+          severity: info
+        annotations:
+          summary: "Conductor has queued work and no free session slot"
+          description: >-
+            Events have been waiting for 60 minutes while every session slot is
+            in use. Check the Conductor dashboard and
+            `scripts/conductor sessions list`; a stuck set may need
+            `scripts/conductor sessions interrupt <set>`.
+
+      - alert: ConductorDeliveryBlocked
+        expr: increase(conductor_delivery_blocked_total{job="conductor"}[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A conductor task paste was not confirmed"
+          description: >-
+            A task was pasted into a session but UserPromptSubmit never
+            arrived, so delivery to that set is halted. Attach with
+            `scripts/conductor sessions attach <set>`, check the input box,
+            then run `scripts/conductor sessions release <set>`.
+
+      - alert: ConductorRunsFailing
+        expr: >
+          sum(increase(conductor_runs_total{job="conductor",result=~"start_failed|timed_out|signaled"}[1h])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "Conductor runs are failing"
+          description: >-
+            {{ $value | humanize }} runs ended start_failed, timed_out or
+            signaled in the last hour. See `scripts/conductor sessions list` and
+            the pod logs (kubectl -n conductor logs deploy/conductor).
+
+      - alert: ConductorWebhookRejected
+        expr: sum by (source) (increase(conductor_webhooks_total{job="conductor",outcome="bad_signature"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Conductor rejected {{ $labels.source }} webhooks with a bad signature"
+          description: >-
+            Webhooks failed signature verification in the last 15 minutes: a
+            misconfigured webhook secret, or someone probing the endpoint.

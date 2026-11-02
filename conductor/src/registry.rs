@@ -324,6 +324,22 @@ pub struct RunOutcome {
     pub model: Option<String>,
 }
 
+/// Counts a finished run and records its duration.
+fn record_run(outcome: &RunOutcome) {
+    let result = match outcome.result {
+        RunResult::Exited { .. } => "exited",
+        RunResult::Signaled { .. } => "signaled",
+        RunResult::TimedOut => "timed_out",
+        RunResult::StartFailed => "start_failed",
+        RunResult::Completed => "completed",
+        RunResult::Killed { .. } => "killed",
+        RunResult::Interrupted => "interrupted",
+        RunResult::Lost => "lost",
+    };
+    metrics::counter!("conductor_runs_total", "result" => result).increment(1);
+    metrics::histogram!("conductor_run_duration_seconds").record(outcome.duration.as_secs_f64());
+}
+
 /// An accepted event waiting to be dispatched.
 ///
 /// Queued events live in the registry so a webhook that already received `200`
@@ -1148,6 +1164,7 @@ impl RegistryTxn<'_> {
         .bind(self.now)
         .execute(&mut *self.tx)
         .await?;
+        record_run(outcome);
         Ok(())
     }
 
@@ -1240,6 +1257,7 @@ impl RegistryTxn<'_> {
                 .bind(Json(&outcome))
                 .execute(&mut *self.tx)
                 .await?;
+            record_run(&outcome);
             reset += 1;
         }
         Ok(reset)
@@ -1375,9 +1393,10 @@ impl RegistryTxn<'_> {
         };
         sqlx::query("UPDATE session_groups SET last_run = $2 WHERE slug = $1")
             .bind(slug)
-            .bind(Json(outcome))
+            .bind(Json(&outcome))
             .execute(&mut *self.tx)
             .await?;
+        record_run(&outcome);
         Ok(())
     }
 
@@ -1483,9 +1502,10 @@ impl RegistryTxn<'_> {
         sqlx::query("UPDATE session_groups SET state = $2, last_run = $3 WHERE slug = $1")
             .bind(&slug)
             .bind(Json(GroupState::NoSession))
-            .bind(Json(outcome))
+            .bind(Json(&outcome))
             .execute(&mut *self.tx)
             .await?;
+        record_run(&outcome);
         Ok(true)
     }
 

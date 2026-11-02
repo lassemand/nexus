@@ -67,6 +67,11 @@ spec:
             - name: http
               containerPort: 8788
               protocol: TCP
+            # Prometheus scrape port. Deliberately not on 8788, which
+            # receives external webhooks; reached by the PodMonitor only.
+            - name: metrics
+              containerPort: 9464
+              protocol: TCP
 
           envFrom:
             - secretRef:

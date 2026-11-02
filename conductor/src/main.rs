@@ -96,6 +96,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Command::Serve { bind, dispatch } => {
+            // Own port: 8788 receives external webhooks, so /metrics must not live there.
+            // Metrics must not take conductor down: a port that cannot bind is only logged.
+            if let Err(e) = telemetry::serve("conductor", 9464).await {
+                tracing::error!(error = %e, "metrics endpoint unavailable, continuing without it");
+            }
+
             let github_webhook_secret = std::env::var("GITHUB_WEBHOOK_SECRET").ok();
             if github_webhook_secret.is_none() {
                 tracing::warn!(

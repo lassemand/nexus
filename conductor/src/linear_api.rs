@@ -240,11 +240,16 @@ impl LinearGraphql {
 #[async_trait::async_trait]
 impl IssueSetSource for LinearGraphql {
     async fn issues_in_set(&self, key: &GroupKey) -> Result<Vec<SetIssue>, LinearApiError> {
-        match key {
+        let result = match key {
             GroupKey::Named(group) => self.named_set(group).await,
             GroupKey::Issue(id) => self.single(id).await,
             GroupKey::Unresolved => Err(LinearApiError::NotASet),
+        };
+        // `NotASet` is a caller mistake, not a failing API.
+        if matches!(&result, Err(e) if !matches!(e, LinearApiError::NotASet)) {
+            metrics::counter!("conductor_linear_api_errors_total").increment(1);
         }
+        result
     }
 }
 
