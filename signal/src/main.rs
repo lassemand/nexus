@@ -188,6 +188,8 @@ async fn main() {
     // Metrics must not take signal down: a port that cannot bind is only logged.
     if let Err(e) = telemetry::serve("signal", 9464).await {
         error!(error = %e, "metrics endpoint unavailable, continuing without it");
+    } else {
+        observe::describe();
     }
 
     let pool = PgPoolOptions::new()

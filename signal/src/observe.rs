@@ -36,6 +36,54 @@ impl Outcome {
     }
 }
 
+/// Registers help text and units for every metric. Call after the recorder is installed.
+pub fn describe() {
+    use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
+    describe_counter!(
+        "signal_messages_total",
+        "Kafka messages handled, by topic and outcome (db_error_retried counts failed attempts)"
+    );
+    describe_histogram!(
+        "signal_store_duration_seconds",
+        Unit::Seconds,
+        "Time from receipt to commit of a message, by topic"
+    );
+    describe_counter!(
+        "signal_store_retries_total",
+        "Failed store attempts that were retried, by topic"
+    );
+    describe_gauge!(
+        "signal_store_blocked",
+        "1 while the Nordic store retry loop is waiting, otherwise 0"
+    );
+    describe_gauge!(
+        "signal_last_processed_timestamp_seconds",
+        Unit::Seconds,
+        "Unix time of the last message processed, by topic"
+    );
+    describe_counter!(
+        "signal_nordic_events_total",
+        "Nordic events stored, by event type and result"
+    );
+    describe_counter!(
+        "signal_reactions_computed_total",
+        "Report reactions computed, by data_status"
+    );
+    describe_histogram!(
+        "signal_reaction_refresh_duration_seconds",
+        Unit::Seconds,
+        "Duration of a report reaction refresh"
+    );
+    describe_gauge!(
+        "signal_reaction_queue_depth",
+        "Instruments waiting for a report reaction recompute"
+    );
+    describe_counter!(
+        "signal_insider_db_errors_total",
+        "Insider transactions rejected by the database and committed without being stored"
+    );
+}
+
 fn now_secs() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
