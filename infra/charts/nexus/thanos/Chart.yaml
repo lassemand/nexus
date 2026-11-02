@@ -1,0 +1,14 @@
+apiVersion: v2
+name: thanos
+description: >-
+  Umbrella chart for the Thanos components that give Prometheus long-term
+  storage on Backblaze B2: Query, Store Gateway and Compactor, plus the
+  ExternalSecret that renders objstore.yml. The sidecar lives in the
+  prometheus chart. See docs/guides/metrics-longterm.md.
+type: application
+version: 0.1.0
+appVersion: "0.42.4"
+dependencies:
+  - name: thanos
+    version: "1.24.2"
+    repository: https://stevehipwell.github.io/helm-charts

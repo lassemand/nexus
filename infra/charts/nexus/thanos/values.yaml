@@ -1,0 +1,84 @@
+thanos:
+  fullnameOverride: thanos
+
+  # The Secret is rendered by templates/external-secret.yaml, not by the chart.
+  objstoreConfig:
+    create: false
+    name: thanos-objstore
+    key: objstore.yml
+
+  serviceMonitor:
+    enabled: true
+
+  # Prometheus (single replica) sets prometheus_replica; Query drops it so the
+  # sidecar and the store gateway copies of the same block merge into one series.
+  additionalReplicaLabels:
+    - prometheus_replica
+
+  # The Prometheus sidecar (thanos-discovery headless Service from the
+  # prometheus chart). The store gateway and compactor endpoints are added by
+  # the chart itself.
+  additionalEndpoints:
+    - dnssrv+_grpc._tcp.prometheus-kube-prometheus-thanos-discovery.nexus.svc.cluster.local
+
+  query:
+    enabled: true
+    extraArgs:
+      # Pick raw / 5m / 1h data from the query range (max_source_resolution=auto).
+      - --query.auto-downsampling
+      # Dashboards keep showing local data, with a warning, when B2 or the
+      # internet is unreachable.
+      - --query.partial-response
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 512Mi}
+
+  storeGateway:
+    enabled: true
+    persistence:
+      enabled: true
+      storageClass: local-path
+      size: 5Gi
+    extraArgs:
+      # Serve only data older than 12 days; the last 14 days are answered by
+      # local Prometheus, so everyday dashboards never touch B2. The 2-day
+      # overlap is deduplicated by Query.
+      - --max-time=-12d
+      - --index-cache-size=128MB
+      - >-
+        --store.caching-bucket.config={type: IN-MEMORY, config: {max_size: 128MB, max_item_size: 1MB},
+        chunk_subrange_size: 16000, max_chunks_get_range_requests: 3,
+        chunk_object_attrs_ttl: 24h, chunk_subrange_ttl: 24h, blocks_iter_ttl: 5m,
+        metafile_exists_ttl: 2h, metafile_doesnt_exist_ttl: 15m, metafile_content_ttl: 24h}
+    resources:
+      requests: {cpu: 50m, memory: 384Mi}
+      limits: {memory: 768Mi}
+
+  compact:
+    enabled: true
+    # One Prometheus, so no replica deduplication (and no vertical compaction).
+    deduplication:
+      enabled: false
+    persistence:
+      enabled: true
+      storageClass: local-path
+      size: 5Gi
+    extraArgs:
+      - --wait-interval=30m
+      # Merge 2h -> 8h -> 2d and stop; the default would continue to 14d blocks,
+      # and Thanos deletes a block only when all of it is past the retention.
+      - --debug.max-compaction-level=3
+      # Every resolution must be set: unset or 0s means keep forever.
+      - --retention.resolution-raw=14d
+      - --retention.resolution-5m=30d
+      - --retention.resolution-1h=90d
+    resources:
+      requests: {cpu: 50m, memory: 256Mi}
+      limits: {memory: 1Gi}
+
+  queryFrontend:
+    enabled: false
+  receive:
+    enabled: false
+  rule:
+    enabled: false

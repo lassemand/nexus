@@ -658,3 +658,153 @@ tests:
         alertname: NordicSlackPostsFailing
         exp_alerts: []
 
+
+  - name: ThanosSidecarUploadFailing fires after 4h without an upload
+    input_series:
+      - series: 'thanos_objstore_bucket_last_successful_upload_time{job="prometheus-kube-prometheus-thanos-discovery"}'
+        values: '0+0x400'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: ThanosSidecarUploadFailing
+        exp_alerts: []
+      - eval_time: 5h
+        alertname: ThanosSidecarUploadFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Thanos sidecar has not uploaded a block to B2 for 4h"
+              description: "Blocks are cut every 2 hours, so no successful upload in 4 hours means uploads are failing. Local data is safe for 14 days. Check `kubectl -n nexus logs prometheus-prometheus-kube-prometheus-prometheus-0 -c thanos-sidecar` and the thanos-objstore secret."
+
+  - name: ThanosSidecarUploadFailing is silent while uploads succeed
+    input_series:
+      - series: 'thanos_objstore_bucket_last_successful_upload_time{job="prometheus-kube-prometheus-thanos-discovery"}'
+        values: '0+60x400'
+    alert_rule_test:
+      - eval_time: 5h
+        alertname: ThanosSidecarUploadFailing
+        exp_alerts: []
+
+  - name: ThanosCompactorHalted fires when halted
+    input_series:
+      - series: 'thanos_compact_halted{job="thanos-compact"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ThanosCompactorHalted
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: ThanosCompactorHalted
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Thanos compactor halted"
+              description: "The compactor stopped after an unexpected error (usually an overlapping or corrupt block) and does not apply retention or downsampling, so B2 grows. Check `kubectl -n nexus logs statefulset/thanos-compact`."
+
+  - name: ThanosCompactorHalted is silent when running
+    input_series:
+      - series: 'thanos_compact_halted{job="thanos-compact"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ThanosCompactorHalted
+        exp_alerts: []
+
+  - name: ThanosCompactorNotRunning fires with no iterations in 24h
+    input_series:
+      - series: 'thanos_compact_iterations_total{job="thanos-compact"}'
+        values: '5+0x2000'
+      - series: 'process_start_time_seconds{job="thanos-compact"}'
+        values: '0+0x2000'
+    alert_rule_test:
+      - eval_time: 12h
+        alertname: ThanosCompactorNotRunning
+        exp_alerts: []
+      - eval_time: 26h
+        alertname: ThanosCompactorNotRunning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: thanos-compact
+            exp_annotations:
+              summary: "Thanos compactor has had no successful run in 24h"
+              description: "The compactor runs every 30 minutes. With no successful iteration for a day, retention and downsampling are not applied. Check `kubectl -n nexus get pods -l app.kubernetes.io/component=compact`."
+
+  - name: ThanosCompactorNotRunning is silent while iterating
+    input_series:
+      - series: 'thanos_compact_iterations_total{job="thanos-compact"}'
+        values: '0+1x2000'
+      - series: 'process_start_time_seconds{job="thanos-compact"}'
+        values: '0+0x2000'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: ThanosCompactorNotRunning
+        exp_alerts: []
+
+  - name: ThanosStoreGatewayBucketErrors fires on failing operations
+    input_series:
+      - series: 'thanos_objstore_bucket_operation_failures_total{job="thanos-store-gateway",operation="get"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ThanosStoreGatewayBucketErrors
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: ThanosStoreGatewayBucketErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Thanos store gateway is failing to read from B2"
+              description: "Object-store operations are failing, so data older than 12 days is missing from Thanos queries (partial response). Check B2 status and `kubectl -n nexus logs statefulset/thanos-store-gateway`."
+
+  - name: ThanosStoreGatewayBucketErrors is silent without failures
+    input_series:
+      - series: 'thanos_objstore_bucket_operation_failures_total{job="thanos-store-gateway",operation="get"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ThanosStoreGatewayBucketErrors
+        exp_alerts: []
+
+  - name: PrometheusLocalRetentionShort fires when old Prometheus holds under 12 days
+    input_series:
+      # lowest sample is 10 days before "now" (eval at 20d = 1728000s)
+      - series: 'prometheus_tsdb_lowest_timestamp_seconds{job="prometheus-kube-prometheus-prometheus",instance="a"}'
+        values: '864000+0x30000'
+      - series: 'process_start_time_seconds{job="prometheus-kube-prometheus-prometheus",instance="a"}'
+        values: '0+0x30000'
+    alert_rule_test:
+      - eval_time: 20d
+        alertname: PrometheusLocalRetentionShort
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: prometheus-kube-prometheus-prometheus
+              instance: a
+            exp_annotations:
+              summary: "Prometheus holds less than 12 days locally"
+              description: "retentionSize is cutting local data below the store gateway's 12-day boundary, so the most recent B2 data is missing from queries. Raise retentionSize (the PVC is 20Gi) in infra/charts/nexus/prometheus/values.yaml."
+
+  - name: PrometheusLocalRetentionShort is silent in the first 14 days
+    input_series:
+      - series: 'prometheus_tsdb_lowest_timestamp_seconds{job="prometheus-kube-prometheus-prometheus",instance="a"}'
+        values: '0+0x30000'
+      - series: 'process_start_time_seconds{job="prometheus-kube-prometheus-prometheus",instance="a"}'
+        values: '0+0x30000'
+    alert_rule_test:
+      - eval_time: 10d
+        alertname: PrometheusLocalRetentionShort
+        exp_alerts: []
+
+  - name: PrometheusLocalRetentionShort is silent when 20 days are held
+    input_series:
+      - series: 'prometheus_tsdb_lowest_timestamp_seconds{job="prometheus-kube-prometheus-prometheus",instance="a"}'
+        values: '0+0x30000'
+      - series: 'process_start_time_seconds{job="prometheus-kube-prometheus-prometheus",instance="a"}'
+        values: '0+0x30000'
+    alert_rule_test:
+      - eval_time: 20d
+        alertname: PrometheusLocalRetentionShort
+        exp_alerts: []

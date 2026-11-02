@@ -1,0 +1,6 @@
+dependencies:
+- name: thanos
+  repository: https://stevehipwell.github.io/helm-charts
+  version: 1.24.2
+digest: sha256:22b14aba0daa1b4e206a3d007f70839e4d34eaac080a94d52cd0331a07ca49b8
+generated: "2026-11-01T20:44:33.394657934Z"
