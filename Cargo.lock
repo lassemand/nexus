@@ -3192,7 +3192,6 @@ dependencies = [
  "clap",
  "dotenvy",
  "metrics",
- "metrics-exporter-prometheus",
  "model",
  "prost",
  "rdkafka",

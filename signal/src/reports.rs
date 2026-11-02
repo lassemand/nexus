@@ -1001,19 +1001,19 @@ pub async fn handle(pool: &PgPool, m: &Message<'_>) -> sqlx::Result<String> {
                 Recorded::Inserted if r.is_correction => "correction",
                 Recorded::Inserted => "new",
             };
-            crate::observe::nordic_event(r.event_type, result);
+            metrics::counter!("signal_nordic_events_total", "event_type" => r.event_type, "result" => result).increment(1);
             Ok(format!("{recorded:?}"))
         }
         Message::Calendar(c) => {
             let today = stockholm_today(pool).await?;
             let outcome = apply_report_calendar(pool, c, today).await?;
-            crate::observe::nordic_event(CALENDAR, calendar_result(&outcome));
+            metrics::counter!("signal_nordic_events_total", "event_type" => CALENDAR, "result" => calendar_result(&outcome)).increment(1);
             Ok(format!("{outcome:?}"))
         }
         Message::CalendarRelease(r) => {
             let today = stockholm_today(pool).await?;
             let outcome = apply_calendar_release(pool, r, today).await?;
-            crate::observe::nordic_event(CALENDAR_RELEASE, calendar_result(&outcome));
+            metrics::counter!("signal_nordic_events_total", "event_type" => CALENDAR_RELEASE, "result" => calendar_result(&outcome)).increment(1);
             Ok(format!("{outcome:?}"))
         }
     }
