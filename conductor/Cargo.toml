@@ -33,6 +33,8 @@ nix = { version = "0.29", features = ["signal", "process", "feature", "term"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 async-trait = "0.1"
 thiserror = "1"
+metrics = "0.24"
+telemetry = { path = "../telemetry" }
 
 [dev-dependencies]
 tracing-test = "0.2"

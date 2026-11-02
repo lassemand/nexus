@@ -180,6 +180,7 @@ impl BranchResolver {
         let body = match response {
             Ok(r) if r.status().is_success() => r.json::<PullRequestBody>().await.ok()?,
             Ok(r) => {
+                metrics::counter!("conductor_github_api_errors_total").increment(1);
                 tracing::warn!(
                     repo = %comment.repo,
                     pr = comment.pr_number,
@@ -189,6 +190,7 @@ impl BranchResolver {
                 return None;
             }
             Err(e) => {
+                metrics::counter!("conductor_github_api_errors_total").increment(1);
                 tracing::warn!(
                     repo = %comment.repo,
                     pr = comment.pr_number,

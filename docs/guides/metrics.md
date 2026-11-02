@@ -77,3 +77,4 @@ namespaces down for 5 m) and `NexusJobLastRunFailed`.
 | Kafka consumer lag (`kafka_consumergroup_lag{consumergroup,topic,partition}`) | Strimzi `kafkaExporter` on the Kafka CR, PodMonitor `kafka-exporter` |
 | saxo-stream, nordic-live | PodMonitors in `infra/charts/chronicle/chronicle/templates/` |
 | signal | PodMonitor in `infra/charts/signal/signal/templates/`, dashboard `Signal`, alerts `nexus.signal` |
+| conductor | PodMonitor in `infra/charts/conductor/conductor/templates/`, dashboard `Conductor`, alerts `nexus.conductor` |

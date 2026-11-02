@@ -107,6 +107,16 @@ fn submit(sink: &Arc<dyn EventSink>, event: InboundEvent) {
     tokio::spawn(async move { sink.submit(event) });
 }
 
+/// The `outcome` label for a valid webhook: `accepted` when it produced an
+/// event, `ignored` when it needs no action.
+fn outcome_label(produced_event: bool) -> &'static str {
+    if produced_event {
+        "accepted"
+    } else {
+        "ignored"
+    }
+}
+
 /// `POST /webhook` — Linear.
 async fn handle_linear(
     State(state): State<AppState>,
@@ -115,6 +125,8 @@ async fn handle_linear(
 ) -> StatusCode {
     // Accepting now would mean answering 200 for work that will not run.
     if state.draining() {
+        metrics::counter!("conductor_webhooks_total", "source" => "linear", "outcome" => "error")
+            .increment(1);
         return StatusCode::SERVICE_UNAVAILABLE;
     }
 
@@ -122,6 +134,7 @@ async fn handle_linear(
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "failed to parse Linear payload");
+            metrics::counter!("conductor_webhooks_total", "source" => "linear", "outcome" => "bad_payload").increment(1);
             return StatusCode::BAD_REQUEST;
         }
     };
@@ -139,6 +152,7 @@ async fn handle_linear(
             delivery_id: delivery,
         })
     });
+    metrics::counter!("conductor_webhooks_total", "source" => "linear", "outcome" => outcome_label(event.is_some())).increment(1);
     if let Some(event) = event {
         submit(&state.sink, event);
     }
@@ -153,6 +167,8 @@ async fn handle_github(
     body: axum::body::Bytes,
 ) -> StatusCode {
     if state.draining() {
+        metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "error")
+            .increment(1);
         return StatusCode::SERVICE_UNAVAILABLE;
     }
 
@@ -164,6 +180,7 @@ async fn handle_github(
             .unwrap_or("");
         if !verify_github_signature(secret, signature, &body) {
             tracing::warn!("GitHub signature verification failed, dropping event");
+            metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "bad_signature").increment(1);
             return StatusCode::UNAUTHORIZED;
         }
     }
@@ -180,11 +197,13 @@ async fn handle_github(
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to parse issue_comment payload");
+                    metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "bad_payload").increment(1);
                     return StatusCode::BAD_REQUEST;
                 }
             };
-            if let Some(comment) = dispatchable_issue_comment(payload, &state.watched_github_users)
-            {
+            let comment = dispatchable_issue_comment(payload, &state.watched_github_users);
+            metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => outcome_label(comment.is_some())).increment(1);
+            if let Some(comment) = comment {
                 submit(
                     &state.sink,
                     InboundEvent::GithubPrComment {
@@ -200,11 +219,13 @@ async fn handle_github(
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to parse review comment payload");
+                    metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "bad_payload").increment(1);
                     return StatusCode::BAD_REQUEST;
                 }
             };
-            if let Some(comment) = dispatchable_review_comment(payload, &state.watched_github_users)
-            {
+            let comment = dispatchable_review_comment(payload, &state.watched_github_users);
+            metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => outcome_label(comment.is_some())).increment(1);
+            if let Some(comment) = comment {
                 submit(
                     &state.sink,
                     InboundEvent::GithubPrComment {
@@ -216,7 +237,7 @@ async fn handle_github(
             }
         }
         // Other events are accepted and ignored so the sender does not retry.
-        _ => {}
+        _ => metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "ignored").increment(1),
     }
 
     StatusCode::OK

@@ -157,6 +157,7 @@ Keys: `username`, `password`.
 - When every issue in a set is Done or Canceled, conductor closes the set automatically: the worktree is removed and the registry row deleted; branches and transcripts are kept. It never closes on a failed or empty Linear answer, and never forces a dirty worktree (shown as `close blocked`).
 - A task added to a set after it closed starts a fresh session.
 - Put the same label on tasks that build on the same code, and a different or no label on unrelated work.
+- Metrics (`conductor_*`, port 9464, own `PodMonitor`) and alerts are on the Grafana dashboard "Conductor" (folder Nexus).
 
 ### Live sessions
 

@@ -656,6 +656,7 @@ impl Dispatcher {
             }
             Err(e) => {
                 tracing::warn!(group = %slug, error = %e, "cannot read the set from Linear; not closing");
+                metrics::counter!("conductor_set_closes_total", "outcome" => "skipped_linear_error").increment(1);
                 return self.registry.clear_close_request(key).await;
             }
         };
@@ -684,7 +685,10 @@ impl Dispatcher {
         )
         .await?
         {
-            CloseOutcome::Closed { .. } | CloseOutcome::Gone => {}
+            CloseOutcome::Closed { .. } => {
+                metrics::counter!("conductor_set_closes_total", "outcome" => "closed").increment(1);
+            }
+            CloseOutcome::Gone => {}
             CloseOutcome::Busy => {
                 tracing::info!(group = %slug, reason = "busy", "set complete but group is busy; will retry when idle");
             }
@@ -693,6 +697,8 @@ impl Dispatcher {
             }
             CloseOutcome::WorktreeDirty(reason) => {
                 tracing::warn!(group = %slug, reason = %reason, "worktree could not be removed; not closing");
+                metrics::counter!("conductor_set_closes_total", "outcome" => "blocked_dirty")
+                    .increment(1);
                 self.registry.block_close(key, &reason).await?;
             }
         }
@@ -716,6 +722,26 @@ impl Dispatcher {
     /// Advances every set that has work, up to the concurrency limits.
     async fn start_runnable(self: &Arc<Self>) -> Result<(), sqlx::Error> {
         let groups = self.registry.snapshot().await?;
+        // Gauges are recomputed from the snapshot on every pass, never
+        // incremented, so they cannot drift. Every state is set so an empty one reads 0.
+        for (label, matches_state) in [
+            (
+                "no_session",
+                (|s: &GroupState| matches!(s, GroupState::NoSession)) as fn(&GroupState) -> bool,
+            ),
+            ("starting", |s| matches!(s, GroupState::Starting { .. })),
+            ("ready", |s| matches!(s, GroupState::Ready { .. })),
+            ("delivering", |s| matches!(s, GroupState::Delivering { .. })),
+            ("busy", |s| matches!(s, GroupState::Busy { .. })),
+            ("attached", |s| matches!(s, GroupState::Attached { .. })),
+            ("idle", |s| matches!(s, GroupState::Idle)),
+            ("running", |s| matches!(s, GroupState::Running { .. })),
+        ] {
+            let n = groups.iter().filter(|g| matches_state(&g.state)).count();
+            metrics::gauge!("conductor_sets", "state" => label).set(n as f64);
+        }
+        metrics::gauge!("conductor_queued_events")
+            .set(groups.iter().map(|g| g.pending.len()).sum::<usize>() as f64);
 
         let is_active = |s: &GroupState| {
             matches!(
@@ -731,6 +757,16 @@ impl Dispatcher {
             .iter()
             .filter(|g| g.state.is_tmux() && g.state != GroupState::NoSession)
             .count();
+
+        for (limit, max, used) in [
+            ("sessions", self.config.max_sessions, active),
+            ("live", self.config.max_live_sessions, live),
+        ] {
+            metrics::gauge!("conductor_session_slots", "limit" => limit, "kind" => "max")
+                .set(max as f64);
+            metrics::gauge!("conductor_session_slots", "limit" => limit, "kind" => "used")
+                .set(used as f64);
+        }
 
         self.check_timeouts(&groups);
 
@@ -903,6 +939,7 @@ impl Dispatcher {
         let id = queued.id;
         tracing::info!(group = %slug, issue = ?issue_identifier(&queued.event), "delivering");
 
+        let pasted_at = Instant::now();
         let pasted = self
             .runtime
             .deliver(&slug, &prompt_for(&queued.event))
@@ -946,6 +983,10 @@ impl Dispatcher {
                         tracing::debug!(group = %slug, "delivery unconfirmed; re-sent Enter");
                     }
                 }
+                if confirmed.is_some() {
+                    metrics::histogram!("conductor_delivery_seconds")
+                        .record(pasted_at.elapsed().as_secs_f64());
+                }
                 confirmed.is_none().then(|| {
                     format!(
                         "no UserPromptSubmit within {}s of pasting",
@@ -966,10 +1007,13 @@ impl Dispatcher {
             }
             .await;
             match blocked {
-                Ok(true) => tracing::error!(
-                    group = %slug, event_id = id, %reason,
-                    "delivery not confirmed; delivery to this set is halted until an operator releases it"
-                ),
+                Ok(true) => {
+                    metrics::counter!("conductor_delivery_blocked_total").increment(1);
+                    tracing::error!(
+                        group = %slug, event_id = id, %reason,
+                        "delivery not confirmed; delivery to this set is halted until an operator releases it"
+                    )
+                }
                 Ok(false) => {} // The hook arrived in the meantime.
                 Err(e) => {
                     tracing::error!(group = %slug, error = %e, "cannot record the blocked delivery")
