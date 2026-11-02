@@ -1,0 +1,536 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-signal
+  namespace: nexus
+  annotations:
+    grafana_folder: Nexus
+  labels:
+    grafana_dashboard: "1"
+data:
+  signal.json: |
+    {
+      "uid": "nexus-signal",
+      "title": "Signal",
+      "tags": [
+        "nexus"
+      ],
+      "timezone": "browser",
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Messages per second",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "stacking": {
+                  "mode": "normal"
+                },
+                "fillOpacity": 30
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (topic, outcome) (rate(signal_messages_total[5m]))",
+              "legendFormat": "{{topic}} {{outcome}}"
+            }
+          ],
+          "description": "Handled messages by topic and outcome. db_error_retried counts failed attempts."
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Store latency (p50 / p95)",
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max by (topic) (signal_store_duration_seconds{quantile=\"0.5\"})",
+              "legendFormat": "p50 {{topic}}"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max by (topic) (signal_store_duration_seconds{quantile=\"0.95\"})",
+              "legendFormat": "p95 {{topic}}"
+            }
+          ],
+          "description": "Time from receipt to commit per message."
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Store retries and blocked flag",
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (topic) (increase(signal_store_retries_total[5m]))",
+              "legendFormat": "retries {{topic}}"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max(signal_store_blocked)",
+              "legendFormat": "blocked"
+            }
+          ],
+          "description": "signal_store_blocked is 1 while the Nordic retry loop waits: the whole consumer is stuck."
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Kafka consumer lag (group signal)",
+          "gridPos": {
+            "x": 12,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (topic) (kafka_consumergroup_lag{consumergroup=\"signal\"})",
+              "legendFormat": "{{topic}}"
+            }
+          ],
+          "description": "From the Kafka Exporter."
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Time since last message",
+          "gridPos": {
+            "x": 0,
+            "y": 16,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "time() - max by (topic) (signal_last_processed_timestamp_seconds)",
+              "legendFormat": "{{topic}}"
+            }
+          ],
+          "description": "Quiet topics grow without bound; that is normal for sparse topics."
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Nordic events by result",
+          "gridPos": {
+            "x": 12,
+            "y": 16,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "custom": {
+                "stacking": {
+                  "mode": "normal"
+                },
+                "fillOpacity": 30
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (event_type, result) (increase(signal_nordic_events_total[1h]))",
+              "legendFormat": "{{event_type}} {{result}}"
+            }
+          ],
+          "description": "Per hour."
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Reactions computed by data_status",
+          "gridPos": {
+            "x": 0,
+            "y": 24,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "custom": {
+                "stacking": {
+                  "mode": "normal"
+                },
+                "fillOpacity": 30
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (data_status) (increase(signal_reactions_computed_total[1h]))",
+              "legendFormat": "{{data_status}}"
+            }
+          ],
+          "description": "Per hour."
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Reaction queue depth and refresh time",
+          "gridPos": {
+            "x": 12,
+            "y": 24,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max(signal_reaction_queue_depth)",
+              "legendFormat": "queue depth"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max(signal_reaction_refresh_duration_seconds{quantile=\"0.95\"})",
+              "legendFormat": "refresh p95 (s)"
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Insider DB errors (data loss)",
+          "gridPos": {
+            "x": 0,
+            "y": 32,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "increase(signal_insider_db_errors_total[1h])",
+              "legendFormat": "per hour"
+            }
+          ],
+          "description": "Insider transactions rejected by the database and committed without being stored."
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Pod CPU (cores)",
+          "gridPos": {
+            "x": 12,
+            "y": 32,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"signal\",container=\"signal\"}[5m]))",
+              "legendFormat": "{{pod}}"
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "Pod memory",
+          "gridPos": {
+            "x": 0,
+            "y": 40,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"signal\",container=\"signal\"})",
+              "legendFormat": "{{pod}}"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Pod restarts (per hour)",
+          "gridPos": {
+            "x": 12,
+            "y": 40,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace=\"signal\"}[1h]))",
+              "legendFormat": "{{pod}}"
+            }
+          ]
+        }
+      ]
+    }

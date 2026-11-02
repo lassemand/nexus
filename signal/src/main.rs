@@ -3,6 +3,7 @@ mod daily_bars;
 mod db;
 mod features;
 mod insider_store;
+mod observe;
 mod reactions;
 mod reports;
 mod strategy;
@@ -24,6 +25,7 @@ use model::{
     },
     sector::Sector,
 };
+use observe::{Handling, Outcome};
 use prost::Message;
 use rdkafka::{
     consumer::{CommitMode, Consumer, StreamConsumer},
@@ -82,16 +84,18 @@ struct Args {
 /// - Resolves the sector with [`resolve_sector`]; logs an error and returns
 ///   on API failure, but the caller should still commit the offset.
 /// - On success, persists the mapping to Postgres.
+///
+/// Returns how the message ended, for the metrics.
 async fn handle_ticker_registration<P: CompanyProvider>(
     payload: &[u8],
     pool: &PgPool,
     sector_provider: &P,
-) {
+) -> Outcome {
     let msg = match TickerRegistration::decode(payload) {
         Ok(m) => m,
         Err(e) => {
             warn!("malformed TickerRegistration protobuf, skipping: {e}");
-            return;
+            return Outcome::SkippedMalformed;
         }
     };
 
@@ -103,15 +107,21 @@ async fn handle_ticker_registration<P: CompanyProvider>(
         msg.exchange_mic.clone()
     };
     if msg.unregister {
-        match delete_company(pool, &ticker, &exchange_mic).await {
+        return match delete_company(pool, &ticker, &exchange_mic).await {
             Ok(true) => {
-                info!(ticker = %ticker, exchange_mic = %exchange_mic, "ticker unregistered")
+                info!(ticker = %ticker, exchange_mic = %exchange_mic, "ticker unregistered");
+                Outcome::Stored
             }
-            Ok(false) => info!(ticker = %ticker, exchange_mic = %exchange_mic,
-                               "unregistration for a ticker that is not registered, nothing to do"),
-            Err(e) => error!(ticker = %ticker, error = %e, "failed to delete company from DB"),
-        }
-        return;
+            Ok(false) => {
+                info!(ticker = %ticker, exchange_mic = %exchange_mic,
+                      "unregistration for a ticker that is not registered, nothing to do");
+                Outcome::SkippedInvalid
+            }
+            Err(e) => {
+                error!(ticker = %ticker, error = %e, "failed to delete company from DB");
+                Outcome::DbErrorCommitted
+            }
+        };
     }
     // Resolve currency: use explicit proto value if present, else derive from MIC.
     let currency = if msg.currency.is_empty() {
@@ -120,7 +130,7 @@ async fn handle_ticker_registration<P: CompanyProvider>(
             None => {
                 warn!(ticker = %ticker, exchange_mic = %exchange_mic,
                       "registration has no currency and MIC has no known currency, skipping");
-                return;
+                return Outcome::SkippedInvalid;
             }
         }
     } else {
@@ -134,17 +144,18 @@ async fn handle_ticker_registration<P: CompanyProvider>(
         Err(e) => {
             error!(ticker = %ticker, exchange_mic = %exchange_mic, error = %e,
                    "Polygon sector lookup failed, skipping ticker");
-            return;
+            return Outcome::SkippedInvalid;
         }
     };
 
     if let Err(e) = upsert_company(pool, &ticker, &exchange_mic, &currency, sector).await {
         error!(ticker = %ticker, error = %e, "failed to persist company to DB");
-        return;
+        return Outcome::DbErrorCommitted;
     }
 
     info!(ticker = %ticker, exchange_mic = %exchange_mic, currency = %currency,
           "ticker registered and sector persisted");
+    Outcome::Stored
 }
 
 /// Longest wait between retries of a failed Nordic report store.
@@ -173,6 +184,11 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
+
+    // Metrics must not take signal down: a port that cannot bind is only logged.
+    if let Err(e) = telemetry::serve("signal", 9464).await {
+        error!(error = %e, "metrics endpoint unavailable, continuing without it");
+    }
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -238,19 +254,23 @@ async fn main() {
             Err(e) => error!("kafka recv error: {e}"),
             Ok(msg) => {
                 let topic = msg.topic();
+                let obs = Handling::start(topic);
+                let mut outcome = Outcome::Stored;
                 let Some(payload) = msg.payload() else {
                     warn!(topic, "empty payload, skipping");
+                    obs.finish(Outcome::SkippedEmpty);
                     consumer.commit_message(&msg, CommitMode::Async).ok();
                     continue;
                 };
 
                 if topic == args.tickers_topic {
-                    handle_ticker_registration(payload, &pool, &sector_provider).await;
+                    outcome = handle_ticker_registration(payload, &pool, &sector_provider).await;
                 } else if topic == args.topic {
                     let event = match EarningsEvent::decode(payload) {
                         Ok(e) => e,
                         Err(e) => {
                             error!("protobuf decode failed: {e}");
+                            obs.finish(Outcome::SkippedMalformed);
                             consumer.commit_message(&msg, CommitMode::Async).ok();
                             continue;
                         }
@@ -260,11 +280,13 @@ async fn main() {
                     match is_registered(&pool, &ticker).await {
                         Ok(false) => {
                             debug!(ticker = %ticker, "skipping unregistered ticker");
+                            obs.finish(Outcome::SkippedInvalid);
                             consumer.commit_message(&msg, CommitMode::Async).ok();
                             continue;
                         }
                         Err(e) => {
                             error!(ticker = %ticker, error = %e, "DB registration check failed, skipping");
+                            obs.finish(Outcome::DbErrorCommitted);
                             consumer.commit_message(&msg, CommitMode::Async).ok();
                             continue;
                         }
@@ -288,6 +310,7 @@ async fn main() {
 
                             if let Err(e) = insert_trade_result(&pool, &result).await {
                                 error!("db insert failed for {}: {e}", result.ticker);
+                                outcome = Outcome::DbErrorCommitted;
                             }
                         }
                         Err(e) => error!("strategy evaluation failed for {}: {e}", event.ticker),
@@ -308,10 +331,12 @@ async fn main() {
                                 .await
                                 {
                                     error!(ticker = %ticker, error = %e, "failed to insert event signal");
+                                    outcome = Outcome::DbErrorCommitted;
                                 }
                             }
                             Err(e) => {
                                 error!(ticker = %ticker, error = %e, "failed to fetch bars for feature computation");
+                                outcome = Outcome::DbErrorCommitted;
                             }
                         }
                     }
@@ -320,6 +345,7 @@ async fn main() {
                         Ok(e) => e,
                         Err(e) => {
                             warn!("malformed SpecialEvent protobuf, skipping: {e}");
+                            obs.finish(Outcome::SkippedMalformed);
                             consumer.commit_message(&msg, CommitMode::Async).ok();
                             continue;
                         }
@@ -331,6 +357,7 @@ async fn main() {
                             Err(e) => {
                                 warn!(ticker = %event.ticker, event_type = %event.event_type,
                                       error = %e, "invalid Nordic report event, skipping");
+                                obs.finish(Outcome::SkippedInvalid);
                                 consumer.commit_message(&msg, CommitMode::Async).ok();
                                 continue;
                             }
@@ -347,12 +374,15 @@ async fn main() {
                                     info!(ticker = %event.ticker, event_type = %event.event_type,
                                           source_id = %event.source_id, %outcome,
                                           "Nordic report event stored");
+                                    observe::store_blocked(false);
                                     break;
                                 }
                                 Err(e) => {
                                     error!(ticker = %event.ticker, event_type = %event.event_type,
                                            error = %e, retry_in = ?backoff,
                                            "failed to store Nordic report event, retrying");
+                                    obs.retried();
+                                    observe::store_blocked(true);
                                     tokio::time::sleep(backoff).await;
                                     backoff = (backoff * 2).min(MAX_STORE_BACKOFF);
                                 }
@@ -367,6 +397,7 @@ async fn main() {
                                 secs = event.occurred_at_unix_secs,
                                 "invalid occurred_at timestamp, skipping"
                             );
+                            obs.finish(Outcome::SkippedInvalid);
                             consumer.commit_message(&msg, CommitMode::Async).ok();
                             continue;
                         };
@@ -387,6 +418,7 @@ async fn main() {
                         .await
                         {
                             warn!(ticker = %event.ticker, error = %e, "failed to persist special event");
+                            outcome = Outcome::DbErrorCommitted;
                         } else {
                             info!(
                                 ticker = %event.ticker,
@@ -401,6 +433,7 @@ async fn main() {
                         Ok(e) => e,
                         Err(e) => {
                             warn!("malformed MarketEvent protobuf, skipping: {e}");
+                            obs.finish(Outcome::SkippedMalformed);
                             consumer.commit_message(&msg, CommitMode::Async).ok();
                             continue;
                         }
@@ -414,6 +447,7 @@ async fn main() {
                             secs = event.timestamp_unix_secs,
                             "invalid bar timestamp, skipping"
                         );
+                        obs.finish(Outcome::SkippedInvalid);
                         consumer.commit_message(&msg, CommitMode::Async).ok();
                         continue;
                     };
@@ -431,6 +465,7 @@ async fn main() {
                     .await
                     {
                         warn!(ticker = %event.ticker, date = %date, error = %e, "failed to persist bar");
+                        outcome = Outcome::DbErrorCommitted;
                     } else {
                         info!(ticker = %event.ticker, date = %date, "bar persisted");
                     }
@@ -501,6 +536,7 @@ async fn main() {
                         Ok(m) => m,
                         Err(e) => {
                             warn!("malformed DailyBar protobuf, skipping: {e}");
+                            obs.finish(Outcome::SkippedMalformed);
                             consumer.commit_message(&msg, CommitMode::Async).ok();
                             continue;
                         }
@@ -510,6 +546,7 @@ async fn main() {
                         Err(e) => {
                             warn!(ticker = %message.ticker, date = %message.date, error = %e,
                                   "invalid daily bar, skipping");
+                            obs.finish(Outcome::SkippedInvalid);
                             consumer.commit_message(&msg, CommitMode::Async).ok();
                             continue;
                         }
@@ -520,6 +557,7 @@ async fn main() {
                     if let Err(e) = daily_bars::store(&pool, &bar).await {
                         warn!(ticker = %bar.ticker, date = %bar.date, error = %e,
                               "failed to persist daily bar");
+                        outcome = Outcome::DbErrorCommitted;
                     } else {
                         debug!(ticker = %bar.ticker, mic = %bar.exchange_mic, date = %bar.date,
                                "daily bar persisted");
@@ -535,6 +573,7 @@ async fn main() {
                         Ok(t) => t,
                         Err(e) => {
                             warn!("malformed UnifiedInsiderTransaction protobuf, skipping: {e}");
+                            obs.finish(Outcome::SkippedMalformed);
                             consumer.commit_message(&msg, CommitMode::Async).ok();
                             continue;
                         }
@@ -545,17 +584,20 @@ async fn main() {
                     // insider transaction exists nowhere else once read, so a
                     // dropped one is lost. A row the schema itself rejects is
                     // logged and skipped: retrying it would block the partition.
-                    if let Err(e) = insider_store::store_with_retry(
+                    if let Err(e) = insider_store::store_with_retry_counted(
                         "insider transaction",
                         || upsert_insider_filing(&pool, &txn),
                         Duration::from_secs(1),
                         MAX_STORE_BACKOFF,
+                        || obs.retried(),
                     )
                     .await
                     {
                         error!(ticker = %txn.ticker, filer = %txn.person_name,
                                txn_date = %txn.transaction_date, error = %e,
                                "insider transaction rejected by the database, skipped");
+                        observe::insider_db_error();
+                        outcome = Outcome::DbErrorCommitted;
                     } else {
                         info!(
                             ticker = %txn.ticker,
@@ -570,8 +612,10 @@ async fn main() {
                     }
                 } else {
                     warn!(topic, "message from unknown topic, skipping");
+                    outcome = Outcome::SkippedInvalid;
                 }
 
+                obs.finish(outcome);
                 consumer.commit_message(&msg, CommitMode::Async).ok();
             }
         }

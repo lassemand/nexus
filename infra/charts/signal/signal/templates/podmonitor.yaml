@@ -1,0 +1,16 @@
+# Scrapes signal's /metrics (signal_*) on the `metrics` port. jobLabel makes the
+# `job` label `signal`.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: signal
+  labels:
+    app: signal
+spec:
+  jobLabel: app
+  selector:
+    matchLabels:
+      app: signal
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics

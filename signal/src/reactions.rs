@@ -426,9 +426,11 @@ pub async fn refresh_report_reactions(
     ticker: &str,
     mic: &str,
 ) -> sqlx::Result<Counts> {
+    let started = Instant::now();
     let mut tx = pool.begin().await?;
     let counts = refresh_in(&mut tx, ticker, mic, None).await?;
     tx.commit().await?;
+    crate::observe::reactions_refreshed(&counts, started);
     Ok(counts)
 }
 
@@ -441,9 +443,11 @@ pub async fn refresh_after_bars(
     mic: &str,
     earliest_new_bar: NaiveDate,
 ) -> sqlx::Result<Counts> {
+    let started = Instant::now();
     let mut tx = pool.begin().await?;
     let counts = refresh_in(&mut tx, ticker, mic, Some(earliest_new_bar)).await?;
     tx.commit().await?;
+    crate::observe::reactions_refreshed(&counts, started);
     Ok(counts)
 }
 
@@ -506,6 +510,7 @@ impl ReactionQueue {
         *e = (*e).min(date);
         self.first_added.get_or_insert(now);
         self.last_added = Some(now);
+        crate::observe::reaction_queue_depth(self.pending.len());
     }
 
     /// True if the queue should be flushed.
@@ -520,6 +525,7 @@ impl ReactionQueue {
     pub fn take(&mut self) -> Vec<(String, String, NaiveDate)> {
         self.first_added = None;
         self.last_added = None;
+        crate::observe::reaction_queue_depth(0);
         self.pending.drain().map(|((t, m), d)| (t, m, d)).collect()
     }
 }

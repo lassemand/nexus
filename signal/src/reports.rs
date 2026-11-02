@@ -971,6 +971,15 @@ pub async fn stockholm_today(pool: &PgPool) -> sqlx::Result<NaiveDate> {
     .await
 }
 
+/// The `result` metric label for a calendar outcome.
+fn calendar_result(o: &CalendarOutcome) -> &'static str {
+    if o.stale {
+        "calendar_stale"
+    } else {
+        "calendar_applied"
+    }
+}
+
 /// Stores a validated message: a release, or a calendar snapshot.
 pub async fn handle(pool: &PgPool, m: &Message<'_>) -> sqlx::Result<String> {
     match m {
@@ -985,16 +994,26 @@ pub async fn handle(pool: &PgPool, m: &Message<'_>) -> sqlx::Result<String> {
             {
                 tracing::warn!(ticker = r.ticker, error = %e, "failed to refresh report reactions");
             }
+            let result = match recorded {
+                Recorded::Updated => "refreshed",
+                Recorded::Merged => "twin_merged",
+                Recorded::Matched(_) => "filled_scheduled",
+                Recorded::Inserted if r.is_correction => "correction",
+                Recorded::Inserted => "new",
+            };
+            crate::observe::nordic_event(r.event_type, result);
             Ok(format!("{recorded:?}"))
         }
         Message::Calendar(c) => {
             let today = stockholm_today(pool).await?;
             let outcome = apply_report_calendar(pool, c, today).await?;
+            crate::observe::nordic_event(CALENDAR, calendar_result(&outcome));
             Ok(format!("{outcome:?}"))
         }
         Message::CalendarRelease(r) => {
             let today = stockholm_today(pool).await?;
             let outcome = apply_calendar_release(pool, r, today).await?;
+            crate::observe::nordic_event(CALENDAR_RELEASE, calendar_result(&outcome));
             Ok(format!("{outcome:?}"))
         }
     }
