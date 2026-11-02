@@ -1,0 +1,6 @@
+dependencies:
+- name: prometheus-pushgateway
+  repository: https://prometheus-community.github.io/helm-charts
+  version: 3.10.1
+digest: sha256:467db8e7b57c8dd56249bbecb5bbf599bcad795dad255c4a98cba14f5a3ed168
+generated: "2026-11-01T19:15:46.674452193Z"

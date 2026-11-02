@@ -3657,6 +3657,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "telemetry"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "reqwest",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
