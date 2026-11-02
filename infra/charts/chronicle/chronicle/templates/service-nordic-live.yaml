@@ -1,5 +1,5 @@
-# Prometheus scrapes nordic_slack_posts_total from nordic-live's /metrics
-# (static job `nordic-live` in infra/charts/nexus/prometheus/values.yaml).
+# Prometheus scrapes nordic_slack_posts_total from nordic-live's /metrics through
+# the PodMonitor in podmonitor-nordic-live.yaml (job `nordic-live`).
 apiVersion: v1
 kind: Service
 metadata:

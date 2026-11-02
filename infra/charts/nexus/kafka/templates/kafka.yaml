@@ -57,6 +57,11 @@ spec:
     livenessProbe:
       initialDelaySeconds: 15
       timeoutSeconds: 5
+  # Kafka Exporter: kafka_consumergroup_lag{consumergroup,topic,partition} and
+  # related metrics for every group and topic. Scraped by kafka-exporter-podmonitor.yaml.
+  kafkaExporter:
+    groupRegex: ".*"
+    topicRegex: ".*"
   entityOperator:
     topicOperator: {}
     userOperator: {}
