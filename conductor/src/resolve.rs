@@ -69,6 +69,13 @@ struct ApiRepo {
     full_name: Option<String>,
 }
 
+/// Whether a set name is a [`fallback_key`] name, which has no `session:` label.
+pub fn is_pr_fallback_name(name: &str) -> bool {
+    name.strip_prefix("gh-")
+        .and_then(|rest| rest.rsplit_once("-pr-"))
+        .is_some_and(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// The group key used when no session owns the pull request.
 ///
 /// The repository part is truncated rather than the whole key, so the pull
