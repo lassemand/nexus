@@ -427,6 +427,7 @@ mod tests {
             title: "FirstFarms A/S: Quarterly update 1 January – 30 September 2026".into(),
             url: Some("https://mfn.se/a/x".into()),
             attachment_urls: vec!["https://x.test/file.pdf".into()],
+            event: None,
         }
     }
 

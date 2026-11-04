@@ -407,10 +407,15 @@ event; the display name comes from `companies.name` (`name` in the registry).
 
 A Deployment (`infra/charts/chronicle/chronicle/templates/deployment-nordic-live.yaml`, 1 replica, `Recreate`) that
 connects to MFN's **unofficial** WebSocket `wss://mfn.se/all/s/nordic.json` and **logs** every new item from a company
-with an `mfn_slug` the moment it is published, and can post results releases to Slack (below). It publishes nothing and
-stores no reports: the `nordic-reports` poll stays the only writer of reports and covers anything missed while the socket
-is down (the stream has no replay, and the server closes it every 300 s with code 3000, which is a fast reconnect). Its
-only write is the Slack claim row in `slack_report_posts`.
+with an `mfn_slug` the moment it is published, and can post results releases to Slack (below).
+
+When `KAFKA_BROKERS` is set (it comes from `chronicle-secret`), every new report or correction is also published to
+`special.events` within seconds, as the same `SpecialEvent` the poll builds (`events::release_event`, keyed
+`ticker:exchange_mic`), so it leaves "Upcoming reports" straight away. This does not depend on Slack. signal stores an MFN
+item once per `(source, source_id)`, so the poll sending it again later changes nothing; the `nordic-reports` poll stays the
+fallback and covers anything missed while the socket is down (the stream has no replay, and the server closes it every
+300 s with code 3000, which is a fast reconnect). News and calendar notices are not published. Its only database write is
+the Slack claim row in `slack_report_posts`.
 
 ```bash
 kubectl --context orbstack -n chronicle logs deploy/nordic-live -f
@@ -426,7 +431,7 @@ kubectl --context orbstack -n chronicle logs deploy/nordic-live -f
 - Reconnects: close code 3000 at once (debug log); anything else backs off 10 ms doubling to 30 s (reset after 60 s up);
   15 minutes without a message or ping drops the connection and reconnects.
 - Env: `MFN_WS_URL`, `DATABASE_URL`, `SIGNAL_DATABASE_URL` (optional), `SLACK_BOT_TOKEN` and `SLACK_CHANNEL` (optional, see
-  below), `SLACK_API_URL`, `METRICS_PORT` (8080), `RUST_LOG`, `LOG_FORMAT` (`json` default or `text`).
+  below), `SLACK_API_URL`, `METRICS_PORT` (9464), `RUST_LOG`, `LOG_FORMAT` (`json` default or `text`).
 
 ### Slack notifications
 
@@ -456,7 +461,8 @@ Not posted: company news, corrections, calendar notices, insider releases, and i
 - The company name is `companies.name` without a trailing ` (TICKER)`, else MFN's `author.name`, else the ticker.
 - Logs: the `report_released` line is unchanged and gets `slack = "queued"` (or `"disabled"`); the outcome follows in a
   `slack_post` event with `slack` = `posted`, `updated`, `skipped_already_posted`, `in_flight` or `failed`.
-- Metrics (`:9464/metrics`, scraped by the `nordic-live` job; the full list is in `docs/guides/metrics.md`): `nordic_slack_posts_total{result="posted|updated|failed|dropped"}`.
+- Metrics (`:9464/metrics`, scraped by the `nordic-live` job; the full list is in `docs/guides/metrics.md`): `nordic_slack_posts_total{result="posted|updated|failed|dropped"}`
+  and `nordic_live_events_published_total{result="published|failed"}` (a failed publish is left to the poll).
   The alert `NordicSlackPostsFailing` fires on any failed post in 30 minutes; look for `slack post failed` in the logs for
   Slack's error code (`invalid_auth`, `missing_scope`, `channel_not_found` or `not_in_channel` mean the token, the scope or
   the channel invite).

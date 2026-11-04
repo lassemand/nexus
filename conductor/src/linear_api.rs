@@ -29,6 +29,11 @@ issues(filter: { labels: { name: { eqIgnoreCase: $label } } }, includeArchived: 
 nodes { identifier state { type } trashed } \
 pageInfo { hasNextPage endCursor } } }";
 
+/// Labels are workspace- or team-scoped, so several can share a name.
+const LABEL_QUERY: &str = "query SetLabel($label: String!) { \
+issueLabels(filter: { name: { eqIgnoreCase: $label } }, first: 50) { \
+nodes { id description team { id } } } }";
+
 const ISSUE_QUERY: &str =
     "query OneIssue($id: String!) { issue(id: $id) { identifier state { type } trashed } }";
 
@@ -62,6 +67,15 @@ pub enum LinearApiError {
 pub trait IssueSetSource: Send + Sync {
     /// Lists every non-trashed issue in the group, or errors if unsure.
     async fn issues_in_set(&self, key: &GroupKey) -> Result<Vec<SetIssue>, LinearApiError>;
+
+    /// Descriptions of every `session:<group>` label, an empty string for a
+    /// label without one. An empty list means no such label exists.
+    ///
+    /// Defaults to `NotASet`, so a source that cannot look labels up makes the
+    /// caller fall back to the global model.
+    async fn set_label_descriptions(&self, _group: &str) -> Result<Vec<String>, LinearApiError> {
+        Err(LinearApiError::NotASet)
+    }
 }
 
 /// [`IssueSetSource`] backed by Linear's GraphQL API.
@@ -129,6 +143,22 @@ struct PageInfo {
     has_next_page: bool,
     #[serde(rename = "endCursor")]
     end_cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LabelData {
+    #[serde(rename = "issueLabels")]
+    issue_labels: LabelConnection,
+}
+
+#[derive(Deserialize)]
+struct LabelConnection {
+    nodes: Vec<LabelNode>,
+}
+
+#[derive(Deserialize)]
+struct LabelNode {
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -212,6 +242,23 @@ impl LinearGraphql {
         Err(LinearApiError::TooLarge)
     }
 
+    async fn label_descriptions(&self, group: &str) -> Result<Vec<String>, LinearApiError> {
+        let label = format!("{SESSION_LABEL_PREFIX}{group}");
+        let env: Envelope<LabelData> = self.post(LABEL_QUERY, json!({ "label": label })).await?;
+        if let Some(errors) = env.errors.filter(|e| !e.is_empty()) {
+            return Err(LinearApiError::GraphQl(Value::Array(errors).to_string()));
+        }
+        let data = env
+            .data
+            .ok_or_else(|| LinearApiError::Malformed("missing data".into()))?;
+        Ok(data
+            .issue_labels
+            .nodes
+            .into_iter()
+            .map(|n| n.description.unwrap_or_default())
+            .collect())
+    }
+
     async fn single(&self, identifier: &str) -> Result<Vec<SetIssue>, LinearApiError> {
         let env: Envelope<IssueData> = self.post(ISSUE_QUERY, json!({ "id": identifier })).await?;
         if let Some(errors) = env.errors.filter(|e| !e.is_empty()) {
@@ -247,6 +294,14 @@ impl IssueSetSource for LinearGraphql {
         };
         // `NotASet` is a caller mistake, not a failing API.
         if matches!(&result, Err(e) if !matches!(e, LinearApiError::NotASet)) {
+            metrics::counter!("conductor_linear_api_errors_total").increment(1);
+        }
+        result
+    }
+
+    async fn set_label_descriptions(&self, group: &str) -> Result<Vec<String>, LinearApiError> {
+        let result = self.label_descriptions(group).await;
+        if result.is_err() {
             metrics::counter!("conductor_linear_api_errors_total").increment(1);
         }
         result
@@ -514,6 +569,98 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, LinearApiError::NotASet));
+    }
+
+    fn labels(descriptions: &[Value]) -> ResponseTemplate {
+        let nodes: Vec<_> = descriptions
+            .iter()
+            .map(|d| json!({ "id": "l", "description": d, "team": null }))
+            .collect();
+        ResponseTemplate::new(200)
+            .set_body_json(json!({ "data": { "issueLabels": { "nodes": nodes } } }))
+    }
+
+    #[tokio::test]
+    async fn label_found_with_description() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("Authorization", KEY))
+            .respond_with(labels(&[json!("Metrics.\nmodel: opus")]))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let got = client(&server).set_label_descriptions("grp").await.unwrap();
+        assert_eq!(got, ["Metrics.\nmodel: opus"]);
+        let body: Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(body["query"]
+            .as_str()
+            .unwrap()
+            .contains("eqIgnoreCase: $label"));
+        assert_eq!(body["variables"]["label"], "session:grp");
+    }
+
+    #[tokio::test]
+    async fn label_not_found_is_empty_and_null_description_is_blank() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(labels(&[]))
+            .mount(&server)
+            .await;
+        assert!(client(&server)
+            .set_label_descriptions("g")
+            .await
+            .unwrap()
+            .is_empty());
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(labels(&[Value::Null]))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            client(&server).set_label_descriptions("g").await.unwrap(),
+            [""]
+        );
+    }
+
+    #[tokio::test]
+    async fn label_lookup_http_500_and_graphql_errors_fail() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let err = client(&server)
+            .set_label_descriptions("g")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LinearApiError::Status(500)));
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "data": null, "errors": [{ "message": "boom" }] })),
+            )
+            .mount(&server)
+            .await;
+        let err = client(&server)
+            .set_label_descriptions("g")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LinearApiError::GraphQl(_)));
+    }
+
+    #[tokio::test]
+    async fn two_labels_with_the_name_are_both_returned() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(labels(&[json!("model: opus"), json!("model: sonnet")]))
+            .mount(&server)
+            .await;
+        let got = client(&server).set_label_descriptions("g").await.unwrap();
+        assert_eq!(got, ["model: opus", "model: sonnet"]);
     }
 
     #[test]

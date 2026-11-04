@@ -1050,7 +1050,7 @@ tests:
               severity: info
             exp_annotations:
               summary: "nordic-live releases arrive more than 60 s after publication (p95)"
-              description: "The 95th percentile of receive time minus MFN publish_date has been 4m 47s over 30 minutes. MFN may be delaying the stream, or clocks are skewed."
+              description: "The 95th percentile of receive time minus MFN publish_date has been 4m 48s over 30 minutes. MFN may be delaying the stream, or clocks are skewed."
 
   - name: NordicLiveSlowReleases is silent when releases are fast
     input_series:

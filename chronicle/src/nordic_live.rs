@@ -12,9 +12,11 @@
 ///
 /// Exits non-zero only on a startup error (bad config, database unreachable at
 /// start). Network trouble never ends the process.
+use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
 use chronicle_lib::nordic::live::{
-    describe_metrics, handle_message_with, Companies, Counters, IngestedCheck, Listener,
-    Registered, SeenSet, SignalDb, SlackMode, DEFAULT_WS_URL, LATENCY_BUCKETS, SEEN_CAPACITY,
+    describe_metrics, describe_publish_metrics, events_to_publish, handle_message_with,
+    publish_live, Companies, Counters, IngestedCheck, Listener, Registered, SeenSet, SignalDb,
+    SlackMode, DEFAULT_WS_URL, LATENCY_BUCKETS, SEEN_CAPACITY,
 };
 use chronicle_lib::nordic::live_slack::{
     describe_metrics as describe_slack_metrics, enqueue, jobs_for, run_worker, Sessions, SlackApi,
@@ -27,6 +29,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Row};
 use std::process::ExitCode;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
@@ -49,6 +52,15 @@ struct Args {
     /// Without it every relevant item is logged as new.
     #[arg(long, env = "SIGNAL_DATABASE_URL")]
     signal_database_url: Option<String>,
+
+    /// Kafka brokers. When set, released reports are published to
+    /// `special.events` the moment they are seen, so they leave "upcoming"
+    /// without waiting for the nightly poll. Unset: log only.
+    #[arg(long, env = "KAFKA_BROKERS")]
+    kafka_brokers: Option<String>,
+
+    #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = SPECIAL_EVENTS_TOPIC)]
+    special_events_topic: String,
 
     /// Slack bot token (`chat:write`). Without it, or without `SLACK_CHANNEL`,
     /// Slack posting is off.
@@ -170,7 +182,20 @@ async fn run(args: Args) -> anyhow::Result<()> {
     .await?;
     describe_metrics();
     describe_slack_metrics();
+    describe_publish_metrics();
     gauge!("nordic_live_registered_companies").set(companies.len() as f64);
+
+    let events: Option<Arc<KafkaSink>> = match args.kafka_brokers.as_deref() {
+        Some(brokers) if !brokers.is_empty() => {
+            let sink = KafkaSink::new(brokers, args.special_events_topic.clone())?;
+            info!(topic = %args.special_events_topic, "publishing released reports to special.events");
+            Some(Arc::new(sink))
+        }
+        _ => {
+            warn!("KAFKA_BROKERS not set: released reports wait for the poll");
+            None
+        }
+    };
 
     let slack_tx = match (&args.slack_bot_token, &args.slack_channel) {
         (Some(token), Some(channel)) if !token.is_empty() && !channel.is_empty() => {
@@ -222,6 +247,14 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 .await;
                 window.seen += counters.seen;
                 window.relevant += counters.relevant;
+                // Independent of Slack, and off the socket loop: a slow broker
+                // never delays the next message.
+                if let Some(sink) = &events {
+                    for (key, event) in events_to_publish(&dispositions) {
+                        let sink = sink.clone();
+                        tokio::spawn(async move { publish_live(sink.as_ref(), &key, &event).await });
+                    }
+                }
                 if let Some(jobs) = &slack_tx {
                     for job in jobs_for(dispositions, &sessions) {
                         enqueue(jobs, job);

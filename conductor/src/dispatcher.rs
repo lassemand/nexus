@@ -246,6 +246,90 @@ pub fn parse_model(value: &str) -> Result<String, String> {
     }
 }
 
+/// The model a set's label description asks for.
+///
+/// `Ok(None)` means the description defines no model; `Err` carries why a
+/// `model:` line was unusable.
+pub fn model_from_description(description: &str) -> Result<Option<String>, String> {
+    for line in description.lines() {
+        let line = line.trim();
+        let Some(key) = line.get(..6) else { continue };
+        if !key.eq_ignore_ascii_case("model:") {
+            continue;
+        }
+        let value = line[6..].trim();
+        if value.is_empty() || value.contains(char::is_whitespace) {
+            continue;
+        }
+        return match parse_model(value) {
+            Ok(model) => Ok(Some(model)),
+            Err(_) => Err(format!("invalid model {value:?} in the label description")),
+        };
+    }
+    Ok(None)
+}
+
+/// Resolves the effective model for a set about to be started or resumed.
+///
+/// Returns the model and whether it came from the set's `session:` label.
+/// Every failure falls back to `global` and is logged; nothing here can block a
+/// set. Sets of one and pull-request sets have no label and make no request.
+pub async fn resolve_set_model(
+    source: Option<&dyn IssueSetSource>,
+    key: &GroupKey,
+    global: Option<&str>,
+) -> (Option<String>, bool) {
+    let default = || (global.map(str::to_string), false);
+    let GroupKey::Named(name) = key else {
+        return default();
+    };
+    if crate::resolve::is_pr_fallback_name(name) {
+        return default();
+    }
+    let Some(source) = source else {
+        return default();
+    };
+    let descriptions = match source.set_label_descriptions(name).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(set = %name, error = %e, "cannot read the set's model; using the default");
+            return default();
+        }
+    };
+    if descriptions.is_empty() {
+        tracing::warn!(set = %name, "session label not found; using the default model");
+        return default();
+    }
+    let mut found: Vec<Option<String>> = Vec::new();
+    for description in &descriptions {
+        if description.trim().is_empty() {
+            tracing::warn!(set = %name, "label description is empty; using the default model");
+            return default();
+        }
+        match model_from_description(description) {
+            Ok(model) => found.push(model),
+            Err(reason) => {
+                tracing::warn!(set = %name, %reason, "using the default model");
+                return default();
+            }
+        }
+    }
+    if found.iter().any(|m| m != &found[0]) {
+        tracing::warn!(set = %name, "labels with this name disagree on the model; using the default");
+        return default();
+    }
+    match found.swap_remove(0) {
+        Some(model) => {
+            tracing::info!(set = %name, %model, "model taken from the set label");
+            (Some(model), true)
+        }
+        None => {
+            tracing::debug!(set = %name, "label description has no model line; using the default");
+            default()
+        }
+    }
+}
+
 /// Adds `--model` to a Claude command line when a model is configured.
 ///
 /// Precedence against an agent definition's `model:` frontmatter: see the
@@ -921,10 +1005,19 @@ impl Dispatcher {
     }
 
     async fn start_session(&self, key: &GroupKey) -> Result<(), String> {
+        let mut spec = self.config.start_spec();
+        let (model, from_set) = resolve_set_model(
+            self.issue_source.as_deref(),
+            key,
+            self.config.model.as_deref(),
+        )
+        .await;
+        spec.model = model;
+        spec.model_from_set = from_set;
         launch_session(
             &self.registry,
             self.runtime.as_ref(),
-            &self.config.start_spec(),
+            &spec,
             key,
             Some(&self.repo_lock),
             Some(&self.events),
@@ -1224,6 +1317,8 @@ pub struct StartSpec {
     pub agent: String,
     /// Model passed as `--model`; `None` leaves it to Claude Code.
     pub model: Option<String>,
+    /// Whether `model` came from the set's label rather than the global default.
+    pub model_from_set: bool,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// How long to wait for `SessionStart`.
@@ -1239,6 +1334,7 @@ impl SessionEnv {
             claude_bin: self.claude_bin.clone(),
             agent: self.agent.clone(),
             model: self.model.clone(),
+            model_from_set: false,
             skip_permissions: self.skip_permissions,
             start_timeout: self.start_timeout,
         }
@@ -1254,6 +1350,7 @@ impl DispatchConfig {
             claude_bin: self.claude_bin.clone(),
             agent: self.agent.clone(),
             model: self.model.clone(),
+            model_from_set: false,
             skip_permissions: self.skip_permissions,
             start_timeout: self.start_timeout,
         }
@@ -1341,6 +1438,9 @@ pub async fn launch_session(
         txn.set_worktree(key, &worktree)
             .await
             .map_err(|e| e.to_string())?;
+        txn.set_model(key, spec.model.as_deref(), spec.model_from_set)
+            .await
+            .map_err(|e| e.to_string())?;
         // Recorded now as well as after each turn: routing a pull request
         // comment back to this group needs every branch it has worked on.
         if let Some(branch) = current_branch(&spec.worktree_root, &slug).await {
@@ -1356,6 +1456,29 @@ pub async fn launch_session(
         r
     };
 
+    let argv = session_argv(spec, session_id, resume);
+    // Each worktree needs its own build cache; a shared target directory
+    // would serialise parallel sessions on cargo's lock.
+    let env = vec![(
+        "CARGO_TARGET_DIR".to_string(),
+        worktree.join("target").to_string_lossy().into_owned(),
+    )];
+
+    tracing::info!(group = %slug, resume, "starting session");
+    runtime
+        .start(&slug, &worktree, &argv, &env)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let reached = wait_for_group_state(registry, &slug, spec.start_timeout, events, |s| {
+        !matches!(s, GroupState::Starting { .. })
+    })
+    .await;
+    start_outcome(reached, spec.start_timeout)
+}
+
+/// The command line that starts or resumes a set's Claude session.
+pub fn session_argv(spec: &StartSpec, session_id: uuid::Uuid, resume: bool) -> Vec<String> {
     let mut argv = vec![spec.claude_bin.clone()];
     argv.push(if resume { "--resume" } else { "--session-id" }.into());
     argv.push(session_id.to_string());
@@ -1376,24 +1499,7 @@ pub async fn launch_session(
     if spec.skip_permissions {
         argv.push("--dangerously-skip-permissions".into());
     }
-    // Each worktree needs its own build cache; a shared target directory
-    // would serialise parallel sessions on cargo's lock.
-    let env = vec![(
-        "CARGO_TARGET_DIR".to_string(),
-        worktree.join("target").to_string_lossy().into_owned(),
-    )];
-
-    tracing::info!(group = %slug, resume, "starting session");
-    runtime
-        .start(&slug, &worktree, &argv, &env)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let reached = wait_for_group_state(registry, &slug, spec.start_timeout, events, |s| {
-        !matches!(s, GroupState::Starting { .. })
-    })
-    .await;
-    start_outcome(reached, spec.start_timeout)
+    argv
 }
 
 /// Whether a session counts as started, given the first state seen once it left
@@ -1558,6 +1664,110 @@ fn delivery_id(event: &InboundEvent) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn description_model_parsing() {
+        let m = |d: &str| model_from_description(d);
+        assert_eq!(m("model: opus"), Ok(Some("opus".into())));
+        assert_eq!(
+            m("Model:  claude-sonnet-5-5"),
+            Ok(Some("claude-sonnet-5-5".into()))
+        );
+        assert_eq!(
+            m("  model: claude-opus-5-5[1m]  "),
+            Ok(Some("claude-opus-5-5[1m]".into()))
+        );
+        assert_eq!(
+            m("Metrics for signal.\nmodel: opus"),
+            Ok(Some("opus".into()))
+        );
+        assert_eq!(m("model: opus\nmodel: sonnet"), Ok(Some("opus".into())));
+        assert_eq!(m("model:"), Ok(None));
+        assert_eq!(m("model:   "), Ok(None));
+        assert!(m("model: Opus!").is_err());
+        assert_eq!(m(""), Ok(None));
+        assert_eq!(m("just words\nmodels: opus"), Ok(None));
+        assert_eq!(m("é model: opus"), Ok(None));
+    }
+
+    struct Labels(Result<Vec<String>, ()>);
+
+    #[async_trait::async_trait]
+    impl IssueSetSource for Labels {
+        async fn issues_in_set(
+            &self,
+            _: &GroupKey,
+        ) -> Result<Vec<crate::linear_api::SetIssue>, LinearApiError> {
+            Err(LinearApiError::NotASet)
+        }
+        async fn set_label_descriptions(&self, _: &str) -> Result<Vec<String>, LinearApiError> {
+            self.0.clone().map_err(|()| LinearApiError::Status(500))
+        }
+    }
+
+    async fn resolved(labels: Result<Vec<String>, ()>, key: GroupKey) -> (Option<String>, bool) {
+        resolve_set_model(Some(&Labels(labels)), &key, Some("sonnet")).await
+    }
+
+    fn named() -> GroupKey {
+        GroupKey::Named("metrics".into())
+    }
+
+    #[tokio::test]
+    async fn set_model_resolution_and_fallbacks() {
+        let ok = |d: &[&str]| Ok(d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let set = (Some("opus".to_string()), true);
+        let default = (Some("sonnet".to_string()), false);
+        assert_eq!(resolved(ok(&["x\nmodel: opus"]), named()).await, set);
+        assert_eq!(
+            resolved(ok(&["model: opus", "model: opus"]), named()).await,
+            set
+        );
+        for fallback in [
+            ok(&["model: Opus!"]),
+            ok(&[""]),
+            ok(&["no model here"]),
+            ok(&[]),
+            ok(&["model: opus", "model: haiku"]),
+            ok(&["model: opus", "nothing"]),
+            Err(()),
+        ] {
+            assert_eq!(resolved(fallback, named()).await, default);
+        }
+        let ok_set = ok(&["model: opus"]);
+        for key in [
+            GroupKey::Issue("NEX-1".into()),
+            GroupKey::Named("gh-org-repo-pr-12".into()),
+        ] {
+            assert_eq!(resolved(ok_set.clone(), key).await, default);
+        }
+        assert_eq!(resolve_set_model(None, &named(), None).await, (None, false));
+    }
+
+    #[test]
+    fn argv_carries_set_global_or_no_model() {
+        let spec = |model: Option<&str>| StartSpec {
+            repo_root: "/r".into(),
+            worktree_root: "/w".into(),
+            claude_bin: "claude".into(),
+            agent: "backend".into(),
+            model: model.map(str::to_string),
+            model_from_set: false,
+            skip_permissions: false,
+            start_timeout: Duration::from_secs(1),
+        };
+        let id = uuid::Uuid::nil();
+        for resume in [false, true] {
+            let flag = if resume { "--resume" } else { "--session-id" };
+            let with = session_argv(&spec(Some("opus")), id, resume);
+            assert_eq!(with[1], flag);
+            assert!(with.windows(2).any(|w| w == ["--model", "opus"]));
+            assert!(with.contains(&"--agent=backend".to_string()));
+            let global = session_argv(&spec(Some("sonnet")), id, resume);
+            assert!(global.windows(2).any(|w| w == ["--model", "sonnet"]));
+            assert!(!session_argv(&spec(None), id, resume).contains(&"--model".to_string()));
+        }
+    }
     use clap::Parser;
 
     #[derive(Parser)]

@@ -6,7 +6,7 @@ image:
   # missing file. (0.1.0 and 0.1.1 additionally carry two defects the
   # in-container workspace build found: a login shell lost the Rust toolchain
   # from PATH, and clippy/rustfmt were on the wrong toolchain.)
-  tag: "0.1.10"
+  tag: "0.1.11"
 claude:
   # Model for every Claude process conductor starts (`--model`). `sonnet` is an
   # alias that follows the newest Sonnet known to the image's pinned Claude Code
@@ -14,6 +14,8 @@ claude:
   # `claude-sonnet-5-5`, today. Bumping Claude Code can move it to a newer
   # Sonnet. To pin, set a full model ID such as `claude-sonnet-5-5`.
   # Empty uses Claude Code's own default.
+  # This is the default for every set: a set can override it with a
+  # `model: <alias-or-id>` line in its `session:<name>` Linear label's description.
   model: "sonnet"
 # Maximum concurrent runs across all sets — how many agents may be working at
 # once. A set holds one of these only while Starting, Delivering or Busy; an
