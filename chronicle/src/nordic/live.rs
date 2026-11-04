@@ -23,10 +23,14 @@
 //!   messages to a channel.
 
 use super::classify::classify_item;
+use super::db::Company;
+use super::events::{company_key, release_event, EventSink};
 use super::feed::{parse_document, NewsItem};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
+use metrics::counter;
+use model::generated::SpecialEvent;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
@@ -61,6 +65,19 @@ pub struct Registered {
     pub mfn_slug: String,
     /// Display name from the registry (`companies.name`).
     pub name: Option<String>,
+}
+
+impl Registered {
+    /// As a registry row, for the shared event builders.
+    pub fn as_company(&self) -> Company {
+        Company {
+            ticker: self.ticker.clone(),
+            exchange_mic: self.exchange_mic.clone(),
+            mfn_slug: Some(self.mfn_slug.clone()),
+            name: self.name.clone(),
+            isin: None,
+        }
+    }
 }
 
 /// Lookup of registered companies by MFN slug.
@@ -176,6 +193,9 @@ pub struct LiveItem {
     pub title: String,
     pub url: Option<String>,
     pub attachment_urls: Vec<String>,
+    /// The event the poll would publish for this item (reports and
+    /// corrections); `None` for news and calendar notices.
+    pub event: Option<SpecialEvent>,
 }
 
 impl LiveItem {
@@ -291,6 +311,7 @@ pub fn process_message(
         }
         // The same rules as the hourly poll (NEX-166).
         let c = classify_item(&item.tags, &item.title);
+        let event = release_event(&company.as_company(), &item, &c);
         out.relevant.push(LiveItem {
             news_id: item.news_id,
             ticker: company.ticker.clone(),
@@ -310,6 +331,7 @@ pub fn process_message(
             title: item.title,
             url: item.url,
             attachment_urls: item.attachment_urls,
+            event,
         });
     }
     out
@@ -391,6 +413,59 @@ pub fn report_with(d: &Disposition, mode: SlackMode) {
         })),
         Disposition::New(item) => item.log(),
         Disposition::AlreadyIngested(id) => info!(news_id = %id, "already ingested by poll"),
+    }
+}
+
+// ── Publishing ──────────────────────────────────────────────────────────────
+
+/// The `special.events` messages for new items, keyed like the poll's
+/// (`ticker:exchange_mic`). Items the poll already stored are skipped.
+pub fn events_to_publish(dispositions: &[Disposition]) -> Vec<(String, SpecialEvent)> {
+    dispositions
+        .iter()
+        .filter_map(|d| match d {
+            Disposition::New(item) => item.event.clone().map(|e| {
+                let key = company_key(&Company {
+                    ticker: item.ticker.clone(),
+                    exchange_mic: item.exchange_mic.clone(),
+                    mfn_slug: None,
+                    name: None,
+                    isin: None,
+                });
+                (key, e)
+            }),
+            Disposition::AlreadyIngested(_) => None,
+        })
+        .collect()
+}
+
+/// Sets `nordic_live_events_published_total` to 0 for each result.
+pub fn describe_publish_metrics() {
+    for result in ["published", "failed"] {
+        counter!("nordic_live_events_published_total", "result" => result).absolute(0);
+    }
+}
+
+/// Publishes one event to `special.events`. A failure is logged and counted,
+/// not returned: the nightly poll publishes the same item again.
+pub async fn publish_live(
+    sink: &(dyn EventSink + Send + Sync),
+    key: &str,
+    event: &SpecialEvent,
+) -> bool {
+    match sink.send(key, event).await {
+        Ok(()) => {
+            counter!("nordic_live_events_published_total", "result" => "published").increment(1);
+            info!(key, news_id = %event.source_id, event_type = %event.event_type,
+                  "published to special.events");
+            true
+        }
+        Err(e) => {
+            counter!("nordic_live_events_published_total", "result" => "failed").increment(1);
+            warn!(key, news_id = %event.source_id, error = format!("{e:#}"),
+                  "publishing to special.events failed; the poll will publish it");
+            false
+        }
     }
 }
 
@@ -737,6 +812,91 @@ mod tests {
         assert!(fnfi.find(&item("abc", &["abc"], &["XHEL:ABC"])).is_none());
         // A WebSocket item without tickers is matched by slug alone, as before.
         assert!(fnfi.find(&item("abc", &["abc"], &[])).is_some());
+    }
+
+    /// The GomSpace fixture rewritten as business news (no report tags).
+    fn as_news(msg: &str) -> String {
+        let mut doc: serde_json::Value = serde_json::from_str(msg).unwrap();
+        let item = &mut doc["items"][0];
+        item["properties"]["tags"] = serde_json::json!([":regulatory"]);
+        item["content"]["title"] = serde_json::json!("GomSpace signs a new customer contract");
+        item["news_id"] = serde_json::json!("6e343aa5-f961-55a9-a00e-a94cf5d4d401");
+        doc.to_string()
+    }
+
+    #[derive(Default)]
+    struct VecSink {
+        sent: std::sync::Mutex<Vec<(String, SpecialEvent)>>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl EventSink for VecSink {
+        async fn send(&self, key: &str, event: &SpecialEvent) -> anyhow::Result<()> {
+            if self.fail {
+                anyhow::bail!("broker unavailable");
+            }
+            self.sent
+                .lock()
+                .unwrap()
+                .push((key.to_string(), event.clone()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_report_carries_the_event_the_poll_would_publish() {
+        let mut seen = SeenSet::new(10);
+        let p = process_message(GOMSPACE, at(3), &companies(), &mut seen);
+        let e = p.relevant[0].event.as_ref().expect("a report has an event");
+        assert_eq!(e.event_type, "quarterly_report");
+        assert_eq!(
+            (e.ticker.as_str(), e.exchange_mic.as_str()),
+            ("GOMX", "FNSE")
+        );
+        assert_eq!(e.source, "mfn");
+        assert_eq!(e.source_id, "5e343aa5-f961-55a9-a00e-a94cf5d4d401");
+        assert_eq!(e.report_kind, "interim");
+        assert_eq!(
+            e.occurred_at_unix_secs,
+            p.relevant[0].publish_date.timestamp()
+        );
+
+        let news = process_message(&as_news(GOMSPACE), at(3), &companies(), &mut seen);
+        assert_eq!(news.relevant.len(), 1);
+        assert!(news.relevant[0].event.is_none(), "news is not published");
+    }
+
+    #[tokio::test]
+    async fn only_new_items_with_an_event_are_published() {
+        let mut seen = SeenSet::new(10);
+        let report = process_message(GOMSPACE, at(3), &companies(), &mut seen)
+            .relevant
+            .remove(0);
+        let news = process_message(&as_news(GOMSPACE), at(3), &companies(), &mut seen)
+            .relevant
+            .remove(0);
+        let ds = vec![
+            Disposition::New(Box::new(report.clone())),
+            Disposition::New(Box::new(news)),
+            Disposition::AlreadyIngested(report.news_id),
+        ];
+        let out = events_to_publish(&ds);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "GOMX:FNSE");
+
+        let sink = VecSink::default();
+        assert!(publish_live(&sink, &out[0].0, &out[0].1).await);
+        assert_eq!(sink.sent.lock().unwrap().len(), 1);
+
+        let down = VecSink {
+            fail: true,
+            ..Default::default()
+        };
+        assert!(
+            !publish_live(&down, &out[0].0, &out[0].1).await,
+            "a failure is reported, not raised"
+        );
     }
 
     #[test]
