@@ -120,6 +120,12 @@ kube-prometheus-stack:
           slack_configs:
             - api_url_file: /etc/alertmanager/secrets/alertmanager-slack/SLACK_WEBHOOK_URL
               send_resolved: true
+              # The title links to Grafana's alert list, filtered to this alert
+              # (Grafana lists the Prometheus rules through its Prometheus
+              # datasource). The default link is Alertmanager's in-cluster URL,
+              # which does not open outside the cluster. localhost:32300 is
+              # Grafana through the port forward (CLAUDE.md, Key addresses).
+              title_link: 'http://localhost:32300/alerting/list?search={{ .CommonLabels.alertname }}'
               title: >-
                 [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}]
                 {{ .CommonLabels.alertname }}
