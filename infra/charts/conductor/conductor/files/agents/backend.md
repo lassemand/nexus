@@ -52,6 +52,16 @@ The system communicates between services and workers through domain events, not 
 - Do not couple producers to consumers — a producer must not import a consumer crate
 ---
  
+## Speed
+
+Speed is of high importance to this system: market data, releases and announcements must reach signal as fast as possible.
+
+- Prefer event-driven and streaming paths (WebSockets, Kafka) over scheduled polls. A poll is only a fallback or a backfill, never the primary path for time-sensitive data.
+- Never block a hot path (a WebSocket reader, a Kafka consumer loop) on a slow step such as an external call, a retry or a DB write: hand it to a bounded queue and a worker.
+- If a task would introduce a delay (a schedule, a batch, a debounce) on time-sensitive data, state the latency it adds in the PR description.
+
+---
+
 ## Database — sqlx
  
 - Use `sqlx` for all database access; no ORM
