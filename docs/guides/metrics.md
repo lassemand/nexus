@@ -75,6 +75,7 @@ namespaces down for 5 m) and `NexusJobLastRunFailed`.
 |---|---|
 | Pushgateway (in-cluster only, persistent) | `infra/charts/nexus/pushgateway`, `pushgateway.nexus.svc.cluster.local:9091` |
 | Kafka consumer lag (`kafka_consumergroup_lag{consumergroup,topic,partition}`) | Strimzi `kafkaExporter` on the Kafka CR, PodMonitor `kafka-exporter` |
-| saxo-stream, nordic-live | PodMonitors in `infra/charts/chronicle/chronicle/templates/` |
+| saxo-stream | PodMonitor in `infra/charts/chronicle/chronicle/templates/` |
+| nordic-live | PodMonitor in `infra/charts/chronicle/chronicle/templates/`, dashboard `Nordic Live`, alerts `nexus.nordic-live` (`nordic_live_*`, `nordic_slack_posts_total`) |
 | signal | PodMonitor in `infra/charts/signal/signal/templates/`, dashboard `Signal`, alerts `nexus.signal` |
 | conductor | PodMonitor in `infra/charts/conductor/conductor/templates/`, dashboard `Conductor`, alerts `nexus.conductor` |

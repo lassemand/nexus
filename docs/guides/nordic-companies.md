@@ -431,7 +431,7 @@ kubectl --context orbstack -n chronicle logs deploy/nordic-live -f
 - Reconnects: close code 3000 at once (debug log); anything else backs off 10 ms doubling to 30 s (reset after 60 s up);
   15 minutes without a message or ping drops the connection and reconnects.
 - Env: `MFN_WS_URL`, `DATABASE_URL`, `SIGNAL_DATABASE_URL` (optional), `SLACK_BOT_TOKEN` and `SLACK_CHANNEL` (optional, see
-  below), `SLACK_API_URL`, `METRICS_PORT` (8080), `RUST_LOG`, `LOG_FORMAT` (`json` default or `text`).
+  below), `SLACK_API_URL`, `METRICS_PORT` (9464), `RUST_LOG`, `LOG_FORMAT` (`json` default or `text`).
 
 ### Slack notifications
 
@@ -461,7 +461,7 @@ Not posted: company news, corrections, calendar notices, insider releases, and i
 - The company name is `companies.name` without a trailing ` (TICKER)`, else MFN's `author.name`, else the ticker.
 - Logs: the `report_released` line is unchanged and gets `slack = "queued"` (or `"disabled"`); the outcome follows in a
   `slack_post` event with `slack` = `posted`, `updated`, `skipped_already_posted`, `in_flight` or `failed`.
-- Metrics (`:8080/metrics`, scraped by the `nordic-live` job): `nordic_slack_posts_total{result="posted|updated|failed|dropped"}`
+- Metrics (`:9464/metrics`, scraped by the `nordic-live` job; the full list is in `docs/guides/metrics.md`): `nordic_slack_posts_total{result="posted|updated|failed|dropped"}`
   and `nordic_live_events_published_total{result="published|failed"}` (a failed publish is left to the poll).
   The alert `NordicSlackPostsFailing` fires on any failed post in 30 minutes; look for `slack post failed` in the logs for
   Slack's error code (`invalid_auth`, `missing_scope`, `channel_not_found` or `not_in_channel` mean the token, the scope or

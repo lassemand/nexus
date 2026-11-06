@@ -380,6 +380,7 @@ dependencies = [
  "serde_json",
  "slack-morphism",
  "sqlx",
+ "telemetry",
  "thiserror 1.0.69",
  "time",
  "tokio",

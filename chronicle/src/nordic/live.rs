@@ -29,7 +29,7 @@ use super::feed::{parse_document, NewsItem};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use metrics::counter;
+use metrics::{counter, gauge, histogram};
 use model::generated::SpecialEvent;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -382,8 +382,11 @@ pub async fn dispose(item: LiveItem, check: Option<&dyn IngestedCheck>) -> Dispo
         match check.already_ingested(item.news_id).await {
             Ok(true) => return Disposition::AlreadyIngested(item.news_id),
             Ok(false) => {}
-            Err(e) => warn!(news_id = %item.news_id, error = %e,
-                            "signal database lookup failed, treating the item as new"),
+            Err(e) => {
+                counter!("nordic_live_signal_check_failures_total").increment(1);
+                warn!(news_id = %item.news_id, error = %e,
+                      "signal database lookup failed, treating the item as new");
+            }
         }
     }
     Disposition::New(Box::new(item))
@@ -486,6 +489,51 @@ impl Counters {
     }
 }
 
+/// Histogram buckets (seconds) for `nordic_live_release_latency_seconds`.
+pub const LATENCY_BUCKETS: &[f64] = &[1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 1800.0];
+
+/// Registers every `nordic_live_*` series at zero so rates and alerts see them
+/// before the first event. Call once after the recorder is installed.
+pub fn describe_metrics() {
+    for reason in ["server_close_3000", "error", "timeout", "other"] {
+        counter!("nordic_live_reconnects_total", "reason" => reason).absolute(0);
+    }
+    for relevance in ["relevant", "other"] {
+        counter!("nordic_live_items_total", "relevance" => relevance).absolute(0);
+    }
+    for event in ["report_released", "company_news"] {
+        counter!("nordic_live_releases_total", "event" => event).absolute(0);
+    }
+    for name in [
+        "nordic_live_messages_total",
+        "nordic_live_message_parse_errors_total",
+        "nordic_live_already_ingested_total",
+        "nordic_live_negative_latency_total",
+        "nordic_live_company_reload_failures_total",
+        "nordic_live_signal_check_failures_total",
+    ] {
+        counter!(name).absolute(0);
+    }
+    gauge!("nordic_live_connected").set(0.0);
+}
+
+/// Counts the message's parsed items as relevant (registered company) or other.
+fn record_items(p: &Processed) {
+    let relevant = p.relevant.len() + p.duplicates;
+    counter!("nordic_live_items_total", "relevance" => "relevant").increment(relevant as u64);
+    counter!("nordic_live_items_total", "relevance" => "other")
+        .increment(p.items_seen.saturating_sub(relevant) as u64);
+}
+
+/// Records receive-time minus publish-time. Negative values (clock skew) are
+/// clamped to 0 and counted separately.
+fn record_latency(latency_ms: i64) {
+    if latency_ms < 0 {
+        counter!("nordic_live_negative_latency_total").increment(1);
+    }
+    histogram!("nordic_live_release_latency_seconds").record(latency_ms.max(0) as f64 / 1000.0);
+}
+
 /// Handles one message end to end: parse, filter, cancel-check, log. Returns
 /// what happened, for the counters and for tests.
 pub async fn handle_message(
@@ -516,6 +564,12 @@ pub async fn handle_message_with(
     mode: SlackMode,
 ) -> (Counters, Vec<Disposition>) {
     let processed = process_message(msg, received_at, companies, seen);
+    counter!("nordic_live_messages_total").increment(1);
+    gauge!("nordic_live_last_message_timestamp_seconds")
+        .set(received_at.timestamp_millis() as f64 / 1000.0);
+    if processed.malformed.is_some() {
+        counter!("nordic_live_message_parse_errors_total").increment(1);
+    }
     if let Some(why) = &processed.malformed {
         let head: String = msg.chars().take(300).collect();
         warn!(error = %why, message = %head, "malformed nordic-live message, skipped");
@@ -528,9 +582,19 @@ pub async fn handle_message_with(
         seen: processed.items_seen,
         relevant: processed.relevant.len() + processed.duplicates,
     };
+    record_items(&processed);
     let mut out = Vec::new();
     for item in processed.relevant {
+        record_latency(item.latency_ms());
         let d = dispose(item, check).await;
+        match &d {
+            Disposition::New(item) => {
+                counter!("nordic_live_releases_total", "event" => item.event()).increment(1)
+            }
+            Disposition::AlreadyIngested(_) => {
+                counter!("nordic_live_already_ingested_total").increment(1)
+            }
+        }
         report_with(&d, mode);
         out.push(d);
     }
@@ -595,9 +659,27 @@ pub enum ConnEvent {
     Dead,
 }
 
+/// Why a session failed, as the `reason` label of `nordic_live_reconnects_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailKind {
+    Error,
+    Timeout,
+    Other,
+}
+
+impl FailKind {
+    fn label(self) -> &'static str {
+        match self {
+            FailKind::Error => "error",
+            FailKind::Timeout => "timeout",
+            FailKind::Other => "other",
+        }
+    }
+}
+
 enum SessionEnd {
     FastReconnect,
-    Failed(String),
+    Failed(FailKind, String),
     ReceiverGone,
 }
 
@@ -639,16 +721,20 @@ impl Listener {
                 return;
             }
             let (end, up_for) = self.session(&tx).await;
+            gauge!("nordic_live_connected").set(0.0);
             match end {
                 SessionEnd::ReceiverGone => return,
                 SessionEnd::FastReconnect => {
+                    counter!("nordic_live_reconnects_total", "reason" => "server_close_3000")
+                        .increment(1);
                     debug!("MFN closed the connection with 3000, reconnecting");
                     self.emit(ConnEvent::FastReconnect);
                     if up_for.is_some_and(|d| d >= self.stable_after) {
                         backoff.reset();
                     }
                 }
-                SessionEnd::Failed(reason) => {
+                SessionEnd::Failed(kind, reason) => {
+                    counter!("nordic_live_reconnects_total", "reason" => kind.label()).increment(1);
                     if up_for.is_some_and(|d| d >= self.stable_after) {
                         backoff.reset();
                     }
@@ -665,7 +751,12 @@ impl Listener {
     async fn session(&self, tx: &mpsc::Sender<Received>) -> (SessionEnd, Option<Duration>) {
         let mut request = match self.url.as_str().into_client_request() {
             Ok(r) => r,
-            Err(e) => return (SessionEnd::Failed(format!("bad url: {e}")), None),
+            Err(e) => {
+                return (
+                    SessionEnd::Failed(FailKind::Error, format!("bad url: {e}")),
+                    None,
+                )
+            }
         };
         if let Ok(ua) = self.user_agent.parse() {
             request.headers_mut().insert(USER_AGENT, ua);
@@ -673,11 +764,22 @@ impl Listener {
         let connect = tokio_tungstenite::connect_async(request);
         let mut ws = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
             Ok(Ok((ws, _))) => ws,
-            Ok(Err(e)) => return (SessionEnd::Failed(format!("connect failed: {e}")), None),
-            Err(_) => return (SessionEnd::Failed("connect timed out".to_string()), None),
+            Ok(Err(e)) => {
+                return (
+                    SessionEnd::Failed(FailKind::Error, format!("connect failed: {e}")),
+                    None,
+                )
+            }
+            Err(_) => {
+                return (
+                    SessionEnd::Failed(FailKind::Timeout, "connect timed out".to_string()),
+                    None,
+                )
+            }
         };
         info!(url = %self.url, "connected to MFN");
         self.emit(ConnEvent::Connected);
+        gauge!("nordic_live_connected").set(1.0);
         let up_since = Instant::now();
 
         loop {
@@ -688,7 +790,10 @@ impl Listener {
                     warn!(silent_for = ?self.dead_after, "no message or ping from MFN, dropping the connection");
                     self.emit(ConnEvent::Dead);
                     return (
-                        SessionEnd::Failed("no message or ping/pong".to_string()),
+                        SessionEnd::Failed(
+                            FailKind::Timeout,
+                            "no message or ping/pong".to_string(),
+                        ),
                         Some(up_since.elapsed()),
                     );
                 }
@@ -696,12 +801,15 @@ impl Listener {
             match next {
                 None => {
                     return (
-                        SessionEnd::Failed("stream ended".to_string()),
+                        SessionEnd::Failed(FailKind::Error, "stream ended".to_string()),
                         Some(up_since.elapsed()),
                     )
                 }
                 Some(Err(e)) => {
-                    return (SessionEnd::Failed(e.to_string()), Some(up_since.elapsed()))
+                    return (
+                        SessionEnd::Failed(FailKind::Error, e.to_string()),
+                        Some(up_since.elapsed()),
+                    )
                 }
                 Some(Ok(Message::Text(text))) => {
                     let received = Received {
@@ -719,7 +827,10 @@ impl Listener {
                             (SessionEnd::FastReconnect, up)
                         }
                         other => (
-                            SessionEnd::Failed(format!("closed by server: {other:?}")),
+                            SessionEnd::Failed(
+                                FailKind::Other,
+                                format!("closed by server: {other:?}"),
+                            ),
                             up,
                         ),
                     };
@@ -1064,6 +1175,131 @@ mod tests {
                 seen: 1,
                 relevant: 1
             }
+        );
+    }
+
+    /// Runs `f` against a fresh local recorder and returns the rendered metrics.
+    async fn metered<F: std::future::Future>(f: F) -> String {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new()
+            .set_buckets_for_metric(
+                metrics_exporter_prometheus::Matcher::Full(
+                    "nordic_live_release_latency_seconds".into(),
+                ),
+                LATENCY_BUCKETS,
+            )
+            .unwrap()
+            .build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        f.await;
+        handle.render()
+    }
+
+    /// The value of an exact series line such as `name{label="x"}`.
+    fn value(text: &str, series: &str) -> f64 {
+        text.lines()
+            .find_map(|l| l.strip_prefix(series)?.strip_prefix(' '))
+            .unwrap_or_else(|| panic!("series {series} not found in:\n{text}"))
+            .parse()
+            .unwrap()
+    }
+
+    async fn handle(msg: &str, received: DateTime<Utc>, check: Option<&dyn IngestedCheck>) {
+        let mut seen = SeenSet::new(10);
+        handle_message(msg, received, &companies(), &mut seen, check).await;
+    }
+
+    #[tokio::test]
+    async fn counts_a_relevant_item() {
+        let text = metered(handle(GOMSPACE, at(3), None)).await;
+        assert_eq!(value(&text, "nordic_live_messages_total"), 1.0);
+        assert_eq!(
+            value(&text, "nordic_live_items_total{relevance=\"relevant\"}"),
+            1.0
+        );
+        assert_eq!(
+            value(&text, "nordic_live_items_total{relevance=\"other\"}"),
+            0.0
+        );
+        assert_eq!(
+            value(&text, "nordic_live_release_latency_seconds_count"),
+            1.0
+        );
+        assert_eq!(value(&text, "nordic_live_release_latency_seconds_sum"), 3.0);
+        assert_eq!(
+            value(
+                &text,
+                "nordic_live_release_latency_seconds_bucket{le=\"2\"}"
+            ),
+            0.0
+        );
+        assert_eq!(
+            value(
+                &text,
+                "nordic_live_release_latency_seconds_bucket{le=\"5\"}"
+            ),
+            1.0
+        );
+        assert!(
+            value(&text, "nordic_live_last_message_timestamp_seconds") > 1.7e9,
+            "{text}"
+        );
+        let released = text
+            .lines()
+            .filter(|l| l.starts_with("nordic_live_releases_total{"))
+            .count();
+        assert_eq!(released, 1, "one event label: {text}");
+    }
+
+    #[tokio::test]
+    async fn counts_an_item_from_an_unregistered_company_as_other() {
+        let text = metered(handle(VOLVO, at(3), None)).await;
+        assert_eq!(value(&text, "nordic_live_messages_total"), 1.0);
+        assert_eq!(
+            value(&text, "nordic_live_items_total{relevance=\"other\"}"),
+            1.0
+        );
+        assert!(
+            !text.contains("nordic_live_release_latency_seconds"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn counts_a_malformed_message() {
+        let text = metered(handle("not json", at(3), None)).await;
+        assert_eq!(value(&text, "nordic_live_messages_total"), 1.0);
+        assert_eq!(value(&text, "nordic_live_message_parse_errors_total"), 1.0);
+    }
+
+    #[tokio::test]
+    async fn counts_an_item_the_poll_already_stored() {
+        let stub = Stub(Ok(true));
+        let text = metered(handle(GOMSPACE, at(3), Some(&stub))).await;
+        assert_eq!(value(&text, "nordic_live_already_ingested_total"), 1.0);
+        assert!(!text.contains("nordic_live_releases_total"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn counts_a_failed_signal_check_and_still_releases() {
+        let stub = Stub(Err("db down".into()));
+        let text = metered(handle(GOMSPACE, at(3), Some(&stub))).await;
+        assert_eq!(value(&text, "nordic_live_signal_check_failures_total"), 1.0);
+        assert!(text.contains("nordic_live_releases_total{event="), "{text}");
+    }
+
+    #[tokio::test]
+    async fn negative_latency_is_clamped_to_zero_and_counted() {
+        // Received 5 s before MFN's publish_date.
+        let text = metered(handle(GOMSPACE, at(-5), None)).await;
+        assert_eq!(value(&text, "nordic_live_negative_latency_total"), 1.0);
+        assert_eq!(value(&text, "nordic_live_release_latency_seconds_sum"), 0.0);
+        assert_eq!(
+            value(
+                &text,
+                "nordic_live_release_latency_seconds_bucket{le=\"1\"}"
+            ),
+            1.0
         );
     }
 }

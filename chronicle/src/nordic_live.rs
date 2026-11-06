@@ -14,24 +14,23 @@
 /// start). Network trouble never ends the process.
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
 use chronicle_lib::nordic::live::{
-    describe_publish_metrics, events_to_publish, handle_message_with, publish_live, Companies,
-    Counters, IngestedCheck, Listener, Registered, SeenSet, SignalDb, SlackMode, DEFAULT_WS_URL,
-    SEEN_CAPACITY,
+    describe_metrics, describe_publish_metrics, events_to_publish, handle_message_with,
+    publish_live, Companies, Counters, IngestedCheck, Listener, Registered, SeenSet, SignalDb,
+    SlackMode, DEFAULT_WS_URL, LATENCY_BUCKETS, SEEN_CAPACITY,
 };
 use chronicle_lib::nordic::live_slack::{
-    describe_metrics, enqueue, jobs_for, run_worker, Sessions, SlackApi, SlackJob, QUEUE_CAPACITY,
+    describe_metrics as describe_slack_metrics, enqueue, jobs_for, run_worker, Sessions, SlackApi,
+    SlackJob, QUEUE_CAPACITY,
 };
 use chronicle_lib::nordic::slack::{SlackClient, DEFAULT_API_URL};
 use clap::Parser;
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics::{counter, gauge};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Row};
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -77,7 +76,7 @@ struct Args {
     slack_api_url: String,
 
     /// Port of the Prometheus `/metrics` endpoint.
-    #[arg(long, env = "METRICS_PORT", default_value_t = 8080)]
+    #[arg(long, env = "METRICS_PORT", default_value_t = 9464)]
     metrics_port: u16,
 
     /// `json` (default, one JSON object per line) or `text`.
@@ -147,41 +146,6 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Serves `GET /metrics` (and a plain 200 elsewhere, for probes).
-async fn serve_metrics(port: u16, handle: PrometheusHandle) {
-    let listener = match TcpListener::bind(("0.0.0.0", port)).await {
-        Ok(l) => l,
-        Err(e) => {
-            warn!(error = %e, port, "metrics endpoint not started");
-            return;
-        }
-    };
-    loop {
-        let Ok((stream, _)) = listener.accept().await else {
-            continue;
-        };
-        let handle = handle.clone();
-        tokio::spawn(async move {
-            let (read, mut write) = stream.into_split();
-            let mut line = String::new();
-            if BufReader::new(read).read_line(&mut line).await.is_err() {
-                return;
-            }
-            let body = if line.starts_with("GET /metrics") {
-                handle.render()
-            } else {
-                "ok\n".to_string()
-            };
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain; version=0.0.4\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = write.write_all(response.as_bytes()).await;
-        });
-    }
-}
-
 async fn run(args: Args) -> anyhow::Result<()> {
     let pool = PgPoolOptions::new()
         .max_connections(3)
@@ -210,9 +174,16 @@ async fn run(args: Args) -> anyhow::Result<()> {
         }
     };
 
-    let metrics = PrometheusBuilder::new().install_recorder()?;
+    telemetry::serve_with_buckets(
+        "nordic-live",
+        args.metrics_port,
+        &[("nordic_live_release_latency_seconds", LATENCY_BUCKETS)],
+    )
+    .await?;
     describe_metrics();
+    describe_slack_metrics();
     describe_publish_metrics();
+    gauge!("nordic_live_registered_companies").set(companies.len() as f64);
 
     let events: Option<Arc<KafkaSink>> = match args.kafka_brokers.as_deref() {
         Some(brokers) if !brokers.is_empty() => {
@@ -225,7 +196,6 @@ async fn run(args: Args) -> anyhow::Result<()> {
             None
         }
     };
-    tokio::spawn(serve_metrics(args.metrics_port, metrics));
 
     let slack_tx = match (&args.slack_bot_token, &args.slack_channel) {
         (Some(token), Some(channel)) if !token.is_empty() && !channel.is_empty() => {
@@ -298,8 +268,12 @@ async fn run(args: Args) -> anyhow::Result<()> {
                             info!(old = companies.len(), new = c.len(), "registered companies changed");
                         }
                         companies = c;
+                        gauge!("nordic_live_registered_companies").set(companies.len() as f64);
                     }
-                    Err(e) => warn!(error = %e, "reloading companies failed, keeping the old list"),
+                    Err(e) => {
+                        counter!("nordic_live_company_reload_failures_total").increment(1);
+                        warn!(error = %e, "reloading companies failed, keeping the old list");
+                    }
                 }
                 sessions = load_sessions(signal.as_ref(), &sessions).await;
             }

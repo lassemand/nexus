@@ -70,6 +70,7 @@ urlencoding = "2"
 async-trait = "0.1"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
+telemetry = { path = "../telemetry" }
 scraper = "0.29.0"
 uuid = { version = "1.29.0", features = ["serde"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
