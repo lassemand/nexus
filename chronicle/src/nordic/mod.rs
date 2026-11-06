@@ -9,6 +9,7 @@ use model::asset::mic;
 /// that has an `mfn_slug`, whatever its MIC.
 pub const NORDIC_MICS: &[&str] = mic::NORDIC;
 
+pub mod announcement;
 pub mod calendar;
 pub mod calendar_release;
 pub mod classify;

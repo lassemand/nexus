@@ -30,6 +30,27 @@ struct VecSink {
     sent: Mutex<Vec<SpecialEvent>>,
 }
 
+impl VecSink {
+    fn reports(&self) -> Vec<SpecialEvent> {
+        self.sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.event_type != "company_announcement")
+            .cloned()
+            .collect()
+    }
+
+    fn announcements(&self) -> usize {
+        self.sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.event_type == "company_announcement")
+            .count()
+    }
+}
+
 #[async_trait]
 impl EventSink for VecSink {
     async fn send(&self, _key: &str, event: &SpecialEvent) -> anyhow::Result<()> {
@@ -132,8 +153,10 @@ async fn the_burst_and_the_ceo_release_publish_ten_transactions_once_each() {
         (summary.mar_parse_errors, summary.mar_suspicious_zero_price),
         (0, 0)
     );
-    // Managers' transactions are not reports.
-    assert!(sink.sent.lock().unwrap().is_empty());
+    // Managers' transactions are not reports, but each release is also a
+    // company announcement.
+    assert!(sink.reports().is_empty());
+    assert_eq!(sink.announcements(), items().len());
 
     let sent = insiders.take();
     assert_eq!(sent.len(), 10);
@@ -226,10 +249,7 @@ async fn swedish_and_danish_companies_publish_no_insiders_from_mfn() {
     assert!(summary.is_success(), "{summary:?}");
     assert!(insiders.take().is_empty());
     assert_eq!(summary.insiders_published, 0);
-    assert!(
-        sink.sent.lock().unwrap().is_empty(),
-        "and no report events either"
-    );
+    assert!(sink.reports().is_empty(), "and no report events either");
 
     // The one-off re-read leaves them alone as well.
     let only = VecInsiders::default();
@@ -350,7 +370,7 @@ async fn the_insiders_only_reread_publishes_no_reports_and_never_moves_the_curso
         before,
         "the cursor did not move"
     );
-    assert!(sink.sent.lock().unwrap().is_empty());
+    assert!(sink.reports().is_empty());
 
     // From a date: only the April burst.
     let april = VecInsiders::default();

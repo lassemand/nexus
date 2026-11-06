@@ -17,6 +17,13 @@ package nexus;
 //                       instant; `calendar` = its entries, with fetched_at =
 //                       the publish instant. Stored as scheduled rows of
 //                       source "mfn_release"; not a row itself.
+//   "company_announcement"
+//                       any other release a company published on MFN (not a
+//                       report, correction, calendar notice or calendar
+//                       release): source = "mfn", source_id = MFN news_id,
+//                       description = its title; occurred_at = its publish
+//                       instant; report_kind = ""; text = content.text. One
+//                       event per language version.
 //
 // Producers key Kafka messages by "{ticker}:{exchange_mic}" so one company's
 // events stay in order on one partition.
@@ -37,6 +44,7 @@ message SpecialEvent {
   bool   is_correction  = 13;
   string company_name   = 14;  // display name from companies.name, "" if unknown
   ReportCalendar calendar = 15; // only when event_type is "report_calendar" or "report_calendar_release"
+  string text           = 16;  // company_announcement: the release as plain text, "" if MFN has none
 }
 
 // A company's upcoming reports as listed on its MFN page at fetched_at.

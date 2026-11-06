@@ -326,7 +326,12 @@ async fn cursor(db: &TestDb, ticker: &str) -> Option<chrono::DateTime<chrono::Ut
 fn releases(sent: &[(String, SpecialEvent)]) -> Vec<(String, String, String)> {
     let mut out: Vec<_> = sent
         .iter()
-        .filter(|(_, e)| !e.event_type.starts_with("report_calendar"))
+        .filter(|(_, e)| {
+            matches!(
+                e.event_type.as_str(),
+                "quarterly_report" | "annual_report" | "report_correction"
+            )
+        })
         .map(|(_, e)| {
             let at = chrono::DateTime::from_timestamp(e.occurred_at_unix_secs, 0).unwrap();
             (
@@ -997,4 +1002,141 @@ async fn scanning_releases_stops_at_the_window_and_emits_only_calendar_releases(
         .iter()
         .all(|(_, e)| e.event_type == "report_calendar_release"));
     assert_eq!(requests_to(&server, "/all/").await, 2);
+}
+
+fn ff_item(id: &str, date: &str, lang: &str, tags: Value, title: &str, text: &str) -> Value {
+    json!({
+        "news_id": id,
+        "url": format!("https://mfn.se/one/a/firstfarms/{id}"),
+        "author": {"slug": "firstfarms", "slugs": ["firstfarms"], "tickers": ["XCSE:FFARMS"]},
+        "properties": {"lang": lang, "tags": tags},
+        "content": {"title": title, "publish_date": date, "text": text}
+    })
+}
+
+fn announcement_page() -> Vec<Value> {
+    let reg = json!([":regulatory"]);
+    let report = json!([":regulatory", "sub:report", "sub:report:interim"]);
+    let cal = json!([":regulatory", "sub:ci", "sub:ci:calendar"]);
+    vec![
+        ff_item(
+            "00000000-0000-4000-8000-0000000000a1",
+            "2026-08-26T06:15:21Z",
+            "da",
+            reg.clone(),
+            "FirstFarms A/S: Nedjustering af forventninger",
+            "  Bestyrelsen nedjusterer.  ",
+        ),
+        ff_item(
+            "00000000-0000-4000-8000-0000000000a2",
+            "2026-08-26T06:15:21Z",
+            "en",
+            reg,
+            "FirstFarms A/S: Downward adjustment of guidance",
+            "The board lowers its outlook.",
+        ),
+        ff_item(
+            "00000000-0000-4000-8000-0000000000b1",
+            "2026-08-26T06:00:00Z",
+            "da",
+            report.clone(),
+            "FirstFarms A/S: Delårsrapport for Q2 2026",
+            "Rapport",
+        ),
+        ff_item(
+            "00000000-0000-4000-8000-0000000000b2",
+            "2026-08-26T06:00:00Z",
+            "en",
+            report,
+            "FirstFarms A/S: Interim report Q2 2026",
+            "Report",
+        ),
+        ff_item(
+            "00000000-0000-4000-8000-0000000000c1",
+            "2026-05-19T06:23:14Z",
+            "en",
+            cal,
+            "Financial calendar 2026 for FirstFarms A/S",
+            "25 March 2026 Annual report 2025\n27 May 2026 Interim report Q1 2026",
+        ),
+    ]
+}
+
+fn ff_summary(sent: &[(String, SpecialEvent)]) -> Vec<(String, String)> {
+    sent.iter()
+        .map(|(_, e)| (e.event_type.clone(), e.source_id[30..].to_string()))
+        .collect()
+}
+
+#[tokio::test]
+async fn announcements_are_emitted_per_language_in_feed_order_beside_reports() {
+    let Some(db) = TestDb::create().await else {
+        return;
+    };
+    db.add_company("FFARMS", "XCSE", "firstfarms").await;
+    let server = MockServer::start().await;
+    serve_feed(&server, "firstfarms", &announcement_page(), 48).await;
+    let sink = VecSink::default();
+    ingest_firstfarms(&db, &server, &sink).await;
+    let sent = sink.take();
+    assert!(sent.iter().all(|(k, _)| k == "FFARMS:XCSE"));
+    let kinds: Vec<(&str, &str)> = [
+        ("company_announcement", "a1"),
+        ("company_announcement", "a2"),
+        ("quarterly_report", "b1"),
+        ("quarterly_report", "b2"),
+        ("report_calendar_release", "c1"),
+    ]
+    .to_vec();
+    let got = ff_summary(&sent);
+    assert_eq!(
+        got.iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect::<Vec<_>>(),
+        kinds
+    );
+    let first = &sent[0].1;
+    assert_eq!(first.text, "Bestyrelsen nedjusterer.");
+    assert_eq!(first.lang, "da");
+    assert_eq!(first.source, "mfn");
+    assert_eq!(first.report_kind, "");
+    assert_eq!(first.occurred_at_unix_secs, sent[1].1.occurred_at_unix_secs);
+    assert_eq!(
+        cursor_of(&db, "FFARMS", "XCSE").await.unwrap().to_rfc3339(),
+        "2026-08-26T06:15:21+00:00"
+    );
+    db.drop_db().await;
+}
+
+async fn cursor_of(db: &TestDb, ticker: &str, mic: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    db::load_state(&db.pool, ticker, mic)
+        .await
+        .unwrap()
+        .feed_cursor
+}
+
+#[tokio::test]
+async fn a_failing_announcement_send_leaves_the_cursor() {
+    let Some(db) = TestDb::create().await else {
+        return;
+    };
+    db.add_company("FFARMS", "XCSE", "firstfarms").await;
+    let server = MockServer::start().await;
+    serve_feed(&server, "firstfarms", &announcement_page(), 48).await;
+    let insiders = common::VecInsiders::default();
+    let mut feed = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
+    let flaky = VecSink::failing_after(1);
+    let result = chronicle_lib::nordic::ingest::ingest_company(
+        &db.pool,
+        &mut feed,
+        &flaky,
+        &insiders,
+        &firstfarms(),
+        "firstfarms",
+        false,
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(cursor_of(&db, "FFARMS", "XCSE").await, None);
+    db.drop_db().await;
 }

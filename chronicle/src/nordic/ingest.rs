@@ -7,11 +7,14 @@
 //! signal upserts by `(source, source_id)`), and moves it only after every
 //! message for the company was acknowledged, so a failed publish loses nothing.
 
+use super::announcement::is_announcement_class;
 use super::calendar::{self, MfnClient, Refresh};
 use super::calendar_release::parse_calendar_release;
 use super::classify::classify_item;
 use super::db::{self, Company};
-use super::events::{calendar_release_event, publish, release_event, EventSink};
+use super::events::{
+    announcement_event, calendar_release_event, publish, release_event, EventSink,
+};
 use super::feed::{fetch_feed_page, first_page_url, NewsItem};
 use super::insiders::{self, insider_key, InsiderSink, InsiderStats};
 use chrono::{DateTime, Duration, Utc};
@@ -33,6 +36,8 @@ pub struct CompanyOutcome {
     pub calendar_announced: bool,
     /// `report_calendar_release` events published.
     pub calendar_releases: usize,
+    /// `company_announcement` events published.
+    pub announcements: usize,
     /// Pages fetched.
     pub pages: usize,
     /// The cursor after the run.
@@ -124,27 +129,35 @@ pub async fn ingest_company(
                 checked_isin = true;
                 store_isin(pool, company, slug, &item.author_isins).await;
             }
-            if let Some(release) = parse_calendar_release(item) {
+            let release = parse_calendar_release(item);
+            if let Some(release) = &release {
                 publish(
                     sink,
                     company,
-                    &calendar_release_event(company, item, &release),
+                    &calendar_release_event(company, item, release),
                 )
                 .await?;
                 outcome.calendar_releases += 1;
                 newest_published = newest_published.max(Some(item.published_at));
             }
-            if finnish && insiders::is_managers_transaction(item) {
+            let managers = finnish && insiders::is_managers_transaction(item);
+            if managers {
                 insider_items.push(item.clone());
-                continue;
             }
             let c = classify_item(&item.tags, &item.title);
-            if c.calendar_update && start.is_none_or(|s| item.published_at > s) {
-                outcome.calendar_announced = true;
+            if !managers {
+                if c.calendar_update && start.is_none_or(|s| item.published_at > s) {
+                    outcome.calendar_announced = true;
+                }
+                if let Some(event) = release_event(company, item, &c) {
+                    publish(sink, company, &event).await?;
+                    outcome.published += 1;
+                    newest_published = newest_published.max(Some(item.published_at));
+                }
             }
-            if let Some(event) = release_event(company, item, &c) {
-                publish(sink, company, &event).await?;
-                outcome.published += 1;
+            if is_announcement_class(&c, release.is_some()) {
+                publish(sink, company, &announcement_event(company, item)).await?;
+                outcome.announcements += 1;
                 newest_published = newest_published.max(Some(item.published_at));
             }
         }
@@ -437,7 +450,8 @@ pub async fn process_companies(
         summary.attempted += 1;
         match ingest_company(pool, feed, sink, insider_sink, c, slug, backfill).await {
             Ok(o) => {
-                info!(ticker = %c.ticker, published = o.published, pages = o.pages,
+                info!(ticker = %c.ticker, published = o.published, announcements = o.announcements,
+                      calendar_releases = o.calendar_releases, pages = o.pages,
                       cursor = ?o.cursor, insiders_published = o.insiders_published,
                       insiders = ?o.insiders, "ingested");
                 summary.insiders_published += o.insiders_published;
