@@ -1064,7 +1064,12 @@ fn announcement_page() -> Vec<Value> {
 
 fn ff_summary(sent: &[(String, SpecialEvent)]) -> Vec<(String, String)> {
     sent.iter()
-        .map(|(_, e)| (e.event_type.clone(), e.source_id[30..].to_string()))
+        .map(|(_, e)| {
+            (
+                e.event_type.clone(),
+                e.source_id[e.source_id.len() - 2..].to_string(),
+            )
+        })
         .collect()
 }
 
