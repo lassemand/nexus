@@ -388,11 +388,16 @@ fn a_weekday_in(year: i32) -> NaiveDate {
 /// without a local Postgres running.
 #[tokio::test]
 async fn all_checks_pass_against_seeded_fixtures_and_mocked_apis() {
-    let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
-        eprintln!(
-            "TEST_DATABASE_URL not set — skipping smoke test (see .github/workflows/verify.yml)"
-        );
-        return;
+    let database_url = match std::env::var("TEST_DATABASE_URL") {
+        Ok(url) if !url.is_empty() => url,
+        // Under CI a skip would pass without running anything.
+        _ if std::env::var("CI").is_ok_and(|v| v == "true") => {
+            panic!("TEST_DATABASE_URL is not set under CI, so the smoke test would be skipped")
+        }
+        _ => {
+            eprintln!("TEST_DATABASE_URL not set — skipping smoke test");
+            return;
+        }
     };
 
     let pool = PgPoolOptions::new()
