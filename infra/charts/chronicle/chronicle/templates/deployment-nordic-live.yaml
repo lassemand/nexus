@@ -1,6 +1,7 @@
 # Live MFN listener (NEX-170): logs Nordic releases the moment they are published,
 # emits company announcements to special.events within seconds (NEX-241) and,
-# when nordicLive.slackChannel is set, posts results releases to Slack (NEX-222). Its
+# when nordicLive.slackChannel is set, posts results releases to Slack (NEX-222), and
+# company announcements to nordicLive.announcementsChannel when that is set (NEX-239). Its
 # only write is the slack_report_posts claim in chronicle's database; the nordic-reports
 # poll stays the only writer of reports and the fallback for anything missed while the
 # socket is down.
@@ -40,6 +41,11 @@ spec:
             # Slack channel ID (not the name); empty/unset disables Slack posting.
             - name: SLACK_CHANNEL
               value: {{ .Values.nordicLive.slackChannel | quote }}
+            {{- end }}
+            {{- if .Values.nordicLive.announcementsChannel }}
+            # Slack channel ID (not the name) for company announcements; empty/unset disables them.
+            - name: SLACK_ANNOUNCEMENTS_CHANNEL
+              value: {{ .Values.nordicLive.announcementsChannel | quote }}
             {{- end }}
           envFrom:
             # DATABASE_URL: chronicle's database (the registered companies).

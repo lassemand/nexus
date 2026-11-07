@@ -29,6 +29,7 @@ use super::db::Company;
 use super::events::{announcement_event, company_key, release_event, EventSink};
 use super::feed::{parse_document, NewsItem};
 use super::live_emit::{EmitJob, Emitter};
+use super::slack::NoticeKind;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -417,28 +418,57 @@ pub async fn dispose(item: LiveItem, check: Option<&dyn IngestedCheck>) -> Dispo
     Disposition::New(Box::new(item))
 }
 
-/// Whether results releases are handed to the Slack worker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SlackMode {
-    /// No token or channel: log only.
-    Disabled,
-    /// Report items are queued for Slack.
-    Enabled,
+/// The Slack channel IDs of the two kinds of post. A kind without a channel is not posted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlackChannels {
+    /// Where results releases go.
+    pub reports: Option<String>,
+    /// Where company announcements go.
+    pub announcements: Option<String>,
+}
+
+impl SlackChannels {
+    /// Channels from configuration; empty strings count as unset.
+    pub fn new(reports: Option<String>, announcements: Option<String>) -> Self {
+        let set = |c: Option<String>| c.filter(|c| !c.is_empty());
+        Self {
+            reports: set(reports),
+            announcements: set(announcements),
+        }
+    }
+
+    /// The channel for `kind`.
+    pub fn for_kind(&self, kind: NoticeKind) -> Option<&str> {
+        match kind {
+            NoticeKind::Report => self.reports.as_deref(),
+            NoticeKind::Announcement => self.announcements.as_deref(),
+        }
+    }
 }
 
 /// Logs a disposition: the item itself, or `already ingested by poll`.
 pub fn report(d: &Disposition) {
-    report_with(d, SlackMode::Disabled)
+    report_with(d, &SlackChannels::default())
 }
 
-/// [`report`] with the Slack mode: results releases get `slack = "disabled"` or
-/// `"queued"`; the worker logs the outcome in its own `slack_post` event.
-pub fn report_with(d: &Disposition, mode: SlackMode) {
+/// [`report`] with the channels: results releases and announcements get
+/// `slack = "disabled"` or `"queued"` by whether their kind has a channel; the
+/// worker logs the outcome in its own `slack_post` event.
+pub fn report_with(d: &Disposition, channels: &SlackChannels) {
+    let label = |kind| {
+        if channels.for_kind(kind).is_some() {
+            "queued"
+        } else {
+            "disabled"
+        }
+    };
     match d {
-        Disposition::New(item) if item.is_slack_candidate() => item.log_with(Some(match mode {
-            SlackMode::Disabled => "disabled",
-            SlackMode::Enabled => "queued",
-        })),
+        Disposition::New(item) if item.is_slack_candidate() => {
+            item.log_with(Some(label(NoticeKind::Report)))
+        }
+        Disposition::New(item) if item.announcement.is_some() => {
+            item.log_with(Some(label(NoticeKind::Announcement)))
+        }
         Disposition::New(item) => item.log(),
         Disposition::AlreadyIngested(id) => info!(news_id = %id, "already ingested by poll"),
     }
@@ -574,7 +604,7 @@ pub async fn handle_message(
         companies,
         seen,
         check,
-        SlackMode::Disabled,
+        &SlackChannels::default(),
     )
     .await
 }
@@ -586,9 +616,9 @@ pub async fn handle_message_with(
     companies: &Companies,
     seen: &mut SeenSet,
     check: Option<&dyn IngestedCheck>,
-    mode: SlackMode,
+    channels: &SlackChannels,
 ) -> (Counters, Vec<Disposition>) {
-    handle_message_full(msg, received_at, companies, seen, check, mode, None).await
+    handle_message_full(msg, received_at, companies, seen, check, channels, None).await
 }
 
 /// [`handle_message_with`] that also queues each item's announcement event on
@@ -601,7 +631,7 @@ pub async fn handle_message_full(
     companies: &Companies,
     seen: &mut SeenSet,
     check: Option<&dyn IngestedCheck>,
-    mode: SlackMode,
+    channels: &SlackChannels,
     emitter: Option<&Emitter>,
 ) -> (Counters, Vec<Disposition>) {
     let mut processed = process_message(msg, received_at, companies, seen);
@@ -648,7 +678,7 @@ pub async fn handle_message_full(
                 counter!("nordic_live_already_ingested_total").increment(1)
             }
         }
-        report_with(&d, mode);
+        report_with(&d, channels);
         out.push(d);
     }
     (counters, out)
@@ -1098,7 +1128,7 @@ mod tests {
                 &companies(),
                 &mut seen,
                 None,
-                SlackMode::Disabled,
+                &SlackChannels::default(),
                 Some(&emitter),
             )
             .await;
@@ -1131,7 +1161,7 @@ mod tests {
             &companies(),
             &mut seen,
             Some(&Always),
-            SlackMode::Disabled,
+            &SlackChannels::default(),
             Some(&emitter),
         )
         .await;
@@ -1144,7 +1174,7 @@ mod tests {
             &companies(),
             &mut seen,
             None,
-            SlackMode::Disabled,
+            &SlackChannels::default(),
             None,
         )
         .await;
