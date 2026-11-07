@@ -525,6 +525,91 @@ data:
               "legendFormat": "{{ "{{" }}pod{{ "}}" }}"
             }
           ]
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "Announcements emitted (per hour)",
+          "gridPos": {
+            "x": 0,
+            "y": 34,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (result) (increase(nordic_live_events_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "{{ "{{" }}result{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Emit latency (receive time to Kafka ack)",
+          "gridPos": {
+            "x": 12,
+            "y": 34,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(nordic_live_emit_latency_seconds_bucket{job=\"nordic-live\"}[15m])))",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(nordic_live_emit_latency_seconds_bucket{job=\"nordic-live\"}[15m])))",
+              "legendFormat": "p99"
+            }
+          ]
         }
       ]
     }

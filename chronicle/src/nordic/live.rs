@@ -22,10 +22,13 @@
 //! * [`Listener`] owns the connection and its reconnect rules and hands raw
 //!   messages to a channel.
 
+use super::announcement::is_announcement_class;
+use super::calendar_release::parse_calendar_release;
 use super::classify::classify_item;
 use super::db::Company;
-use super::events::{company_key, release_event, EventSink};
+use super::events::{announcement_event, company_key, release_event, EventSink};
 use super::feed::{parse_document, NewsItem};
+use super::live_emit::{EmitJob, Emitter};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -196,9 +199,26 @@ pub struct LiveItem {
     /// The event the poll would publish for this item (reports and
     /// corrections); `None` for news and calendar notices.
     pub event: Option<SpecialEvent>,
+    /// The `company_announcement` event for this item (the poll's builder), or
+    /// `None` for reports, corrections and calendar items.
+    pub announcement: Option<SpecialEvent>,
+    /// What happened to the announcement: `queued`, `dropped` or `disabled`.
+    /// `None` for items that are not announcements.
+    pub emit: Option<&'static str>,
 }
 
 impl LiveItem {
+    /// The Kafka key of this item's events, `ticker:exchange_mic`.
+    pub fn key(&self) -> String {
+        company_key(&Company {
+            ticker: self.ticker.clone(),
+            exchange_mic: self.exchange_mic.clone(),
+            mfn_slug: None,
+            name: None,
+            isin: None,
+        })
+    }
+
     /// `received_at − publish_date` in milliseconds. Negative means clock skew
     /// and is kept as is.
     pub fn latency_ms(&self) -> i64 {
@@ -263,6 +283,7 @@ impl LiveItem {
             url = self.url.as_deref().unwrap_or(""),
             attachment_urls = %attachments,
             slack = slack.unwrap_or(""),
+            emit = self.emit.unwrap_or(""),
             "nordic-live item"
         );
     }
@@ -312,6 +333,8 @@ pub fn process_message(
         // The same rules as the hourly poll (NEX-166).
         let c = classify_item(&item.tags, &item.title);
         let event = release_event(&company.as_company(), &item, &c);
+        let announcement = is_announcement_class(&c, parse_calendar_release(&item).is_some())
+            .then(|| announcement_event(&company.as_company(), &item));
         out.relevant.push(LiveItem {
             news_id: item.news_id,
             ticker: company.ticker.clone(),
@@ -332,6 +355,8 @@ pub fn process_message(
             url: item.url,
             attachment_urls: item.attachment_urls,
             event,
+            announcement,
+            emit: None,
         });
     }
     out
@@ -563,7 +588,35 @@ pub async fn handle_message_with(
     check: Option<&dyn IngestedCheck>,
     mode: SlackMode,
 ) -> (Counters, Vec<Disposition>) {
-    let processed = process_message(msg, received_at, companies, seen);
+    handle_message_full(msg, received_at, companies, seen, check, mode, None).await
+}
+
+/// [`handle_message_with`] that also queues each item's announcement event on
+/// `emitter` (`None`: emission is off). The announcements are queued right
+/// after parsing, before the "already ingested" lookup, so neither that
+/// database nor Slack can delay or suppress them.
+pub async fn handle_message_full(
+    msg: &str,
+    received_at: DateTime<Utc>,
+    companies: &Companies,
+    seen: &mut SeenSet,
+    check: Option<&dyn IngestedCheck>,
+    mode: SlackMode,
+    emitter: Option<&Emitter>,
+) -> (Counters, Vec<Disposition>) {
+    let mut processed = process_message(msg, received_at, companies, seen);
+    for item in &mut processed.relevant {
+        if let Some(event) = item.announcement.clone() {
+            item.emit = Some(match emitter {
+                Some(e) => e.offer(EmitJob {
+                    key: item.key(),
+                    event,
+                    received_at,
+                }),
+                None => "disabled",
+            });
+        }
+    }
     counter!("nordic_live_messages_total").increment(1);
     gauge!("nordic_live_last_message_timestamp_seconds")
         .set(received_at.timestamp_millis() as f64 / 1000.0);
@@ -952,6 +1005,152 @@ mod tests {
                 .unwrap()
                 .push((key.to_string(), event.clone()));
             Ok(())
+        }
+    }
+
+    /// The GomSpace fixture with its tags, title, id and text replaced.
+    fn variant(msg: &str, id: &str, tags: &[&str], title: &str, text: &str) -> String {
+        let mut doc: serde_json::Value = serde_json::from_str(msg).unwrap();
+        let item = &mut doc["items"][0];
+        item["properties"]["tags"] = serde_json::json!(tags);
+        item["content"]["title"] = serde_json::json!(title);
+        item["content"]["text"] = serde_json::json!(text);
+        item["news_id"] = serde_json::json!(id);
+        doc.to_string()
+    }
+
+    const WARNING_ID: &str = "7e343aa5-f961-55a9-a00e-a94cf5d4d401";
+
+    fn warning(id: &str) -> String {
+        variant(
+            GOMSPACE,
+            id,
+            &[":regulatory"],
+            "GomSpace Group AB: Downward adjustment of guidance for 2026",
+            "  The board lowers its outlook.  ",
+        )
+    }
+
+    #[test]
+    fn a_profit_warning_carries_exactly_the_event_the_poll_would_build() {
+        let msg = warning(WARNING_ID);
+        let mut seen = SeenSet::new(10);
+        let p = process_message(&msg, at(3), &companies(), &mut seen);
+        assert_eq!(p.relevant.len(), 1);
+        let item = parse_document(&msg).unwrap().items.remove(0);
+        let registered = companies().find(&item).unwrap().as_company();
+        let expected = announcement_event(&registered, &item);
+        let got = p.relevant[0]
+            .announcement
+            .as_ref()
+            .expect("an announcement");
+        assert_eq!(got, &expected);
+        assert_eq!(got.event_type, "company_announcement");
+        assert_eq!(got.text, "The board lowers its outlook.");
+        assert_eq!(got.source_id, WARNING_ID);
+        assert!(p.relevant[0].event.is_none());
+        assert_eq!(p.relevant[0].key(), "GOMX:FNSE");
+    }
+
+    #[test]
+    fn reports_corrections_and_calendar_releases_are_not_announcements() {
+        let mut seen = SeenSet::new(10);
+        let report = process_message(GOMSPACE, at(3), &companies(), &mut seen);
+        assert!(report.relevant[0].announcement.is_none());
+        let correction = variant(
+            GOMSPACE,
+            "8e343aa5-f961-55a9-a00e-a94cf5d4d401",
+            &[":regulatory", "sub:report", "sub:report:interim"],
+            "GomSpace Group AB: Correction: Interim report Q2 2026",
+            "Corrected.",
+        );
+        let c = process_message(&correction, at(3), &companies(), &mut seen);
+        assert!(c.relevant[0].is_correction && c.relevant[0].announcement.is_none());
+        let calendar = variant(
+            GOMSPACE,
+            "9e343aa5-f961-55a9-a00e-a94cf5d4d401",
+            &[":regulatory", "sub:ci", "sub:ci:calendar"],
+            "Financial calendar 2026 for GomSpace Group AB",
+            "27 May 2026 Interim report Q1 2026",
+        );
+        let cal = process_message(&calendar, at(3), &companies(), &mut seen);
+        assert_eq!(cal.relevant.len(), 1);
+        assert!(cal.relevant[0].announcement.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_reader_never_waits_on_a_full_queue_and_later_items_are_emitted() {
+        let (emitter, mut rx) = Emitter::channel(1);
+        let mut seen = SeenSet::new(10);
+        let ids = [
+            "7e343aa5-f961-55a9-a00e-a94cf5d4d401",
+            "7e343aa5-f961-55a9-a00e-a94cf5d4d402",
+            "7e343aa5-f961-55a9-a00e-a94cf5d4d403",
+        ];
+        let mut statuses = Vec::new();
+        for (n, id) in ids.iter().enumerate() {
+            if n == 2 {
+                assert_eq!(rx.recv().await.unwrap().event.source_id, ids[0]);
+            }
+            let (_, ds) = handle_message_full(
+                &warning(id),
+                at(3),
+                &companies(),
+                &mut seen,
+                None,
+                SlackMode::Disabled,
+                Some(&emitter),
+            )
+            .await;
+            match &ds[0] {
+                Disposition::New(i) => statuses.push(i.emit),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(
+            statuses,
+            vec![Some("queued"), Some("dropped"), Some("queued")]
+        );
+        assert_eq!(rx.recv().await.unwrap().event.source_id, ids[2]);
+    }
+
+    #[tokio::test]
+    async fn emission_is_independent_of_the_ingested_check_and_can_be_off() {
+        struct Always;
+        #[async_trait]
+        impl IngestedCheck for Always {
+            async fn already_ingested(&self, _id: Uuid) -> Result<bool, String> {
+                Ok(true)
+            }
+        }
+        let (emitter, mut rx) = Emitter::channel(4);
+        let mut seen = SeenSet::new(10);
+        let (_, ds) = handle_message_full(
+            &warning(WARNING_ID),
+            at(3),
+            &companies(),
+            &mut seen,
+            Some(&Always),
+            SlackMode::Disabled,
+            Some(&emitter),
+        )
+        .await;
+        assert!(matches!(ds[0], Disposition::AlreadyIngested(_)));
+        assert_eq!(rx.try_recv().unwrap().event.source_id, WARNING_ID);
+
+        let (_, ds) = handle_message_full(
+            &warning("7e343aa5-f961-55a9-a00e-a94cf5d4d409"),
+            at(3),
+            &companies(),
+            &mut seen,
+            None,
+            SlackMode::Disabled,
+            None,
+        )
+        .await;
+        match &ds[0] {
+            Disposition::New(i) => assert_eq!(i.emit, Some("disabled")),
+            other => panic!("{other:?}"),
         }
     }
 

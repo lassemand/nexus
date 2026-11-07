@@ -1,4 +1,5 @@
-# Live MFN listener (NEX-170): logs Nordic releases the moment they are published and,
+# Live MFN listener (NEX-170): logs Nordic releases the moment they are published,
+# emits company announcements to special.events within seconds (NEX-241) and,
 # when nordicLive.slackChannel is set, posts results releases to Slack (NEX-222). Its
 # only write is the slack_report_posts claim in chronicle's database; the nordic-reports
 # poll stays the only writer of reports and the fallback for anything missed while the
@@ -42,6 +43,10 @@ spec:
             {{- end }}
           envFrom:
             # DATABASE_URL: chronicle's database (the registered companies).
+            # KAFKA_BROKERS: the same Kafka the nordic-reports CronJob publishes to;
+            # with it nordic-live emits company_announcement events (NEX-241) and
+            # released reports to special.events. SPECIAL_EVENTS_TOPIC is not set
+            # anywhere, so both use the default "special.events".
             - secretRef:
                 name: chronicle-secret
             # SIGNAL_DATABASE_URL: signal's database, for the poll's

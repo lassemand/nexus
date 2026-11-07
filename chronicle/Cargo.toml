@@ -48,6 +48,7 @@ path = "src/saxo_stream.rs"
 [dependencies]
 model = { path = "../model" }
 alpha = { path = "../alpha" }
+backon = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "net"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }

@@ -427,8 +427,33 @@ When `KAFKA_BROKERS` is set (it comes from `chronicle-secret`), every new report
 `ticker:exchange_mic`), so it leaves "Upcoming reports" straight away. This does not depend on Slack. signal stores an MFN
 item once per `(source, source_id)`, so the poll sending it again later changes nothing; the `nordic-reports` poll stays the
 fallback and covers anything missed while the socket is down (the stream has no replay, and the server closes it every
-300 s with code 3000, which is a fast reconnect). News and calendar notices are not published. Its only database write is
+300 s with code 3000, which is a fast reconnect). Calendar notices are not published. Its only database write is
 the Slack claim row in `slack_report_posts`.
+
+### Company announcements in real time
+
+Every new item that is a company announcement (`announcement::is_company_announcement`: not a report, correction, calendar
+notice or calendar release) is also produced as a `company_announcement` event, built by the poll's own
+`events::announcement_event` and keyed `ticker:exchange_mic`, so it reaches signal within seconds instead of at the 22:00
+poll. The poll stays the fallback and backfill; both produce the same event and signal dedupes by `(source, source_id)`.
+
+```
+socket reader ──► parse + classify ──► Emitter::offer (bounded queue, 10 000) ──► producer task ──► special.events
+                        │                      full: drop + count                  retry 100 ms → 30 s, give up at 5 min
+                        └─► "already ingested" lookup, Slack (independent of emission)
+```
+
+- The reader never waits for Kafka. Events are queued right after parsing, before the signal lookup, so neither the lookup
+  nor Slack can delay or suppress them (every announcement is emitted, even one the poll already stored).
+- One producer task sends in order. A failing send is retried with exponential backoff (100 ms doubling to 30 s) for up to
+  5 minutes, then logged at `error`, counted as failed and skipped. The producer uses `linger.ms=5`, `acks=all` and
+  `enable.idempotence=true` (`KafkaSink::low_latency`).
+- Without `KAFKA_BROKERS` the pod starts, logs `emission is off` once and keeps logging and posting to Slack.
+- The `company_news` log line has `emit` = `queued`, `dropped` or `disabled` for announcements.
+- Metrics: `nordic_live_events_total{result="sent|dropped|failed"}`, `nordic_live_emit_latency_seconds` (receive time to
+  Kafka acknowledgement; target p99 under 1 s) and `nordic_live_emit_queue_depth`. Dashboard `Nordic Live`; alert
+  `NordicLiveEmitLosingEvents` (any dropped or failed in 15 minutes, for 5). Dropped and failed events are recovered by the
+  poll.
 
 ```bash
 kubectl --context orbstack -n chronicle logs deploy/nordic-live -f
