@@ -13,6 +13,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use backon::{ConstantBuilder, Retryable};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -185,27 +186,42 @@ impl BatchMetrics {
     }
 }
 
-/// POSTs `body` to the Pushgateway group of `job`, retrying once.
+/// Whether a failed push can succeed on a second try: a transport error
+/// (connect, TLS, timeout), 408, 429 or 5xx. Any other status fails at once.
+fn is_transient(e: &reqwest::Error) -> bool {
+    match e.status() {
+        Some(status) => {
+            status.is_server_error()
+                || status == reqwest::StatusCode::REQUEST_TIMEOUT
+                || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        }
+        None => e.is_connect() || e.is_timeout() || e.is_request(),
+    }
+}
+
+/// POSTs `body` to the Pushgateway group of `job`, retrying once at once when
+/// the failure is transient (see [`is_transient`]).
 async fn push(base: &str, job: &str, body: String) -> Result<()> {
     let url = format!("{}/metrics/job/{job}", base.trim_end_matches('/'));
     let client = reqwest::Client::builder().timeout(PUSH_TIMEOUT).build()?;
-    let mut last = None;
-    for _ in 0..2 {
-        let result = client
+    (|| async {
+        client
             .post(&url)
             .header("Content-Type", "text/plain; version=0.0.4")
             .body(body.clone())
             .send()
             .await
-            .and_then(|r| r.error_for_status());
-        match result {
-            Ok(_) => return Ok(()),
-            Err(error) => last = Some(error),
-        }
-    }
-    Err(last
-        .map(anyhow::Error::from)
-        .unwrap_or_else(|| anyhow::anyhow!("push failed")))
+            .and_then(|r| r.error_for_status())
+            .map(|_| ())
+    })
+    .retry(
+        ConstantBuilder::new()
+            .with_delay(Duration::ZERO)
+            .with_max_times(1),
+    )
+    .when(is_transient)
+    .await
+    .map_err(anyhow::Error::from)
 }
 
 #[cfg(test)]
@@ -237,5 +253,16 @@ mod tests {
             .await;
         assert!(push(&server.uri(), "market", String::new()).await.is_err());
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_client_error_is_sent_once() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+        assert!(push(&server.uri(), "market", String::new()).await.is_err());
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 }

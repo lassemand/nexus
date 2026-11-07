@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+backon = { version = "1.6", default-features = false, features = ["std", "tokio-sleep"] }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

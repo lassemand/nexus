@@ -8,6 +8,7 @@
 //! back to the caller, who logs it and moves on: retrying would block the
 //! partition forever.
 
+use backon::{ExponentialBuilder, Retryable};
 use std::future::Future;
 use std::time::Duration;
 use tracing::error;
@@ -31,7 +32,7 @@ pub fn is_transient(e: &sqlx::Error) -> bool {
     }
 }
 
-/// Runs `op` until it succeeds, sleeping `initial` (doubling up to `max`)
+/// Runs `op` until it succeeds, waiting `initial` (doubling up to `max`)
 /// between transient failures. Returns the first non-transient error.
 #[cfg(test)]
 pub async fn store_with_retry<F, Fut>(
@@ -48,30 +49,30 @@ where
 }
 
 /// Like [`store_with_retry`], calling `on_retry` before each wait.
-pub async fn store_with_retry_counted<F, Fut>(
+pub async fn store_with_retry_counted<T, F, Fut>(
     what: &str,
-    mut op: F,
+    op: F,
     initial: Duration,
     max: Duration,
     mut on_retry: impl FnMut(),
-) -> sqlx::Result<()>
+) -> sqlx::Result<T>
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = sqlx::Result<()>>,
+    Fut: Future<Output = sqlx::Result<T>>,
 {
-    let mut backoff = initial;
-    loop {
-        match op().await {
-            Ok(()) => return Ok(()),
-            Err(e) if is_transient(&e) => {
-                error!(what, error = %e, retry_in = ?backoff, "failed to store, retrying");
-                on_retry();
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(max);
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    op.retry(
+        ExponentialBuilder::new()
+            .with_min_delay(initial)
+            .with_factor(2.0)
+            .with_max_delay(max)
+            .without_max_times(),
+    )
+    .when(is_transient)
+    .notify(|e, wait| {
+        error!(what, error = %e, retry_in = ?wait, "failed to store, retrying");
+        on_retry();
+    })
+    .await
 }
 
 #[cfg(test)]

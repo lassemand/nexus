@@ -2,7 +2,7 @@ mod db;
 mod earnings_db;
 mod kafka;
 
-use alpha::{EarningsProvider, PolygonEarningsError, PolygonEarningsProvider};
+use alpha::{PolygonEarningsError, PolygonEarningsProvider};
 use chrono::{Duration, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use clap::Parser;
 use earnings_db::{load_unpublished_earnings, mark_earnings_published, upsert_earnings_date};
@@ -81,18 +81,14 @@ async fn main() {
 
         info!(ticker = %ticker, from = %from_date, "fetching quarterly earnings");
 
-        let earnings = match polygon.quarterly_earnings(&asset, from_date).await {
+        let earnings = match polygon
+            .quarterly_earnings_with_retry(&asset, from_date)
+            .await
+        {
             Ok(e) => e,
-            Err(PolygonEarningsError::RateLimited) => {
-                warn!(ticker = %ticker, "rate limited by Polygon, sleeping 12s and retrying");
-                tokio::time::sleep(std::time::Duration::from_secs(12)).await;
-                match polygon.quarterly_earnings(&asset, from_date).await {
-                    Ok(e) => e,
-                    Err(e) => {
-                        error!(ticker = %ticker, error = %e, "retry failed after rate limit, skipping ticker");
-                        continue;
-                    }
-                }
+            Err(PolygonEarningsError::RateLimited { .. }) => {
+                error!(ticker = %ticker, "retry failed after rate limit, skipping ticker");
+                continue;
             }
             Err(e) => {
                 error!(ticker = %ticker, error = %e, "failed to fetch earnings, skipping ticker");

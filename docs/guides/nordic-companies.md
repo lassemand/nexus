@@ -316,8 +316,10 @@ signal's rules (`signal/src/reports.rs`):
 5. A report on the same Stockholm date as an earlier report of the company becomes a `report_correction`; the earliest instant is the release the market reacted to.
 6. A page calendar snapshot is diffed against the company's future page rows (see "Calendar sources" below); an entry matching an occurred report without expected fields (±7 days) fills them instead. Past scheduled rows stay ("expected, not seen"). An empty snapshot clears the future ones.
 
-A database error in signal is retried with backoff before the offset is
-committed, so no report event is lost.
+A transient database error in signal is retried with backoff before the offset is
+committed, so no report event is lost. An error the schema causes is not retried: the
+report is logged, counted in `signal_report_db_errors_total` and committed, and must
+be replayed from MFN (alert `SignalReportRejected`, `docs/guides/metrics.md`).
 
 ## Released reports (`nordic-reports`)
 
@@ -466,7 +468,7 @@ kubectl --context orbstack -n chronicle logs deploy/nordic-live -f
 - Every 10 minutes: `nordic-live: N items seen, M relevant`. Registered companies are reloaded every 10 minutes.
 - `already ingested by poll`: the item is already in signal's `special_events` (`source = 'mfn'`, `source_id` = the MFN
   news id), checked through `SIGNAL_DATABASE_URL` (read-only). If that lookup fails, the item is logged anyway.
-- Reconnects: close code 3000 at once (debug log); anything else backs off 10 ms doubling to 30 s (reset after 60 s up);
+- Reconnects: close code 3000 at once (debug log); anything else backs off 10 ms doubling to 15 s, each wait jittered to 1-2x (so under 30 s; reset after 60 s up);
   15 minutes without a message or ping drops the connection and reconnects.
 - Env: `MFN_WS_URL`, `DATABASE_URL`, `SIGNAL_DATABASE_URL` (optional), `SLACK_BOT_TOKEN`, `SLACK_CHANNEL` and `SLACK_ANNOUNCEMENTS_CHANNEL` (optional, see
   below), `SLACK_API_URL`, `METRICS_PORT` (9464), `RUST_LOG`, `LOG_FORMAT` (`json` default or `text`).
