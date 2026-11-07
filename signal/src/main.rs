@@ -1,3 +1,4 @@
+mod announcements;
 mod calendar_sources;
 mod daily_bars;
 mod db;

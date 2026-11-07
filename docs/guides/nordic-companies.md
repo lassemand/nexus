@@ -356,6 +356,18 @@ apart, 20 s timeout, `429` honours `Retry-After`.
 - **Company announcements** (`nordic-reports`, the fallback and backfill path; `nordic-live` is the real-time one): every feed item that is not a results report, a report correction, a calendar notice or a calendar release (`announcement::is_company_announcement`) is also published as one `company_announcement` event (`source = "mfn"`, `source_id` = the MFN news id, `description` = the title, `occurred_at` = the publish instant, `report_kind = ""`, `text` = the release's plain text, trimmed and cut to 256 KiB on a char boundary). Regulatory or not, and Finnish managers' transactions too (in addition to their `insider.transactions` messages). Each language version is its own event; signal merges them and dedupes by `(source, source_id)`. The events count towards the cursor like reports, and `--backfill` re-emits the history. The poll adds no latency to the live path: it only catches what the live path missed.
 - **`nordic-calendar --scan-releases[=<months>]`** (default 18) first pages each mapped company's news feed back that far and sends a `report_calendar_release` for every calendar release found, then runs the normal page refresh. Run it once after signal can handle the event type, and whenever a company is registered late.
 
+## Company announcements (signal)
+
+signal stores each `company_announcement` event as one `occurred` row in `special_events` (`event_type = 'company_announcement'`, `report_kind` and `fiscal_period` NULL, `is_correction = false`) with the release text in `body_text` (`NULL` when MFN has none; `NULL` on every other row). Rules (`signal/src/announcements.rs`):
+
+- An item is stored once per `(source, source_id)`; a re-delivery (poll re-run, `--backfill`) refreshes `description`, `url`, `lang`, `tags`, `body_text` and `company_name` and is otherwise a no-op.
+- **Language twin:** an item merges into an existing announcement row of the same company with a different non-NULL `lang`, **equal tag sets** and `occurred_at` within 120 s (`TWIN_WINDOW_SECS`, shared with reports). English wins: the row takes the English `source_id`, text and fields and keeps its `id` and the earliest `occurred_at`. If several rows match, the closest in time, then the lowest `id`, is used.
+- Two different announcements of the **same language** in the same second are two rows, and an sv and an en item with different tags are two rows (a missed merge is preferred over merging unrelated releases). This differs from reports, which match twins at the same instant whatever the language.
+- `special_events_dedup_idx` (company, type, instant) no longer covers announcements; `special_events_source_idx` does.
+- Announcements never fill or match a scheduled report row, and reports, corrections and calendar handling ignore them.
+- Invalid events (no ticker, MIC or UUID `source_id`, `occurred_at <= 0`, non-empty `report_kind`) are logged at `warn` and skipped. A database error blocks the consumer and retries with backoff, like reports.
+- The twin lookup is an index scan on the `occurred_at` range; it is cheap even with tens of thousands of announcements.
+
 ## Calendar sources (signal)
 
 chronicle only emits source data; signal decides which source wins. No extra tables: the sources live in `special_events` as scheduled rows.

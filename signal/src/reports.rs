@@ -137,9 +137,10 @@ pub enum Message<'a> {
     Release(Release<'a>),
     Calendar(Calendar<'a>),
     CalendarRelease(CalendarRelease<'a>),
+    Announcement(crate::announcements::Announcement<'a>),
 }
 
-fn is_uuid(s: &str) -> bool {
+pub(crate) fn is_uuid(s: &str) -> bool {
     s.len() == 36
         && s.char_indices().all(|(i, c)| match i {
             8 | 13 | 18 | 23 => c == '-',
@@ -176,7 +177,7 @@ fn scheduled_entries(cal: &model::generated::ReportCalendar) -> Result<Vec<Sched
         .collect()
 }
 
-fn non_empty(s: &str) -> Option<&str> {
+pub(crate) fn non_empty(s: &str) -> Option<&str> {
     (!s.is_empty()).then_some(s)
 }
 
@@ -189,12 +190,15 @@ fn report_kind(raw: &str, event_type: &str) -> Result<Option<&'static str>, Inva
     }
 }
 
-fn timestamp(secs: i64) -> Result<DateTime<Utc>, Invalid> {
+pub(crate) fn timestamp(secs: i64) -> Result<DateTime<Utc>, Invalid> {
     DateTime::from_timestamp(secs, 0).ok_or(Invalid::Timestamp(secs))
 }
 
 /// Validates a `source = "mfn"` event.
 pub fn parse(e: &SpecialEvent) -> Result<Message<'_>, Invalid> {
+    if e.event_type == crate::announcements::COMPANY_ANNOUNCEMENT {
+        return crate::announcements::parse(e).map(Message::Announcement);
+    }
     let ticker = non_empty(&e.ticker).ok_or(Invalid::NoTicker)?;
     let exchange_mic = non_empty(&e.exchange_mic).ok_or(Invalid::NoExchange)?;
     let company_name = non_empty(&e.company_name);
@@ -1004,6 +1008,7 @@ pub async fn handle(pool: &PgPool, m: &Message<'_>) -> sqlx::Result<String> {
             metrics::counter!("signal_nordic_events_total", "event_type" => r.event_type, "result" => result).increment(1);
             Ok(format!("{recorded:?}"))
         }
+        Message::Announcement(a) => crate::announcements::handle(pool, a).await,
         Message::Calendar(c) => {
             let today = stockholm_today(pool).await?;
             let outcome = apply_report_calendar(pool, c, today).await?;
