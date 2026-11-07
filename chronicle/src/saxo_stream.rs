@@ -19,6 +19,7 @@ use alpha::saxo::{
     error_chain, AuthError, ChartClient, ChartError, InstrumentQuery, RotatedToken, SaxoAuth,
     SaxoToken, SharedToken, TokenStore, UicResolver,
 };
+use backon::{BackoffBuilder, ExponentialBuilder, Retryable};
 use anyhow::Context;
 use chronicle_lib::daily_bars::{self, BarSink, Instrument};
 use chrono::Utc;
@@ -102,39 +103,33 @@ const TOKEN_REFRESH_THRESHOLD_SECS: i64 = 120;
 /// Waits between attempts of the startup token refresh when it gets no answer
 /// or a transient status (about 3 minutes in all). Only a rejection, or every
 /// attempt failing, sends saxo-stream to wait for a new registration.
-const INITIAL_REFRESH_BACKOFF: [Duration; 7] = [
-    Duration::from_secs(1),
-    Duration::from_secs(2),
-    Duration::from_secs(4),
-    Duration::from_secs(8),
-    Duration::from_secs(16),
-    Duration::from_secs(32),
-    Duration::from_secs(60),
-];
+const INITIAL_REFRESH_BACKOFF: ExponentialBuilder = ExponentialBuilder::new()
+    .with_min_delay(Duration::from_secs(1))
+    .with_factor(2.0)
+    .with_max_delay(Duration::from_secs(60))
+    .with_max_times(7);
 
-/// The startup refresh, retried after each wait in `backoff` while the error
-/// is transient (a dropped connection must not be taken for a revoked token).
+/// The startup refresh, retried on `backoff` while the error is transient (a
+/// dropped connection must not be taken for a revoked token).
 async fn initial_refresh(
     auth: &mut SaxoAuth,
-    backoff: &[Duration],
+    backoff: ExponentialBuilder,
 ) -> Result<RotatedToken, AuthError> {
-    let mut waits = backoff.iter();
-    loop {
-        match auth.refresh().await {
-            Err(e) if e.is_transient() => match waits.next() {
-                Some(wait) => {
-                    warn!(
-                        error = error_chain(&e),
-                        ?wait,
-                        "initial Saxo token refresh failed, retrying"
-                    );
-                    tokio::time::sleep(*wait).await;
-                }
-                None => return Err(e),
-            },
-            result => return result,
-        }
-    }
+    let auth = tokio::sync::Mutex::new(auth);
+    let auth = &auth;
+    let retries = std::sync::atomic::AtomicU32::new(0);
+    (move || async move { auth.lock().await.refresh().await })
+        .retry(backoff)
+        .when(|e: &AuthError| e.is_transient())
+        .notify(|e, wait| {
+            warn!(
+                error = error_chain(e),
+                attempt = retries.fetch_add(1, Ordering::Relaxed) + 1,
+                ?wait,
+                "initial Saxo token refresh failed, retrying"
+            );
+        })
+        .await
 }
 
 struct PgTokenStore {
@@ -204,12 +199,20 @@ const CHART_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const SWEEP_RETRY_START: Duration = Duration::from_secs(15 * 60);
 const SWEEP_RETRY_MAX: Duration = Duration::from_secs(2 * 60 * 60);
 
-/// After a failure: how long to wait now (`current`, or Saxo's hint when that
-/// is longer), and the backoff to use after the next failure (doubled, capped
-/// at `max`).
-fn backoff_step(current: Duration, max: Duration, hint: Option<Duration>) -> (Duration, Duration) {
-    let wait = hint.map_or(current, |h| h.max(current));
-    (wait, (current * 2).min(max))
+/// Backoff between early re-runs of a failed sweep: 15 minutes doubling to 2 hours.
+const fn sweep_backoff() -> ExponentialBuilder {
+    ExponentialBuilder::new()
+        .with_min_delay(SWEEP_RETRY_START)
+        .with_factor(2.0)
+        .with_max_delay(SWEEP_RETRY_MAX)
+        .without_max_times()
+}
+
+/// After a failure: how long to wait now (the next backoff step, or Saxo's
+/// hint when that is longer). A hint never shortens the wait.
+fn backoff_step(backoff: &mut impl Iterator<Item = Duration>, hint: Option<Duration>) -> Duration {
+    let step = backoff.next().unwrap_or(SWEEP_RETRY_MAX);
+    hint.map_or(step, |h| h.max(step))
 }
 
 /// Failed tickers of one sweep, and how many of those failures can go away on
@@ -312,7 +315,7 @@ async fn run_daily_bars(
     mics: Vec<String>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let mut retry = SWEEP_RETRY_START;
+    let mut retry = sweep_backoff().build();
     loop {
         let sweep = {
             let (pool, http, api_base, chart_version, shared_token, sink, resolver, mics) = (
@@ -370,7 +373,7 @@ async fn run_daily_bars(
         };
 
         let wait = if !retry_early {
-            retry = SWEEP_RETRY_START;
+            retry = sweep_backoff().build();
             let next = model::stockholm::next_stockholm_time(
                 Utc::now(),
                 DAILY_BARS_HOUR,
@@ -381,8 +384,7 @@ async fn run_daily_bars(
                 .to_std()
                 .unwrap_or(Duration::from_secs(60))
         } else {
-            let (wait, next_retry) = backoff_step(retry, SWEEP_RETRY_MAX, None);
-            retry = next_retry;
+            let wait = backoff_step(&mut retry, None);
             info!(retry_in = ?wait, "daily bars sweep had failures, retrying");
             wait
         };
@@ -869,7 +871,7 @@ async fn main() -> anyhow::Result<()> {
             refresh_token,
             token_store,
         );
-        match initial_refresh(&mut auth, &INITIAL_REFRESH_BACKOFF).await {
+        match initial_refresh(&mut auth, INITIAL_REFRESH_BACKOFF).await {
             Ok(rotated) => {
                 token_expires_at_unix.store(
                     rotated.refresh_token_expires_at.timestamp(),
@@ -1066,38 +1068,28 @@ mod backoff_tests {
 
     #[test]
     fn backoff_doubles_to_the_cap() {
-        let mut current = SWEEP_RETRY_START;
-        let mut waits = Vec::new();
-        for _ in 0..6 {
-            let (wait, next) = backoff_step(current, SWEEP_RETRY_MAX, None);
-            waits.push(wait.as_secs() / 60);
-            current = next;
-        }
+        let mut backoff = sweep_backoff().build();
+        let waits: Vec<u64> = (0..6)
+            .map(|_| backoff_step(&mut backoff, None).as_secs() / 60)
+            .collect();
         assert_eq!(waits, [15, 30, 60, 120, 120, 120]);
     }
 
     #[test]
     fn a_longer_saxo_hint_wins_but_never_shortens_the_wait() {
-        let (wait, _) = backoff_step(
-            Duration::from_secs(30),
-            SWEEP_RETRY_MAX,
-            Some(Duration::from_secs(3600)),
-        );
-        assert_eq!(wait.as_secs(), 3600);
-        let (wait, _) = backoff_step(
-            Duration::from_secs(120),
-            SWEEP_RETRY_MAX,
-            Some(Duration::from_secs(5)),
-        );
-        assert_eq!(wait.as_secs(), 120);
+        let mut backoff = sweep_backoff().build();
+        let wait = backoff_step(&mut backoff, Some(Duration::from_secs(3600 * 3)));
+        assert_eq!(wait.as_secs(), 3600 * 3);
+        let mut backoff = sweep_backoff().build();
+        let wait = backoff_step(&mut backoff, Some(Duration::from_secs(5)));
+        assert_eq!(wait, SWEEP_RETRY_START);
     }
 
     #[test]
     fn a_failed_sweep_is_retried_the_same_day() {
-        let (wait, next) = backoff_step(SWEEP_RETRY_START, SWEEP_RETRY_MAX, None);
-        assert_eq!((wait.as_secs(), next.as_secs()), (15 * 60, 30 * 60));
-        let (wait, _) = backoff_step(SWEEP_RETRY_MAX, SWEEP_RETRY_MAX, None);
-        assert_eq!(wait, SWEEP_RETRY_MAX);
+        let mut backoff = sweep_backoff().build();
+        assert_eq!(backoff_step(&mut backoff, None).as_secs(), 15 * 60);
+        assert_eq!(backoff_step(&mut backoff, None).as_secs(), 30 * 60);
     }
 }
 
@@ -1115,7 +1107,11 @@ mod tests {
             async fn save(&self, _: &RotatedToken) {}
         }
 
-        const FAST: [Duration; 3] = [Duration::from_millis(1); 3];
+        const FAST_RETRIES: usize = 3;
+        const FAST: ExponentialBuilder = ExponentialBuilder::new()
+            .with_min_delay(Duration::from_millis(1))
+            .with_factor(1.0)
+            .with_max_times(FAST_RETRIES);
         const OK: &str = r#"{"access_token":"new_acc","refresh_token":"new_ref","expires_in":1200,"refresh_token_expires_in":3600}"#;
 
         fn auth(server: &MockServer) -> SaxoAuth {
@@ -1145,7 +1141,7 @@ mod tests {
                 .with_priority(2)
                 .mount(&server)
                 .await;
-            let rotated = initial_refresh(&mut auth(&server), &FAST).await.unwrap();
+            let rotated = initial_refresh(&mut auth(&server), FAST).await.unwrap();
             assert_eq!(rotated.access_token.access_token, "new_acc");
             assert_eq!(server.received_requests().await.unwrap().len(), 3);
         }
@@ -1157,7 +1153,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(400))
                 .mount(&server)
                 .await;
-            let err = initial_refresh(&mut auth(&server), &FAST)
+            let err = initial_refresh(&mut auth(&server), FAST)
                 .await
                 .unwrap_err();
             assert!(!err.is_transient());
@@ -1171,13 +1167,13 @@ mod tests {
                 .respond_with(ResponseTemplate::new(503))
                 .mount(&server)
                 .await;
-            let err = initial_refresh(&mut auth(&server), &FAST)
+            let err = initial_refresh(&mut auth(&server), FAST)
                 .await
                 .unwrap_err();
             assert!(err.is_transient());
             assert_eq!(
                 server.received_requests().await.unwrap().len(),
-                FAST.len() + 1
+                FAST_RETRIES + 1
             );
         }
     }

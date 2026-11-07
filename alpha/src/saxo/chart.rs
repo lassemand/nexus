@@ -28,12 +28,14 @@
 //! **unadjusted** until confirmed (see NEX-162).
 
 use super::auth::SharedToken;
+use backon::{ExponentialBuilder, Retryable};
 use chrono::{DateTime, NaiveDate, Utc};
 use model::exchange::local_date;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::str::FromStr;
+use std::sync::Mutex;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::time::Instant;
@@ -203,14 +205,15 @@ impl ChartClient {
         self
     }
 
-    async fn throttle(&mut self) {
-        if let Some(last) = self.last_request {
+    async fn throttle(&self, last_request: &Mutex<Option<Instant>>) {
+        let last = *last_request.lock().unwrap();
+        if let Some(last) = last {
             let elapsed = last.elapsed();
             if elapsed < self.min_interval {
                 tokio::time::sleep(self.min_interval - elapsed).await;
             }
         }
-        self.last_request = Some(Instant::now());
+        *last_request.lock().unwrap() = Some(Instant::now());
     }
 
     /// Up to `count` (≤ 1200) daily bars ending at `up_to` (inclusive), oldest
@@ -240,71 +243,129 @@ impl ChartClient {
             .append_pair("Time", &up_to.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())
             .append_pair("Count", &count.clamp(1, MAX_COUNT).to_string());
 
-        for attempt in 1..=MAX_ATTEMPTS {
-            self.throttle().await;
-            // Read the stream's current token; never refresh it.
-            let access_token = self.token.lock().unwrap().access_token.clone();
-            let backoff = Duration::from_secs(1 << (attempt - 1));
-            let resp = match self
-                .http
-                .get(url.clone())
-                .bearer_auth(access_token)
-                .send()
-                .await
-            {
-                Ok(r) => r,
-                // No response at all: worth another try.
-                Err(e) if attempt < MAX_ATTEMPTS => {
-                    warn!(
-                        uic,
-                        error = super::error_chain(&e),
-                        ?backoff,
-                        "Saxo chart request failed, retrying"
-                    );
-                    tokio::time::sleep(backoff).await;
-                    continue;
-                }
-                Err(e) => return Err(e.into()),
-            };
-            let status = resp.status();
-            if status.is_success() {
-                let body = resp.text().await?;
-                return parse_daily_bars(&body, exchange_mic).map_err(|e| {
-                    warn!(error = %e, "undecodable chart response");
-                    ChartError::Status(reqwest::StatusCode::UNPROCESSABLE_ENTITY)
-                });
-            }
-            if !super::is_transient_status(status) {
-                // Saxo explains a 4xx in the body (`ErrorCode`, `Message`).
-                let body = resp.text().await.unwrap_or_default();
-                let body: String = body.chars().take(300).collect();
-                warn!(uic, %status, body = %body, url = %url.path(), "Saxo chart API rejected the request");
-                return Err(ChartError::Status(status));
-            }
-            if attempt == MAX_ATTEMPTS {
-                return Err(if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    ChartError::RateLimited(attempt)
+        let last_request = Mutex::new(self.last_request);
+        let this = &*self;
+        let result = (|| async {
+            this.throttle(&last_request).await;
+            this.attempt(&url, uic, exchange_mic).await
+        })
+        .retry(chart_backoff())
+        .when(|e: &Attempt| e.retryable)
+        .adjust(|e, dur| {
+            dur.map(|backoff| {
+                let wait = if e.rate_limited {
+                    e.retry_after.unwrap_or(DEFAULT_RETRY_AFTER)
                 } else {
-                    ChartError::Status(status)
-                });
+                    e.retry_after.unwrap_or(backoff)
+                };
+                wait.min(MAX_RETRY_AFTER)
+            })
+        })
+        .notify(|e, wait| match e.status {
+            Some(status) => {
+                warn!(uic, %status, ?wait, "Saxo chart API returned a transient error, waiting");
             }
-            let retry_after = resp
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .map(Duration::from_secs);
-            let wait = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                retry_after.unwrap_or(DEFAULT_RETRY_AFTER)
+            None => warn!(
+                uic,
+                error = match &e.error {
+                    ChartError::Http(h) => super::error_chain(h),
+                    other => other.to_string(),
+                },
+                ?wait,
+                "Saxo chart request failed, retrying"
+            ),
+        })
+        .await;
+        self.last_request = *last_request.lock().unwrap();
+        result.map_err(|e| {
+            if e.rate_limited {
+                ChartError::RateLimited(MAX_ATTEMPTS)
             } else {
-                retry_after.unwrap_or(backoff)
+                e.error
             }
-            .min(MAX_RETRY_AFTER);
-            warn!(uic, %status, ?wait, "Saxo chart API returned a transient error, waiting");
-            tokio::time::sleep(wait).await;
-        }
-        Err(ChartError::RateLimited(MAX_ATTEMPTS))
+        })
     }
+
+    async fn attempt(
+        &self,
+        url: &url::Url,
+        uic: u64,
+        exchange_mic: &str,
+    ) -> Result<Vec<DailyBarRow>, Attempt> {
+        // Read the stream's current token; never refresh it.
+        let access_token = self.token.lock().unwrap().access_token.clone();
+        let resp = self
+            .http
+            .get(url.clone())
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| Attempt {
+                error: ChartError::Http(e),
+                retryable: true,
+                rate_limited: false,
+                retry_after: None,
+                status: None,
+            })?;
+        let status = resp.status();
+        if status.is_success() {
+            let body = resp.text().await.map_err(Attempt::fatal)?;
+            return parse_daily_bars(&body, exchange_mic).map_err(|e| {
+                warn!(error = %e, "undecodable chart response");
+                Attempt::fatal(ChartError::Status(reqwest::StatusCode::UNPROCESSABLE_ENTITY))
+            });
+        }
+        if !super::is_transient_status(status) {
+            // Saxo explains a 4xx in the body (`ErrorCode`, `Message`).
+            let body = resp.text().await.unwrap_or_default();
+            let body: String = body.chars().take(300).collect();
+            warn!(uic, %status, body = %body, url = %url.path(), "Saxo chart API rejected the request");
+            return Err(Attempt::fatal(ChartError::Status(status)));
+        }
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(Duration::from_secs);
+        Err(Attempt {
+            error: ChartError::Status(status),
+            retryable: true,
+            rate_limited: status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+            retry_after,
+            status: Some(status),
+        })
+    }
+}
+
+/// One failed request and how to treat it.
+struct Attempt {
+    error: ChartError,
+    retryable: bool,
+    rate_limited: bool,
+    retry_after: Option<Duration>,
+    status: Option<reqwest::StatusCode>,
+}
+
+impl Attempt {
+    fn fatal(error: impl Into<ChartError>) -> Self {
+        Attempt {
+            error: error.into(),
+            retryable: false,
+            rate_limited: false,
+            retry_after: None,
+            status: None,
+        }
+    }
+}
+
+/// Backoff between attempts: 1 s, 2 s, 4 s (`MAX_ATTEMPTS` - 1 retries).
+const fn chart_backoff() -> ExponentialBuilder {
+    ExponentialBuilder::new()
+        .with_min_delay(Duration::from_secs(1))
+        .with_factor(2.0)
+        .with_max_delay(MAX_RETRY_AFTER)
+        .with_max_times(MAX_ATTEMPTS as usize - 1)
 }
 
 #[cfg(test)]
