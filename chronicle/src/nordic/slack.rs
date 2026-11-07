@@ -1,7 +1,10 @@
 //! Slack notifications for periodic reports (NEX-221): the message format, the
 //! exactly-once claim table and a small `chat.postMessage` client.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
+
+use backon::{ExponentialBuilder, Retryable};
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
@@ -518,31 +521,53 @@ impl SlackClient {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<PostedRef, SlackClientError>>,
     {
-        let mut backoff = BASE_BACKOFF;
-        let mut last = SlackError::Transport("no attempt made".into());
-        for attempt in 1..=MAX_SEND_ATTEMPTS {
-            let verdict = match tokio::time::timeout(REQUEST_TIMEOUT, call()).await {
-                Ok(Ok(posted)) => return Ok(posted),
-                Ok(Err(e)) => judge(&e, backoff),
-                Err(_) => Verdict::Retry(backoff, SlackError::Transport("timed out".into())),
-            };
-            match verdict {
-                Verdict::Fatal(e) => {
-                    error!(error = %e, "slack rejected the call");
-                    return Err(e);
-                }
-                Verdict::Retry(wait, e) => {
-                    last = e;
-                    if attempt < MAX_SEND_ATTEMPTS {
-                        warn!(attempt, error = %last, "slack call failed, retrying");
-                        tokio::time::sleep(wait).await;
-                        backoff *= 2;
-                    }
-                }
+        let retries = AtomicU32::new(0);
+        (|| async {
+            match tokio::time::timeout(REQUEST_TIMEOUT, call()).await {
+                Ok(Ok(posted)) => Ok(posted),
+                Ok(Err(e)) => Err(judge(&e, BASE_BACKOFF)),
+                Err(_) => Err(Verdict::Retry(
+                    BASE_BACKOFF,
+                    SlackError::Transport("timed out".into()),
+                )),
             }
-        }
-        Err(last)
+        })
+        .retry(send_backoff())
+        .when(|v: &Verdict| matches!(v, Verdict::Retry(..)))
+        .adjust(|v, dur| {
+            dur.map(|backoff| match v {
+                Verdict::Retry(asked, SlackError::Status(429)) => *asked,
+                _ => backoff,
+            })
+        })
+        .notify(|v, wait| {
+            if let Verdict::Retry(_, e) = v {
+                warn!(
+                    attempt = retries.fetch_add(1, Ordering::Relaxed) + 1,
+                    ?wait,
+                    error = %e,
+                    "slack call failed, retrying"
+                );
+            }
+        })
+        .await
+        .map_err(|v| match v {
+            Verdict::Fatal(e) => {
+                error!(error = %e, "slack rejected the call");
+                e
+            }
+            Verdict::Retry(_, e) => e,
+        })
     }
+}
+
+/// 500 ms, then 1 s: `MAX_SEND_ATTEMPTS` - 1 retries.
+const fn send_backoff() -> ExponentialBuilder {
+    ExponentialBuilder::new()
+        .with_min_delay(BASE_BACKOFF)
+        .with_factor(2.0)
+        .with_max_delay(Duration::from_secs(MAX_RETRY_AFTER_SECS))
+        .with_max_times(MAX_SEND_ATTEMPTS as usize - 1)
 }
 
 #[cfg(test)]
@@ -924,5 +949,88 @@ mod tests {
         let c = SlackClient::new("xoxb-secret", "C1").unwrap();
         let d = format!("{c:?}");
         assert!(!d.contains("xoxb-secret") && d.contains("redacted"));
+    }
+
+    fn posted() -> PostedRef {
+        PostedRef {
+            channel: "C".into(),
+            ts: "1".into(),
+        }
+    }
+
+    fn client() -> SlackClient {
+        SlackClient::new("xoxb-test", "C").unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_server_error_is_retried_once_then_succeeds() {
+        let calls = AtomicU32::new(0);
+        let result = client()
+            .retrying(|| async {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(SlackClientError::HttpError(
+                        slack_morphism::errors::SlackClientHttpError {
+                            status_code: reqwest::StatusCode::BAD_GATEWAY,
+                            http_response_body: None,
+                        },
+                    ))
+                } else {
+                    Ok(posted())
+                }
+            })
+            .await;
+        assert_eq!(result, Ok(posted()));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_waits_for_retry_after() {
+        let calls = AtomicU32::new(0);
+        let started = std::time::Instant::now();
+        let result = client()
+            .retrying(|| async {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(SlackClientError::RateLimitError(
+                        SlackRateLimitError::new().with_retry_after(Duration::from_secs(2)),
+                    ))
+                } else {
+                    Ok(posted())
+                }
+            })
+            .await;
+        assert_eq!(result, Ok(posted()));
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(1950), "{waited:?}");
+        assert!(waited < Duration::from_secs(4), "{waited:?}");
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_on_the_last_attempt_is_not_retried_again() {
+        let calls = AtomicU32::new(0);
+        let result = client()
+            .retrying(|| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err::<PostedRef, _>(SlackClientError::RateLimitError(
+                    SlackRateLimitError::new().with_retry_after(Duration::ZERO),
+                ))
+            })
+            .await;
+        assert_eq!(result, Err(SlackError::Status(429)));
+        assert_eq!(calls.load(Ordering::SeqCst), MAX_SEND_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn a_fatal_error_is_not_retried() {
+        let calls = AtomicU32::new(0);
+        let result = client()
+            .retrying(|| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err::<PostedRef, _>(SlackClientError::ApiError(SlackClientApiError::new(
+                    "invalid_auth".to_string(),
+                )))
+            })
+            .await;
+        assert_eq!(result, Err(SlackError::Api("invalid_auth".into())));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

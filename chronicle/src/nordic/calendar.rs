@@ -12,9 +12,11 @@ use super::classify::ReportKind;
 use super::db::{self, Company};
 use super::events::{calendar_event, calendar_hash, publish, EventSink};
 use anyhow::{anyhow, Context};
+use backon::{ConstantBuilder, Retryable};
 use chrono::{NaiveDate, NaiveTime, Utc};
 use scraper::{Html, Selector};
 use sqlx::PgPool;
+use std::sync::Mutex;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::time::Instant;
@@ -224,14 +226,15 @@ impl MfnClient {
         })
     }
 
-    async fn throttle(&mut self) {
-        if let Some(last) = self.last_request {
+    async fn throttle(&self, last_request: &Mutex<Option<Instant>>) {
+        let last = *last_request.lock().unwrap();
+        if let Some(last) = last {
             let elapsed = last.elapsed();
             if elapsed < self.min_interval {
                 tokio::time::sleep(self.min_interval - elapsed).await;
             }
         }
-        self.last_request = Some(Instant::now());
+        *last_request.lock().unwrap() = Some(Instant::now());
     }
 
     /// `<base>/a/<slug>`, built with path segments so the slug cannot inject anything.
@@ -261,30 +264,74 @@ impl MfnClient {
     /// waits `Retry-After` (capped at 120 s) before retrying. Any other
     /// non-success status is an error.
     pub async fn get_text(&mut self, url: reqwest::Url) -> anyhow::Result<String> {
-        for attempt in 1..=MAX_ATTEMPTS {
-            self.throttle().await;
-            let resp = self.http.get(url.clone()).send().await?;
-            let status = resp.status();
-            if status.is_success() {
-                return Ok(resp.text().await?);
-            }
-            if status.as_u16() == 429 && attempt < MAX_ATTEMPTS {
-                let wait = resp
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.trim().parse::<u64>().ok())
-                    .map(Duration::from_secs)
+        let last_request = Mutex::new(self.last_request);
+        let this = &*self;
+        let result = (|| async {
+            this.throttle(&last_request).await;
+            this.get_once(&url).await
+        })
+        .retry(get_backoff())
+        .when(|e: &GetFailure| e.rate_limited)
+        .adjust(|e, dur| {
+            dur.map(|_| {
+                e.retry_after
                     .unwrap_or(DEFAULT_RETRY_AFTER)
-                    .min(MAX_RETRY_AFTER);
-                warn!(path = url.path(), ?wait, "MFN returned 429, waiting");
-                tokio::time::sleep(wait).await;
-                continue;
-            }
-            return Err(anyhow!("MFN returned {status} for {}", url.path()));
-        }
-        Err(anyhow!("MFN rate limited {}", url.path()))
+                    .min(MAX_RETRY_AFTER)
+            })
+        })
+        .notify(|_, wait| warn!(path = url.path(), ?wait, "MFN returned 429, waiting"))
+        .await;
+        self.last_request = *last_request.lock().unwrap();
+        result.map_err(|e| e.error)
     }
+
+    async fn get_once(&self, url: &reqwest::Url) -> Result<String, GetFailure> {
+        let resp = self
+            .http
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(GetFailure::fatal)?;
+        let status = resp.status();
+        if status.is_success() {
+            return resp.text().await.map_err(GetFailure::fatal);
+        }
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(Duration::from_secs);
+        Err(GetFailure {
+            error: anyhow!("MFN returned {status} for {}", url.path()),
+            rate_limited: status.as_u16() == 429,
+            retry_after,
+        })
+    }
+}
+
+/// One failed request; only a `429` is worth another try.
+struct GetFailure {
+    error: anyhow::Error,
+    rate_limited: bool,
+    retry_after: Option<Duration>,
+}
+
+impl GetFailure {
+    fn fatal(e: impl Into<anyhow::Error>) -> Self {
+        Self {
+            error: e.into(),
+            rate_limited: false,
+            retry_after: None,
+        }
+    }
+}
+
+/// `MAX_ATTEMPTS` - 1 retries; the delay is replaced by `Retry-After` or its default.
+const fn get_backoff() -> ConstantBuilder {
+    ConstantBuilder::new()
+        .with_delay(DEFAULT_RETRY_AFTER)
+        .with_max_times(MAX_ATTEMPTS as usize - 1)
 }
 
 /// Result of [`refresh_company`].
