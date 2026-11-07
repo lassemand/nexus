@@ -369,6 +369,7 @@ signal stores each `company_announcement` event as one `occurred` row in `specia
 - Announcements never fill or match a scheduled report row, and reports, corrections and calendar handling ignore them.
 - Invalid events (no ticker, MIC or UUID `source_id`, `occurred_at <= 0`, non-empty `report_kind`) are logged at `warn` and skipped. A database error blocks the consumer and retries with backoff, like reports.
 - The twin lookup is an index scan on the `occurred_at` range; it is cheap even with tens of thousands of announcements.
+- **Price reaction:** each announcement row gets the same share-price reaction columns as a report (`release_session`, `reaction_date`, `base_close`, `reaction_close`, `move_pct`, `data_status`, `needs_review`, definitions in CLAUDE.md and `signal/src/reactions.rs`). A twin merge keeps the earliest `occurred_at`, so the session is that of the first publish. **Limitation:** a day's move has many causes. When a company publishes a report and an announcement, or several announcements, on one day they all get the same reaction day and the same `move_pct`; the move is not attributed to one release. Prices are unadjusted, so `needs_review` flags `|move| > 40` %. Storing an announcement recomputes only its own row; the startup sweep recomputes only rows never computed, not `ok`, or with a reaction day within 10 days of today (3 companies x 2 000 announcements: first sweep about 2.2 s for 6 000 rows, the next one 7 ms and 0 rows).
 
 ## Calendar sources (signal)
 

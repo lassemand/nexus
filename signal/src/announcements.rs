@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use model::generated::SpecialEvent;
 use sqlx::{PgConnection, PgPool, Row};
 use std::fmt;
-use tracing::info;
+use tracing::{info, warn};
 
 /// `event_type` of announcement events and rows.
 pub const COMPANY_ANNOUNCEMENT: &str = "company_announcement";
@@ -98,8 +98,12 @@ pub fn parse(e: &SpecialEvent) -> Result<Announcement<'_>, Invalid> {
     })
 }
 
-/// Stores one announcement in one transaction (see the module docs).
-pub async fn record_announcement(pool: &PgPool, a: &Announcement<'_>) -> sqlx::Result<Outcome> {
+/// Stores one announcement in one transaction (see the module docs). Returns
+/// what happened and the id of the row that now holds the announcement.
+pub async fn record_announcement(
+    pool: &PgPool,
+    a: &Announcement<'_>,
+) -> sqlx::Result<(Outcome, i64)> {
     let mut tx = pool.begin().await?;
     let outcome = record_in(&mut tx, a).await?;
     tx.commit().await?;
@@ -109,7 +113,7 @@ pub async fn record_announcement(pool: &PgPool, a: &Announcement<'_>) -> sqlx::R
 async fn refresh_known(
     tx: &mut PgConnection,
     a: &Announcement<'_>,
-) -> sqlx::Result<Option<Outcome>> {
+) -> sqlx::Result<Option<(Outcome, i64)>> {
     let updated = sqlx::query(
         "UPDATE special_events SET description = $3, url = $4, lang = $5, tags = $6, \
                 body_text = $7, company_name = COALESCE($8, company_name) \
@@ -130,22 +134,21 @@ async fn refresh_known(
     .bind(a.company_name)
     .fetch_optional(&mut *tx)
     .await?;
-    if updated.is_some() {
-        return Ok(Some(Outcome::Updated));
+    if let Some(row) = updated {
+        return Ok(Some((Outcome::Updated, row.get("id"))));
     }
-    let known: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM special_events WHERE source = $1 AND source_id = $2)",
-    )
-    .bind(SOURCE_MFN)
-    .bind(a.source_id)
-    .fetch_one(&mut *tx)
-    .await?;
-    Ok(known.then_some(Outcome::Unchanged))
+    let known: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM special_events WHERE source = $1 AND source_id = $2")
+            .bind(SOURCE_MFN)
+            .bind(a.source_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    Ok(known.map(|id| (Outcome::Unchanged, id)))
 }
 
-async fn record_in(tx: &mut PgConnection, a: &Announcement<'_>) -> sqlx::Result<Outcome> {
-    if let Some(outcome) = refresh_known(tx, a).await? {
-        return Ok(outcome);
+async fn record_in(tx: &mut PgConnection, a: &Announcement<'_>) -> sqlx::Result<(Outcome, i64)> {
+    if let Some(known) = refresh_known(tx, a).await? {
+        return Ok(known);
     }
 
     let twin = sqlx::query(
@@ -184,7 +187,7 @@ async fn record_in(tx: &mut PgConnection, a: &Announcement<'_>) -> sqlx::Result<
             .execute(&mut *tx)
             .await?;
         }
-        return Ok(Outcome::Twin);
+        return Ok((Outcome::Twin, row.get("id")));
     }
 
     let inserted = sqlx::query(
@@ -192,7 +195,8 @@ async fn record_in(tx: &mut PgConnection, a: &Announcement<'_>) -> sqlx::Result<
            (ticker, exchange_mic, event_type, occurred_at, description, status, source, \
             source_id, url, lang, tags, report_kind, is_correction, company_name, body_text) \
          VALUES ($1,$2,$3,$4,$5,'occurred',$6,$7,$8,$9,$10,NULL,false,$11,$12) \
-         ON CONFLICT (source, source_id) WHERE source_id IS NOT NULL DO NOTHING",
+         ON CONFLICT (source, source_id) WHERE source_id IS NOT NULL DO NOTHING \
+         RETURNING id",
     )
     .bind(a.ticker)
     .bind(a.exchange_mic)
@@ -206,18 +210,27 @@ async fn record_in(tx: &mut PgConnection, a: &Announcement<'_>) -> sqlx::Result<
     .bind(a.tags)
     .bind(a.company_name)
     .bind(a.body_text)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
-    if inserted.rows_affected() == 1 {
-        return Ok(Outcome::Inserted);
+    if let Some(row) = inserted {
+        return Ok((Outcome::Inserted, row.get("id")));
     }
-    Ok(refresh_known(tx, a).await?.unwrap_or(Outcome::Unchanged))
+    refresh_known(tx, a).await?.ok_or(sqlx::Error::RowNotFound)
 }
 
-/// Stores a validated announcement, logs and counts the outcome, and returns
-/// it as text.
+/// Stores a validated announcement, logs and counts the outcome, refreshes the
+/// share-price reaction of the stored row (unless it was already stored
+/// unchanged) and returns the outcome as text.
 pub async fn handle(pool: &PgPool, a: &Announcement<'_>) -> sqlx::Result<String> {
-    let outcome = record_announcement(pool, a).await?;
+    let (outcome, id) = record_announcement(pool, a).await?;
+    if outcome != Outcome::Unchanged {
+        // A failure here is repaired by the next daily bar or the startup sweep
+        // and must not make the consumer re-store the event.
+        if let Err(e) = crate::reactions::refresh_rows(pool, a.ticker, a.exchange_mic, &[id]).await
+        {
+            warn!(ticker = a.ticker, error = %e, "failed to refresh announcement reaction");
+        }
+    }
     info!(
         ticker = a.ticker,
         source_id = a.source_id,

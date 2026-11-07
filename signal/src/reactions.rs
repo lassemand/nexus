@@ -1,8 +1,14 @@
-//! Share-price reaction of each released Nordic report (NEX-163).
+//! Share-price reaction of each released Nordic report and company announcement
+//! (NEX-163, NEX-237).
 //!
-//! For a qualifying report (`source = 'mfn'`, `status = 'occurred'`, a quarterly
-//! or annual report, not a correction) the reaction is stored on its own
-//! `special_events` row. All prices stay `NUMERIC` (text in Rust, arithmetic in
+//! For a qualifying row (`source = 'mfn'`, `status = 'occurred'`, a quarterly or
+//! annual report or a `company_announcement`, not a correction) the reaction is
+//! stored on its own `special_events` row. Announcements use exactly the same
+//! definitions as reports. Several releases of one company on one reaction day
+//! (a report and an announcement, or two announcements) get the same reaction
+//! day and the same move: the move is the raw price change of that day and is
+//! not attributed to one release. The names `report` in the logs, metrics and
+//! functions below were kept so dashboards keep working; they cover both. All prices stay `NUMERIC` (text in Rust, arithmetic in
 //! Postgres): no `f64` anywhere.
 //!
 //! # Definitions
@@ -70,7 +76,8 @@ pub const REVIEW_THRESHOLD_PCT: i64 = 40;
 pub const CORRECTION_WINDOW_DAYS: i64 = 10;
 
 const QUALIFYING: &str = "source = 'mfn' AND status = 'occurred' \
-     AND event_type IN ('quarterly_report', 'annual_report') AND NOT is_correction";
+     AND event_type IN ('quarterly_report', 'annual_report', 'company_announcement') \
+     AND NOT is_correction";
 
 /// Why a reaction could or could not be computed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -351,6 +358,7 @@ async fn refresh_in(
     ticker: &str,
     mic: &str,
     since: Option<NaiveDate>,
+    only: Option<&[i64]>,
 ) -> sqlx::Result<Counts> {
     // Rows that no longer qualify (a correction, a scheduled row, another source)
     // must not carry reaction values.
@@ -380,13 +388,15 @@ async fn refresh_in(
         "SELECT id, occurred_at FROM special_events \
          WHERE ticker = $1 AND exchange_mic = $2 AND {QUALIFYING} \
            AND ($3::date IS NULL OR data_status IS DISTINCT FROM 'ok' OR reaction_date IS NULL \
-                OR reaction_date >= $3::date - $4::int) \
+                OR reaction_computed_at IS NULL OR reaction_date >= $3::date - $4::int) \
+           AND ($5::bigint[] IS NULL OR id = ANY($5)) \
          ORDER BY occurred_at FOR UPDATE"
     ))
     .bind(ticker)
     .bind(mic)
     .bind(since)
     .bind(CORRECTION_WINDOW_DAYS as i32)
+    .bind(only)
     .fetch_all(&mut *conn)
     .await?;
 
@@ -428,7 +438,7 @@ pub async fn refresh_report_reactions(
 ) -> sqlx::Result<Counts> {
     let started = Instant::now();
     let mut tx = pool.begin().await?;
-    let counts = refresh_in(&mut tx, ticker, mic, None).await?;
+    let counts = refresh_in(&mut tx, ticker, mic, None, None).await?;
     tx.commit().await?;
     record_refresh(&counts, started);
     Ok(counts)
@@ -445,14 +455,35 @@ pub async fn refresh_after_bars(
 ) -> sqlx::Result<Counts> {
     let started = Instant::now();
     let mut tx = pool.begin().await?;
-    let counts = refresh_in(&mut tx, ticker, mic, Some(earliest_new_bar)).await?;
+    let counts = refresh_in(&mut tx, ticker, mic, Some(earliest_new_bar), None).await?;
     tx.commit().await?;
     record_refresh(&counts, started);
     Ok(counts)
 }
 
-/// Catch-up sweep at startup: every company that has Nordic reports.
+/// Recomputes only the given rows of a company (a stored announcement), in one
+/// transaction. Recomputing the whole company on every announcement would make
+/// a backfill of thousands of announcements quadratic.
+pub async fn refresh_rows(
+    pool: &PgPool,
+    ticker: &str,
+    mic: &str,
+    ids: &[i64],
+) -> sqlx::Result<Counts> {
+    let started = Instant::now();
+    let mut tx = pool.begin().await?;
+    let counts = refresh_in(&mut tx, ticker, mic, None, Some(ids)).await?;
+    tx.commit().await?;
+    record_refresh(&counts, started);
+    Ok(counts)
+}
+
+/// Catch-up sweep at startup: every company that has Nordic releases, bounded to
+/// the rows that can have changed: never computed, not `ok`, or with a reaction
+/// day within [`CORRECTION_WINDOW_DAYS`] of today. An `ok` row older than that is
+/// left alone, so the sweep stays cheap with thousands of announcements.
 pub async fn refresh_all(pool: &PgPool) -> sqlx::Result<Counts> {
+    let today = Utc::now().date_naive();
     let companies = sqlx::query(
         "SELECT DISTINCT ticker, exchange_mic FROM special_events WHERE source = 'mfn' \
          ORDER BY ticker, exchange_mic",
@@ -462,7 +493,7 @@ pub async fn refresh_all(pool: &PgPool) -> sqlx::Result<Counts> {
     let mut total = Counts::default();
     for c in &companies {
         let (ticker, mic): (String, String) = (c.get("ticker"), c.get("exchange_mic"));
-        match refresh_report_reactions(pool, &ticker, &mic).await {
+        match refresh_after_bars(pool, &ticker, &mic, today).await {
             Ok(counts) => total.add(&counts),
             Err(e) => warn!(ticker, mic, error = %e, "report reaction sweep failed for company"),
         }
@@ -559,6 +590,7 @@ pub async fn flush(pool: &PgPool, queue: &mut ReactionQueue) {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use model::generated::SpecialEvent;
 
     fn d(s: &str) -> NaiveDate {
         s.parse().unwrap()
@@ -2045,5 +2077,283 @@ mod tests {
         }
         let counts = refresh_all(&pool).await.unwrap();
         assert_eq!((counts.computed, counts.by_status.get("ok")), (2, Some(&2)));
+    }
+
+    // ── Company announcements (NEX-237) ─────────────────────────────────────
+
+    /// Inserts a qualifying announcement (MFN, occurred, not a correction).
+    async fn announcement(pool: &PgPool, ticker: &str, mic: &str, at: DateTime<Utc>) -> i64 {
+        sqlx::query_scalar(
+            "INSERT INTO special_events (ticker, exchange_mic, event_type, occurred_at, status, \
+               source, source_id, lang) \
+             VALUES ($1, $2, 'company_announcement', $3, 'occurred', 'mfn', $4, 'en') RETURNING id",
+        )
+        .bind(ticker)
+        .bind(mic)
+        .bind(at)
+        .bind(format!("ann-{ticker}-{mic}-{}", at.timestamp()))
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_pre_open_announcement_reacts_the_same_day(pool: PgPool) {
+        let id = announcement(&pool, "GOMX", MIC, utc(2026, 8, 25, 6, 0)).await;
+        bar(&pool, "GOMX", "2026-08-24", "100.000000", 10).await;
+        bar(&pool, "GOMX", "2026-08-25", "82.000000", 900).await;
+        let counts = refresh(&pool, "GOMX").await;
+        assert_eq!(counts.by_status.get("ok"), Some(&1));
+        let r = row(&pool, id).await;
+        assert_eq!(r.session.as_deref(), Some("pre_open"));
+        assert_eq!(
+            (r.reaction_date.as_deref(), r.base_date.as_deref()),
+            (Some("2026-08-25"), Some("2026-08-24"))
+        );
+        assert_eq!(r.move_pct.as_deref(), Some("-18.0000"));
+        assert_eq!(r.needs_review, Some(false));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_announcement_at_1800_is_after_close_and_reacts_next_day(pool: PgPool) {
+        // 16:00 UTC is 18:00 in Stockholm in August.
+        let id = announcement(&pool, "GOMX", MIC, utc(2026, 8, 25, 16, 0)).await;
+        bar(&pool, "GOMX", "2026-08-25", "100.000000", 10).await;
+        bar(&pool, "GOMX", "2026-08-26", "110.000000", 10).await;
+        refresh(&pool, "GOMX").await;
+        let r = row(&pool, id).await;
+        assert_eq!(r.session.as_deref(), Some("after_close"));
+        assert_eq!(r.reaction_date.as_deref(), Some("2026-08-26"));
+        assert_eq!(r.move_pct.as_deref(), Some("10.0000"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_saturday_announcement_is_a_non_trading_day_release(pool: PgPool) {
+        let id = announcement(&pool, "GOMX", MIC, utc(2026, 8, 29, 8, 0)).await;
+        bar(&pool, "GOMX", "2026-08-28", "200.000000", 10).await;
+        bar(&pool, "GOMX", "2026-08-31", "190.000000", 10).await;
+        refresh(&pool, "GOMX").await;
+        let r = row(&pool, id).await;
+        assert_eq!(r.session.as_deref(), Some("non_trading_day"));
+        assert_eq!(r.reaction_date.as_deref(), Some("2026-08-31"));
+        assert_eq!(r.move_pct.as_deref(), Some("-5.0000"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_report_and_an_announcement_on_one_day_share_the_move(pool: PgPool) {
+        let rep = report(&pool, "GOMX", MIC, utc(2026, 8, 25, 6, 0)).await;
+        let ann = announcement(&pool, "GOMX", MIC, utc(2026, 8, 25, 6, 30)).await;
+        bar(&pool, "GOMX", "2026-08-24", "100.000000", 10).await;
+        bar(&pool, "GOMX", "2026-08-25", "93.000000", 10).await;
+        let counts = refresh(&pool, "GOMX").await;
+        assert_eq!(counts.computed, 2);
+        let (r, a) = (row(&pool, rep).await, row(&pool, ann).await);
+        assert_eq!(r.move_pct.as_deref(), Some("-7.0000"));
+        assert_eq!(r.move_pct, a.move_pct);
+        assert_eq!(r.reaction_date, a.reaction_date);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn announcements_without_the_needed_bars_get_the_report_statuses(pool: PgPool) {
+        let at = utc(2026, 8, 25, 6, 0);
+        let no_reaction = announcement(&pool, "NOREACT", MIC, at).await;
+        let no_bars = announcement(&pool, "NOBARS", MIC, at).await;
+        bar(&pool, "NOREACT", "2026-08-24", "10.000000", 1).await;
+        bar(&pool, "NOREACT", "2026-08-26", "99.000000", 1).await;
+        refresh(&pool, "NOREACT").await;
+        refresh(&pool, "NOBARS").await;
+        let r = row(&pool, no_reaction).await;
+        assert_eq!(r.status.as_deref(), Some("missing_reaction_bar"));
+        assert_eq!(r.move_pct, None);
+        assert_eq!(
+            row(&pool, no_bars).await.status.as_deref(),
+            Some("missing_base_bar"),
+            "with no bars at all the base bar is the first thing missing, as for reports"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_corrections_and_other_sources_still_do_not_qualify(pool: PgPool) {
+        let id = announcement(&pool, "GOMX", MIC, utc(2026, 8, 25, 6, 0)).await;
+        sqlx::query("UPDATE special_events SET source = 'other' WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        bar(&pool, "GOMX", "2026-08-24", "100.000000", 10).await;
+        bar(&pool, "GOMX", "2026-08-25", "105.000000", 10).await;
+        assert_eq!(refresh(&pool, "GOMX").await.computed, 0);
+        assert!(!row(&pool, id).await.computed);
+    }
+
+    fn announcement_event(id: &str, lang: &str, at: DateTime<Utc>) -> SpecialEvent {
+        SpecialEvent {
+            ticker: "GOMX".into(),
+            exchange_mic: MIC.into(),
+            event_type: "company_announcement".into(),
+            occurred_at_unix_secs: at.timestamp(),
+            description: format!("headline {id}"),
+            source: crate::reports::SOURCE_MFN.into(),
+            source_id: format!("00000000-0000-4000-8000-{id:0>12}"),
+            lang: lang.into(),
+            tags: vec![":regulatory".into()],
+            ..Default::default()
+        }
+    }
+
+    async fn store_event(pool: &PgPool, e: &SpecialEvent) -> String {
+        crate::reports::handle(pool, &crate::reports::parse(e).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn storing_an_announcement_computes_its_reaction_and_a_twin_keeps_the_first_instant(
+        pool: PgPool,
+    ) {
+        bar(&pool, "GOMX", "2026-08-24", "100.000000", 10).await;
+        bar(&pool, "GOMX", "2026-08-25", "90.000000", 10).await;
+        // 08:59:50 local is pre_open; the English twin 20 s later would be intraday.
+        let da = announcement_event(
+            "1",
+            "da",
+            utc(2026, 8, 25, 6, 59) + chrono::Duration::seconds(50),
+        );
+        let en = announcement_event(
+            "2",
+            "en",
+            utc(2026, 8, 25, 7, 0) + chrono::Duration::seconds(10),
+        );
+        assert_eq!(store_event(&pool, &da).await, "inserted");
+        let (id, session): (i64, Option<String>) = sqlx::query_as(
+            "SELECT id, release_session FROM special_events WHERE event_type = 'company_announcement'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(session.as_deref(), Some("pre_open"));
+        assert_eq!(row(&pool, id).await.move_pct.as_deref(), Some("-10.0000"));
+
+        assert_eq!(store_event(&pool, &en).await, "twin");
+        let (n, source_id, lang): (i64, String, Option<String>) =
+            sqlx::query_as("SELECT count(*), max(source_id), max(lang) FROM special_events")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            (n, source_id.as_str(), lang.as_deref()),
+            (1, en.source_id.as_str(), Some("en"))
+        );
+        let after = row(&pool, id).await;
+        assert_eq!(
+            after.session.as_deref(),
+            Some("pre_open"),
+            "the earliest instant still decides"
+        );
+        assert_eq!(after.reaction_date.as_deref(), Some("2026-08-25"));
+    }
+
+    async fn computed_at(pool: &PgPool, id: i64) -> DateTime<Utc> {
+        sqlx::query_scalar("SELECT reaction_computed_at FROM special_events WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_startup_sweep_skips_old_ok_rows_and_recomputes_the_others(pool: PgPool) {
+        let ok = announcement(&pool, "AAA", MIC, utc(2026, 8, 25, 6, 0)).await;
+        let missing = announcement(&pool, "BBB", MIC, utc(2026, 8, 25, 6, 0)).await;
+        let fresh = announcement(&pool, "CCC", MIC, utc(2026, 8, 25, 6, 0)).await;
+        for t in ["AAA", "BBB", "CCC"] {
+            bar(&pool, t, "2026-08-24", "10.000000", 1).await;
+        }
+        bar(&pool, "AAA", "2026-08-25", "11.000000", 1).await;
+        bar(&pool, "BBB", "2026-08-26", "13.000000", 1).await;
+        bar(&pool, "CCC", "2026-08-25", "11.000000", 1).await;
+        refresh_all(&pool).await.unwrap();
+        assert_eq!(row(&pool, ok).await.status.as_deref(), Some("ok"));
+        assert_eq!(
+            row(&pool, missing).await.status.as_deref(),
+            Some("missing_reaction_bar")
+        );
+        let (ok_at, missing_at, fresh_at) = (
+            computed_at(&pool, ok).await,
+            computed_at(&pool, missing).await,
+            computed_at(&pool, fresh).await,
+        );
+
+        // The bar that was missing arrives; nothing tells the sweep except its own rule.
+        bar(&pool, "BBB", "2026-08-25", "12.000000", 1).await;
+        let counts = refresh_all(&pool).await.unwrap();
+        assert_eq!(
+            computed_at(&pool, ok).await,
+            ok_at,
+            "an old ok row is left alone"
+        );
+        assert_eq!(computed_at(&pool, fresh).await, fresh_at, "likewise");
+        assert!(computed_at(&pool, missing).await > missing_at);
+        assert_eq!(row(&pool, missing).await.status.as_deref(), Some("ok"));
+        assert_eq!(counts.computed, 1, "only the row that was not ok");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_startup_sweep_stays_bounded_with_thousands_of_announcements(pool: PgPool) {
+        for t in ["AAA", "BBB", "CCC"] {
+            sqlx::query(
+                "INSERT INTO daily_bars (ticker, exchange_mic, date, open, high, low, close, \
+                   volume, currency, source, fetched_at) \
+                 SELECT $1, 'FNSE', d::date, 100, 100, 100, 100 + (extract(doy FROM d))::numeric / 10, \
+                        1000, 'SEK', 'saxo', now() \
+                 FROM generate_series('2023-12-01'::date, '2026-10-30'::date, interval '1 day') d \
+                 WHERE extract(isodow FROM d) < 6",
+            )
+            .bind(t)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO special_events (ticker, exchange_mic, event_type, occurred_at, \
+                   status, source, source_id, lang) \
+                 SELECT $1, 'FNSE', 'company_announcement', \
+                        '2024-01-02 06:00+00'::timestamptz + (g / 2) * interval '1 day' \
+                          + (g % 2) * interval '3 hours', \
+                        'occurred', 'mfn', $1 || '-' || g, 'en' \
+                 FROM generate_series(1, 2000) g",
+            )
+            .bind(t)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let started = Instant::now();
+        let first = refresh_all(&pool).await.unwrap();
+        let first_took = started.elapsed();
+        assert_eq!(first.computed, 6000);
+        assert!(
+            first.by_status.get("ok").copied().unwrap_or(0) > 5000,
+            "{:?}",
+            first.by_status
+        );
+
+        let not_ok: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM special_events WHERE data_status IS DISTINCT FROM 'ok'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let started = Instant::now();
+        let second = refresh_all(&pool).await.unwrap();
+        let second_took = started.elapsed();
+        eprintln!(
+            "startup sweep, 3 companies x 2000 announcements: first {first_took:?} ({} rows), \
+             second {second_took:?} ({} rows, {not_ok} not ok)",
+            first.computed, second.computed
+        );
+        assert_eq!(
+            second.computed as i64, not_ok,
+            "only rows that were not ok are recomputed"
+        );
     }
 }
