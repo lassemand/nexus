@@ -553,4 +553,33 @@ mod tests {
             "<html><body><table class=\"table-calender\"><thead><tr><td></td><td>Est. tid*</td><td></td></tr></thead><tbody>{body}</tbody></table></body></html>"
         )
     }
+
+    #[tokio::test]
+    async fn a_retry_after_on_the_last_attempt_does_not_cause_an_extra_request() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .expect(MAX_ATTEMPTS as u64)
+            .mount(&server)
+            .await;
+        let mut client = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
+        let err = client.fetch_page("any").await.unwrap_err();
+        assert!(err.to_string().contains("429"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn other_statuses_are_not_retried() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut client = MfnClient::new(server.uri(), Duration::ZERO).unwrap();
+        assert!(client.fetch_page("any").await.is_err());
+    }
 }

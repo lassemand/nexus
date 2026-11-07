@@ -158,7 +158,52 @@ async fn handle_ticker_registration<P: CompanyProvider>(
 }
 
 /// Longest wait between retries of a failed Nordic report store.
+const INITIAL_STORE_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_STORE_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Stores one Nordic report event, retrying transient database errors with
+/// backoff while `set_blocked(true)` signals the stalled partition. Returns the
+/// stored outcome, or `None` when the database rejected the row for good (it is
+/// logged and counted in `signal_report_db_errors_total`, and the caller commits).
+async fn store_report<F, Fut>(
+    topic: &str,
+    ticker: &str,
+    event_type: &str,
+    source_id: &str,
+    op: F,
+    initial: Duration,
+    set_blocked: impl Fn(bool),
+) -> Option<String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = sqlx::Result<String>>,
+{
+    let result = insider_store::store_with_retry_counted(
+        "nordic report event",
+        op,
+        initial,
+        MAX_STORE_BACKOFF,
+        || {
+            metrics::counter!("signal_messages_total", "topic" => topic.to_string(), "outcome" => "db_error_retried").increment(1);
+            metrics::counter!("signal_store_retries_total", "topic" => topic.to_string()).increment(1);
+            set_blocked(true);
+        },
+    )
+    .await;
+    set_blocked(false);
+    match result {
+        Ok(outcome) => {
+            info!(ticker, event_type, source_id, %outcome, "Nordic report event stored");
+            Some(outcome)
+        }
+        Err(e) => {
+            error!(ticker, event_type, source_id, error = %e,
+               "Nordic report event rejected by the database, skipped");
+            metrics::counter!("signal_report_db_errors_total").increment(1);
+            None
+        }
+    }
+}
 
 /// Returns the sector for `asset`, asking `provider` only for US listings.
 ///
@@ -355,31 +400,30 @@ async fn main() {
                                 }
                             };
                             // Nordic reports exist only here and the producer won't
-                            // resend them, so a DB error must not lose the event:
-                            // retry with backoff and only then fall through to the
-                            // commit. This blocks the consumer, which keeps each
+                            // resend them, so a transient DB error must not lose the
+                            // event: retry with backoff and only then fall through to
+                            // the commit. This blocks the consumer, which keeps each
                             // company's events in order.
-                            let mut backoff = Duration::from_secs(1);
-                            loop {
-                                match reports::handle(&pool, &message).await {
-                                    Ok(outcome) => {
-                                        info!(ticker = %event.ticker, event_type = %event.event_type,
-                                          source_id = %event.source_id, %outcome,
-                                          "Nordic report event stored");
-                                        metrics::gauge!("signal_store_blocked").set(0.0);
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        error!(ticker = %event.ticker, event_type = %event.event_type,
-                                           error = %e, retry_in = ?backoff,
-                                           "failed to store Nordic report event, retrying");
-                                        metrics::counter!("signal_messages_total", "topic" => topic.to_string(), "outcome" => "db_error_retried").increment(1);
-                                        metrics::counter!("signal_store_retries_total", "topic" => topic.to_string()).increment(1);
-                                        metrics::gauge!("signal_store_blocked").set(1.0);
-                                        tokio::time::sleep(backoff).await;
-                                        backoff = (backoff * 2).min(MAX_STORE_BACKOFF);
-                                    }
-                                }
+                            // Only a transient error (see `insider_store::is_transient`)
+                            // is retried. A row the schema rejects would block the
+                            // partition forever and stall every later report behind
+                            // it, so it is logged, counted and committed; the producer
+                            // does not resend it, so it must be replayed from MFN.
+                            let stored = store_report(
+                                &topic,
+                                &event.ticker,
+                                &event.event_type,
+                                &event.source_id,
+                                || reports::handle(&pool, &message),
+                                INITIAL_STORE_BACKOFF,
+                                |blocked| {
+                                    metrics::gauge!("signal_store_blocked")
+                                        .set(if blocked { 1.0 } else { 0.0 })
+                                },
+                            )
+                            .await;
+                            if stored.is_none() {
+                                outcome = "db_error_committed";
                             }
                         } else {
                             let Some(occurred_at) =
@@ -574,7 +618,7 @@ async fn main() {
                         if let Err(e) = insider_store::store_with_retry_counted(
                         "insider transaction",
                         || upsert_insider_filing(&pool, &txn),
-                        Duration::from_secs(1),
+                        INITIAL_STORE_BACKOFF,
                         MAX_STORE_BACKOFF,
                         || {
                             metrics::counter!("signal_messages_total", "topic" => topic.to_string(), "outcome" => "db_error_retried").increment(1);
@@ -671,5 +715,58 @@ mod tests {
             .unwrap();
         assert_eq!(sector, Some(Sector::Technology));
         assert_eq!(p.calls.load(Ordering::SeqCst), 1);
+    }
+
+    mod report_store {
+        use super::*;
+        use std::sync::Mutex;
+
+        fn store(
+            op: impl FnMut() -> std::future::Ready<sqlx::Result<String>>,
+        ) -> (Option<String>, Vec<bool>) {
+            let blocked = Mutex::new(Vec::new());
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            let out = rt.block_on(store_report(
+                "special.events",
+                "T",
+                "report",
+                "id",
+                op,
+                Duration::from_millis(1),
+                |b| blocked.lock().unwrap().push(b),
+            ));
+            (out, blocked.into_inner().unwrap())
+        }
+
+        #[test]
+        fn a_pool_timeout_is_retried_until_it_succeeds() {
+            let calls = AtomicUsize::new(0);
+            let (out, blocked) = store(|| {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(if n < 2 {
+                    Err(sqlx::Error::PoolTimedOut)
+                } else {
+                    Ok("stored".to_string())
+                })
+            });
+            assert_eq!(out.as_deref(), Some("stored"));
+            assert_eq!(calls.load(Ordering::SeqCst), 3);
+            assert_eq!(blocked, [true, true, false]);
+        }
+
+        #[test]
+        fn a_rejected_row_is_committed_after_one_attempt() {
+            let calls = AtomicUsize::new(0);
+            let (out, blocked) = store(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Err(sqlx::Error::RowNotFound))
+            });
+            assert_eq!(out, None);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(blocked, [false]);
+        }
     }
 }
