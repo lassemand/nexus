@@ -227,6 +227,12 @@ impl LiveItem {
         (self.received_at - self.publish_date).num_milliseconds()
     }
 
+    /// True if the item was published more than `max_age` before it was read,
+    /// so it must not be posted to Slack (a catch-up after a long outage).
+    pub fn is_stale(&self, max_age: Duration) -> bool {
+        self.latency_ms() > i64::try_from(max_age.as_millis()).unwrap_or(i64::MAX)
+    }
+
     /// `report_released` for results releases, `company_news` for the rest.
     pub fn event(&self) -> &'static str {
         if self.report_kind.is_some() {
@@ -304,6 +310,9 @@ pub struct Processed {
     pub malformed: Option<String>,
     /// One note per item that could not be parsed.
     pub bad_items: Vec<String>,
+    /// The newest `publish_date` of every parsed item, registered company or
+    /// not: the live watermark.
+    pub newest_published: Option<DateTime<Utc>>,
 }
 
 /// Parses one WebSocket message and picks out the relevant new items. Pure
@@ -323,8 +332,33 @@ pub fn process_message(
         }
     };
     out.bad_items = doc.bad_items;
-    for item in doc.items {
+    pick_relevant(&mut out, doc.items, received_at, companies, seen);
+    out
+}
+
+/// [`process_message`] for items that were not read from a socket message (the
+/// catch-up's HTTP feed): the same filtering, de-duplication and classification.
+pub fn process_items(
+    items: Vec<NewsItem>,
+    received_at: DateTime<Utc>,
+    companies: &Companies,
+    seen: &mut SeenSet,
+) -> Processed {
+    let mut out = Processed::default();
+    pick_relevant(&mut out, items, received_at, companies, seen);
+    out
+}
+
+fn pick_relevant(
+    out: &mut Processed,
+    items: Vec<NewsItem>,
+    received_at: DateTime<Utc>,
+    companies: &Companies,
+    seen: &mut SeenSet,
+) {
+    for item in items {
         out.items_seen += 1;
+        out.newest_published = out.newest_published.max(Some(item.published_at));
         let Some(company) = companies.find(&item) else {
             continue;
         };
@@ -361,7 +395,6 @@ pub fn process_message(
             emit: None,
         });
     }
-    out
 }
 
 // ── The poll's "cancel" ─────────────────────────────────────────────────────
@@ -456,11 +489,19 @@ pub fn report(d: &Disposition) {
 /// `slack = "disabled"` or `"queued"` by whether their kind has a channel; the
 /// worker logs the outcome in its own `slack_post` event.
 pub fn report_with(d: &Disposition, channels: &SlackChannels) {
+    report_labelled(d, channels, false)
+}
+
+/// [`report_with`], where a `stale` item (too old to post, see
+/// [`LiveItem::is_stale`]) is labelled `slack = "stale"` when its kind has a channel.
+pub fn report_labelled(d: &Disposition, channels: &SlackChannels, stale: bool) {
     let label = |kind| {
-        if channels.for_kind(kind).is_some() {
-            "queued"
-        } else {
+        if channels.for_kind(kind).is_none() {
             "disabled"
+        } else if stale {
+            "stale"
+        } else {
+            "queued"
         }
     };
     match d {
@@ -590,6 +631,48 @@ fn record_latency(latency_ms: i64) {
     histogram!("nordic_live_release_latency_seconds").record(latency_ms.max(0) as f64 / 1000.0);
 }
 
+/// Slack posts older than this are skipped (default `SLACK_MAX_AGE_MINUTES`).
+pub const DEFAULT_SLACK_MAX_AGE: Duration = Duration::from_secs(15 * 60);
+
+static NO_CHANNELS: SlackChannels = SlackChannels {
+    reports: None,
+    announcements: None,
+};
+
+/// What happens to relevant items beyond the log line.
+#[derive(Clone, Copy)]
+pub struct Handling<'a> {
+    /// The poll's "already ingested" check, if any.
+    pub check: Option<&'a dyn IngestedCheck>,
+    /// The Slack channels of the two kinds of post.
+    pub channels: &'a SlackChannels,
+    /// Where announcements are queued for `special.events`, if emission is on.
+    pub emitter: Option<&'a Emitter>,
+    /// Releases and announcements older than this are never posted to Slack.
+    pub slack_max_age: Duration,
+}
+
+impl Default for Handling<'_> {
+    fn default() -> Self {
+        Self {
+            check: None,
+            channels: &NO_CHANNELS,
+            emitter: None,
+            slack_max_age: DEFAULT_SLACK_MAX_AGE,
+        }
+    }
+}
+
+/// What handling a message or a catch-up batch produced.
+pub struct Handled {
+    /// Items seen and relevant.
+    pub counters: Counters,
+    /// One disposition per new relevant item.
+    pub dispositions: Vec<Disposition>,
+    /// The newest `publish_date` of any parsed item.
+    pub newest_published: Option<DateTime<Utc>>,
+}
+
 /// Handles one message end to end: parse, filter, cancel-check, log. Returns
 /// what happened, for the counters and for tests.
 pub async fn handle_message(
@@ -619,35 +702,27 @@ pub async fn handle_message_with(
     check: Option<&dyn IngestedCheck>,
     channels: &SlackChannels,
 ) -> (Counters, Vec<Disposition>) {
-    handle_message_full(msg, received_at, companies, seen, check, channels, None).await
+    let handling = Handling {
+        check,
+        channels,
+        ..Handling::default()
+    };
+    let h = handle_message_full(msg, received_at, companies, seen, &handling).await;
+    (h.counters, h.dispositions)
 }
 
-/// [`handle_message_with`] that also queues each item's announcement event on
-/// `emitter` (`None`: emission is off). The announcements are queued right
-/// after parsing, before the "already ingested" lookup, so neither that
-/// database nor Slack can delay or suppress them.
+/// Handles one socket message with everything `nordic-live` does: queues each
+/// item's announcement event on the emitter right after parsing (before the
+/// "already ingested" lookup, so neither that database nor Slack can delay or
+/// suppress it), then looks up, logs and returns the dispositions.
 pub async fn handle_message_full(
     msg: &str,
     received_at: DateTime<Utc>,
     companies: &Companies,
     seen: &mut SeenSet,
-    check: Option<&dyn IngestedCheck>,
-    channels: &SlackChannels,
-    emitter: Option<&Emitter>,
-) -> (Counters, Vec<Disposition>) {
-    let mut processed = process_message(msg, received_at, companies, seen);
-    for item in &mut processed.relevant {
-        if let Some(event) = item.announcement.clone() {
-            item.emit = Some(match emitter {
-                Some(e) => e.offer(EmitJob {
-                    key: item.key(),
-                    event,
-                    received_at,
-                }),
-                None => "disabled",
-            });
-        }
-    }
+    h: &Handling<'_>,
+) -> Handled {
+    let processed = process_message(msg, received_at, companies, seen);
     counter!("nordic_live_messages_total").increment(1);
     gauge!("nordic_live_last_message_timestamp_seconds")
         .set(received_at.timestamp_millis() as f64 / 1000.0);
@@ -662,15 +737,53 @@ pub async fn handle_message_full(
         let head: String = msg.chars().take(300).collect();
         warn!(error = %why, message = %head, "unusable item in nordic-live message, skipped");
     }
+    record_items(&processed);
+    dispatch(processed, h, true).await
+}
+
+/// Handles items fetched by the catch-up through exactly the path of a socket
+/// message (filter, de-duplicate, classify, emit, look up, log). `items` must
+/// be oldest first so a company's events stay in order on Kafka. Their
+/// receive-to-publish gap is not a release latency, so it is not recorded.
+pub async fn handle_catchup_items(
+    items: Vec<NewsItem>,
+    received_at: DateTime<Utc>,
+    companies: &Companies,
+    seen: &mut SeenSet,
+    h: &Handling<'_>,
+) -> Handled {
+    let processed = process_items(items, received_at, companies, seen);
+    dispatch(processed, h, false).await
+}
+
+async fn dispatch(mut processed: Processed, h: &Handling<'_>, from_socket: bool) -> Handled {
+    for item in &mut processed.relevant {
+        if let Some(event) = item.announcement.clone() {
+            item.emit = Some(match h.emitter {
+                Some(e) => e.offer(EmitJob {
+                    key: item.key(),
+                    event,
+                    received_at: item.received_at,
+                }),
+                None => "disabled",
+            });
+        }
+    }
     let counters = Counters {
         seen: processed.items_seen,
         relevant: processed.relevant.len() + processed.duplicates,
     };
-    record_items(&processed);
-    let mut out = Vec::new();
+    if !from_socket {
+        counter!("nordic_live_catchup_items_total").increment(processed.relevant.len() as u64);
+    }
+    let newest_published = processed.newest_published;
+    let mut dispositions = Vec::new();
     for item in processed.relevant {
-        record_latency(item.latency_ms());
-        let d = dispose(item, check).await;
+        if from_socket {
+            record_latency(item.latency_ms());
+        }
+        let stale = item.is_stale(h.slack_max_age);
+        let d = dispose(item, h.check).await;
         match &d {
             Disposition::New(item) => {
                 counter!("nordic_live_releases_total", "event" => item.event()).increment(1)
@@ -679,10 +792,14 @@ pub async fn handle_message_full(
                 counter!("nordic_live_already_ingested_total").increment(1)
             }
         }
-        report_with(&d, channels);
-        out.push(d);
+        report_labelled(&d, h.channels, stale);
+        dispositions.push(d);
     }
-    (counters, out)
+    Handled {
+        counters,
+        dispositions,
+        newest_published,
+    }
 }
 
 // ── Connection ──────────────────────────────────────────────────────────────
@@ -1104,16 +1221,18 @@ mod tests {
             if n == 2 {
                 assert_eq!(rx.recv().await.unwrap().event.source_id, ids[0]);
             }
-            let (_, ds) = handle_message_full(
+            let ds = handle_message_full(
                 &warning(id),
                 at(3),
                 &companies(),
                 &mut seen,
-                None,
-                &SlackChannels::default(),
-                Some(&emitter),
+                &Handling {
+                    emitter: Some(&emitter),
+                    ..Handling::default()
+                },
             )
-            .await;
+            .await
+            .dispositions;
             match &ds[0] {
                 Disposition::New(i) => statuses.push(i.emit),
                 other => panic!("{other:?}"),
@@ -1137,29 +1256,31 @@ mod tests {
         }
         let (emitter, mut rx) = Emitter::channel(4);
         let mut seen = SeenSet::new(10);
-        let (_, ds) = handle_message_full(
+        let ds = handle_message_full(
             &warning(WARNING_ID),
             at(3),
             &companies(),
             &mut seen,
-            Some(&Always),
-            &SlackChannels::default(),
-            Some(&emitter),
+            &Handling {
+                check: Some(&Always),
+                emitter: Some(&emitter),
+                ..Handling::default()
+            },
         )
-        .await;
+        .await
+        .dispositions;
         assert!(matches!(ds[0], Disposition::AlreadyIngested(_)));
         assert_eq!(rx.try_recv().unwrap().event.source_id, WARNING_ID);
 
-        let (_, ds) = handle_message_full(
+        let ds = handle_message_full(
             &warning("7e343aa5-f961-55a9-a00e-a94cf5d4d409"),
             at(3),
             &companies(),
             &mut seen,
-            None,
-            &SlackChannels::default(),
-            None,
+            &Handling::default(),
         )
-        .await;
+        .await
+        .dispositions;
         match &ds[0] {
             Disposition::New(i) => assert_eq!(i.emit, Some("disabled")),
             other => panic!("{other:?}"),

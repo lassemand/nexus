@@ -1,3 +1,4 @@
+use chronicle_lib::nordic::calendar::MfnClient;
 /// Live MFN listener (NEX-170): logs Nordic releases the moment they are published
 /// and, with `KAFKA_BROKERS`, emits each company announcement to `special.events`
 /// within seconds (NEX-241; queue and producer in `chronicle_lib::nordic::live_emit`).
@@ -17,19 +18,25 @@
 /// start). Network trouble never ends the process.
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
 use chronicle_lib::nordic::live::{
-    describe_metrics, describe_publish_metrics, events_to_publish, handle_message_full,
-    publish_live, Companies, Counters, IngestedCheck, Listener, Registered, SeenSet, SignalDb,
-    SlackChannels, DEFAULT_WS_URL, LATENCY_BUCKETS, SEEN_CAPACITY,
+    describe_metrics, describe_publish_metrics, events_to_publish, handle_catchup_items,
+    handle_message_full, publish_live, Companies, Counters, Handling, IngestedCheck, Listener,
+    Registered, SeenSet, SignalDb, SlackChannels, DEFAULT_SLACK_MAX_AGE, DEFAULT_WS_URL,
+    LATENCY_BUCKETS, SEEN_CAPACITY,
+};
+use chronicle_lib::nordic::live_catchup::{
+    self, describe_catchup_metrics, page_backoff, run_coordinator, run_once, Fetched,
+    SharedWatermark, Watermark, DEFAULT_FEED_URL, FLUSH_EVERY, PAGE_GAP, PAGE_TIMEOUT, USER_AGENT,
 };
 use chronicle_lib::nordic::live_emit::{
     describe_emit_metrics, producer_backoff, run_producer, Emitter, EMIT_LATENCY_BUCKETS,
     QUEUE_CAPACITY as EMIT_QUEUE_CAPACITY,
 };
 use chronicle_lib::nordic::live_slack::{
-    describe_metrics as describe_slack_metrics, enqueue, jobs_for, run_worker, Sessions, SlackApi,
-    SlackJob, QUEUE_CAPACITY,
+    describe_metrics as describe_slack_metrics, enqueue, jobs_for_fresh, run_worker, Sessions,
+    SlackApi, SlackJob, QUEUE_CAPACITY,
 };
 use chronicle_lib::nordic::slack::{SlackClient, DEFAULT_API_URL};
+use chrono::Utc;
 use clap::Parser;
 use metrics::{counter, gauge};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -87,6 +94,16 @@ struct Args {
     /// Slack Web API base URL.
     #[arg(long, env = "SLACK_API_URL", default_value = DEFAULT_API_URL)]
     slack_api_url: String,
+
+    /// MFN's HTTP feed of the Nordic stream, read after every (re)connect to
+    /// catch up on items the socket missed.
+    #[arg(long, env = "MFN_FEED_URL", default_value = DEFAULT_FEED_URL)]
+    feed_url: String,
+
+    /// Releases and announcements published longer ago than this are never
+    /// posted to Slack (they are still emitted and logged).
+    #[arg(long, env = "SLACK_MAX_AGE_MINUTES", default_value_t = DEFAULT_SLACK_MAX_AGE.as_secs() / 60)]
+    slack_max_age_minutes: u64,
 
     /// Port of the Prometheus `/metrics` endpoint.
     #[arg(long, env = "METRICS_PORT", default_value_t = 9464)]
@@ -200,6 +217,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     describe_slack_metrics();
     describe_publish_metrics();
     describe_emit_metrics();
+    describe_catchup_metrics();
     gauge!("nordic_live_registered_companies").set(companies.len() as f64);
 
     let events: Option<Arc<KafkaSink>> = match args.kafka_brokers.as_deref() {
@@ -256,19 +274,55 @@ async fn run(args: Args) -> anyhow::Result<()> {
     };
     let mut sessions = load_sessions(signal.as_ref(), &Sessions::default()).await;
 
+    let watermark: SharedWatermark = Arc::new(std::sync::Mutex::new(
+        match Watermark::load(&pool, Utc::now()).await {
+            Ok(w) => w,
+            Err(e) => {
+                warn!(error = %e, "loading the watermark failed, starting 15 minutes back");
+                Watermark::new(Utc::now() - live_catchup::DEFAULT_WATERMARK_AGE)
+            }
+        },
+    ));
+
     let (tx, mut rx) = mpsc::channel(256);
-    let listener = Listener::new(
-        args.ws_url.clone(),
-        "nexus-chronicle/nordic-live (lasse.alm@gsfleet.io)",
-    );
+    let (conn_tx, conn_rx) = mpsc::unbounded_channel();
+    let (catchup_tx, mut catchup_rx) = mpsc::channel::<Fetched>(4);
+    let feed_url = reqwest::Url::parse(&args.feed_url)?;
+    let feed_origin = feed_url.origin().ascii_serialization();
+    let catchup_client = Arc::new(tokio::sync::Mutex::new(MfnClient::with_options(
+        feed_origin,
+        PAGE_GAP,
+        USER_AGENT,
+        PAGE_TIMEOUT,
+    )?));
+    tokio::spawn({
+        let watermark = watermark.clone();
+        async move {
+            run_coordinator(conn_rx, move || {
+                let (client, url, wm, out) = (
+                    catchup_client.clone(),
+                    feed_url.clone(),
+                    watermark.clone(),
+                    catchup_tx.clone(),
+                );
+                async move { run_once(&client, &url, &wm, &out, page_backoff()).await }
+            })
+            .await
+        }
+    });
+    let mut listener = Listener::new(args.ws_url.clone(), USER_AGENT);
+    listener.events = Some(conn_tx);
     tokio::spawn(async move { listener.run(tx).await });
+    let slack_max_age = Duration::from_secs(args.slack_max_age_minutes * 60);
 
     let mut seen = SeenSet::new(SEEN_CAPACITY);
     let mut window = Counters::default();
     let mut reload = tokio::time::interval(RELOAD_EVERY);
     let mut stats = tokio::time::interval(STATS_EVERY);
+    let mut flush = tokio::time::interval(FLUSH_EVERY);
     reload.tick().await;
     stats.tick().await;
+    flush.tick().await;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     loop {
@@ -276,11 +330,19 @@ async fn run(args: Args) -> anyhow::Result<()> {
             received = rx.recv() => {
                 let Some(msg) = received else { return Ok(()) };
                 let check = signal.as_ref().map(|s| s as &dyn IngestedCheck);
-                let (counters, dispositions) = handle_message_full(
-                    &msg.text, msg.received_at, &companies, &mut seen, check, &channels,
-                    emitter.as_ref(),
+                let handling = Handling {
+                    check,
+                    channels: &channels,
+                    emitter: emitter.as_ref(),
+                    slack_max_age,
+                };
+                let handled = handle_message_full(
+                    &msg.text, msg.received_at, &companies, &mut seen, &handling,
                 )
                 .await;
+                watermark.lock().expect("watermark lock is never poisoned")
+                    .observe(handled.newest_published);
+                let (counters, dispositions) = (handled.counters, handled.dispositions);
                 window.seen += counters.seen;
                 window.relevant += counters.relevant;
                 // Independent of Slack, and off the socket loop: a slow broker
@@ -292,10 +354,43 @@ async fn run(args: Args) -> anyhow::Result<()> {
                     }
                 }
                 if let Some(jobs) = &slack_tx {
-                    for job in jobs_for(dispositions, &sessions, &channels) {
+                    for job in jobs_for_fresh(dispositions, &sessions, &channels, slack_max_age) {
                         enqueue(jobs, job);
                     }
                 }
+            }
+            Some(fetched) = catchup_rx.recv() => {
+                let check = signal.as_ref().map(|s| s as &dyn IngestedCheck);
+                let handling = Handling {
+                    check,
+                    channels: &channels,
+                    emitter: emitter.as_ref(),
+                    slack_max_age,
+                };
+                let handled = handle_catchup_items(
+                    fetched.items.clone(), Utc::now(), &companies, &mut seen, &handling,
+                )
+                .await;
+                let after = {
+                    let mut w = watermark.lock().expect("watermark lock is never poisoned");
+                    w.observe(handled.newest_published);
+                    w.value()
+                };
+                live_catchup::log_run(&fetched, handled.dispositions.len(), after);
+                if let Some(sink) = &events {
+                    for (key, event) in events_to_publish(&handled.dispositions) {
+                        let sink = sink.clone();
+                        tokio::spawn(async move { publish_live(sink.as_ref(), &key, &event).await });
+                    }
+                }
+                if let Some(jobs) = &slack_tx {
+                    for job in jobs_for_fresh(handled.dispositions, &sessions, &channels, slack_max_age) {
+                        enqueue(jobs, job);
+                    }
+                }
+            }
+            _ = flush.tick() => {
+                live_catchup::flush(&pool, &watermark, Utc::now()).await;
             }
             _ = reload.tick() => {
                 match load_companies(&pool).await {
@@ -317,8 +412,16 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 window.log();
                 window = Counters::default();
             }
-            _ = tokio::signal::ctrl_c() => { info!("interrupted, shutting down"); return Ok(()); }
-            _ = term.recv() => { info!("terminated, shutting down"); return Ok(()); }
+            _ = tokio::signal::ctrl_c() => {
+                info!("interrupted, shutting down");
+                live_catchup::flush(&pool, &watermark, Utc::now()).await;
+                return Ok(());
+            }
+            _ = term.recv() => {
+                info!("terminated, shutting down");
+                live_catchup::flush(&pool, &watermark, Utc::now()).await;
+                return Ok(());
+            }
         }
     }
 }

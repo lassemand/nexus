@@ -1075,7 +1075,7 @@ mod tests {
     }
 
     fn client() -> SlackClient {
-        SlackClient::new("xoxb-test", "C").unwrap()
+        SlackClient::new("xoxb-test").unwrap()
     }
 
     #[tokio::test]
