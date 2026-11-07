@@ -1,8 +1,10 @@
 use async_trait::async_trait;
+use backon::{ConstantBuilder, Retryable};
 use chrono::NaiveDate;
 use model::asset::Asset;
 use serde::Deserialize;
-use tracing::debug;
+use std::time::Duration;
+use tracing::{debug, warn};
 
 use crate::earnings::{EarningsProvider, QuarterlyEarnings};
 
@@ -27,7 +29,11 @@ pub enum PolygonEarningsError {
     Http(reqwest::Error),
     /// The Polygon API returned HTTP 429 (rate limited).
     #[error("polygon rate limited (429)")]
-    RateLimited,
+    RateLimited {
+        /// The server's `Retry-After` in delta-seconds; `None` when the header
+        /// is missing or an HTTP-date.
+        retry_after: Option<Duration>,
+    },
     /// The Polygon API returned a non-2xx status other than 429.
     #[error("polygon api error {status}: {message}")]
     Api { status: u16, message: String },
@@ -74,6 +80,18 @@ struct IncomeStatement {
 #[derive(Deserialize)]
 struct MoneyValue {
     value: Option<f64>,
+}
+
+/// Wait before retrying a 429 that carries no `Retry-After`.
+pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(12);
+/// Upper bound on any wait, including one the server asks for.
+pub const RATE_LIMIT_MAX_WAIT: Duration = Duration::from_secs(120);
+
+/// One retry, after [`RATE_LIMIT_DEFAULT_WAIT`] unless the server says otherwise.
+const fn rate_limit_backoff() -> ConstantBuilder {
+    ConstantBuilder::new()
+        .with_delay(RATE_LIMIT_DEFAULT_WAIT)
+        .with_max_times(1)
 }
 
 // ---------- Constructors ----------
@@ -128,7 +146,13 @@ async fn fetch_page(
     let status = response.status();
 
     if status.as_u16() == 429 {
-        return Err(PolygonEarningsError::RateLimited);
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(Duration::from_secs);
+        return Err(PolygonEarningsError::RateLimited { retry_after });
     }
 
     if !status.is_success() {
@@ -143,6 +167,34 @@ async fn fetch_page(
     }
 
     response.json().await.map_err(PolygonEarningsError::from)
+}
+
+impl PolygonEarningsProvider {
+    /// [`EarningsProvider::quarterly_earnings`] with exactly one retry of a
+    /// rate-limited (429) answer, after its `Retry-After` or
+    /// [`RATE_LIMIT_DEFAULT_WAIT`], at most [`RATE_LIMIT_MAX_WAIT`]. Other
+    /// errors are returned at once.
+    pub async fn quarterly_earnings_with_retry(
+        &self,
+        asset: &Asset,
+        from: NaiveDate,
+    ) -> Result<Vec<QuarterlyEarnings>, PolygonEarningsError> {
+        (|| self.quarterly_earnings(asset, from))
+            .retry(rate_limit_backoff())
+            .when(|e| matches!(e, PolygonEarningsError::RateLimited { .. }))
+            .adjust(|e, dur| {
+                dur.map(|default| match e {
+                    PolygonEarningsError::RateLimited {
+                        retry_after: Some(asked),
+                    } => (*asked).min(RATE_LIMIT_MAX_WAIT),
+                    _ => default.min(RATE_LIMIT_MAX_WAIT),
+                })
+            })
+            .notify(|e, wait| {
+                warn!(ticker = %asset.ticker, ?wait, error = %e, "rate limited by Polygon, retrying");
+            })
+            .await
+    }
 }
 
 // ---------- EarningsProvider impl ----------
@@ -396,8 +448,74 @@ mod tests {
             .await;
         assert!(matches!(
             run(&server).await,
-            Err(PolygonEarningsError::RateLimited)
+            Err(PolygonEarningsError::RateLimited { retry_after: None })
         ));
+    }
+
+    #[tokio::test]
+    async fn http_429_with_retry_after_carries_the_delay() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "7"))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            run(&server).await,
+            Err(PolygonEarningsError::RateLimited {
+                retry_after: Some(d)
+            }) if d == Duration::from_secs(7)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_429_is_retried_once_after_retry_after() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let started = std::time::Instant::now();
+        let result = PolygonEarningsProvider::with_base_url("key", server.uri())
+            .quarterly_earnings_with_retry(&Asset::new("AAPL"), from())
+            .await;
+        assert!(matches!(
+            result,
+            Err(PolygonEarningsError::RateLimited { .. })
+        ));
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(950), "{waited:?}");
+        assert!(waited < Duration::from_secs(5), "{waited:?}");
+    }
+
+    #[tokio::test]
+    async fn a_429_that_clears_is_retried_to_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        mount_ok(&server, json!({"results": []})).await;
+        let out = PolygonEarningsProvider::with_base_url("key", server.uri())
+            .quarterly_earnings_with_retry(&Asset::new("AAPL"), from())
+            .await
+            .unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn other_errors_are_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let result = PolygonEarningsProvider::with_base_url("key", server.uri())
+            .quarterly_earnings_with_retry(&Asset::new("AAPL"), from())
+            .await;
+        assert!(matches!(result, Err(PolygonEarningsError::Api { .. })));
     }
 
     #[tokio::test]

@@ -37,7 +37,7 @@ result
 `finish` sets `nexus_job_last_run_timestamp_seconds`, `nexus_job_last_run_success` (1/0),
 `nexus_job_duration_seconds` and, on success only, `nexus_job_last_success_timestamp_seconds`
 (all `{job}`), then pushes everything recorded during the run with one HTTP **POST** to
-`$PUSHGATEWAY_URL/metrics/job/<job>` (10 s timeout, one retry).
+`$PUSHGATEWAY_URL/metrics/job/<job>` (10 s timeout, one immediate retry, only for a transport error, 408, 429 or 5xx; other 4xx fail at once).
 
 * POST, never PUT: PUT replaces every metric in the group, which would erase
   `last_success_timestamp` after a failed run. The exporter's own `push-gateway` feature
@@ -68,6 +68,18 @@ pod restarts, every pushed job and Kafka consumer lag.
 **Alerts:** added to `infra/charts/nexus/prometheus/rules/nexus.rules.yml`, each with a test
 in `nexus.rules.test.yml`. Generic alerts: `NexusScrapeTargetDown` (any target in the app
 namespaces down for 5 m) and `NexusJobLastRunFailed`.
+
+## signal report store
+
+A Nordic report event that `signal` cannot store is handled by the kind of error.
+A transient one (connection lost, pool exhausted, serialization failure) is retried
+with backoff (1 s doubling to 60 s) and counts `signal_messages_total{outcome="db_error_retried"}`
+and `signal_store_retries_total{topic}`; `signal_store_blocked` is 1 while it retries.
+Any other error (a value the schema rejects) would block the partition forever, so the
+report is logged at `error`, counted in `signal_report_db_errors_total` and its offset
+committed (`outcome="db_error_committed"`). The producer does not resend it, so the
+alert `SignalReportRejected` (`increase(signal_report_db_errors_total[15m]) > 0`,
+warning) means the report was dropped and must be replayed from MFN.
 
 ## Cluster pieces
 

@@ -140,7 +140,10 @@ async fn code_3000_reconnects_at_once_and_other_closes_back_off() {
     assert_eq!(events[2], ConnEvent::Connected);
     match &events[3] {
         ConnEvent::Backoff { reason, delay } => {
-            assert_eq!(*delay, Duration::from_millis(10));
+            assert!(
+                *delay >= Duration::from_millis(10) && *delay < Duration::from_millis(20),
+                "{delay:?}"
+            );
             assert!(reason.contains("closed by server"), "{reason}");
         }
         other => panic!("expected a backoff after 1011, got {other:?}"),
@@ -191,12 +194,18 @@ async fn connect_failures_back_off_and_dropping_the_receiver_stops_the_listener(
     match next_event(&mut run).await {
         ConnEvent::Backoff { reason, delay } => {
             assert!(reason.contains("connect failed"), "{reason}");
-            assert_eq!(delay, Duration::from_millis(10));
+            assert!(
+                delay >= Duration::from_millis(10) && delay < Duration::from_millis(20),
+                "{delay:?}"
+            );
         }
         other => panic!("{other:?}"),
     }
     match next_event(&mut run).await {
-        ConnEvent::Backoff { delay, .. } => assert_eq!(delay, Duration::from_millis(20)),
+        ConnEvent::Backoff { delay, .. } => assert!(
+            delay >= Duration::from_millis(20) && delay < Duration::from_millis(40),
+            "{delay:?}"
+        ),
         other => panic!("{other:?}"),
     }
     drop(run.messages);

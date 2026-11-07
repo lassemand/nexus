@@ -385,8 +385,8 @@ groups:
           summary: "signal's consumer is blocked retrying a store"
           description: >-
             The Nordic report store has been failing for 10 minutes and blocks
-            every topic. Check the database and `failed to store Nordic report
-            event` in the signal logs.
+            every topic. Check the database and `failed to store, retrying` with
+            `what="nordic report event"` in the signal logs.
 
       # A database error on the insider path is logged and the offset committed.
       - alert: SignalInsiderDataLoss
@@ -400,6 +400,21 @@ groups:
             {{ $value | humanize }} insider transaction(s) were rejected by the
             database and committed without being stored in the last hour. See
             `insider transaction rejected by the database` in the signal logs.
+
+      # A Nordic report the database rejects for good is logged and the offset
+      # committed; the producer does not resend it.
+      - alert: SignalReportRejected
+        expr: increase(signal_report_db_errors_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "signal dropped a Nordic report that must be replayed from MFN"
+          description: >-
+            {{ $value | humanize }} Nordic report event(s) were rejected by the
+            database in the last 15 minutes. The report was dropped and the
+            producer does not resend it: replay it from MFN. See `Nordic report
+            event rejected by the database` in the signal logs.
 
       # The threshold 1000 is a first guess; tune it from the lag seen in normal
       # operation (a backfill of daily bars legitimately exceeds it for a while).

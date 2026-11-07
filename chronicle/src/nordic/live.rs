@@ -30,6 +30,7 @@ use super::events::{announcement_event, company_key, release_event, EventSink};
 use super::feed::{parse_document, NewsItem};
 use super::live_emit::{EmitJob, Emitter};
 use async_trait::async_trait;
+use backon::{BackoffBuilder, ExponentialBuilder};
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use metrics::{counter, gauge, histogram};
@@ -656,38 +657,16 @@ pub async fn handle_message_full(
 
 // ── Connection ──────────────────────────────────────────────────────────────
 
-/// Reconnect delay: 10 ms, doubling, capped at 30 s (MFN's own site does the same).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Backoff {
-    next: Duration,
-}
-
-impl Default for Backoff {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Backoff {
-    const START: Duration = Duration::from_millis(10);
-    const CAP: Duration = Duration::from_secs(30);
-
-    /// A fresh backoff.
-    pub fn new() -> Self {
-        Self { next: Self::START }
-    }
-
-    /// The delay to wait now; the following one is doubled (capped).
-    pub fn next_delay(&mut self) -> Duration {
-        let d = self.next;
-        self.next = (self.next * 2).min(Self::CAP);
-        d
-    }
-
-    /// Back to 10 ms.
-    pub fn reset(&mut self) {
-        self.next = Self::START;
-    }
+/// Reconnect delay: 10 ms, doubling, jittered. backon adds the jitter after
+/// the cap (each wait is `d + d × rand[0,1)`), so the cap is 15 s and the
+/// longest wait stays under the 30 s MFN's own site uses.
+pub const fn reconnect_backoff() -> ExponentialBuilder {
+    ExponentialBuilder::new()
+        .with_min_delay(Duration::from_millis(10))
+        .with_factor(2.0)
+        .with_max_delay(Duration::from_secs(15))
+        .without_max_times()
+        .with_jitter()
 }
 
 /// A message read from the socket.
@@ -744,6 +723,8 @@ pub struct Listener {
     pub dead_after: Duration,
     /// See [`STABLE_AFTER`].
     pub stable_after: Duration,
+    /// Delays between reconnects; tests seed its jitter.
+    pub reconnect: ExponentialBuilder,
     /// Connection events, if someone wants them.
     pub events: Option<mpsc::UnboundedSender<ConnEvent>>,
 }
@@ -756,6 +737,7 @@ impl Listener {
             user_agent: user_agent.into(),
             dead_after: DEAD_AFTER,
             stable_after: STABLE_AFTER,
+            reconnect: reconnect_backoff(),
             events: None,
         }
     }
@@ -768,7 +750,7 @@ impl Listener {
 
     /// Runs until `tx` is closed. Never returns because of network trouble.
     pub async fn run(&self, tx: mpsc::Sender<Received>) {
-        let mut backoff = Backoff::new();
+        let mut backoff = self.reconnect.build();
         loop {
             if tx.is_closed() {
                 return;
@@ -783,15 +765,15 @@ impl Listener {
                     debug!("MFN closed the connection with 3000, reconnecting");
                     self.emit(ConnEvent::FastReconnect);
                     if up_for.is_some_and(|d| d >= self.stable_after) {
-                        backoff.reset();
+                        backoff = self.reconnect.build();
                     }
                 }
                 SessionEnd::Failed(kind, reason) => {
                     counter!("nordic_live_reconnects_total", "reason" => kind.label()).increment(1);
                     if up_for.is_some_and(|d| d >= self.stable_after) {
-                        backoff.reset();
+                        backoff = self.reconnect.build();
                     }
-                    let delay = backoff.next_delay();
+                    let delay = backoff.next().unwrap_or(Duration::from_secs(30));
                     warn!(%reason, ?delay, "MFN connection lost, backing off");
                     self.emit(ConnEvent::Backoff { reason, delay });
                     tokio::time::sleep(delay).await;
@@ -1326,17 +1308,31 @@ mod tests {
     }
 
     #[test]
-    fn backoff_doubles_from_10ms_to_30s_and_resets() {
-        let mut b = Backoff::new();
-        let delays: Vec<Duration> = (0..14).map(|_| b.next_delay()).collect();
-        assert_eq!(delays[0], Duration::from_millis(10));
-        assert_eq!(delays[1], Duration::from_millis(20));
-        assert_eq!(delays[2], Duration::from_millis(40));
-        assert_eq!(delays[11], Duration::from_millis(20_480));
-        assert_eq!(delays[12], Duration::from_secs(30));
-        assert_eq!(delays[13], Duration::from_secs(30));
-        b.reset();
-        assert_eq!(b.next_delay(), Duration::from_millis(10));
+    fn backoff_doubles_from_10ms_with_jitter_and_stays_under_30s() {
+        let delays: Vec<Duration> = reconnect_backoff().build().take(14).collect();
+        for (i, d) in delays.iter().enumerate() {
+            let base = Duration::from_millis(10 << i).min(Duration::from_secs(15));
+            assert!(
+                *d >= base && *d < base * 2,
+                "delay {i} = {d:?}, base {base:?}"
+            );
+        }
+        assert!(delays.iter().all(|d| *d < Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn a_seeded_backoff_is_repeatable() {
+        let a: Vec<Duration> = reconnect_backoff()
+            .with_jitter_seed(7)
+            .build()
+            .take(5)
+            .collect();
+        let b: Vec<Duration> = reconnect_backoff()
+            .with_jitter_seed(7)
+            .build()
+            .take(5)
+            .collect();
+        assert_eq!(a, b);
     }
 
     struct Stub(Result<bool, String>);

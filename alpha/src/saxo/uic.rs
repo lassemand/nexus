@@ -19,8 +19,10 @@
 /// If lookup returns CFD-only results, the ticker is rejected with
 /// [`UicResolverError::CfdOnly`] — the caller must not proceed with that
 /// ticker.
+use backon::{ExponentialBuilder, Retryable};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use thiserror::Error;
@@ -193,9 +195,30 @@ impl RetryPolicy {
         max_wait: Duration::ZERO,
     };
 
-    fn wait(&self, attempt: u32, asked: Option<Duration>) -> Duration {
-        let backoff = self.base_backoff.saturating_mul(1 << (attempt - 1).min(16));
+    /// The backoff between attempts: `base_backoff` doubling, `max_wait` at
+    /// most, `max_attempts - 1` retries.
+    pub fn backoff(&self) -> ExponentialBuilder {
+        ExponentialBuilder::new()
+            .with_min_delay(self.base_backoff)
+            .with_factor(2.0)
+            .with_max_delay(self.max_wait)
+            .with_max_times(self.max_attempts.saturating_sub(1) as usize)
+    }
+
+    fn capped(&self, backoff: Duration, asked: Option<Duration>) -> Duration {
         asked.unwrap_or(backoff).min(self.max_wait)
+    }
+
+    #[cfg(test)]
+    fn wait(&self, attempt: u32, asked: Option<Duration>) -> Duration {
+        use backon::BackoffBuilder;
+        let backoff = self
+            .backoff()
+            .without_max_times()
+            .build()
+            .nth(attempt as usize - 1)
+            .expect("an unlimited backoff never ends");
+        self.capped(backoff, asked)
     }
 }
 
@@ -279,28 +302,22 @@ impl UicResolver {
         asset_type: &str,
         access_token: &str,
     ) -> Result<InstrumentListResponse, UicResolverError> {
-        let mut attempt = 1;
-        loop {
-            match self
-                .search_once(ticker, keywords, asset_type, access_token)
-                .await
-            {
-                Err(e) if e.is_transient() && attempt < self.retry.max_attempts => {
-                    let wait = self.retry.wait(attempt, e.retry_after());
-                    tracing::warn!(
-                        ticker,
-                        keywords,
-                        attempt,
-                        ?wait,
-                        error = super::error_chain(&e),
-                        "Saxo instrument search failed, retrying"
-                    );
-                    tokio::time::sleep(wait).await;
-                    attempt += 1;
-                }
-                result => return result,
-            }
-        }
+        let retries = AtomicU32::new(0);
+        (|| self.search_once(ticker, keywords, asset_type, access_token))
+            .retry(self.retry.backoff())
+            .when(|e: &UicResolverError| e.is_transient())
+            .adjust(|e, dur| dur.map(|backoff| self.retry.capped(backoff, e.retry_after())))
+            .notify(|e, wait| {
+                tracing::warn!(
+                    ticker,
+                    keywords,
+                    attempt = retries.fetch_add(1, Ordering::Relaxed) + 1,
+                    ?wait,
+                    error = super::error_chain(e),
+                    "Saxo instrument search failed, retrying"
+                );
+            })
+            .await
     }
 
     async fn search_once(
@@ -802,6 +819,23 @@ mod tests {
                 .unwrap();
             assert_eq!(got.uic, 4769462);
             assert_eq!(server.received_requests().await.unwrap().len(), 2);
+        }
+
+        #[tokio::test]
+        async fn a_retry_after_on_the_last_attempt_does_not_cause_an_extra_request() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+                .mount(&server)
+                .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri()).with_retry(FAST);
+            let err = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
+                .await
+                .unwrap_err();
+            assert!(err.is_transient());
+            let attempts = FAST.max_attempts as usize;
+            assert_eq!(server.received_requests().await.unwrap().len(), attempts);
         }
 
         #[tokio::test]
