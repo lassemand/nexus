@@ -9,13 +9,13 @@
 //! same event and signal dedupes by `(source, source_id)`.
 
 use super::events::EventSink;
+use backon::{ExponentialBuilder, Retryable};
 use chrono::{DateTime, Utc};
 use metrics::{counter, gauge, histogram};
 use model::generated::SpecialEvent;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::Instant;
 use tracing::{error, warn};
 
 /// Capacity of the emit queue.
@@ -71,25 +71,14 @@ impl Emitter {
     }
 }
 
-/// How a failed send is retried.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RetryPolicy {
-    /// First delay; doubled after each failure.
-    pub initial: Duration,
-    /// Largest delay.
-    pub max_delay: Duration,
-    /// Total time after which the event is given up on.
-    pub give_up_after: Duration,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            initial: Duration::from_millis(100),
-            max_delay: Duration::from_secs(30),
-            give_up_after: Duration::from_secs(5 * 60),
-        }
-    }
+/// The producer's retry schedule: 100 ms doubling to 30 s, giving up once 5
+/// minutes of waiting have been spent.
+pub fn producer_backoff() -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_min_delay(Duration::from_millis(100))
+        .with_max_delay(Duration::from_secs(30))
+        .with_total_delay(Some(Duration::from_secs(5 * 60)))
+        .without_max_times()
 }
 
 /// Sets every `nordic_live_events_total` result and the queue gauge to 0.
@@ -100,41 +89,25 @@ pub fn describe_emit_metrics() {
     gauge!("nordic_live_emit_queue_depth").set(0.0);
 }
 
-async fn send_with_retry(
-    sink: &(dyn EventSink + Send + Sync),
-    job: &EmitJob,
-    policy: RetryPolicy,
-) -> anyhow::Result<()> {
-    let started = Instant::now();
-    let mut delay = policy.initial;
-    loop {
-        match sink.send(&job.key, &job.event).await {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                if started.elapsed() + delay > policy.give_up_after {
-                    return Err(e);
-                }
-                warn!(key = %job.key, news_id = %job.event.source_id, error = format!("{e:#}"),
-                      retry_in = ?delay, "producing announcement failed, retrying");
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(policy.max_delay);
-            }
-        }
-    }
-}
-
 /// Drains the queue until every [`Emitter`] is dropped. One event at a time, in
-/// order, so a company's events stay in order. A send that keeps failing for
-/// `policy.give_up_after` is counted as failed and logged at `error`; the next
-/// event goes on normally.
+/// order, so a company's events stay in order. A send is retried on `backoff`;
+/// one that keeps failing until the schedule is exhausted is counted as failed
+/// and logged at `error`, and the next event goes on normally.
 pub async fn run_producer(
     sink: Arc<dyn EventSink + Send + Sync>,
     mut rx: mpsc::Receiver<EmitJob>,
-    policy: RetryPolicy,
+    backoff: ExponentialBuilder,
 ) {
     while let Some(job) = rx.recv().await {
         gauge!("nordic_live_emit_queue_depth").set(rx.len() as f64);
-        match send_with_retry(sink.as_ref(), &job, policy).await {
+        let sent = (|| sink.send(&job.key, &job.event))
+            .retry(backoff)
+            .notify(|e: &anyhow::Error, retry_in| {
+                warn!(key = %job.key, news_id = %job.event.source_id, error = format!("{e:#}"),
+                      ?retry_in, "producing announcement failed, retrying");
+            })
+            .await;
+        match sent {
             Ok(()) => {
                 let latency =
                     (Utc::now() - job.received_at).num_milliseconds().max(0) as f64 / 1000.0;
@@ -192,12 +165,12 @@ mod tests {
         }
     }
 
-    fn fast() -> RetryPolicy {
-        RetryPolicy {
-            initial: Duration::from_millis(1),
-            max_delay: Duration::from_millis(4),
-            give_up_after: Duration::from_millis(60),
-        }
+    fn fast() -> ExponentialBuilder {
+        ExponentialBuilder::default()
+            .with_min_delay(Duration::from_millis(1))
+            .with_max_delay(Duration::from_millis(4))
+            .with_total_delay(Some(Duration::from_millis(60)))
+            .without_max_times()
     }
 
     #[test]

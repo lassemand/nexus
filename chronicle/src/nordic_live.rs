@@ -21,7 +21,7 @@ use chronicle_lib::nordic::live::{
     SlackMode, DEFAULT_WS_URL, LATENCY_BUCKETS, SEEN_CAPACITY,
 };
 use chronicle_lib::nordic::live_emit::{
-    describe_emit_metrics, run_producer, Emitter, RetryPolicy, EMIT_LATENCY_BUCKETS,
+    describe_emit_metrics, producer_backoff, run_producer, Emitter, EMIT_LATENCY_BUCKETS,
     QUEUE_CAPACITY as EMIT_QUEUE_CAPACITY,
 };
 use chronicle_lib::nordic::live_slack::{
@@ -210,7 +210,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
 
     let emitter: Option<Emitter> = events.as_ref().map(|sink| {
         let (emitter, jobs) = Emitter::channel(EMIT_QUEUE_CAPACITY);
-        tokio::spawn(run_producer(sink.clone(), jobs, RetryPolicy::default()));
+        tokio::spawn(run_producer(sink.clone(), jobs, producer_backoff()));
         emitter
     });
 
