@@ -3679,6 +3679,7 @@ name = "telemetry"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "backon",
  "metrics",
  "metrics-exporter-prometheus",
  "reqwest",

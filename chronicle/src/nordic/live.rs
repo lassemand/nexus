@@ -29,8 +29,8 @@ use super::db::Company;
 use super::events::{announcement_event, company_key, release_event, EventSink};
 use super::feed::{parse_document, NewsItem};
 use super::live_emit::{EmitJob, Emitter};
-use backon::{BackoffBuilder, ExponentialBuilder};
 use async_trait::async_trait;
+use backon::{BackoffBuilder, ExponentialBuilder};
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use metrics::{counter, gauge, histogram};
@@ -1322,8 +1322,16 @@ mod tests {
 
     #[test]
     fn a_seeded_backoff_is_repeatable() {
-        let a: Vec<Duration> = reconnect_backoff().with_jitter_seed(7).build().take(5).collect();
-        let b: Vec<Duration> = reconnect_backoff().with_jitter_seed(7).build().take(5).collect();
+        let a: Vec<Duration> = reconnect_backoff()
+            .with_jitter_seed(7)
+            .build()
+            .take(5)
+            .collect();
+        let b: Vec<Duration> = reconnect_backoff()
+            .with_jitter_seed(7)
+            .build()
+            .take(5)
+            .collect();
         assert_eq!(a, b);
     }
 

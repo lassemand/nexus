@@ -81,7 +81,10 @@ async fn main() {
 
         info!(ticker = %ticker, from = %from_date, "fetching quarterly earnings");
 
-        let earnings = match polygon.quarterly_earnings_with_retry(&asset, from_date).await {
+        let earnings = match polygon
+            .quarterly_earnings_with_retry(&asset, from_date)
+            .await
+        {
             Ok(e) => e,
             Err(PolygonEarningsError::RateLimited { .. }) => {
                 error!(ticker = %ticker, "retry failed after rate limit, skipping ticker");

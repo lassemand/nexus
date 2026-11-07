@@ -312,7 +312,9 @@ impl ChartClient {
             let body = resp.text().await.map_err(Attempt::fatal)?;
             return parse_daily_bars(&body, exchange_mic).map_err(|e| {
                 warn!(error = %e, "undecodable chart response");
-                Attempt::fatal(ChartError::Status(reqwest::StatusCode::UNPROCESSABLE_ENTITY))
+                Attempt::fatal(ChartError::Status(
+                    reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+                ))
             });
         }
         if !super::is_transient_status(status) {
@@ -572,6 +574,21 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ChartError::Status(s) if s.as_u16() == 404));
         assert!(!err.is_transient());
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_on_the_last_attempt_does_not_cause_an_extra_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .expect(MAX_ATTEMPTS as u64)
+            .mount(&server)
+            .await;
+        let err = client(&server)
+            .fetch_up_to(1, "FNSE", at(2026, 8, 26), 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ChartError::RateLimited(n) if n == MAX_ATTEMPTS));
     }
 
     #[tokio::test]

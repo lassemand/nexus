@@ -19,8 +19,8 @@ use alpha::saxo::{
     error_chain, AuthError, ChartClient, ChartError, InstrumentQuery, RotatedToken, SaxoAuth,
     SaxoToken, SharedToken, TokenStore, UicResolver,
 };
-use backon::{BackoffBuilder, ExponentialBuilder, Retryable};
 use anyhow::Context;
+use backon::{BackoffBuilder, ExponentialBuilder, Retryable};
 use chronicle_lib::daily_bars::{self, BarSink, Instrument};
 use chrono::Utc;
 use clap::Parser;
@@ -1153,9 +1153,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(400))
                 .mount(&server)
                 .await;
-            let err = initial_refresh(&mut auth(&server), FAST)
-                .await
-                .unwrap_err();
+            let err = initial_refresh(&mut auth(&server), FAST).await.unwrap_err();
             assert!(!err.is_transient());
             assert_eq!(server.received_requests().await.unwrap().len(), 1);
         }
@@ -1167,9 +1165,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(503))
                 .mount(&server)
                 .await;
-            let err = initial_refresh(&mut auth(&server), FAST)
-                .await
-                .unwrap_err();
+            let err = initial_refresh(&mut auth(&server), FAST).await.unwrap_err();
             assert!(err.is_transient());
             assert_eq!(
                 server.received_requests().await.unwrap().len(),

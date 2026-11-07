@@ -822,6 +822,23 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_retry_after_on_the_last_attempt_does_not_cause_an_extra_request() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+                .mount(&server)
+                .await;
+            let r = UicResolver::new(reqwest::Client::new(), server.uri()).with_retry(FAST);
+            let err = r
+                .resolve_with_cfd_check(&InstrumentQuery::new("GOMX", "FNSE"), "t")
+                .await
+                .unwrap_err();
+            assert!(err.is_transient());
+            let attempts = FAST.max_attempts as usize;
+            assert_eq!(server.received_requests().await.unwrap().len(), attempts);
+        }
+
+        #[tokio::test]
         async fn a_permanent_status_is_not_retried() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))

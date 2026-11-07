@@ -410,15 +410,18 @@ async fn main() {
                             // it, so it is logged, counted and committed; the producer
                             // does not resend it, so it must be replayed from MFN.
                             let stored = store_report(
-                                &topic,
+                                topic,
                                 &event.ticker,
                                 &event.event_type,
                                 &event.source_id,
                                 || reports::handle(&pool, &message),
                                 INITIAL_STORE_BACKOFF,
                                 |blocked| {
-                                    metrics::gauge!("signal_store_blocked")
-                                        .set(if blocked { 1.0 } else { 0.0 })
+                                    metrics::gauge!("signal_store_blocked").set(if blocked {
+                                        1.0
+                                    } else {
+                                        0.0
+                                    })
                                 },
                             )
                             .await;
