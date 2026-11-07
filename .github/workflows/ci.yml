@@ -10,6 +10,9 @@ env:
   CARGO_TERM_COLOR: always
   # Used by #[sqlx::test] to locate the test Postgres instance.
   DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+  # chronicle's integration tests (tests/common::TestDb, smoke_test) create their
+  # own databases from this; without it they skip, and under CI that is a failure.
+  TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
 
 jobs:
   ci:
