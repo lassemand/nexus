@@ -610,6 +610,91 @@ data:
               "legendFormat": "p99"
             }
           ]
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Catch-up items (non-zero: the socket missed something)",
+          "gridPos": {
+            "x": 0,
+            "y": 41,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(increase(nordic_live_catchup_items_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "new relevant items per hour"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (result) (increase(nordic_live_catchup_runs_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "{{ "{{" }}result{{ "}}" }} runs per hour"
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "type": "timeseries",
+          "title": "Watermark lag (now - newest processed publish_date)",
+          "gridPos": {
+            "x": 12,
+            "y": 41,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "nordic_live_watermark_lag_seconds{job=\"nordic-live\"}",
+              "legendFormat": "lag"
+            }
+          ]
         }
       ]
     }

@@ -455,6 +455,31 @@ socket reader ──► parse + classify ──► Emitter::offer (bounded queue
   `NordicLiveEmitLosingEvents` (any dropped or failed in 15 minutes, for 5). Dropped and failed events are recovered by the
   poll.
 
+### Catch-up after every (re)connect
+
+The WebSocket has no replay, and the server closes it every 300 s, so items published while it is down are never sent.
+After **every** successful connect (the first after startup and each reconnect) a catch-up task reads MFN's HTTP feed of
+the same stream, `MFN_FEED_URL` (default `https://mfn.se/all/s/nordic.json`, newest first, `next_url` paging), and closes
+the gap within seconds. The socket never waits for it.
+
+- **Watermark:** the newest `publish_date` processed, from the socket or a catch-up, kept in chronicle's single-row table
+  `nordic_live_state` (written at most every 10 s, and on shutdown), so a restart catches up from where it stopped. With
+  no row it starts 15 minutes back.
+- **How far:** pages are read until one reaches items older than `watermark - 2 min`, at most 50 pages and never beyond
+  24 h (both logged at `warn`; the 22:00 poll covers the rest). Each page has a 10 s timeout and is retried 3 times with
+  backoff (`backon`); if it still fails the run is abandoned until the next reconnect.
+- **One at a time:** connects that arrive together cause one run; a connect during a run causes a single follow-up run.
+- **Same path:** the items, oldest first, go through exactly the code of a socket item (`Companies::find`, `SeenSet`,
+  classification, emission to `special.events`, Slack), so an item the socket delivered is skipped and a company's events
+  stay in order. `SeenSet` holds 10 000 ids and only registered companies' items are inserted, which covers a 24 h window.
+- **Slack freshness:** only results releases published within the last `SLACK_MAX_AGE_MINUTES` (default 15) are posted.
+  Older ones are emitted and logged (`slack = "stale"`), never posted, so a long outage does not cause a burst of stale posts.
+- Metrics: `nordic_live_catchup_runs_total{result="ok|capped|failed"}`, `nordic_live_catchup_items_total` (relevant items
+  that were new; non-zero means the socket missed something), `nordic_live_catchup_pages_total` and
+  `nordic_live_watermark_lag_seconds`. Both are on the `Nordic Live` dashboard. Alert `NordicLiveWatermarkLag`: lag over
+  900 s for 10 minutes (Nordic markets publish around the clock; if this is noisy at night, give it a schedule instead of
+  silencing it). One `info` line per run: pages, items, new relevant items, watermark before and after.
+
 ```bash
 kubectl --context orbstack -n chronicle logs deploy/nordic-live -f
 ```

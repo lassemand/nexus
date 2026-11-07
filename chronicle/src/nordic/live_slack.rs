@@ -337,6 +337,19 @@ pub fn jobs_for(dispositions: Vec<super::live::Disposition>, sessions: &Sessions
         .collect()
 }
 
+/// [`jobs_for`] without items older than `max_age` at the time they were read:
+/// after a long outage the catch-up emits them but they are never posted.
+pub fn jobs_for_fresh(
+    dispositions: Vec<super::live::Disposition>,
+    sessions: &Sessions,
+    max_age: std::time::Duration,
+) -> Vec<SlackJob> {
+    jobs_for(dispositions, sessions)
+        .into_iter()
+        .filter(|j| !j.item.is_stale(max_age))
+        .collect()
+}
+
 /// Queues a job without ever waiting. A full queue drops the post (the poll
 /// posts it later, marked late). Returns whether it was queued.
 pub fn enqueue(tx: &mpsc::Sender<SlackJob>, job: SlackJob) -> bool {
