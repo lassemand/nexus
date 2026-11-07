@@ -103,6 +103,88 @@ groups:
             A CronJob in namespace chronicle has a failed execution.
             Check pod logs: kubectl logs -n chronicle -l job-name=<name>
 
+  - name: nexus.chronicle-jobs
+    rules:
+      # Pushed by the CronJobs at the end of each run (docs/guides/metrics.md).
+      # Thresholds allow one missed run plus slack: daily jobs run every 24 h, so
+      # 30 h; weekday jobs go Friday -> Monday (72 h), so 78 h. The manual
+      # nordic-reports-backfill job has no staleness alert.
+      - alert: ChronicleJobStale
+        expr: >
+          (time() - nexus_job_last_success_timestamp_seconds{job=~"chronicle|earnings|nordic-reports|nordic-calendar"} > 30 * 3600)
+          or
+          (time() - nexus_job_last_success_timestamp_seconds{job=~"market|filings|pdmr"} > 78 * 3600)
+        labels:
+          severity: warning
+        annotations:
+          summary: "Chronicle job {{ $labels.job }} has not succeeded for {{ $value | humanizeDuration }}"
+          description: >-
+            No successful run of {{ $labels.job }} for {{ $value | humanizeDuration }}:
+            it failed, was not scheduled, or its CronJob is suspended. See the
+            Chronicle Jobs dashboard and `kubectl -n chronicle get cronjob`.
+
+      # Bootstrap: before a job's first push there is no last_success series, so
+      # ChronicleJobStale cannot fire. `absent` for 48 h (78 h for weekday jobs,
+      # so a Friday deploy survives the weekend) catches a job that never
+      # succeeded since the rule was loaded. `for` restarts with Prometheus.
+      - alert: ChronicleJobNeverSucceeded
+        expr: >
+          absent(nexus_job_last_success_timestamp_seconds{job="chronicle"})
+          or absent(nexus_job_last_success_timestamp_seconds{job="earnings"})
+          or absent(nexus_job_last_success_timestamp_seconds{job="nordic-reports"})
+          or absent(nexus_job_last_success_timestamp_seconds{job="nordic-calendar"})
+        for: 48h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Chronicle job {{ $labels.job }} has never reported a success"
+          description: >-
+            No successful run of {{ $labels.job }} has been pushed for 48 hours
+            after the rules were loaded. Check that its CronJob has
+            PUSHGATEWAY_URL set and that it ran.
+
+      - alert: ChronicleJobNeverSucceeded
+        expr: >
+          absent(nexus_job_last_success_timestamp_seconds{job="market"})
+          or absent(nexus_job_last_success_timestamp_seconds{job="filings"})
+          or absent(nexus_job_last_success_timestamp_seconds{job="pdmr"})
+        for: 78h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Chronicle job {{ $labels.job }} has never reported a success"
+          description: >-
+            No successful run of {{ $labels.job }} has been pushed for 78 hours
+            after the rules were loaded. Check that its CronJob has
+            PUSHGATEWAY_URL set and that it ran.
+
+      # A run with some failed companies still exits and counts as a success
+      # for last_success; this alert shows the failed ones. Pushed values stay
+      # until the next run replaces them.
+      - alert: ChronicleJobPartialFailure
+        expr: >
+          nordic_reports_companies_total{job="nordic-reports",outcome="failed"} > 0
+          or nordic_calendar_companies_total{job="nordic-calendar",outcome="failed"} > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }}: {{ $value }} companies failed in the last run"
+          description: >-
+            The last run of {{ $labels.job }} failed for {{ $value }} companies.
+            See the Chronicle Jobs dashboard and the pod logs in Loki
+            (`company failed`, `calendar refresh failed`).
+
+      - alert: NordicMarParseErrors
+        expr: sum by (job) (nordic_mar_parse_errors_total{job="nordic-reports"}) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "nordic-reports could not parse {{ $value }} Finnish insider releases"
+          description: >-
+            The last nordic-reports run read {{ $value }} managers' transaction
+            releases it could not parse; they are not published. Find them in the
+            logs (`managers' transaction not parsed, skipped`).
+
   - name: nexus.database
     rules:
       - alert: PostgresPrimaryDown

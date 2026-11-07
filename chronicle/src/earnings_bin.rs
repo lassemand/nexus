@@ -3,6 +3,8 @@ mod earnings_db;
 mod kafka;
 
 use alpha::{PolygonEarningsError, PolygonEarningsProvider};
+use anyhow::Context;
+use chronicle_lib::job_metrics;
 use chrono::{Duration, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use clap::Parser;
 use earnings_db::{load_unpublished_earnings, mark_earnings_published, upsert_earnings_date};
@@ -12,6 +14,7 @@ use model::{
     generated::{EarningsEvent, SpecialEvent},
 };
 use sqlx::postgres::PgPoolOptions;
+use std::process::ExitCode;
 use tracing::{error, info, warn};
 
 /// Fetch quarterly earnings from Polygon and publish them to Kafka.
@@ -40,35 +43,52 @@ struct Args {
     tickers_topic: String,
 }
 
+/// Job name in the Pushgateway and the prefix of the run metrics. Units: `items` are quarterly earnings records fetched from Polygon, `events` are `EarningsEvent`s published.
+const JOB: &str = "earnings";
+
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
     tracing_subscriber::fmt::init();
+    match run_job(Args::parse()).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            error!(error = %format!("{e:#}"), "earnings failed");
+            ExitCode::FAILURE
+        }
+    }
+}
 
-    let args = Args::parse();
+/// Runs the job and pushes its metrics, on success and on error alike.
+async fn run_job(args: Args) -> anyhow::Result<()> {
+    telemetry::run_batch(JOB, run(args)).await
+}
 
+async fn run(args: Args) -> anyhow::Result<()> {
+    job_metrics::register(JOB);
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&args.database_url)
         .await
-        .expect("failed to connect to postgres");
+        .context("failed to connect to postgres")?;
 
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
-        .expect("migrations failed");
+        .context("migrations failed")?;
 
     let tickers = load_tickers(&args.kafka_brokers, &args.tickers_topic);
 
     if tickers.is_empty() {
         warn!("no tickers registered — publish a TickerRegistration to the company.tickers topic first");
-        return;
+        return Ok(());
     }
 
     info!(count = tickers.len(), "loaded tickers from kafka");
 
     let polygon = PolygonEarningsProvider::new(&args.polygon_api_key);
-    let producer = ChronicleProducer::new(&args.kafka_brokers).expect("failed to connect to Kafka");
+    let producer =
+        ChronicleProducer::new(&args.kafka_brokers).context("failed to connect to Kafka")?;
 
     let from_date = Utc::now().date_naive() - Duration::days(365 * args.lookback_years as i64);
 
@@ -88,15 +108,27 @@ async fn main() {
             Ok(e) => e,
             Err(PolygonEarningsError::RateLimited { .. }) => {
                 error!(ticker = %ticker, "retry failed after rate limit, skipping ticker");
+                job_metrics::api_error(JOB, "4xx");
                 continue;
             }
             Err(e) => {
                 error!(ticker = %ticker, error = %e, "failed to fetch earnings, skipping ticker");
+                job_metrics::api_error(
+                    JOB,
+                    match &e {
+                        PolygonEarningsError::Http(e) => job_metrics::class_of_reqwest(e),
+                        PolygonEarningsError::Api { status, .. } => {
+                            job_metrics::class_of_status(*status)
+                        }
+                        _ => "other",
+                    },
+                );
                 continue;
             }
         };
 
         info!(ticker = %ticker, count = earnings.len(), "fetched quarterly earnings");
+        job_metrics::items_fetched(JOB, earnings.len());
 
         for eq in &earnings {
             let record = earnings_db::EarningsRecord {
@@ -141,6 +173,7 @@ async fn main() {
 
             match producer.publish(&args.kafka_topic, ticker, &event).await {
                 Ok(()) => {
+                    job_metrics::events_published(JOB, 1);
                     if let Err(e) = mark_earnings_published(
                         &pool,
                         ticker,
@@ -196,10 +229,44 @@ async fn main() {
             }
         }
     }
+    Ok(())
 }
 
 /// Converts a [`chrono::NaiveDate`] to a UTC midnight Unix timestamp in seconds.
 fn naive_date_to_unix_secs(date: chrono::NaiveDate) -> i64 {
     let midnight = NaiveDateTime::new(date, NaiveTime::from_hms_opt(0, 0, 0).unwrap());
     Utc.from_utc_datetime(&midnight).timestamp()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A forced error (unusable database URL) still pushes the run, as a failure.
+    #[tokio::test]
+    async fn a_failed_run_still_pushes_its_metrics() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        std::env::set_var("PUSHGATEWAY_URL", server.uri());
+        let args = Args::parse_from([
+            "earnings",
+            "--database-url",
+            "not-a-url",
+            "--kafka-brokers",
+            "none:1",
+            "--polygon-api-key",
+            "k",
+        ]);
+        assert!(run_job(args).await.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/metrics/job/earnings");
+        let body = String::from_utf8(requests[0].body.clone()).unwrap();
+        assert!(body.contains("nexus_job_last_run_success{job=\"earnings\"} 0"));
+    }
 }

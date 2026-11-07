@@ -14,7 +14,9 @@
 use chronicle_lib::nordic::calendar::{MfnClient, MFN_BASE_URL};
 use chronicle_lib::nordic::db;
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
-use chronicle_lib::nordic::ingest::{process_companies, process_insiders_only};
+use chronicle_lib::nordic::ingest::{
+    describe_run_metrics, process_companies, process_insiders_only,
+};
 use chronicle_lib::nordic::insiders::{mar_start, KafkaInsiderSink, INSIDER_TRANSACTIONS_TOPIC};
 use chronicle_lib::nordic::NORDIC_MICS;
 use chronicle_lib::registry;
@@ -75,7 +77,7 @@ struct Args {
 async fn main() -> ExitCode {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
     tracing_subscriber::fmt::init();
-    match run(Args::parse()).await {
+    match run_job(Args::parse()).await {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
@@ -85,8 +87,29 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Job name in the Pushgateway for a run of this kind.
+///
+/// Manual runs (`--backfill`, `--insiders-only`) push as `nordic-reports-backfill`,
+/// so they never overwrite the daily job's last-success time.
+fn job_name(args: &Args) -> &'static str {
+    if args.backfill || args.insiders_only {
+        "nordic-reports-backfill"
+    } else {
+        "nordic-reports"
+    }
+}
+
+/// Runs the job and pushes its metrics, on success and on error alike. A partial
+/// failure (`Ok(false)`) is a successful run for the metrics; the exit code still
+/// says failed.
+async fn run_job(args: Args) -> anyhow::Result<bool> {
+    let job = job_name(&args);
+    telemetry::run_batch(job, run(args)).await
+}
+
 /// Returns `Ok(false)` if any attempted company failed.
 async fn run(args: Args) -> anyhow::Result<bool> {
+    describe_run_metrics();
     let pool = PgPoolOptions::new()
         .max_connections(2)
         .connect(&args.database_url)
@@ -145,4 +168,65 @@ async fn run(args: Args) -> anyhow::Result<bool> {
         "nordic-reports done"
     );
     Ok(summary.is_success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A forced error (unusable database URL) still pushes the run, as a failure.
+    #[tokio::test]
+    async fn a_failed_run_still_pushes_its_metrics() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        std::env::set_var("PUSHGATEWAY_URL", server.uri());
+        let args = Args::parse_from([
+            "nordic-reports",
+            "--database-url",
+            "not-a-url",
+            "--kafka-brokers",
+            "none:1",
+        ]);
+        assert!(run_job(args).await.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/metrics/job/nordic-reports");
+        let body = String::from_utf8(requests[0].body.clone()).unwrap();
+        assert!(body.contains("nexus_job_last_run_success{job=\"nordic-reports\"} 0"));
+    }
+
+    #[test]
+    fn manual_runs_push_under_their_own_job() {
+        let daily = Args::parse_from([
+            "nordic-reports",
+            "--database-url",
+            "x",
+            "--kafka-brokers",
+            "x",
+        ]);
+        assert_eq!(job_name(&daily), "nordic-reports");
+        let backfill = Args::parse_from([
+            "nordic-reports",
+            "--database-url",
+            "x",
+            "--kafka-brokers",
+            "x",
+            "--backfill",
+        ]);
+        assert_eq!(job_name(&backfill), "nordic-reports-backfill");
+        let insiders = Args::parse_from([
+            "nordic-reports",
+            "--database-url",
+            "x",
+            "--kafka-brokers",
+            "x",
+            "--insiders-only",
+        ]);
+        assert_eq!(job_name(&insiders), "nordic-reports-backfill");
+    }
 }

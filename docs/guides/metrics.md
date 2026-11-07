@@ -49,6 +49,32 @@ result
 **Pushed values describe the last run.** Read them as gauges; never `rate()` or `increase()`
 them. A pushed series keeps its last value until the next run replaces it.
 
+### Run helper
+
+`telemetry::run_batch(job, body)` does `batch` + `finish` around a future, so an early `?` or an
+error can never skip the push; it returns the body's result unchanged. Every chronicle CronJob
+binary uses it (`main` -> `run_job` -> `run_batch(JOB, run(args))`), and each has a test that a
+forced error still pushes a failed run. `Ok(_)` of any value counts as a successful run: a partial
+failure (some companies failed, exit code non-zero) still updates `last_success` and shows up in
+`*_companies_total{outcome="failed"}` instead.
+
+### Chronicle jobs
+
+| Job | Run metrics (last run) |
+|---|---|
+| `chronicle`, `market`, `earnings`, `filings` | `<job>_items_fetched_total`, `<job>_events_published_total`, `<job>_api_errors_total{status_class}` (`4xx`, `5xx`, `network`, `other`). Units: filings found (8-K), bars, earnings records, Form 4 filings; published `EarningsEvent`s, bars, `UnifiedInsiderTransaction`s |
+| `pdmr` | `pdmr_rows_fetched_total`, `pdmr_transactions_published_total`, `pdmr_parse_errors_total` |
+| `nordic-reports` | `nordic_reports_companies_total{outcome}`, `nordic_reports_items_seen_total`, `nordic_reports_events_published_total{event_type}`, `nordic_reports_calendar_refreshes_total{outcome}`, `nordic_mar_*` |
+| `nordic-calendar` | `nordic_calendar_companies_total{outcome}` (`published`, `unchanged`, `no_slug`, `failed`), `nordic_calendar_upcoming_reports` |
+
+`nordic-reports --backfill` and `--insiders-only` are manual runs and push as job
+`nordic-reports-backfill`, so they never replace the daily job's `last_success`. The backfill has no
+staleness alert. Dashboard `Chronicle Jobs`; alerts group `nexus.chronicle-jobs`:
+`ChronicleJobStale` (30 h daily jobs, 78 h weekday jobs `market`/`filings`/`pdmr`),
+`ChronicleJobNeverSucceeded` (no `last_success` series 48 h / 78 h after the rules load),
+`ChronicleJobPartialFailure`, `NordicMarParseErrors`. `ChronicleJobFailed` (Kubernetes Job failed)
+is kept next to `NexusJobLastRunFailed`: only the former sees a job that died before it could push.
+
 ## Conventions
 
 **Names:** `<service>_<subject>_<unit>`. Counters end in `_total`, durations are histograms

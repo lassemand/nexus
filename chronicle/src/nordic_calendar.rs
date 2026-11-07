@@ -7,7 +7,7 @@
 /// (`--force` publishes regardless). signal replaces the company's future
 /// scheduled rows with it. A page that cannot be parsed publishes nothing and
 /// makes the job exit non-zero so the failure is noticed.
-use chronicle_lib::nordic::calendar::{refresh_company, MfnClient, MFN_BASE_URL};
+use chronicle_lib::nordic::calendar::{refresh_company, MfnClient, Refresh, MFN_BASE_URL};
 use chronicle_lib::nordic::db;
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
 use chronicle_lib::nordic::ingest::scan_calendar_releases;
@@ -59,7 +59,7 @@ struct Args {
 async fn main() -> ExitCode {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
     tracing_subscriber::fmt::init();
-    match run(Args::parse()).await {
+    match run_job(Args::parse()).await {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
@@ -69,8 +69,27 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Job name in the Pushgateway.
+const JOB: &str = "nordic-calendar";
+
+/// Runs the job and pushes its metrics, on success and on error alike. A partial
+/// failure (`Ok(false)`) is a successful run for the metrics; the exit code still
+/// says failed.
+async fn run_job(args: Args) -> anyhow::Result<bool> {
+    telemetry::run_batch(JOB, run(args)).await
+}
+
+/// Counts one company in `nordic_calendar_companies_total{outcome}`.
+fn count_company(outcome: &'static str) {
+    metrics::counter!("nordic_calendar_companies_total", "outcome" => outcome).increment(1);
+}
+
 /// Returns `Ok(false)` if any company failed (fetch, parse or publish).
 async fn run(args: Args) -> anyhow::Result<bool> {
+    for outcome in ["published", "unchanged", "no_slug", "failed"] {
+        metrics::counter!("nordic_calendar_companies_total", "outcome" => outcome).absolute(0);
+    }
+    let mut upcoming = 0usize;
     let pool = PgPoolOptions::new()
         .max_connections(2)
         .connect(&args.database_url)
@@ -92,19 +111,66 @@ async fn run(args: Args) -> anyhow::Result<bool> {
                 }
                 Err(e) => {
                     failed += 1;
+                    count_company("failed");
                     error!(ticker = %c.ticker, error = %e, "calendar release scan failed");
                     continue;
                 }
             }
         }
         match refresh_company(&pool, &mut client, &sink, c, args.force).await {
-            Ok(outcome) => info!(ticker = %c.ticker, ?outcome, "calendar checked"),
+            Ok(outcome) => {
+                match outcome {
+                    Refresh::Published(n) => {
+                        upcoming += n;
+                        count_company("published");
+                    }
+                    Refresh::Unchanged => count_company("unchanged"),
+                    Refresh::NoSlug => count_company("no_slug"),
+                }
+                info!(ticker = %c.ticker, ?outcome, "calendar checked")
+            }
             Err(e) => {
                 failed += 1;
+                count_company("failed");
                 error!(ticker = %c.ticker, error = %e, "calendar refresh failed");
             }
         }
     }
-    info!(companies = companies.len(), failed, "nordic-calendar done");
+    metrics::gauge!("nordic_calendar_upcoming_reports").set(upcoming as f64);
+    info!(
+        companies = companies.len(),
+        failed, upcoming, "nordic-calendar done"
+    );
     Ok(failed == 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A forced error (unusable database URL) still pushes the run, as a failure.
+    #[tokio::test]
+    async fn a_failed_run_still_pushes_its_metrics() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        std::env::set_var("PUSHGATEWAY_URL", server.uri());
+        let args = Args::parse_from([
+            "nordic-calendar",
+            "--database-url",
+            "not-a-url",
+            "--kafka-brokers",
+            "none:1",
+        ]);
+        assert!(run_job(args).await.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/metrics/job/nordic-calendar");
+        let body = String::from_utf8(requests[0].body.clone()).unwrap();
+        assert!(body.contains("nexus_job_last_run_success{job=\"nordic-calendar\"} 0"));
+    }
 }

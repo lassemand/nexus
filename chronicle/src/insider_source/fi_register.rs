@@ -200,10 +200,11 @@ pub async fn fetch_pdmr_rows(
             continue;
         }
 
-        let Some(pub_dt) = parse_fi_datetime(get(i_pub)) else {
-            continue;
-        };
-        let Some(txn_dt) = parse_fi_datetime(get(i_date)) else {
+        let (Some(pub_dt), Some(txn_dt)) = (
+            parse_fi_datetime(get(i_pub)),
+            parse_fi_datetime(get(i_date)),
+        ) else {
+            metrics::counter!("pdmr_parse_errors_total").increment(1);
             continue;
         };
 
