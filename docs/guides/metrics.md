@@ -49,6 +49,26 @@ result
 **Pushed values describe the last run.** Read them as gauges; never `rate()` or `increase()`
 them. A pushed series keeps its last value until the next run replaces it.
 
+### saxo-stream
+
+Keeps its own hand-written `/metrics` route (the health server is shared with `/tokens`), and
+sets `nexus_build_info{service="saxo-stream"}` by hand. Series: the original four
+(`saxo_refresh_token_seconds_remaining`, `saxo_refresh_token_failures_total`,
+`saxo_daily_bars_last_success_timestamp`, `saxo_daily_bars_failures_total`) plus
+`saxo_token_refreshes_total{outcome}`, `saxo_daily_bars_sweep_duration_seconds` (histogram),
+`saxo_daily_bars_sweep_instruments`, `saxo_daily_bars_published_total{exchange_mic}` (recent days are
+re-published every sweep), `saxo_daily_bars_backfills_total{outcome}`,
+`saxo_daily_bars_latest_date_timestamp_seconds{ticker,exchange_mic}` (midnight UTC of the newest bar),
+`saxo_api_requests_total{endpoint,status_class}`, `saxo_api_request_duration_seconds{endpoint}` and
+`saxo_api_rate_limited_total`. `endpoint` is `token`, `chart` or `instruments`; `status_class` is
+`2xx`, `4xx`, `5xx` or `error` (no response). The HTTP series are recorded in `alpha::saxo`.
+
+A deregistered ticker keeps no stale series: on every sweep, instruments that had a freshness gauge
+and are no longer registered are set to 0 (the `metrics` crate cannot delete a series) and
+`SaxoDailyBarsStaleInstrument` ignores 0. They stay at 0 until the pod restarts.
+Alerts: `SaxoDailyBarsStaleInstrument` (latest bar > 4 days, weekdays from 18:00 UTC),
+`SaxoApiRateLimited` (> 5 429s in 30 minutes).
+
 ## Conventions
 
 **Names:** `<service>_<subject>_<unit>`. Counters end in `_total`, durations are histograms
@@ -87,7 +107,7 @@ warning) means the report was dropped and must be replayed from MFN.
 |---|---|
 | Pushgateway (in-cluster only, persistent) | `infra/charts/nexus/pushgateway`, `pushgateway.nexus.svc.cluster.local:9091` |
 | Kafka consumer lag (`kafka_consumergroup_lag{consumergroup,topic,partition}`) | Strimzi `kafkaExporter` on the Kafka CR, PodMonitor `kafka-exporter` |
-| saxo-stream | PodMonitor in `infra/charts/chronicle/chronicle/templates/` |
+| saxo-stream | PodMonitor in `infra/charts/chronicle/chronicle/templates/`, dashboard `Saxo` (uid `saxo-token-health`), see below |
 | nordic-live | PodMonitor in `infra/charts/chronicle/chronicle/templates/`, dashboard `Nordic Live`, alerts `nexus.nordic-live` (`nordic_live_*`, `nordic_slack_posts_total`) |
 | signal | PodMonitor in `infra/charts/signal/signal/templates/`, dashboard `Signal`, alerts `nexus.signal` |
 | conductor | PodMonitor in `infra/charts/conductor/conductor/templates/`, dashboard `Conductor`, alerts `nexus.conductor` |

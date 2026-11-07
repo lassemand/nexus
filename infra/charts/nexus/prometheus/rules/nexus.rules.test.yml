@@ -1160,3 +1160,82 @@ tests:
       - eval_time: 45m
         alertname: NordicLiveSlowReleases
         exp_alerts: []
+
+  # ── SaxoDailyBarsStaleInstrument: latest bar > 4 days, weekdays from 18:00 UTC
+  # promtool time 0 is Thu 1970-01-01 00:00 UTC; one sample per hour here.
+  - name: SaxoDailyBarsStaleInstrument fires on a weekday evening
+    interval: 1h
+    input_series:
+      # Latest bar: Fri 1970-01-02 (86400). Evaluated Wed 1970-01-07 19:00 (163 h).
+      - series: 'saxo_daily_bars_latest_date_timestamp_seconds{ticker="AAA",exchange_mic="XSTO"}'
+        values: '86400x200'
+      # A fresh instrument next to it.
+      - series: 'saxo_daily_bars_latest_date_timestamp_seconds{ticker="BBB",exchange_mic="XSTO"}'
+        values: '518400x200'
+    alert_rule_test:
+      - eval_time: 163h
+        alertname: SaxoDailyBarsStaleInstrument
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              ticker: AAA
+              exchange_mic: XSTO
+            exp_annotations:
+              summary: "AAA (XSTO) has no daily bar for 5d 19h 0m 0s"
+              description: "The newest Saxo daily bar for AAA on XSTO is 5d 19h 0m 0s old. Report reactions for it stay at missing_reaction_bar. Check for a delisting, an ISIN change or Saxo returning nothing (saxo-stream logs \"daily bars: sync failed\")."
+
+  - name: SaxoDailyBarsStaleInstrument is silent before 18:00 UTC, at weekends and for 0
+    interval: 1h
+    input_series:
+      - series: 'saxo_daily_bars_latest_date_timestamp_seconds{ticker="AAA",exchange_mic="XSTO"}'
+        values: '86400x300'
+      # Deregistered: set to 0 by saxo-stream.
+      - series: 'saxo_daily_bars_latest_date_timestamp_seconds{ticker="GONE",exchange_mic="XCSE"}'
+        values: '0x300'
+    alert_rule_test:
+      # Wed 1970-01-07 10:00: before the window.
+      - eval_time: 154h
+        alertname: SaxoDailyBarsStaleInstrument
+        exp_alerts: []
+      # Sat 1970-01-10 19:00.
+      - eval_time: 235h
+        alertname: SaxoDailyBarsStaleInstrument
+        exp_alerts: []
+
+  - name: SaxoDailyBarsStaleInstrument tolerates a weekend and a holiday
+    interval: 1h
+    input_series:
+      # Latest bar Fri 1970-01-02; evaluated Tue 1970-01-06 19:00 = 4 d 19 h
+      # after a Monday holiday would still need the Tuesday bar, so this
+      # instrument got it: latest = Tue 1970-01-06.
+      - series: 'saxo_daily_bars_latest_date_timestamp_seconds{ticker="AAA",exchange_mic="XSTO"}'
+        values: '432000x200'
+    alert_rule_test:
+      - eval_time: 139h
+        alertname: SaxoDailyBarsStaleInstrument
+        exp_alerts: []
+
+  # ── SaxoApiRateLimited: more than 5 429s in 30m ───────────────────────────
+  - name: SaxoApiRateLimited fires on a burst of 429s
+    input_series:
+      - series: 'saxo_api_rate_limited_total{job="saxo-stream"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: SaxoApiRateLimited
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: saxo-stream
+            exp_annotations:
+              summary: "Saxo is rate limiting saxo-stream"
+              description: "30 requests were answered 429 in the last 30 minutes. See the Saxo dashboard (API panels) and the Retry-After hints in the saxo-stream logs."
+
+  - name: SaxoApiRateLimited is silent for a few 429s
+    input_series:
+      - series: 'saxo_api_rate_limited_total{job="saxo-stream"}'
+        values: '0+0.1x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: SaxoApiRateLimited
+        exp_alerts: []

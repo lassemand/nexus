@@ -24,6 +24,8 @@ dependencies = [
  "async-trait",
  "backon",
  "chrono",
+ "metrics",
+ "metrics-exporter-prometheus",
  "model",
  "rand 0.9.4",
  "reqwest",

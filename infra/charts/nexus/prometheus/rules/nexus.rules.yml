@@ -59,6 +59,37 @@ groups:
             persists the refresh token chain will break within ~1 hour.
           runbook_url: "https://github.com/lassemand/nexus/blob/main/docs/guides/saxo-oauth-setup.md#recovery-if-the-refresh-token-is-invalid"
 
+      # Per-instrument freshness: the latest bar per instrument (midnight UTC of
+      # its date). 4 days covers a weekend and a one-day holiday. Only after the
+      # 18:30 Stockholm sweep (from 18:00 UTC, Mon-Fri). 0 means the instrument
+      # was deregistered and is ignored.
+      - alert: SaxoDailyBarsStaleInstrument
+        expr: >
+          (time() - saxo_daily_bars_latest_date_timestamp_seconds > 4 * 86400)
+          and (saxo_daily_bars_latest_date_timestamp_seconds > 0)
+          and on() (day_of_week() >= 1 and day_of_week() <= 5 and hour() >= 18)
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.ticker }} ({{ $labels.exchange_mic }}) has no daily bar for {{ $value | humanizeDuration }}"
+          description: >-
+            The newest Saxo daily bar for {{ $labels.ticker }} on
+            {{ $labels.exchange_mic }} is {{ $value | humanizeDuration }} old.
+            Report reactions for it stay at missing_reaction_bar. Check for a
+            delisting, an ISIN change or Saxo returning nothing (saxo-stream
+            logs "daily bars: sync failed").
+
+      - alert: SaxoApiRateLimited
+        expr: increase(saxo_api_rate_limited_total[30m]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "Saxo is rate limiting saxo-stream"
+          description: >-
+            {{ $value | humanize }} requests were answered 429 in the last 30
+            minutes. See the Saxo dashboard (API panels) and the Retry-After
+            hints in the saxo-stream logs.
+
   - name: nexus.ingestion
     rules:
       # nordic-live could not post a results release to Slack (NEX-222). The poll

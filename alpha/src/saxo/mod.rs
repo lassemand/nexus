@@ -4,6 +4,7 @@
 /// The live WebSocket price stream that used to live here was removed
 /// (NEX-193): nothing consumed its 1-minute bars. Daily bars for Nordic report
 /// reactions come from [`chart::ChartClient`].
+pub mod api_metrics;
 pub mod auth;
 pub mod chart;
 pub mod uic;

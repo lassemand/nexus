@@ -193,7 +193,15 @@ impl SaxoAuth {
     /// and persists the rotation via the configured `TokenStore` before
     /// returning — the caller never needs to persist this itself.
     pub async fn refresh(&mut self) -> Result<RotatedToken, AuthError> {
-        let resp: TokenResponse = self
+        let result = self.refresh_once().await;
+        let outcome = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!("saxo_token_refreshes_total", "outcome" => outcome).increment(1);
+        result
+    }
+
+    async fn refresh_once(&mut self) -> Result<RotatedToken, AuthError> {
+        let started = std::time::Instant::now();
+        let sent = self
             .client
             .post(&self.token_url)
             .form(&[
@@ -203,10 +211,13 @@ impl SaxoAuth {
                 ("client_secret", &self.client_secret),
             ])
             .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+            .await;
+        super::api_metrics::record(
+            super::api_metrics::Endpoint::Token,
+            started,
+            sent.as_ref().ok().map(|r| r.status()),
+        );
+        let resp: TokenResponse = sent?.error_for_status()?.json().await?;
 
         if resp.access_token.is_empty() {
             return Err(AuthError::MissingToken);

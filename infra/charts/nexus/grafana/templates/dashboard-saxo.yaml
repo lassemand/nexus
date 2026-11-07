@@ -1,0 +1,739 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-saxo
+  namespace: nexus
+  annotations:
+    # Folder in Grafana (sidecar folderAnnotation, see values.yaml).
+    grafana_folder: Nexus
+  labels:
+    grafana_dashboard: "1"
+data:
+  saxo-token-health.json: |
+    {
+      "uid": "saxo-token-health",
+      "title": "Saxo",
+      "tags": [
+        "nexus",
+        "saxo"
+      ],
+      "timezone": "browser",
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Refresh Token Time Remaining",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 8,
+            "h": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1800
+                  },
+                  {
+                    "color": "green",
+                    "value": 3000
+                  }
+                ]
+              },
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "-1": {
+                      "text": "No rotation yet",
+                      "color": "blue",
+                      "index": 0
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "saxo_refresh_token_seconds_remaining",
+              "legendFormat": "seconds remaining"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Token Seconds Remaining Over Time",
+          "gridPos": {
+            "x": 8,
+            "y": 0,
+            "w": 16,
+            "h": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1800
+                  },
+                  {
+                    "color": "green",
+                    "value": 3000
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "saxo_refresh_token_seconds_remaining",
+              "legendFormat": "seconds remaining"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Refresh Failures (total)",
+          "gridPos": {
+            "x": 0,
+            "y": 6,
+            "w": 8,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "colorMode": "background"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "saxo_refresh_token_failures_total",
+              "legendFormat": "failures"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Refresh Failures Rate",
+          "gridPos": {
+            "x": 8,
+            "y": 6,
+            "w": 16,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "increase(saxo_refresh_token_failures_total[10m])",
+              "legendFormat": "failures per 10m"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "row",
+          "title": "Daily-bar sweep",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 10,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Sweep duration",
+          "gridPos": {
+            "x": 0,
+            "y": 11,
+            "w": 10,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le) (increase(saxo_daily_bars_sweep_duration_seconds_bucket[3d])))",
+              "legendFormat": "p95 (3 d)"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "increase(saxo_daily_bars_sweep_duration_seconds_sum[1d]) / increase(saxo_daily_bars_sweep_duration_seconds_count[1d])",
+              "legendFormat": "average (1 d)"
+            }
+          ],
+          "description": "One sweep per day at 18:30 Stockholm, plus a start-up sweep and early retries after failures."
+        },
+        {
+          "id": 7,
+          "type": "stat",
+          "title": "Instruments in last sweep",
+          "gridPos": {
+            "x": 10,
+            "y": 11,
+            "w": 4,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "colorMode": "value",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "saxo_daily_bars_sweep_instruments",
+              "legendFormat": ""
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Bars published per day, by exchange",
+          "gridPos": {
+            "x": 14,
+            "y": 11,
+            "w": 10,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (exchange_mic) (increase(saxo_daily_bars_published_total[1d]))",
+              "legendFormat": "{{ "{{" }}exchange_mic{{ "}}" }}"
+            }
+          ],
+          "description": "Each sweep re-publishes the last 10 weekdays (signal upserts), so a steady number is expected, not only new bars."
+        },
+        {
+          "id": 9,
+          "type": "table",
+          "title": "Instruments by age of latest bar",
+          "gridPos": {
+            "x": 0,
+            "y": 18,
+            "w": 24,
+            "h": 10
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "description": "Date of the newest bar received per instrument. Red when older than 3 calendar days (weekends and one holiday stay below that). Deregistered instruments (0) are left out. SaxoDailyBarsStaleInstrument fires after 4 days.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Age of latest bar"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-background"
+                    }
+                  },
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "orange",
+                          "value": 172800
+                        },
+                        {
+                          "color": "red",
+                          "value": 259200
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Latest bar"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "dateTimeAsLocal"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "sortBy": [
+              {
+                "displayName": "Age of latest bar",
+                "desc": true
+              }
+            ]
+          },
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "ticker": "Ticker",
+                  "exchange_mic": "Exchange",
+                  "Value #A": "Age of latest bar",
+                  "Value #B": "Latest bar"
+                },
+                "indexByName": {
+                  "ticker": 0,
+                  "exchange_mic": 1,
+                  "Value #A": 2,
+                  "Value #B": 3
+                }
+              }
+            }
+          ],
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "(time() - saxo_daily_bars_latest_date_timestamp_seconds) and saxo_daily_bars_latest_date_timestamp_seconds > 0",
+              "legendFormat": "",
+              "instant": true,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "saxo_daily_bars_latest_date_timestamp_seconds * 1000 and saxo_daily_bars_latest_date_timestamp_seconds > 0",
+              "legendFormat": "",
+              "instant": true,
+              "format": "table"
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "type": "row",
+          "title": "Saxo API",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 28,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "API requests by endpoint and status (per 5 min)",
+          "gridPos": {
+            "x": 0,
+            "y": 29,
+            "w": 10,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (endpoint, status_class) (increase(saxo_api_requests_total[5m]))",
+              "legendFormat": "{{ "{{" }}endpoint{{ "}}" }} {{ "{{" }}status_class{{ "}}" }}"
+            }
+          ],
+          "description": "endpoint: token, chart, instruments. status_class: 2xx, 4xx, 5xx, error (no response)."
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Rate limiting (429, per 30 min)",
+          "gridPos": {
+            "x": 10,
+            "y": 29,
+            "w": 7,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "increase(saxo_api_rate_limited_total[30m])",
+              "legendFormat": "429 responses"
+            }
+          ],
+          "description": "SaxoApiRateLimited fires above 5 in 30 minutes."
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "API latency p95",
+          "gridPos": {
+            "x": 17,
+            "y": 29,
+            "w": 7,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(saxo_api_request_duration_seconds_bucket[15m])))",
+              "legendFormat": "{{ "{{" }}endpoint{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "type": "row",
+          "title": "Token refreshes and backfills",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 36,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 15,
+          "type": "timeseries",
+          "title": "Token refreshes (per hour)",
+          "gridPos": {
+            "x": 0,
+            "y": 37,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (outcome) (increase(saxo_token_refreshes_total[1h]))",
+              "legendFormat": "{{ "{{" }}outcome{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "type": "timeseries",
+          "title": "Full backfills (per day)",
+          "gridPos": {
+            "x": 12,
+            "y": 37,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (outcome) (increase(saxo_daily_bars_backfills_total[1d]))",
+              "legendFormat": "{{ "{{" }}outcome{{ "}}" }}"
+            }
+          ],
+          "description": "First sight of a ticker: history back to 2015-01-01."
+        }
+      ]
+    }
