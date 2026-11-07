@@ -212,9 +212,24 @@ pub struct MfnClient {
 impl MfnClient {
     /// `min_interval` is the minimum gap between requests (2 s in production).
     pub fn new(base_url: impl Into<String>, min_interval: Duration) -> anyhow::Result<Self> {
+        Self::with_options(
+            base_url,
+            min_interval,
+            "nexus-chronicle/nordic-calendar (lasse.alm@gsfleet.io)",
+            Duration::from_secs(20),
+        )
+    }
+
+    /// [`MfnClient::new`] with its own user agent and per-request timeout.
+    pub fn with_options(
+        base_url: impl Into<String>,
+        min_interval: Duration,
+        user_agent: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
-            .user_agent("nexus-chronicle/nordic-calendar (lasse.alm@gsfleet.io)")
-            .timeout(Duration::from_secs(20))
+            .user_agent(user_agent)
+            .timeout(timeout)
             .build()?;
         Ok(Self {
             http,

@@ -518,6 +518,22 @@ groups:
             publishes them later. See the Nordic Live dashboard and the
             nordic-live pod logs.
 
+      # Nordic markets publish around the clock, so 15 minutes without a newer
+      # publish_date is suspicious. If this is noisy at night, add a schedule
+      # (e.g. only 05:00-22:00 UTC) rather than silencing it in code.
+      - alert: NordicLiveWatermarkLag
+        expr: nordic_live_watermark_lag_seconds{job="nordic-live"} > 900
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "nordic-live has seen no newer MFN item for 15 minutes"
+          description: >-
+            The newest publish_date nordic-live has processed is
+            {{ $value | humanizeDuration }} old. The socket may be dead, or MFN
+            published nothing. The catch-up after each reconnect and the 22:00
+            poll are the fallback. See the Nordic Live dashboard.
+
       - alert: NordicLiveSlowReleases
         expr: >
           histogram_quantile(0.95, sum by (le) (rate(nordic_live_release_latency_seconds_bucket{job="nordic-live"}[30m]))) > 60
