@@ -19,7 +19,7 @@ use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
 use chronicle_lib::nordic::live::{
     describe_metrics, describe_publish_metrics, events_to_publish, handle_message_full,
     publish_live, Companies, Counters, IngestedCheck, Listener, Registered, SeenSet, SignalDb,
-    DEFAULT_WS_URL, LATENCY_BUCKETS, SEEN_CAPACITY,
+    SlackChannels, DEFAULT_WS_URL, LATENCY_BUCKETS, SEEN_CAPACITY,
 };
 use chronicle_lib::nordic::live_emit::{
     describe_emit_metrics, producer_backoff, run_producer, Emitter, EMIT_LATENCY_BUCKETS,
@@ -27,7 +27,7 @@ use chronicle_lib::nordic::live_emit::{
 };
 use chronicle_lib::nordic::live_slack::{
     describe_metrics as describe_slack_metrics, enqueue, jobs_for, run_worker, Sessions, SlackApi,
-    SlackChannels, SlackJob, QUEUE_CAPACITY,
+    SlackJob, QUEUE_CAPACITY,
 };
 use chronicle_lib::nordic::slack::{SlackClient, DEFAULT_API_URL};
 use clap::Parser;
@@ -242,20 +242,18 @@ async fn run(args: Args) -> anyhow::Result<()> {
         }
     }
     let slack_tx = match token {
-        Some(token) if channels.any() => {
+        Some(token) => {
             let client = SlackClient::with_api_url(token, &args.slack_api_url)?;
             let (jobs_tx, jobs_rx) = mpsc::channel::<SlackJob>(QUEUE_CAPACITY);
             tokio::spawn(run_worker(
                 pool.clone(),
                 Box::new(client) as Box<dyn SlackApi>,
-                channels.clone(),
                 jobs_rx,
             ));
             Some(jobs_tx)
         }
         _ => None,
     };
-    let modes = channels.modes();
     let mut sessions = load_sessions(signal.as_ref(), &Sessions::default()).await;
 
     let (tx, mut rx) = mpsc::channel(256);
@@ -279,7 +277,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 let Some(msg) = received else { return Ok(()) };
                 let check = signal.as_ref().map(|s| s as &dyn IngestedCheck);
                 let (counters, dispositions) = handle_message_full(
-                    &msg.text, msg.received_at, &companies, &mut seen, check, modes,
+                    &msg.text, msg.received_at, &companies, &mut seen, check, &channels,
                     emitter.as_ref(),
                 )
                 .await;

@@ -3,7 +3,7 @@
 //! worker that keeps all of it off the WebSocket loop.
 
 use super::classify::{strip_issuer_prefix, ReportKind};
-use super::live::{LiveItem, SlackMode, SlackModes};
+use super::live::{LiveItem, SlackChannels};
 use super::slack::{
     claim, format_announcement_message, format_report_message, mark_failed, mark_posted,
     posted_ref, prefer_replacement, AnnouncementNotice, Claim, ClaimRequest, NoticeKind, PostedRef,
@@ -148,58 +148,12 @@ impl SlackApi for SlackClient {
     }
 }
 
-/// The channel IDs of the two kinds of post; either may be unset (that kind is off).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SlackChannels {
-    /// Where results releases go.
-    pub reports: Option<String>,
-    /// Where company announcements go.
-    pub announcements: Option<String>,
-}
-
-impl SlackChannels {
-    /// Channels from configuration; empty strings count as unset.
-    pub fn new(reports: Option<String>, announcements: Option<String>) -> Self {
-        let set = |c: Option<String>| c.filter(|c| !c.is_empty());
-        Self {
-            reports: set(reports),
-            announcements: set(announcements),
-        }
-    }
-
-    /// The channel for `kind`.
-    pub fn for_kind(&self, kind: NoticeKind) -> Option<&str> {
-        match kind {
-            NoticeKind::Report => self.reports.as_deref(),
-            NoticeKind::Announcement => self.announcements.as_deref(),
-        }
-    }
-
-    /// True if at least one kind is posted.
-    pub fn any(&self) -> bool {
-        self.reports.is_some() || self.announcements.is_some()
-    }
-
-    /// The per-kind switches for the log lines.
-    pub fn modes(&self) -> SlackModes {
-        let mode = |c: &Option<String>| {
-            if c.is_some() {
-                SlackMode::Enabled
-            } else {
-                SlackMode::Disabled
-            }
-        };
-        SlackModes {
-            reports: mode(&self.reports),
-            announcements: mode(&self.announcements),
-        }
-    }
-}
-
 /// One post to deliver: a results release or a company announcement.
 #[derive(Debug, Clone)]
 pub struct SlackJob {
     pub kind: NoticeKind,
+    /// The channel ID of this kind, set when the job is made.
+    pub channel: String,
     pub item: LiveItem,
     /// Computed when the item arrived; `None` when unknown.
     pub session: Option<&'static str>,
@@ -214,8 +168,6 @@ pub enum Outcome {
     /// Another poster holds a fresh claim; nothing to do.
     InFlight,
     Failed,
-    /// No channel is configured for the job's kind; nothing was claimed.
-    Disabled,
 }
 
 impl Outcome {
@@ -227,7 +179,6 @@ impl Outcome {
             Outcome::SkippedAlreadyPosted => "skipped_already_posted",
             Outcome::InFlight => "in_flight",
             Outcome::Failed => "failed",
-            Outcome::Disabled => "disabled",
         }
     }
 }
@@ -286,15 +237,7 @@ pub fn build_announcement_notice(job: &SlackJob) -> Option<AnnouncementNotice> {
 
 /// Claims, posts and records one job on the channel of its kind (or upgrades a
 /// posted twin to English).
-pub async fn deliver(
-    pool: &PgPool,
-    api: &dyn SlackApi,
-    channels: &SlackChannels,
-    job: &SlackJob,
-) -> Outcome {
-    let Some(channel) = channels.for_kind(job.kind) else {
-        return Outcome::Disabled;
-    };
+pub async fn deliver(pool: &PgPool, api: &dyn SlackApi, job: &SlackJob) -> Outcome {
     let (request, message, news_id, lang) = match job.kind {
         NoticeKind::Report => {
             let Some(n) = build_notice(job) else {
@@ -322,7 +265,7 @@ pub async fn deliver(
     deliver_message(
         pool,
         api,
-        channel,
+        &job.channel,
         &request,
         &message,
         news_id,
@@ -416,19 +359,14 @@ pub fn describe_metrics() {
 }
 
 /// Delivers jobs from `rx` until the channel closes. Logs one `slack_post` event per job.
-pub async fn run_worker(
-    pool: PgPool,
-    api: Box<dyn SlackApi>,
-    channels: SlackChannels,
-    mut rx: mpsc::Receiver<SlackJob>,
-) {
+pub async fn run_worker(pool: PgPool, api: Box<dyn SlackApi>, mut rx: mpsc::Receiver<SlackJob>) {
     while let Some(job) = rx.recv().await {
-        let outcome = deliver(&pool, api.as_ref(), &channels, &job).await;
+        let outcome = deliver(&pool, api.as_ref(), &job).await;
         match outcome {
             Outcome::Posted => count(job.kind, "posted"),
             Outcome::Updated => count(job.kind, "updated"),
             Outcome::Failed => count(job.kind, "failed"),
-            Outcome::SkippedAlreadyPosted | Outcome::InFlight | Outcome::Disabled => {}
+            Outcome::SkippedAlreadyPosted | Outcome::InFlight => {}
         }
         info!(
             event = "slack_post",
@@ -465,10 +403,11 @@ pub fn jobs_for(
             } else {
                 return None;
             };
-            channels.for_kind(kind)?;
+            let channel = channels.for_kind(kind)?.to_string();
             let session = sessions.label(&item.exchange_mic, item.publish_date);
             Some(SlackJob {
                 kind,
+                channel,
                 item: *item,
                 session,
             })
@@ -577,6 +516,7 @@ mod tests {
     fn job(id: u128, lang: &str) -> SlackJob {
         SlackJob {
             kind: NoticeKind::Report,
+            channel: "CR".into(),
             item: item(id, lang, Some("interim")),
             session: Some("pre-open"),
         }
@@ -590,22 +530,16 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_report_is_posted_once_with_the_expected_text(pool: PgPool) {
         let api = FakeSlack::default();
-        assert_eq!(
-            deliver(&pool, &api, &channels(), &job(1, "en")).await,
-            Outcome::Posted
-        );
+        assert_eq!(deliver(&pool, &api, &job(1, "en")).await, Outcome::Posted);
         assert_eq!(api.calls(), vec![format!("post CR: {MESSAGE}")]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn the_same_item_twice_posts_once(pool: PgPool) {
         let api = FakeSlack::default();
+        assert_eq!(deliver(&pool, &api, &job(1, "en")).await, Outcome::Posted);
         assert_eq!(
-            deliver(&pool, &api, &channels(), &job(1, "en")).await,
-            Outcome::Posted
-        );
-        assert_eq!(
-            deliver(&pool, &api, &channels(), &job(1, "en")).await,
+            deliver(&pool, &api, &job(1, "en")).await,
             Outcome::SkippedAlreadyPosted
         );
         assert_eq!(api.calls().len(), 1);
@@ -614,20 +548,14 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn swedish_then_english_posts_then_updates(pool: PgPool) {
         let api = FakeSlack::default();
-        assert_eq!(
-            deliver(&pool, &api, &channels(), &job(1, "sv")).await,
-            Outcome::Posted
-        );
-        assert_eq!(
-            deliver(&pool, &api, &channels(), &job(2, "en")).await,
-            Outcome::Updated
-        );
+        assert_eq!(deliver(&pool, &api, &job(1, "sv")).await, Outcome::Posted);
+        assert_eq!(deliver(&pool, &api, &job(2, "en")).await, Outcome::Updated);
         let calls = api.calls();
         assert_eq!(calls.len(), 2);
         assert!(calls[1].starts_with("update 1.1: "));
         // The English twin is now the stored one: a repeat changes nothing.
         assert_eq!(
-            deliver(&pool, &api, &channels(), &job(2, "en")).await,
+            deliver(&pool, &api, &job(2, "en")).await,
             Outcome::SkippedAlreadyPosted
         );
         assert_eq!(api.calls().len(), 2);
@@ -636,12 +564,9 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn english_then_swedish_posts_once_without_update(pool: PgPool) {
         let api = FakeSlack::default();
+        assert_eq!(deliver(&pool, &api, &job(1, "en")).await, Outcome::Posted);
         assert_eq!(
-            deliver(&pool, &api, &channels(), &job(1, "en")).await,
-            Outcome::Posted
-        );
-        assert_eq!(
-            deliver(&pool, &api, &channels(), &job(2, "sv")).await,
+            deliver(&pool, &api, &job(2, "sv")).await,
             Outcome::SkippedAlreadyPosted
         );
         assert_eq!(api.calls().len(), 1);
@@ -654,7 +579,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            deliver(&pool, &failing, &channels(), &job(1, "en")).await,
+            deliver(&pool, &failing, &job(1, "en")).await,
             Outcome::Failed
         );
         let (status, error): (String, Option<String>) =
@@ -681,12 +606,7 @@ mod tests {
                 self.0.update(a, m).await
             }
         }
-        let worker = tokio::spawn(run_worker(
-            pool.clone(),
-            Box::new(Shared(ok.clone())),
-            channels(),
-            rx,
-        ));
+        let worker = tokio::spawn(run_worker(pool.clone(), Box::new(Shared(ok.clone())), rx));
         let mut other = job(3, "en");
         other.item.publish_date = Utc.with_ymd_and_hms(2026, 11, 25, 6, 30, 0).unwrap();
         assert!(enqueue(&tx, other));
@@ -735,6 +655,7 @@ mod tests {
     fn announcement_job(id: u128, lang: &str) -> SlackJob {
         SlackJob {
             kind: NoticeKind::Announcement,
+            channel: "CA".into(),
             item: announcement_item(id, lang, &[":regulatory"]),
             session: Some("pre-open"),
         }
@@ -749,13 +670,10 @@ mod tests {
     async fn each_kind_goes_to_its_own_channel(pool: PgPool) {
         let api = FakeSlack::default();
         assert_eq!(
-            deliver(&pool, &api, &channels(), &announcement_job(1, "en")).await,
+            deliver(&pool, &api, &announcement_job(1, "en")).await,
             Outcome::Posted
         );
-        assert_eq!(
-            deliver(&pool, &api, &channels(), &job(2, "en")).await,
-            Outcome::Posted
-        );
+        assert_eq!(deliver(&pool, &api, &job(2, "en")).await, Outcome::Posted);
         assert_eq!(
             api.calls(),
             vec![
@@ -768,40 +686,23 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_danish_announcement_is_updated_when_the_english_twin_arrives(pool: PgPool) {
         let api = FakeSlack::default();
-        let ch = channels();
         assert_eq!(
-            deliver(&pool, &api, &ch, &announcement_job(1, "da")).await,
+            deliver(&pool, &api, &announcement_job(1, "da")).await,
             Outcome::Posted
         );
         let mut en = announcement_job(2, "en");
         en.item.publish_date += chrono::Duration::seconds(25);
-        assert_eq!(deliver(&pool, &api, &ch, &en).await, Outcome::Updated);
+        assert_eq!(deliver(&pool, &api, &en).await, Outcome::Updated);
         let calls = api.calls();
         assert_eq!(calls.len(), 2);
         assert!(calls[1].starts_with("update 1.1: "));
         let mut da = announcement_job(3, "da");
         da.item.publish_date += chrono::Duration::seconds(30);
         assert_eq!(
-            deliver(&pool, &api, &ch, &da).await,
+            deliver(&pool, &api, &da).await,
             Outcome::SkippedAlreadyPosted
         );
         assert_eq!(api.calls().len(), 2);
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn a_kind_without_a_channel_is_not_claimed(pool: PgPool) {
-        let api = FakeSlack::default();
-        let only_reports = SlackChannels::new(Some("CR".into()), None);
-        assert_eq!(
-            deliver(&pool, &api, &only_reports, &announcement_job(1, "en")).await,
-            Outcome::Disabled
-        );
-        assert!(api.calls().is_empty());
-        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_report_posts")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(rows, 0);
     }
 
     #[test]
@@ -867,12 +768,7 @@ mod tests {
                 self.0.update(a, m).await
             }
         }
-        let worker = tokio::spawn(run_worker(
-            pool.clone(),
-            Box::new(Shared(api.clone())),
-            channels(),
-            rx,
-        ));
+        let worker = tokio::spawn(run_worker(pool.clone(), Box::new(Shared(api.clone())), rx));
         assert!(enqueue(&tx, announcement_job(1, "da")));
         assert!(enqueue(&tx, job(2, "en")));
         drop(tx);
