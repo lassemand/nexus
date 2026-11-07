@@ -19,6 +19,7 @@ use prost::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
 use std::time::Duration;
+use tracing::warn;
 
 /// Default topic signal consumes special events from.
 pub const SPECIAL_EVENTS_TOPIC: &str = "special.events";
@@ -119,6 +120,7 @@ pub fn release_event(
         is_correction: c.is_correction,
         company_name: company.name.clone().unwrap_or_default(),
         calendar: None,
+        text: String::new(),
     })
 }
 
@@ -208,6 +210,51 @@ pub fn calendar_release_event(
     }
 }
 
+/// Largest `text` of a `company_announcement`, in bytes (256 KiB), so one
+/// message stays well under Kafka's default 1 MB limit.
+pub const MAX_ANNOUNCEMENT_TEXT_BYTES: usize = 262_144;
+
+/// `text` trimmed and cut to at most `max` bytes on a char boundary.
+fn bounded_text(text: &str, max: usize) -> &str {
+    let text = text.trim();
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// One `company_announcement` event for `item` of `company`: one event per
+/// language version, `text` trimmed and cut to [`MAX_ANNOUNCEMENT_TEXT_BYTES`]
+/// (a cut is logged at `warn`). Shared by the poll and `nordic-live`; signal
+/// dedupes by `(source, source_id)`.
+pub fn announcement_event(company: &Company, item: &NewsItem) -> SpecialEvent {
+    let full = item.text.as_deref().unwrap_or_default().trim();
+    let text = bounded_text(full, MAX_ANNOUNCEMENT_TEXT_BYTES);
+    if text.len() < full.len() {
+        warn!(ticker = %company.ticker, news_id = %item.news_id, original_len = full.len(),
+              "announcement text truncated");
+    }
+    SpecialEvent {
+        ticker: company.ticker.clone(),
+        exchange_mic: company.exchange_mic.clone(),
+        event_type: "company_announcement".into(),
+        occurred_at_unix_secs: item.published_at.timestamp(),
+        description: item.title.clone(),
+        source: SOURCE_MFN.into(),
+        source_id: item.news_id.to_string(),
+        url: item.url.clone().unwrap_or_default(),
+        lang: item.lang.clone().unwrap_or_default(),
+        tags: item.tags.clone(),
+        company_name: company.name.clone().unwrap_or_default(),
+        text: text.to_string(),
+        ..Default::default()
+    }
+}
+
 /// Hash of a calendar's entries for change detection: FNV-1a 64 over a sorted,
 /// field-separated serialisation, so it is stable across runs, entry order and
 /// Rust versions. `fetched_at` is not part of it.
@@ -288,6 +335,55 @@ mod tests {
             kind: ReportKind::Interim,
             fiscal_period: None,
         }
+    }
+
+    #[test]
+    fn announcement_event_maps_every_field() {
+        let mut i = item();
+        i.text = Some("  Body text \n".into());
+        i.tags = vec![":regulatory".into()];
+        i.url = Some("https://mfn.se/x".into());
+        let e = announcement_event(&company(), &i);
+        assert_eq!(e.ticker, company().ticker);
+        assert_eq!(e.exchange_mic, company().exchange_mic);
+        assert_eq!(e.company_name, company().name.unwrap_or_default());
+        assert_eq!(e.event_type, "company_announcement");
+        assert_eq!(e.occurred_at_unix_secs, i.published_at.timestamp());
+        assert_eq!(e.description, i.title);
+        assert_eq!(e.source, "mfn");
+        assert_eq!(e.source_id, i.news_id.to_string());
+        assert_eq!(e.url, "https://mfn.se/x");
+        assert_eq!(e.lang, i.lang.clone().unwrap_or_default());
+        assert_eq!(e.tags, vec![":regulatory".to_string()]);
+        assert_eq!(e.report_kind, "");
+        assert_eq!(e.text, "Body text");
+        assert!(e.calendar.is_none());
+    }
+
+    #[test]
+    fn announcement_without_text_has_an_empty_text() {
+        let mut i = item();
+        i.text = None;
+        assert_eq!(announcement_event(&company(), &i).text, "");
+        i.text = Some("   ".into());
+        assert_eq!(announcement_event(&company(), &i).text, "");
+    }
+
+    #[test]
+    fn long_announcement_text_is_cut_on_a_char_boundary() {
+        let mut i = item();
+        let mut s = "a".repeat(MAX_ANNOUNCEMENT_TEXT_BYTES - 1);
+        s.push_str("øøø");
+        i.text = Some(s);
+        let e = announcement_event(&company(), &i);
+        assert_eq!(e.text.len(), MAX_ANNOUNCEMENT_TEXT_BYTES - 1);
+        assert!(e.text.chars().all(|c| c == 'a'));
+        let mut s = "a".repeat(MAX_ANNOUNCEMENT_TEXT_BYTES - 2);
+        s.push_str("øøø");
+        i.text = Some(s);
+        let e = announcement_event(&company(), &i);
+        assert_eq!(e.text.len(), MAX_ANNOUNCEMENT_TEXT_BYTES);
+        assert!(e.text.ends_with('ø'));
     }
 
     #[test]

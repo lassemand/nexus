@@ -326,10 +326,14 @@ async fn metso_publishes_exactly_its_reports_including_the_earlier_names() {
 
     let summary = run(&db, &server, &sink).await;
     assert!(summary.is_success(), "{summary:?}");
-    let sent = sink.sent.lock().unwrap().clone();
-    assert!(sent
+    let all = sink.sent.lock().unwrap().clone();
+    assert!(all
         .iter()
         .all(|(k, e)| k == "METSO:XHEL" && e.exchange_mic == "XHEL"));
+    let sent: Vec<_> = all
+        .into_iter()
+        .filter(|(_, e)| e.event_type != "company_announcement")
+        .collect();
     let periods: BTreeSet<(String, String, String)> = sent
         .iter()
         .map(|(_, e)| {
