@@ -48,15 +48,18 @@ pub struct ReportNotice {
 }
 
 impl ReportNotice {
-    /// Twin-stable identity: same company, instant and report kind.
-    pub fn report_key(&self) -> String {
-        format!(
-            "{}:{}:{}:{}",
-            self.ticker,
-            self.exchange_mic,
-            self.published_at.timestamp(),
-            self.report_kind.as_str()
-        )
+    /// The claim request for this report.
+    pub fn claim_request(&self) -> ClaimRequest {
+        ClaimRequest {
+            kind: NoticeKind::Report,
+            ticker: self.ticker.clone(),
+            exchange_mic: self.exchange_mic.clone(),
+            published_at: self.published_at,
+            news_id: self.news_id,
+            lang: self.lang.clone(),
+            report_kind: Some(self.report_kind.as_str().to_string()),
+            tags: Vec::new(),
+        }
     }
 }
 
@@ -144,80 +147,157 @@ impl Poster {
     }
 }
 
-/// Outcome of [`claim`].
+/// Window in which two items of one company count as language twins of one release.
+/// Equal to `TWIN_WINDOW_SECS` in `signal/src/reports.rs`; chronicle does not depend on signal.
+pub const TWIN_WINDOW_SECS: i32 = 120;
+
+/// What is being posted; decides the twin rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// A periodic report: twins share the report kind.
+    Report,
+    /// A company announcement: twins share the tag set and differ in language.
+    Announcement,
+}
+
+impl NoticeKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            NoticeKind::Report => "report",
+            NoticeKind::Announcement => "announcement",
+        }
+    }
+}
+
+/// Everything [`claim`] needs to find or create the claim row of one release.
+#[derive(Debug, Clone)]
+pub struct ClaimRequest {
+    pub kind: NoticeKind,
+    pub ticker: String,
+    pub exchange_mic: String,
+    pub published_at: DateTime<Utc>,
+    pub news_id: Uuid,
+    pub lang: Option<String>,
+    /// Report kind, for [`NoticeKind::Report`].
+    pub report_kind: Option<String>,
+    /// Tags, for [`NoticeKind::Announcement`]; compared as a set.
+    pub tags: Vec<String>,
+}
+
+/// Outcome of [`claim`]. `key` is the claim row's key, for [`mark_posted`],
+/// [`mark_failed`] and [`posted_ref`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Claim {
     /// The caller owns the post and must call [`mark_posted`] or [`mark_failed`].
-    Acquired,
+    Acquired { key: String },
     /// Already posted; see [`posted_ref`] for a possible English upgrade.
-    AlreadyPosted,
+    AlreadyPosted { key: String },
     /// Someone else holds a fresh claim, or the retry budget is spent.
     InFlight,
 }
 
-/// Claims the right to post a report. Exactly one concurrent caller gets
-/// [`Claim::Acquired`]; a `claimed`/`failed` row older than ten minutes is taken over.
+/// Claims the right to post a release. Language twins within [`TWIN_WINDOW_SECS`]
+/// share one row. Exactly one concurrent caller gets [`Claim::Acquired`]; a
+/// `claimed`/`failed` row older than ten minutes is taken over.
 pub async fn claim(
     pool: &PgPool,
-    notice: &ReportNotice,
+    req: &ClaimRequest,
     poster: Poster,
 ) -> Result<Claim, sqlx::Error> {
-    let key = notice.report_key();
+    let mut tags = req.tags.clone();
+    tags.sort();
+    tags.dedup();
     let mut tx = pool.begin().await?;
 
-    let inserted = sqlx::query(
-        "INSERT INTO slack_report_posts
-            (report_key, ticker, exchange_mic, news_id, lang, status, claimed_at, poster, attempts)
-         VALUES ($1, $2, $3, $4, $5, 'claimed', now(), $6, 1)
-         ON CONFLICT (report_key) DO NOTHING",
-    )
-    .bind(&key)
-    .bind(&notice.ticker)
-    .bind(&notice.exchange_mic)
-    .bind(notice.news_id)
-    .bind(&notice.lang)
-    .bind(poster.as_str())
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    if inserted == 1 {
-        tx.commit().await?;
-        return Ok(Claim::Acquired);
-    }
-
-    let taken = sqlx::query(
-        "UPDATE slack_report_posts
-            SET status = 'claimed', claimed_at = now(), poster = $2, news_id = $3,
-                lang = $4, attempts = attempts + 1
-          WHERE report_key = $1 AND status <> 'posted' AND attempts < $5
-            AND claimed_at < now() - make_interval(mins => $6)",
-    )
-    .bind(&key)
-    .bind(poster.as_str())
-    .bind(notice.news_id)
-    .bind(&notice.lang)
-    .bind(MAX_ATTEMPTS)
-    .bind(STALE_MINUTES)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    if taken == 1 {
-        tx.commit().await?;
-        return Ok(Claim::Acquired);
-    }
-
-    let row = sqlx::query("SELECT status, attempts FROM slack_report_posts WHERE report_key = $1")
-        .bind(&key)
-        .fetch_one(&mut *tx)
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("{}:{}", req.ticker, req.exchange_mic))
+        .execute(&mut *tx)
         .await?;
-    tx.commit().await?;
+
+    let twin = sqlx::query(
+        "SELECT report_key, status, attempts,
+                claimed_at < now() - make_interval(mins => $9) AS stale
+           FROM slack_report_posts
+          WHERE ticker = $1 AND exchange_mic = $2 AND kind = $3
+            AND abs(extract(epoch FROM published_at - $4)::float8) <= $5::float8
+            AND (news_id = $6
+                 OR ($3 = 'report' AND report_kind IS NOT DISTINCT FROM $7)
+                 OR ($3 = 'announcement' AND tags = $8
+                     AND lang IS NOT NULL AND $10::text IS NOT NULL AND lang <> $10))
+          ORDER BY abs(extract(epoch FROM published_at - $4)::float8), claimed_at
+          LIMIT 1
+          FOR UPDATE",
+    )
+    .bind(&req.ticker)
+    .bind(&req.exchange_mic)
+    .bind(req.kind.as_str())
+    .bind(req.published_at)
+    .bind(f64::from(TWIN_WINDOW_SECS))
+    .bind(req.news_id)
+    .bind(&req.report_kind)
+    .bind(&tags)
+    .bind(STALE_MINUTES)
+    .bind(&req.lang)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some(row) = twin else {
+        let key = req.news_id.to_string();
+        let inserted = sqlx::query(
+            "INSERT INTO slack_report_posts
+                (report_key, ticker, exchange_mic, news_id, lang, status, claimed_at, poster,
+                 attempts, kind, published_at, report_kind, tags)
+             VALUES ($1, $2, $3, $4, $5, 'claimed', now(), $6, 1, $7, $8, $9, $10)
+             ON CONFLICT (report_key) DO NOTHING",
+        )
+        .bind(&key)
+        .bind(&req.ticker)
+        .bind(&req.exchange_mic)
+        .bind(req.news_id)
+        .bind(&req.lang)
+        .bind(poster.as_str())
+        .bind(req.kind.as_str())
+        .bind(req.published_at)
+        .bind(&req.report_kind)
+        .bind(&tags)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        return Ok(if inserted == 1 {
+            Claim::Acquired { key }
+        } else {
+            Claim::InFlight
+        });
+    };
+
+    let key: String = row.get("report_key");
     let status: String = row.get("status");
     let attempts: i32 = row.get("attempts");
+    let stale: bool = row.get("stale");
     if status == "posted" {
-        return Ok(Claim::AlreadyPosted);
+        tx.commit().await?;
+        return Ok(Claim::AlreadyPosted { key });
     }
+    if stale && attempts < MAX_ATTEMPTS {
+        sqlx::query(
+            "UPDATE slack_report_posts
+                SET status = 'claimed', claimed_at = now(), poster = $2, news_id = $3,
+                    lang = $4, attempts = attempts + 1
+              WHERE report_key = $1",
+        )
+        .bind(&key)
+        .bind(poster.as_str())
+        .bind(req.news_id)
+        .bind(&req.lang)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(Claim::Acquired { key });
+    }
+    tx.commit().await?;
     if attempts >= MAX_ATTEMPTS {
-        error!(report_key = %key, attempts, "slack report post abandoned after repeated failures");
+        error!(report_key = %key, attempts, "slack post abandoned after repeated failures");
     }
     Ok(Claim::InFlight)
 }
@@ -550,16 +630,6 @@ mod tests {
     }
 
     #[test]
-    fn report_key_is_twin_stable() {
-        let mut a = notice();
-        let mut b = notice();
-        a.lang = Some("sv".into());
-        b.headline = "Delårsrapport".into();
-        assert_eq!(a.report_key(), b.report_key());
-        assert_eq!(a.report_key(), "FFARMS:XCSE:1795501800:interim");
-    }
-
-    #[test]
     fn replacement_truth_table() {
         let langs = [Some("sv"), Some("da"), Some("fi"), Some("en"), None];
         for posted in langs {
@@ -574,11 +644,52 @@ mod tests {
         }
     }
 
+    fn acquired(c: Claim) -> String {
+        match c {
+            Claim::Acquired { key } => key,
+            other => panic!("expected Acquired, got {other:?}"),
+        }
+    }
+
+    fn req(kind: NoticeKind, secs: i64, id: u128, lang: &str) -> ClaimRequest {
+        ClaimRequest {
+            kind,
+            ticker: "FFARMS".into(),
+            exchange_mic: "XCSE".into(),
+            published_at: Utc.with_ymd_and_hms(2026, 11, 24, 6, 30, 0).unwrap()
+                + chrono::Duration::seconds(secs),
+            news_id: Uuid::from_u128(id),
+            lang: Some(lang.into()),
+            report_kind: (kind == NoticeKind::Report).then(|| "interim".to_string()),
+            tags: if kind == NoticeKind::Announcement {
+                vec!["a".into(), "b".into()]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    fn report(secs: i64, id: u128, lang: &str) -> ClaimRequest {
+        req(NoticeKind::Report, secs, id, lang)
+    }
+
+    fn announcement(secs: i64, id: u128, lang: &str) -> ClaimRequest {
+        req(NoticeKind::Announcement, secs, id, lang)
+    }
+
+    async fn post(pool: &PgPool, r: &ClaimRequest) -> sqlx::Result<Claim> {
+        let c = claim(pool, r, Poster::Live).await?;
+        if let Claim::Acquired { key } = &c {
+            mark_posted(pool, key, "C1", "1.2", r.news_id, r.lang.as_deref()).await?;
+        }
+        Ok(c)
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn claim_lifecycle(pool: PgPool) -> sqlx::Result<()> {
-        let n = notice();
-        let key = n.report_key();
-        assert_eq!(claim(&pool, &n, Poster::Live).await?, Claim::Acquired);
+        let n = report(0, 1, "en");
+        let key = acquired(claim(&pool, &n, Poster::Live).await?);
+        assert_eq!(key, n.news_id.to_string());
         assert_eq!(claim(&pool, &n, Poster::Poll).await?, Claim::InFlight);
 
         mark_failed(&pool, &key, &"x".repeat(900)).await?;
@@ -591,14 +702,20 @@ mod tests {
         sqlx::query("UPDATE slack_report_posts SET claimed_at = now() - interval '11 minutes'")
             .execute(&pool)
             .await?;
-        assert_eq!(claim(&pool, &n, Poster::Poll).await?, Claim::Acquired);
+        assert_eq!(
+            claim(&pool, &n, Poster::Poll).await?,
+            Claim::Acquired { key: key.clone() }
+        );
         let attempts: i32 = sqlx::query_scalar("SELECT attempts FROM slack_report_posts")
             .fetch_one(&pool)
             .await?;
         assert_eq!(attempts, 2);
 
         mark_posted(&pool, &key, "C1", "1.2", n.news_id, Some("sv")).await?;
-        assert_eq!(claim(&pool, &n, Poster::Live).await?, Claim::AlreadyPosted);
+        assert_eq!(
+            claim(&pool, &n, Poster::Live).await?,
+            Claim::AlreadyPosted { key: key.clone() }
+        );
         let p = posted_ref(&pool, &key).await?.unwrap();
         assert_eq!(
             (p.channel.as_str(), p.ts.as_str(), p.lang.as_deref()),
@@ -609,8 +726,8 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn stale_claim_stops_after_five_attempts(pool: PgPool) -> sqlx::Result<()> {
-        let n = notice();
-        assert_eq!(claim(&pool, &n, Poster::Live).await?, Claim::Acquired);
+        let n = report(0, 1, "en");
+        acquired(claim(&pool, &n, Poster::Live).await?);
         sqlx::query("UPDATE slack_report_posts SET attempts = 5, status = 'failed', claimed_at = now() - interval '1 hour'")
             .execute(&pool)
             .await?;
@@ -620,19 +737,159 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn concurrent_claims_yield_one_winner(pool: PgPool) -> sqlx::Result<()> {
-        let n = notice();
         let (a, b) = tokio::join!(
             tokio::spawn({
-                let (p, n) = (pool.clone(), n.clone());
+                let (p, n) = (pool.clone(), report(0, 1, "sv"));
                 async move { claim(&p, &n, Poster::Live).await }
             }),
             tokio::spawn({
-                let (p, n) = (pool.clone(), n.clone());
-                async move { claim(&p, &n, Poster::Poll).await }
+                let (p, n) = (pool.clone(), report(25, 2, "en"));
+                async move { claim(&p, &n, Poster::Live).await }
             })
         );
         let got = [a.unwrap()?, b.unwrap()?];
-        assert_eq!(got.iter().filter(|c| **c == Claim::Acquired).count(), 1);
+        let won = got
+            .iter()
+            .filter(|c| matches!(c, Claim::Acquired { .. }))
+            .count();
+        assert_eq!(won, 1);
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM slack_report_posts")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(rows, 1);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn report_sv_then_en_within_window_updates(pool: PgPool) -> sqlx::Result<()> {
+        let sv = report(0, 1, "sv");
+        let key = acquired(post(&pool, &sv).await?);
+        match claim(&pool, &report(25, 2, "en"), Poster::Live).await? {
+            Claim::AlreadyPosted { key: k } => assert_eq!(k, key),
+            other => panic!("expected AlreadyPosted, got {other:?}"),
+        }
+        let p = posted_ref(&pool, &key).await?.unwrap();
+        assert!(prefer_replacement(p.lang.as_deref(), Some("en")));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn report_en_then_sv_does_not_update(pool: PgPool) -> sqlx::Result<()> {
+        let key = acquired(post(&pool, &report(0, 1, "en")).await?);
+        match claim(&pool, &report(25, 2, "sv"), Poster::Live).await? {
+            Claim::AlreadyPosted { key: k } => assert_eq!(k, key),
+            other => panic!("expected AlreadyPosted, got {other:?}"),
+        }
+        let p = posted_ref(&pool, &key).await?.unwrap();
+        assert!(!prefer_replacement(p.lang.as_deref(), Some("sv")));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn different_report_kinds_are_two_posts(pool: PgPool) -> sqlx::Result<()> {
+        acquired(post(&pool, &report(0, 1, "sv")).await?);
+        let mut annual = report(10, 2, "sv");
+        annual.report_kind = Some("annual".into());
+        acquired(post(&pool, &annual).await?);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn twins_121_seconds_apart_are_two_posts(pool: PgPool) -> sqlx::Result<()> {
+        acquired(post(&pool, &report(0, 1, "sv")).await?);
+        acquired(post(&pool, &report(121, 2, "en")).await?);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn twins_120_seconds_apart_match(pool: PgPool) -> sqlx::Result<()> {
+        acquired(post(&pool, &report(0, 1, "sv")).await?);
+        assert!(matches!(
+            claim(&pool, &report(120, 2, "en"), Poster::Live).await?,
+            Claim::AlreadyPosted { .. }
+        ));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn announcement_twins_match_and_others_do_not(pool: PgPool) -> sqlx::Result<()> {
+        let key = acquired(post(&pool, &announcement(0, 1, "da")).await?);
+        match claim(&pool, &announcement(25, 2, "en"), Poster::Live).await? {
+            Claim::AlreadyPosted { key: k } => assert_eq!(k, key),
+            other => panic!("expected AlreadyPosted, got {other:?}"),
+        }
+
+        acquired(post(&pool, &announcement(1000, 3, "en")).await?);
+        acquired(post(&pool, &announcement(1000, 4, "en")).await?);
+
+        acquired(post(&pool, &announcement(2000, 5, "da")).await?);
+        let mut other_tags = announcement(2010, 6, "en");
+        other_tags.tags = vec!["c".into()];
+        acquired(post(&pool, &other_tags).await?);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn announcement_tag_order_is_irrelevant(pool: PgPool) -> sqlx::Result<()> {
+        acquired(post(&pool, &announcement(0, 1, "da")).await?);
+        let mut en = announcement(5, 2, "en");
+        en.tags = vec!["b".into(), "a".into()];
+        assert!(matches!(
+            claim(&pool, &en, Poster::Live).await?,
+            Claim::AlreadyPosted { .. }
+        ));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn report_and_announcement_are_two_posts(pool: PgPool) -> sqlx::Result<()> {
+        acquired(post(&pool, &report(0, 1, "en")).await?);
+        acquired(post(&pool, &announcement(0, 2, "en")).await?);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn failed_twin_is_retaken_on_the_same_row(pool: PgPool) -> sqlx::Result<()> {
+        let key = acquired(claim(&pool, &report(0, 1, "sv"), Poster::Live).await?);
+        mark_failed(&pool, &key, "boom").await?;
+        sqlx::query("UPDATE slack_report_posts SET claimed_at = now() - interval '11 minutes'")
+            .execute(&pool)
+            .await?;
+        let again = acquired(claim(&pool, &report(25, 2, "en"), Poster::Live).await?);
+        assert_eq!(again, key);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn old_format_rows_are_backfilled_and_matched(pool: PgPool) -> sqlx::Result<()> {
+        sqlx::query("ALTER TABLE slack_report_posts DROP COLUMN kind, DROP COLUMN published_at, DROP COLUMN report_kind, DROP COLUMN tags")
+            .execute(&pool)
+            .await?;
+        let t = Utc.with_ymd_and_hms(2026, 11, 24, 6, 30, 0).unwrap();
+        let old_key = format!("FFARMS:XCSE:{}:interim", t.timestamp());
+        sqlx::query(
+            "INSERT INTO slack_report_posts
+                (report_key, ticker, exchange_mic, news_id, lang, status, claimed_at, poster, attempts)
+             VALUES ($1, 'FFARMS', 'XCSE', $2, 'sv', 'posted', now(), 'live', 1)",
+        )
+        .bind(&old_key)
+        .bind(Uuid::from_u128(9))
+        .execute(&pool)
+        .await?;
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261106000000_slack_report_posts_twin_matching.sql"
+        ))
+        .execute(&pool)
+        .await?;
+        let (published, kind): (DateTime<Utc>, String) =
+            sqlx::query_as("SELECT published_at, report_kind FROM slack_report_posts")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!((published, kind.as_str()), (t, "interim"));
+        match claim(&pool, &report(25, 2, "en"), Poster::Live).await? {
+            Claim::AlreadyPosted { key } => assert_eq!(key, old_key),
+            other => panic!("expected AlreadyPosted, got {other:?}"),
+        }
         Ok(())
     }
 

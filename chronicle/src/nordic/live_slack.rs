@@ -213,15 +213,14 @@ pub async fn deliver(pool: &PgPool, api: &dyn SlackApi, job: &SlackJob) -> Outco
     let Some(notice) = build_notice(job) else {
         return Outcome::SkippedAlreadyPosted;
     };
-    let key = notice.report_key();
     let message = format_report_message(&notice);
-    match claim(pool, &notice, Poster::Live).await {
+    match claim(pool, &notice.claim_request(), Poster::Live).await {
         Err(e) => {
-            error!(report_key = %key, error = %e, "slack claim failed");
+            error!(news_id = %notice.news_id, error = %e, "slack claim failed");
             Outcome::Failed
         }
         Ok(Claim::InFlight) => Outcome::InFlight,
-        Ok(Claim::Acquired) => match api.post(&message).await {
+        Ok(Claim::Acquired { key }) => match api.post(&message).await {
             Ok(posted) => {
                 if let Err(e) = mark_posted(
                     pool,
@@ -245,7 +244,7 @@ pub async fn deliver(pool: &PgPool, api: &dyn SlackApi, job: &SlackJob) -> Outco
                 Outcome::Failed
             }
         },
-        Ok(Claim::AlreadyPosted) => {
+        Ok(Claim::AlreadyPosted { key }) => {
             let stored = match posted_ref(pool, &key).await {
                 Ok(s) => s,
                 Err(e) => {
