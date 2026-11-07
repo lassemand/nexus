@@ -1078,6 +1078,34 @@ tests:
         alertname: NordicLiveEmitLosingEvents
         exp_alerts: []
 
+  # ── NordicLiveWatermarkLag: lag > 900 s for 10m ───────────────────────────
+  - name: NordicLiveWatermarkLag fires after 10 minutes above 15 minutes
+    input_series:
+      - series: 'nordic_live_watermark_lag_seconds{job="nordic-live"}'
+        values: '60+60x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NordicLiveWatermarkLag
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: NordicLiveWatermarkLag
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: nordic-live
+            exp_annotations:
+              summary: "nordic-live has seen no newer MFN item for 15 minutes"
+              description: "The newest publish_date nordic-live has processed is 31m 0s old. The socket may be dead, or MFN published nothing. The catch-up after each reconnect and the 22:00 poll are the fallback. See the Nordic Live dashboard."
+
+  - name: NordicLiveWatermarkLag is silent while the watermark is fresh
+    input_series:
+      - series: 'nordic_live_watermark_lag_seconds{job="nordic-live"}'
+        values: '5x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: NordicLiveWatermarkLag
+        exp_alerts: []
+
   # ── NordicLiveSlowReleases: p95 latency > 60s over 30m with traffic ───────
   - name: NordicLiveSlowReleases fires when releases arrive late
     input_series:
