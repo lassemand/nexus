@@ -3,10 +3,11 @@
 //! worker that keeps all of it off the WebSocket loop.
 
 use super::classify::{strip_issuer_prefix, ReportKind};
-use super::live::LiveItem;
+use super::live::{LiveItem, SlackChannels};
 use super::slack::{
-    claim, format_report_message, mark_failed, mark_posted, posted_ref, prefer_replacement, Claim,
-    PostedRef, Poster, ReportNotice, SlackClient, SlackError, SlackMessage,
+    claim, format_announcement_message, format_report_message, mark_failed, mark_posted,
+    posted_ref, prefer_replacement, AnnouncementNotice, Claim, ClaimRequest, NoticeKind, PostedRef,
+    Poster, ReportNotice, SlackClient, SlackError, SlackMessage,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
@@ -130,16 +131,16 @@ impl Sessions {
 /// What the worker needs of Slack. [`SlackClient`] implements it; tests use a fake.
 #[async_trait]
 pub trait SlackApi: Send + Sync {
-    /// Posts a new message.
-    async fn post(&self, msg: &SlackMessage) -> Result<PostedRef, SlackError>;
+    /// Posts a new message to `channel`.
+    async fn post(&self, channel: &str, msg: &SlackMessage) -> Result<PostedRef, SlackError>;
     /// Replaces a posted message.
     async fn update(&self, at: &PostedRef, msg: &SlackMessage) -> Result<PostedRef, SlackError>;
 }
 
 #[async_trait]
 impl SlackApi for SlackClient {
-    async fn post(&self, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
-        SlackClient::post(self, msg).await
+    async fn post(&self, channel: &str, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
+        SlackClient::post(self, channel, msg).await
     }
 
     async fn update(&self, at: &PostedRef, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
@@ -147,9 +148,12 @@ impl SlackApi for SlackClient {
     }
 }
 
-/// One report to deliver.
+/// One post to deliver: a results release or a company announcement.
 #[derive(Debug, Clone)]
 pub struct SlackJob {
+    pub kind: NoticeKind,
+    /// The channel ID of this kind, set when the job is made.
+    pub channel: String,
     pub item: LiveItem,
     /// Computed when the item arrived; `None` when unknown.
     pub session: Option<&'static str>,
@@ -208,29 +212,87 @@ pub fn build_notice(job: &SlackJob) -> Option<ReportNotice> {
     })
 }
 
-/// Claims, posts and records one report (or upgrades a posted twin to English).
+/// The notice for a job, or `None` for an item that is not a company announcement.
+pub fn build_announcement_notice(job: &SlackJob) -> Option<AnnouncementNotice> {
+    let item = &job.item;
+    item.announcement.as_ref()?;
+    let time_zone = model::exchange::timezone(&item.exchange_mic)
+        .and_then(|n| n.parse::<Tz>().ok())
+        .unwrap_or(chrono_tz::UTC);
+    Some(AnnouncementNotice {
+        company_name: item.display_name(),
+        ticker: item.ticker.clone(),
+        exchange_mic: item.exchange_mic.clone(),
+        published_at: item.publish_date,
+        time_zone,
+        session: job.session.map(str::to_string),
+        headline: strip_issuer_prefix(&item.title).to_string(),
+        mfn_url: item.url.clone(),
+        pdf_url: item.attachment_urls.first().cloned(),
+        tags: item.tags.clone(),
+        news_id: item.news_id,
+        lang: item.lang.clone(),
+    })
+}
+
+/// Claims, posts and records one job on the channel of its kind (or upgrades a
+/// posted twin to English).
 pub async fn deliver(pool: &PgPool, api: &dyn SlackApi, job: &SlackJob) -> Outcome {
-    let Some(notice) = build_notice(job) else {
-        return Outcome::SkippedAlreadyPosted;
+    let (request, message, news_id, lang) = match job.kind {
+        NoticeKind::Report => {
+            let Some(n) = build_notice(job) else {
+                return Outcome::SkippedAlreadyPosted;
+            };
+            (
+                n.claim_request(),
+                format_report_message(&n),
+                n.news_id,
+                n.lang,
+            )
+        }
+        NoticeKind::Announcement => {
+            let Some(n) = build_announcement_notice(job) else {
+                return Outcome::SkippedAlreadyPosted;
+            };
+            (
+                n.claim_request(),
+                format_announcement_message(&n),
+                n.news_id,
+                n.lang,
+            )
+        }
     };
-    let message = format_report_message(&notice);
-    match claim(pool, &notice.claim_request(), Poster::Live).await {
+    deliver_message(
+        pool,
+        api,
+        &job.channel,
+        &request,
+        &message,
+        news_id,
+        lang.as_deref(),
+    )
+    .await
+}
+
+async fn deliver_message(
+    pool: &PgPool,
+    api: &dyn SlackApi,
+    channel: &str,
+    request: &ClaimRequest,
+    message: &SlackMessage,
+    news_id: uuid::Uuid,
+    lang: Option<&str>,
+) -> Outcome {
+    match claim(pool, request, Poster::Live).await {
         Err(e) => {
-            error!(news_id = %notice.news_id, error = %e, "slack claim failed");
+            error!(news_id = %news_id, error = %e, "slack claim failed");
             Outcome::Failed
         }
         Ok(Claim::InFlight) => Outcome::InFlight,
-        Ok(Claim::Acquired { key }) => match api.post(&message).await {
+        Ok(Claim::Acquired { key }) => match api.post(channel, message).await {
             Ok(posted) => {
-                if let Err(e) = mark_posted(
-                    pool,
-                    &key,
-                    &posted.channel,
-                    &posted.ts,
-                    notice.news_id,
-                    notice.lang.as_deref(),
-                )
-                .await
+                if let Err(e) =
+                    mark_posted(pool, &key, &posted.channel, &posted.ts, news_id, lang).await
                 {
                     error!(report_key = %key, error = %e, "recording the slack post failed");
                 }
@@ -255,24 +317,17 @@ pub async fn deliver(pool: &PgPool, api: &dyn SlackApi, job: &SlackJob) -> Outco
             let Some(stored) = stored else {
                 return Outcome::SkippedAlreadyPosted;
             };
-            if !prefer_replacement(stored.lang.as_deref(), notice.lang.as_deref()) {
+            if !prefer_replacement(stored.lang.as_deref(), lang) {
                 return Outcome::SkippedAlreadyPosted;
             }
             let at = PostedRef {
                 channel: stored.channel,
                 ts: stored.ts,
             };
-            match api.update(&at, &message).await {
+            match api.update(&at, message).await {
                 Ok(_) => {
-                    if let Err(e) = mark_posted(
-                        pool,
-                        &key,
-                        &at.channel,
-                        &at.ts,
-                        notice.news_id,
-                        notice.lang.as_deref(),
-                    )
-                    .await
+                    if let Err(e) =
+                        mark_posted(pool, &key, &at.channel, &at.ts, news_id, lang).await
                     {
                         error!(report_key = %key, error = %e, "recording the slack update failed");
                     }
@@ -287,14 +342,19 @@ pub async fn deliver(pool: &PgPool, api: &dyn SlackApi, job: &SlackJob) -> Outco
     }
 }
 
-fn count(result: &'static str) {
-    counter!("nordic_slack_posts_total", "result" => result).increment(1);
+const KINDS: [NoticeKind; 2] = [NoticeKind::Report, NoticeKind::Announcement];
+
+fn count(kind: NoticeKind, result: &'static str) {
+    counter!("nordic_slack_posts_total", "kind" => kind.as_str(), "result" => result).increment(1);
 }
 
 /// Creates the `nordic_slack_posts_total` series at zero so alert rules see them.
 pub fn describe_metrics() {
-    for result in ["posted", "updated", "failed", "dropped"] {
-        counter!("nordic_slack_posts_total", "result" => result).absolute(0);
+    for kind in KINDS {
+        for result in ["posted", "updated", "failed", "dropped"] {
+            counter!("nordic_slack_posts_total", "kind" => kind.as_str(), "result" => result)
+                .absolute(0);
+        }
     }
 }
 
@@ -303,13 +363,14 @@ pub async fn run_worker(pool: PgPool, api: Box<dyn SlackApi>, mut rx: mpsc::Rece
     while let Some(job) = rx.recv().await {
         let outcome = deliver(&pool, api.as_ref(), &job).await;
         match outcome {
-            Outcome::Posted => count("posted"),
-            Outcome::Updated => count("updated"),
-            Outcome::Failed => count("failed"),
+            Outcome::Posted => count(job.kind, "posted"),
+            Outcome::Updated => count(job.kind, "updated"),
+            Outcome::Failed => count(job.kind, "failed"),
             Outcome::SkippedAlreadyPosted | Outcome::InFlight => {}
         }
         info!(
             event = "slack_post",
+            kind = job.kind.as_str(),
             slack = outcome.as_str(),
             news_id = %job.item.news_id,
             ticker = %job.item.ticker,
@@ -319,26 +380,42 @@ pub async fn run_worker(pool: PgPool, api: Box<dyn SlackApi>, mut rx: mpsc::Rece
     }
 }
 
-/// The jobs for a message's dispositions: new results releases only (not
-/// company news, corrections or items the poll already ingested).
-pub fn jobs_for(dispositions: Vec<super::live::Disposition>, sessions: &Sessions) -> Vec<SlackJob> {
+/// The jobs for a message's dispositions: a report job for each new results
+/// release when the reports channel is set, an announcement job for each new
+/// company announcement when the announcements channel is set. Corrections,
+/// calendar items and items the poll already ingested give none, and no item
+/// gives both kinds.
+pub fn jobs_for(
+    dispositions: Vec<super::live::Disposition>,
+    sessions: &Sessions,
+    channels: &SlackChannels,
+) -> Vec<SlackJob> {
     dispositions
         .into_iter()
-        .filter_map(|d| match d {
-            super::live::Disposition::New(item) if item.is_slack_candidate() => {
-                let session = sessions.label(&item.exchange_mic, item.publish_date);
-                Some(SlackJob {
-                    item: *item,
-                    session,
-                })
-            }
-            _ => None,
+        .filter_map(|d| {
+            let super::live::Disposition::New(item) = d else {
+                return None;
+            };
+            let kind = if item.is_slack_candidate() {
+                NoticeKind::Report
+            } else if item.announcement.is_some() {
+                NoticeKind::Announcement
+            } else {
+                return None;
+            };
+            let channel = channels.for_kind(kind)?.to_string();
+            let session = sessions.label(&item.exchange_mic, item.publish_date);
+            Some(SlackJob {
+                kind,
+                channel,
+                item: *item,
+                session,
+            })
         })
         .collect()
 }
 
-/// Queues a job without ever waiting. A full queue drops the post (the poll
-/// posts it later, marked late). Returns whether it was queued.
+/// Queues a job without ever waiting. A full queue drops the post . Returns whether it was queued.
 pub fn enqueue(tx: &mpsc::Sender<SlackJob>, job: SlackJob) -> bool {
     match tx.try_send(job) {
         Ok(()) => true,
@@ -346,7 +423,7 @@ pub fn enqueue(tx: &mpsc::Sender<SlackJob>, job: SlackJob) -> bool {
             let job = match e {
                 mpsc::error::TrySendError::Full(j) | mpsc::error::TrySendError::Closed(j) => j,
             };
-            count("dropped");
+            count(job.kind, "dropped");
             error!(
                 news_id = %job.item.news_id,
                 ticker = %job.item.ticker,
@@ -379,16 +456,16 @@ mod tests {
 
     #[async_trait]
     impl SlackApi for FakeSlack {
-        async fn post(&self, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
+        async fn post(&self, channel: &str, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
             self.calls
                 .lock()
                 .unwrap()
-                .push(format!("post: {}", msg.text));
+                .push(format!("post {channel}: {}", msg.text));
             if self.fail {
                 return Err(SlackError::Status(500));
             }
             Ok(PostedRef {
-                channel: "C1".into(),
+                channel: channel.into(),
                 ts: "1.1".into(),
             })
         }
@@ -432,8 +509,14 @@ mod tests {
         }
     }
 
+    fn channels() -> SlackChannels {
+        SlackChannels::new(Some("CR".into()), Some("CA".into()))
+    }
+
     fn job(id: u128, lang: &str) -> SlackJob {
         SlackJob {
+            kind: NoticeKind::Report,
+            channel: "CR".into(),
             item: item(id, lang, Some("interim")),
             session: Some("pre-open"),
         }
@@ -448,7 +531,7 @@ mod tests {
     async fn a_report_is_posted_once_with_the_expected_text(pool: PgPool) {
         let api = FakeSlack::default();
         assert_eq!(deliver(&pool, &api, &job(1, "en")).await, Outcome::Posted);
-        assert_eq!(api.calls(), vec![format!("post: {MESSAGE}")]);
+        assert_eq!(api.calls(), vec![format!("post CR: {MESSAGE}")]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -512,8 +595,8 @@ mod tests {
         struct Shared(std::sync::Arc<FakeSlack>);
         #[async_trait]
         impl SlackApi for Shared {
-            async fn post(&self, m: &SlackMessage) -> Result<PostedRef, SlackError> {
-                self.0.post(m).await
+            async fn post(&self, c: &str, m: &SlackMessage) -> Result<PostedRef, SlackError> {
+                self.0.post(c, m).await
             }
             async fn update(
                 &self,
@@ -552,10 +635,148 @@ mod tests {
             Disposition::New(Box::new(correction)),
             Disposition::AlreadyIngested(Uuid::from_u128(4)),
         ];
-        let jobs = jobs_for(ds, &sessions);
+        let jobs = jobs_for(ds, &sessions, &channels());
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].item.news_id, Uuid::from_u128(1));
         assert_eq!(jobs[0].session, None);
+    }
+
+    fn announcement_item(id: u128, lang: &str, tags: &[&str]) -> LiveItem {
+        LiveItem {
+            report_kind: None,
+            fiscal_period: None,
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            title: "FirstFarms A/S: Upgrade of guidance".into(),
+            announcement: Some(Default::default()),
+            ..item(id, lang, None)
+        }
+    }
+
+    fn announcement_job(id: u128, lang: &str) -> SlackJob {
+        SlackJob {
+            kind: NoticeKind::Announcement,
+            channel: "CA".into(),
+            item: announcement_item(id, lang, &[":regulatory"]),
+            session: Some("pre-open"),
+        }
+    }
+
+    const ANNOUNCEMENT: &str = "📣 *FirstFarms A/S (FFARMS)* · Regulatory\n\
+         24 Nov 2026 07:30 CET · pre-open\n\
+         Upgrade of guidance\n\
+         <https://mfn.se/a/x|MFN> · <https://x.test/file.pdf|PDF>";
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn each_kind_goes_to_its_own_channel(pool: PgPool) {
+        let api = FakeSlack::default();
+        assert_eq!(
+            deliver(&pool, &api, &announcement_job(1, "en")).await,
+            Outcome::Posted
+        );
+        assert_eq!(deliver(&pool, &api, &job(2, "en")).await, Outcome::Posted);
+        assert_eq!(
+            api.calls(),
+            vec![
+                format!("post CA: {ANNOUNCEMENT}"),
+                format!("post CR: {MESSAGE}")
+            ]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_danish_announcement_is_updated_when_the_english_twin_arrives(pool: PgPool) {
+        let api = FakeSlack::default();
+        assert_eq!(
+            deliver(&pool, &api, &announcement_job(1, "da")).await,
+            Outcome::Posted
+        );
+        let mut en = announcement_job(2, "en");
+        en.item.publish_date += chrono::Duration::seconds(25);
+        assert_eq!(deliver(&pool, &api, &en).await, Outcome::Updated);
+        let calls = api.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[1].starts_with("update 1.1: "));
+        let mut da = announcement_job(3, "da");
+        da.item.publish_date += chrono::Duration::seconds(30);
+        assert_eq!(
+            deliver(&pool, &api, &da).await,
+            Outcome::SkippedAlreadyPosted
+        );
+        assert_eq!(api.calls().len(), 2);
+    }
+
+    #[test]
+    fn announcements_and_reports_become_the_matching_jobs() {
+        let sessions = Sessions::default();
+        let profit_warning = announcement_item(1, "en", &[":regulatory"]);
+        let calendar_release = LiveItem {
+            announcement: None,
+            ..announcement_item(2, "en", &[])
+        };
+        let correction = LiveItem {
+            is_correction: true,
+            ..item(3, "en", Some("interim"))
+        };
+        let ds = || {
+            vec![
+                Disposition::New(Box::new(item(4, "en", Some("interim")))),
+                Disposition::New(Box::new(profit_warning.clone())),
+                Disposition::New(Box::new(calendar_release.clone())),
+                Disposition::New(Box::new(correction.clone())),
+                Disposition::AlreadyIngested(Uuid::from_u128(5)),
+            ]
+        };
+        let kinds = |c: &SlackChannels| {
+            jobs_for(ds(), &sessions, c)
+                .iter()
+                .map(|j| (j.kind, j.item.news_id))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            kinds(&channels()),
+            vec![
+                (NoticeKind::Report, Uuid::from_u128(4)),
+                (NoticeKind::Announcement, Uuid::from_u128(1))
+            ]
+        );
+        assert_eq!(
+            kinds(&SlackChannels::new(Some("CR".into()), None)),
+            vec![(NoticeKind::Report, Uuid::from_u128(4))]
+        );
+        assert_eq!(
+            kinds(&SlackChannels::new(None, Some("CA".into()))),
+            vec![(NoticeKind::Announcement, Uuid::from_u128(1))]
+        );
+        assert!(kinds(&SlackChannels::default()).is_empty());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_worker_routes_by_kind(pool: PgPool) {
+        let (tx, rx) = mpsc::channel(8);
+        let api = std::sync::Arc::new(FakeSlack::default());
+        struct Shared(std::sync::Arc<FakeSlack>);
+        #[async_trait]
+        impl SlackApi for Shared {
+            async fn post(&self, c: &str, m: &SlackMessage) -> Result<PostedRef, SlackError> {
+                self.0.post(c, m).await
+            }
+            async fn update(
+                &self,
+                a: &PostedRef,
+                m: &SlackMessage,
+            ) -> Result<PostedRef, SlackError> {
+                self.0.update(a, m).await
+            }
+        }
+        let worker = tokio::spawn(run_worker(pool.clone(), Box::new(Shared(api.clone())), rx));
+        assert!(enqueue(&tx, announcement_job(1, "da")));
+        assert!(enqueue(&tx, job(2, "en")));
+        drop(tx);
+        worker.await.unwrap();
+        let calls = api.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[0].starts_with("post CA: 📣"));
+        assert!(calls[1].starts_with("post CR: 📊"));
     }
 
     #[test]

@@ -468,7 +468,7 @@ kubectl --context orbstack -n chronicle logs deploy/nordic-live -f
   news id), checked through `SIGNAL_DATABASE_URL` (read-only). If that lookup fails, the item is logged anyway.
 - Reconnects: close code 3000 at once (debug log); anything else backs off 10 ms doubling to 30 s (reset after 60 s up);
   15 minutes without a message or ping drops the connection and reconnects.
-- Env: `MFN_WS_URL`, `DATABASE_URL`, `SIGNAL_DATABASE_URL` (optional), `SLACK_BOT_TOKEN` and `SLACK_CHANNEL` (optional, see
+- Env: `MFN_WS_URL`, `DATABASE_URL`, `SIGNAL_DATABASE_URL` (optional), `SLACK_BOT_TOKEN`, `SLACK_CHANNEL` and `SLACK_ANNOUNCEMENTS_CHANNEL` (optional, see
   below), `SLACK_API_URL`, `METRICS_PORT` (9464), `RUST_LOG`, `LOG_FORMAT` (`json` default or `text`).
 
 ### Slack notifications
@@ -476,30 +476,46 @@ kubectl --context orbstack -n chronicle logs deploy/nordic-live -f
 Each results release (`report_released`: a quarterly, half-year or annual results release) is posted to one Slack
 channel as plain facts: company and ticker, report and period, the release time in the exchange's own time zone with the
 session (`pre-open`, `intraday`, `after close`, `non-trading day`), the headline, and links to MFN and the first PDF.
-Not posted: company news, corrections, calendar notices, insider releases, and items the poll already stored.
+Not posted to the reports channel: company announcements, corrections, calendar notices, and items the poll already stored.
+
+Company announcements (`company_news` items for which `is_company_announcement` holds, the same predicate as the poll's
+`company_announcement` events, so guidance changes, M&A, management changes, AGM notices, insider releases and PR) go to a
+**separate** channel with the same bot token, worker and claim table (`kind = 'announcement'`). No item goes to both
+channels. Posting is live-only: an announcement the WebSocket missed is stored by the poll but not posted. Format:
+
+```
+📣 *<Company> (<TICKER>)* · Regulatory          "Regulatory" only when the tags contain ":regulatory"
+4 Nov 2026 08:00 CET · pre-open                  local time in the exchange's zone, plus the session
+<headline without issuer prefix>
+<MFN> · <PDF>                                     links only when known
+```
 
 **Enable it**
 
 1. Create the channel and `/invite` the Argo CD notifications Slack app (the bot token is that app's: Vault
    `nexus/argocd-notifications`, property `SLACK_TOKEN`, scope `chat:write`; posts show under the app's name).
 2. Copy the channel **ID** (channel details, bottom), not the name, into `nordicLive.slackChannel` in
-   `infra/charts/chronicle/chronicle/values.yaml`. Empty keeps Slack off (`Slack disabled` is logged once at startup).
+   `infra/charts/chronicle/chronicle/values.yaml`. Empty keeps report posting off (logged once at startup).
+3. For announcements, do the same with another channel and `nordicLive.announcementsChannel` (env
+   `SLACK_ANNOUNCEMENTS_CHANNEL`). Empty keeps announcement posting off (`Slack announcement posting disabled` at `info`,
+   and `slack = "disabled"` on the items' `company_news` lines). The two channels are independent; no new secret.
 
 **How it behaves**
 
 - Posting runs in its own task behind a queue of 256; the WebSocket loop never waits for Slack. A full queue drops the
   post (`slack queue full or closed, post dropped`, error) and nothing else is affected.
-- Exactly once: a row in chronicle's `slack_report_posts`, keyed `<ticker>:<mic>:<publish_date unix secs>:<report_kind>`,
-  is claimed before posting, so a Swedish and an English twin of one release share a post. A non-English post is replaced
+- Exactly once: a row in chronicle's `slack_report_posts` is claimed before posting. Language twins within 120 s share a
+  row: reports with the same report kind, announcements with equal tag sets and a different language (two same-language
+  announcements in one second are two releases). Reports and announcements never share a row (`kind`). A non-English post is replaced
   (`chat.update`) when the English twin arrives later; the other way round changes nothing. A claim older than 10 minutes
   is taken over; after 5 attempts a row is never retried.
 - The session is computed from the `exchanges` and `trading_holidays` tables of signal's database
   (`SIGNAL_DATABASE_URL`, reloaded every 10 minutes) with `model::session`, the same code signal uses for price
   reactions. Without that database, or for a year the calendar does not cover, the message simply has no session.
 - The company name is `companies.name` without a trailing ` (TICKER)`, else MFN's `author.name`, else the ticker.
-- Logs: the `report_released` line is unchanged and gets `slack = "queued"` (or `"disabled"`); the outcome follows in a
-  `slack_post` event with `slack` = `posted`, `updated`, `skipped_already_posted`, `in_flight` or `failed`.
-- Metrics (`:9464/metrics`, scraped by the `nordic-live` job; the full list is in `docs/guides/metrics.md`): `nordic_slack_posts_total{result="posted|updated|failed|dropped"}`
+- Logs: the `report_released` and announcement `company_news` lines get `slack = "queued"` (or `"disabled"`); the outcome
+  follows in a `slack_post` event with `kind` (`report` or `announcement`) and `slack` = `posted`, `updated`, `skipped_already_posted`, `in_flight` or `failed`.
+- Metrics (`:9464/metrics`, scraped by the `nordic-live` job; the full list is in `docs/guides/metrics.md`): `nordic_slack_posts_total{kind="report|announcement",result="posted|updated|failed|dropped"}`
   and `nordic_live_events_published_total{result="published|failed"}` (a failed publish is left to the poll).
   The alert `NordicSlackPostsFailing` fires on any failed post in 30 minutes; look for `slack post failed` in the logs for
   Slack's error code (`invalid_auth`, `missing_scope`, `channel_not_found` or `not_in_channel` mean the token, the scope or
