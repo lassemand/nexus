@@ -325,6 +325,7 @@ mod tests {
             ("trial news mis-tagged annual", tags(&[REG, REPORT, ANNUAL]), "Novo Nordisk A/S: CagriSema demonstrated superior HbA1c reduction of 1.91%-points and weight loss of 14.2% in adults with type 2 diabetes in the REIMAGINE 2 trial", None, false, false),
             ("novo share repurchase (tagged)", tags(&[REG, "sub:ca", "sub:ca:shares"]), "Novo Nordisk A/S - share repurchase programme", None, false, false),
             ("novo share repurchase, capital S", tags(&[REG, "sub:ca", "sub:ca:shares"]), "Novo Nordisk A/S \u{2013} Share repurchase programme", None, false, false),
+            ("insider report of a Danish issuer (en twin)", tags(&[REG, "sub:ci", "sub:ci:insider"]), "Reporting of transactions made by members of the Board of Directors or Executive Management or their closely associated persons", None, false, false),
             ("novo insider trading notice", tags(&[REG, "sub:ci", "sub:ci:insider"]), "Novo Nordisk A/S: Trading in Novo Nordisk shares by board members, executives and associated persons", None, false, false),
             ("novo AGM", tags(&[REG]), "Resolutions from the Annual General Meeting of Novo Nordisk A/S", None, false, false),
             ("novo voting rights", tags(&[REG]), "Novo Nordisk A/S \u{2013} Total number of voting rights and share capital in Novo Nordisk A/S as of 26 April 2024", None, false, false),
