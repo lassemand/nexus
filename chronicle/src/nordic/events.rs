@@ -55,6 +55,22 @@ pub struct KafkaSink {
 }
 
 impl KafkaSink {
+    /// Like [`KafkaSink::new`], tuned for latency and safety: `linger.ms` 5,
+    /// `acks=all`, idempotent producer. Used by `nordic-live`.
+    pub fn low_latency(brokers: &str, topic: impl Into<String>) -> anyhow::Result<Self> {
+        let producer = ClientConfig::new()
+            .set("bootstrap.servers", brokers)
+            .set("message.timeout.ms", "10000")
+            .set("linger.ms", "5")
+            .set("acks", "all")
+            .set("enable.idempotence", "true")
+            .create()?;
+        Ok(Self {
+            producer,
+            topic: topic.into(),
+        })
+    }
+
     /// Connects a producer for `topic` on `brokers`.
     pub fn new(brokers: &str, topic: impl Into<String>) -> anyhow::Result<Self> {
         let producer = ClientConfig::new()

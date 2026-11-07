@@ -427,6 +427,8 @@ mod tests {
             url: Some("https://mfn.se/a/x".into()),
             attachment_urls: vec!["https://x.test/file.pdf".into()],
             event: None,
+            announcement: None,
+            emit: None,
         }
     }
 

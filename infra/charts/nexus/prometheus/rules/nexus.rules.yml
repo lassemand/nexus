@@ -505,6 +505,19 @@ groups:
             socket may be connected but dead, or MFN changed the feed. The
             22:00 poll is the fallback.
 
+      - alert: NordicLiveEmitLosingEvents
+        expr: sum(increase(nordic_live_events_total{job="nordic-live",result=~"dropped|failed"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "nordic-live is dropping or failing to produce company announcements"
+          description: >-
+            Announcements were dropped (emit queue full) or not produced after
+            retrying (Kafka unreachable). The 22:00 nordic-reports poll
+            publishes them later. See the Nordic Live dashboard and the
+            nordic-live pod logs.
+
       - alert: NordicLiveSlowReleases
         expr: >
           histogram_quantile(0.95, sum by (le) (rate(nordic_live_release_latency_seconds_bucket{job="nordic-live"}[30m]))) > 60

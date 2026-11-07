@@ -1,4 +1,6 @@
-/// Live MFN listener (NEX-170): logs Nordic releases the moment they are published.
+/// Live MFN listener (NEX-170): logs Nordic releases the moment they are published
+/// and, with `KAFKA_BROKERS`, emits each company announcement to `special.events`
+/// within seconds (NEX-241; queue and producer in `chronicle_lib::nordic::live_emit`).
 ///
 /// Connects to MFN's unofficial WebSocket (`wss://mfn.se/all/s/nordic.json`),
 /// picks out items from companies registered with an `mfn_slug`, classifies them
@@ -14,9 +16,13 @@
 /// start). Network trouble never ends the process.
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
 use chronicle_lib::nordic::live::{
-    describe_metrics, describe_publish_metrics, events_to_publish, handle_message_with,
+    describe_metrics, describe_publish_metrics, events_to_publish, handle_message_full,
     publish_live, Companies, Counters, IngestedCheck, Listener, Registered, SeenSet, SignalDb,
     SlackMode, DEFAULT_WS_URL, LATENCY_BUCKETS, SEEN_CAPACITY,
+};
+use chronicle_lib::nordic::live_emit::{
+    describe_emit_metrics, run_producer, Emitter, RetryPolicy, EMIT_LATENCY_BUCKETS,
+    QUEUE_CAPACITY as EMIT_QUEUE_CAPACITY,
 };
 use chronicle_lib::nordic::live_slack::{
     describe_metrics as describe_slack_metrics, enqueue, jobs_for, run_worker, Sessions, SlackApi,
@@ -177,25 +183,36 @@ async fn run(args: Args) -> anyhow::Result<()> {
     telemetry::serve_with_buckets(
         "nordic-live",
         args.metrics_port,
-        &[("nordic_live_release_latency_seconds", LATENCY_BUCKETS)],
+        &[
+            ("nordic_live_release_latency_seconds", LATENCY_BUCKETS),
+            ("nordic_live_emit_latency_seconds", EMIT_LATENCY_BUCKETS),
+        ],
     )
     .await?;
     describe_metrics();
     describe_slack_metrics();
     describe_publish_metrics();
+    describe_emit_metrics();
     gauge!("nordic_live_registered_companies").set(companies.len() as f64);
 
     let events: Option<Arc<KafkaSink>> = match args.kafka_brokers.as_deref() {
         Some(brokers) if !brokers.is_empty() => {
-            let sink = KafkaSink::new(brokers, args.special_events_topic.clone())?;
-            info!(topic = %args.special_events_topic, "publishing released reports to special.events");
+            let sink = KafkaSink::low_latency(brokers, args.special_events_topic.clone())?;
+            info!(topic = %args.special_events_topic,
+                  "publishing released reports and company announcements to special.events");
             Some(Arc::new(sink))
         }
         _ => {
-            warn!("KAFKA_BROKERS not set: released reports wait for the poll");
+            warn!("KAFKA_BROKERS not set: emission is off, reports and announcements wait for the poll");
             None
         }
     };
+
+    let emitter: Option<Emitter> = events.as_ref().map(|sink| {
+        let (emitter, jobs) = Emitter::channel(EMIT_QUEUE_CAPACITY);
+        tokio::spawn(run_producer(sink.clone(), jobs, RetryPolicy::default()));
+        emitter
+    });
 
     let slack_tx = match (&args.slack_bot_token, &args.slack_channel) {
         (Some(token), Some(channel)) if !token.is_empty() && !channel.is_empty() => {
@@ -241,8 +258,9 @@ async fn run(args: Args) -> anyhow::Result<()> {
             received = rx.recv() => {
                 let Some(msg) = received else { return Ok(()) };
                 let check = signal.as_ref().map(|s| s as &dyn IngestedCheck);
-                let (counters, dispositions) = handle_message_with(
+                let (counters, dispositions) = handle_message_full(
                     &msg.text, msg.received_at, &companies, &mut seen, check, mode,
+                    emitter.as_ref(),
                 )
                 .await;
                 window.seen += counters.seen;

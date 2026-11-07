@@ -20,6 +20,7 @@ pub mod ingest;
 pub mod insiders;
 pub mod lang;
 pub mod live;
+pub mod live_emit;
 pub mod live_slack;
 pub mod mar_release;
 pub mod slack;
