@@ -424,11 +424,11 @@ data:
                 "type": "prometheus",
                 "uid": "nexus-prometheus"
               },
-              "expr": "sum by (result) (increase(nordic_slack_posts_total{job=\"nordic-live\"}[1h]))",
-              "legendFormat": "{{ "{{" }}result{{ "}}" }}"
+              "expr": "sum by (kind, result) (increase(nordic_slack_posts_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "{{ "{{" }}kind{{ "}}" }} {{ "{{" }}result{{ "}}" }}"
             }
           ],
-          "description": "From nordic_slack_posts_total (NEX-222)."
+          "description": "From nordic_slack_posts_total (NEX-222, kind label NEX-239)."
         },
         {
           "id": 9,

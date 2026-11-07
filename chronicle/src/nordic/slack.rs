@@ -63,6 +63,42 @@ impl ReportNotice {
     }
 }
 
+/// Everything the message shows about one company announcement.
+#[derive(Debug, Clone)]
+pub struct AnnouncementNotice {
+    pub company_name: String,
+    pub ticker: String,
+    pub exchange_mic: String,
+    pub published_at: DateTime<Utc>,
+    pub time_zone: Tz,
+    /// `pre-open`, `intraday`, `after close` or `non-trading day`.
+    pub session: Option<String>,
+    pub headline: String,
+    pub mfn_url: Option<String>,
+    pub pdf_url: Option<String>,
+    /// MFN tags; `:regulatory` marks a regulatory release.
+    pub tags: Vec<String>,
+    /// MFN item this notice was built from (stored on the claim row).
+    pub news_id: Uuid,
+    pub lang: Option<String>,
+}
+
+impl AnnouncementNotice {
+    /// The claim request for this announcement.
+    pub fn claim_request(&self) -> ClaimRequest {
+        ClaimRequest {
+            kind: NoticeKind::Announcement,
+            ticker: self.ticker.clone(),
+            exchange_mic: self.exchange_mic.clone(),
+            published_at: self.published_at,
+            news_id: self.news_id,
+            lang: self.lang.clone(),
+            report_kind: None,
+            tags: self.tags.clone(),
+        }
+    }
+}
+
 /// A message ready for Slack: mrkdwn `text`, which also serves as the
 /// notification fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +161,36 @@ pub fn format_report_message(r: &ReportNotice) -> SlackMessage {
     }
 }
 
+/// Formats the Slack message for a company announcement. Pure.
+pub fn format_announcement_message(a: &AnnouncementNotice) -> SlackMessage {
+    let local = a.published_at.with_timezone(&a.time_zone);
+    let mut when = local.format("%-d %b %Y %H:%M %Z").to_string();
+    if let Some(s) = a.session.as_deref().filter(|s| !s.is_empty()) {
+        when.push_str(" · ");
+        when.push_str(&escape(s));
+    }
+
+    let mut title = format!("📣 *{} ({})*", escape(&a.company_name), escape(&a.ticker));
+    if a.tags.iter().any(|t| t == ":regulatory") {
+        title.push_str(" · Regulatory");
+    }
+    let mut lines = vec![title, when, escape(&a.headline)];
+
+    let mut links = Vec::new();
+    if let Some(u) = a.mfn_url.as_deref().filter(|u| !u.is_empty()) {
+        links.push(format!("<{u}|MFN>"));
+    }
+    if let Some(u) = a.pdf_url.as_deref().filter(|u| !u.is_empty()) {
+        links.push(format!("<{u}|PDF>"));
+    }
+    if !links.is_empty() {
+        lines.push(links.join(" · "));
+    }
+    SlackMessage {
+        text: lines.join("\n"),
+    }
+}
+
 /// True only when the posted item is not English and the new one is.
 pub fn prefer_replacement(posted_lang: Option<&str>, new_lang: Option<&str>) -> bool {
     let is_en = |l: Option<&str>| l.is_some_and(|l| l.eq_ignore_ascii_case("en"));
@@ -161,7 +227,8 @@ pub enum NoticeKind {
 }
 
 impl NoticeKind {
-    fn as_str(self) -> &'static str {
+    /// The value stored in `slack_report_posts.kind` and used as metric label.
+    pub fn as_str(self) -> &'static str {
         match self {
             NoticeKind::Report => "report",
             NoticeKind::Announcement => "announcement",
@@ -420,30 +487,24 @@ fn judge(err: &SlackClientError, backoff: Duration) -> Verdict {
 pub struct SlackClient {
     http: SlackHyperClient,
     token: SlackApiToken,
-    channel: String,
 }
 
 impl std::fmt::Debug for SlackClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SlackClient")
             .field("token", &"<redacted>")
-            .field("channel", &self.channel)
             .finish()
     }
 }
 
 impl SlackClient {
-    /// Client posting to `channel` with a bot token.
-    pub fn new(token: impl Into<String>, channel: impl Into<String>) -> Result<Self, SlackError> {
-        Self::with_api_url(token, channel, DEFAULT_API_URL)
+    /// Client with a bot token; every call names its channel.
+    pub fn new(token: impl Into<String>) -> Result<Self, SlackError> {
+        Self::with_api_url(token, DEFAULT_API_URL)
     }
 
     /// Like [`SlackClient::new`] against another Slack API base URL (no trailing slash).
-    pub fn with_api_url(
-        token: impl Into<String>,
-        channel: impl Into<String>,
-        api_url: &str,
-    ) -> Result<Self, SlackError> {
+    pub fn with_api_url(token: impl Into<String>, api_url: &str) -> Result<Self, SlackError> {
         let connector = SlackClientHyperConnector::new()
             .map_err(|e| SlackError::Transport(e.to_string()))?
             .with_slack_api_url(api_url.trim_end_matches('/'))
@@ -451,27 +512,21 @@ impl SlackClient {
         Ok(Self::with_client(
             slack_morphism::SlackClient::new(connector),
             token,
-            channel,
         ))
     }
 
     /// Client on a caller-built `slack-morphism` client (custom API URL or connector).
-    pub fn with_client(
-        http: SlackHyperClient,
-        token: impl Into<String>,
-        channel: impl Into<String>,
-    ) -> Self {
+    pub fn with_client(http: SlackHyperClient, token: impl Into<String>) -> Self {
         Self {
             http,
             token: SlackApiToken::new(SlackApiTokenValue::new(token.into())),
-            channel: channel.into(),
         }
     }
 
-    /// Posts a new message with `chat.postMessage`.
-    pub async fn post(&self, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
+    /// Posts a new message to `channel` with `chat.postMessage`.
+    pub async fn post(&self, channel: &str, msg: &SlackMessage) -> Result<PostedRef, SlackError> {
         let req = SlackApiChatPostMessageRequest::new(
-            SlackChannelId::new(self.channel.clone()),
+            SlackChannelId::new(channel.to_string()),
             SlackMessageContent::new().with_text(msg.text.clone()),
         );
         self.retrying(|| async {
@@ -627,6 +682,67 @@ mod tests {
         assert!(t.contains("*A&amp;B &lt;Co&gt; (FFARMS)* · 2025 annual"));
         assert!(t.contains("Q3: EBIT &lt;0 &amp; falling"));
         assert!(t.ends_with("⏱ posted late by the daily poll (live listener missed it)"));
+    }
+
+    fn announcement_notice() -> AnnouncementNotice {
+        AnnouncementNotice {
+            company_name: "FirstFarms A/S".into(),
+            ticker: "FFARMS".into(),
+            exchange_mic: "XCSE".into(),
+            published_at: Utc.with_ymd_and_hms(2026, 11, 4, 7, 0, 0).unwrap(),
+            time_zone: chrono_tz::Europe::Copenhagen,
+            session: Some("pre-open".into()),
+            headline: "Upgrade of guidance".into(),
+            mfn_url: Some("https://mfn.se/a/x".into()),
+            pdf_url: Some("https://x.test/file.pdf".into()),
+            tags: vec![":regulatory".into()],
+            news_id: Uuid::from_u128(1),
+            lang: Some("en".into()),
+        }
+    }
+
+    #[test]
+    fn announcement_full_message_is_regulatory() {
+        assert_eq!(
+            format_announcement_message(&announcement_notice()).text,
+            "📣 *FirstFarms A/S (FFARMS)* · Regulatory\n\
+             4 Nov 2026 08:00 CET · pre-open\n\
+             Upgrade of guidance\n\
+             <https://mfn.se/a/x|MFN> · <https://x.test/file.pdf|PDF>"
+        );
+    }
+
+    #[test]
+    fn announcement_without_regulatory_tag_or_links() {
+        let mut a = announcement_notice();
+        a.tags = vec!["sub:ci".into()];
+        a.mfn_url = None;
+        a.pdf_url = None;
+        a.session = None;
+        assert_eq!(
+            format_announcement_message(&a).text,
+            "📣 *FirstFarms A/S (FFARMS)*\n4 Nov 2026 08:00 CET\nUpgrade of guidance"
+        );
+    }
+
+    #[test]
+    fn announcement_with_only_a_pdf_and_escaping() {
+        let mut a = announcement_notice();
+        a.mfn_url = None;
+        a.company_name = "A&B <Co>".into();
+        a.headline = "Q3: EBIT <0 & falling >".into();
+        let t = format_announcement_message(&a).text;
+        assert!(t.starts_with("📣 *A&amp;B &lt;Co&gt; (FFARMS)* · Regulatory\n"));
+        assert!(t.contains("\nQ3: EBIT &lt;0 &amp; falling &gt;\n"));
+        assert!(t.ends_with("\n<https://x.test/file.pdf|PDF>"));
+    }
+
+    #[test]
+    fn announcement_claim_request_carries_the_tags() {
+        let r = announcement_notice().claim_request();
+        assert_eq!(r.kind, NoticeKind::Announcement);
+        assert_eq!(r.tags, vec![":regulatory".to_string()]);
+        assert_eq!(r.report_kind, None);
     }
 
     #[test]
@@ -921,7 +1037,7 @@ mod tests {
 
     #[test]
     fn debug_redacts_token() {
-        let c = SlackClient::new("xoxb-secret", "C1").unwrap();
+        let c = SlackClient::new("xoxb-secret").unwrap();
         let d = format!("{c:?}");
         assert!(!d.contains("xoxb-secret") && d.contains("redacted"));
     }

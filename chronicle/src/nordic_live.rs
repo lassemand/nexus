@@ -6,8 +6,9 @@
 /// picks out items from companies registered with an `mfn_slug`, classifies them
 /// with the same rules as the hourly `nordic-reports` poll and logs one
 /// structured event per new item (`event = "report_released"` for results
-/// releases, `"company_news"` otherwise). Results releases are also posted to
-/// Slack when `SLACK_BOT_TOKEN` and `SLACK_CHANNEL` are set (NEX-222); the only
+/// releases, `"company_news"` otherwise). With `SLACK_BOT_TOKEN`, results releases are also posted
+/// to Slack channel `SLACK_CHANNEL` (NEX-222) and company announcements to
+/// `SLACK_ANNOUNCEMENTS_CHANNEL` (NEX-239), each independently; the only
 /// thing it writes is the `slack_report_posts` claim. The poll stays the
 /// fallback for anything missed while disconnected. See `chronicle_lib::nordic::live`
 /// and `chronicle_lib::nordic::live_slack`.
@@ -18,7 +19,7 @@ use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
 use chronicle_lib::nordic::live::{
     describe_metrics, describe_publish_metrics, events_to_publish, handle_message_full,
     publish_live, Companies, Counters, IngestedCheck, Listener, Registered, SeenSet, SignalDb,
-    SlackMode, DEFAULT_WS_URL, LATENCY_BUCKETS, SEEN_CAPACITY,
+    DEFAULT_WS_URL, LATENCY_BUCKETS, SEEN_CAPACITY,
 };
 use chronicle_lib::nordic::live_emit::{
     describe_emit_metrics, producer_backoff, run_producer, Emitter, EMIT_LATENCY_BUCKETS,
@@ -26,7 +27,7 @@ use chronicle_lib::nordic::live_emit::{
 };
 use chronicle_lib::nordic::live_slack::{
     describe_metrics as describe_slack_metrics, enqueue, jobs_for, run_worker, Sessions, SlackApi,
-    SlackJob, QUEUE_CAPACITY,
+    SlackChannels, SlackJob, QUEUE_CAPACITY,
 };
 use chronicle_lib::nordic::slack::{SlackClient, DEFAULT_API_URL};
 use clap::Parser;
@@ -68,14 +69,20 @@ struct Args {
     #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = SPECIAL_EVENTS_TOPIC)]
     special_events_topic: String,
 
-    /// Slack bot token (`chat:write`). Without it, or without `SLACK_CHANNEL`,
+    /// Slack bot token (`chat:write`). Without it, or without any channel,
     /// Slack posting is off.
     #[arg(long, env = "SLACK_BOT_TOKEN", hide_env_values = true)]
     slack_bot_token: Option<String>,
 
-    /// Slack channel ID (for example `C0123456789`; IDs survive renames).
+    /// Slack channel ID (for example `C0123456789`; IDs survive renames) that
+    /// results releases are posted to. Unset: reports are not posted.
     #[arg(long, env = "SLACK_CHANNEL")]
     slack_channel: Option<String>,
+
+    /// Slack channel ID that company announcements are posted to. Unset:
+    /// announcements are not posted. Independent of `SLACK_CHANNEL`.
+    #[arg(long, env = "SLACK_ANNOUNCEMENTS_CHANNEL")]
+    slack_announcements_channel: Option<String>,
 
     /// Slack Web API base URL.
     #[arg(long, env = "SLACK_API_URL", default_value = DEFAULT_API_URL)]
@@ -214,28 +221,41 @@ async fn run(args: Args) -> anyhow::Result<()> {
         emitter
     });
 
-    let slack_tx = match (&args.slack_bot_token, &args.slack_channel) {
-        (Some(token), Some(channel)) if !token.is_empty() && !channel.is_empty() => {
-            let client = SlackClient::with_api_url(token, channel, &args.slack_api_url)?;
+    let token = args.slack_bot_token.as_deref().filter(|t| !t.is_empty());
+    let channels = match token {
+        Some(_) => SlackChannels::new(
+            args.slack_channel.clone(),
+            args.slack_announcements_channel.clone(),
+        ),
+        None => SlackChannels::default(),
+    };
+    match (&channels.reports, &channels.announcements) {
+        (Some(r), _) => info!(channel = %r, "Slack report posting enabled"),
+        (None, _) => {
+            warn!("Slack report posting disabled: SLACK_BOT_TOKEN or SLACK_CHANNEL is not set")
+        }
+    }
+    match &channels.announcements {
+        Some(c) => info!(channel = %c, "Slack announcement posting enabled"),
+        None => {
+            info!("Slack announcement posting disabled: SLACK_ANNOUNCEMENTS_CHANNEL is not set")
+        }
+    }
+    let slack_tx = match token {
+        Some(token) if channels.any() => {
+            let client = SlackClient::with_api_url(token, &args.slack_api_url)?;
             let (jobs_tx, jobs_rx) = mpsc::channel::<SlackJob>(QUEUE_CAPACITY);
             tokio::spawn(run_worker(
                 pool.clone(),
                 Box::new(client) as Box<dyn SlackApi>,
+                channels.clone(),
                 jobs_rx,
             ));
-            info!(channel = %channel, "Slack posting enabled");
             Some(jobs_tx)
         }
-        _ => {
-            warn!("Slack disabled: SLACK_BOT_TOKEN or SLACK_CHANNEL is not set");
-            None
-        }
+        _ => None,
     };
-    let mode = if slack_tx.is_some() {
-        SlackMode::Enabled
-    } else {
-        SlackMode::Disabled
-    };
+    let modes = channels.modes();
     let mut sessions = load_sessions(signal.as_ref(), &Sessions::default()).await;
 
     let (tx, mut rx) = mpsc::channel(256);
@@ -259,7 +279,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 let Some(msg) = received else { return Ok(()) };
                 let check = signal.as_ref().map(|s| s as &dyn IngestedCheck);
                 let (counters, dispositions) = handle_message_full(
-                    &msg.text, msg.received_at, &companies, &mut seen, check, mode,
+                    &msg.text, msg.received_at, &companies, &mut seen, check, modes,
                     emitter.as_ref(),
                 )
                 .await;
@@ -274,7 +294,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                     }
                 }
                 if let Some(jobs) = &slack_tx {
-                    for job in jobs_for(dispositions, &sessions) {
+                    for job in jobs_for(dispositions, &sessions, &channels) {
                         enqueue(jobs, job);
                     }
                 }

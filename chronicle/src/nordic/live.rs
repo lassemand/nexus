@@ -417,28 +417,51 @@ pub async fn dispose(item: LiveItem, check: Option<&dyn IngestedCheck>) -> Dispo
     Disposition::New(Box::new(item))
 }
 
-/// Whether results releases are handed to the Slack worker.
+/// Whether one kind of post is handed to the Slack worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlackMode {
     /// No token or channel: log only.
     Disabled,
-    /// Report items are queued for Slack.
+    /// Items are queued for Slack.
     Enabled,
+}
+
+/// The Slack switches of the two kinds of post.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlackModes {
+    /// Results releases.
+    pub reports: SlackMode,
+    /// Company announcements.
+    pub announcements: SlackMode,
+}
+
+impl SlackModes {
+    /// Both kinds off.
+    pub const DISABLED: SlackModes = SlackModes {
+        reports: SlackMode::Disabled,
+        announcements: SlackMode::Disabled,
+    };
 }
 
 /// Logs a disposition: the item itself, or `already ingested by poll`.
 pub fn report(d: &Disposition) {
-    report_with(d, SlackMode::Disabled)
+    report_with(d, SlackModes::DISABLED)
 }
 
 /// [`report`] with the Slack mode: results releases get `slack = "disabled"` or
 /// `"queued"`; the worker logs the outcome in its own `slack_post` event.
-pub fn report_with(d: &Disposition, mode: SlackMode) {
+pub fn report_with(d: &Disposition, modes: SlackModes) {
+    let label = |m: SlackMode| match m {
+        SlackMode::Disabled => "disabled",
+        SlackMode::Enabled => "queued",
+    };
     match d {
-        Disposition::New(item) if item.is_slack_candidate() => item.log_with(Some(match mode {
-            SlackMode::Disabled => "disabled",
-            SlackMode::Enabled => "queued",
-        })),
+        Disposition::New(item) if item.is_slack_candidate() => {
+            item.log_with(Some(label(modes.reports)))
+        }
+        Disposition::New(item) if item.announcement.is_some() => {
+            item.log_with(Some(label(modes.announcements)))
+        }
         Disposition::New(item) => item.log(),
         Disposition::AlreadyIngested(id) => info!(news_id = %id, "already ingested by poll"),
     }
@@ -574,7 +597,7 @@ pub async fn handle_message(
         companies,
         seen,
         check,
-        SlackMode::Disabled,
+        SlackModes::DISABLED,
     )
     .await
 }
@@ -586,7 +609,7 @@ pub async fn handle_message_with(
     companies: &Companies,
     seen: &mut SeenSet,
     check: Option<&dyn IngestedCheck>,
-    mode: SlackMode,
+    mode: SlackModes,
 ) -> (Counters, Vec<Disposition>) {
     handle_message_full(msg, received_at, companies, seen, check, mode, None).await
 }
@@ -601,7 +624,7 @@ pub async fn handle_message_full(
     companies: &Companies,
     seen: &mut SeenSet,
     check: Option<&dyn IngestedCheck>,
-    mode: SlackMode,
+    mode: SlackModes,
     emitter: Option<&Emitter>,
 ) -> (Counters, Vec<Disposition>) {
     let mut processed = process_message(msg, received_at, companies, seen);
@@ -1098,7 +1121,7 @@ mod tests {
                 &companies(),
                 &mut seen,
                 None,
-                SlackMode::Disabled,
+                SlackModes::DISABLED,
                 Some(&emitter),
             )
             .await;
@@ -1131,7 +1154,7 @@ mod tests {
             &companies(),
             &mut seen,
             Some(&Always),
-            SlackMode::Disabled,
+            SlackModes::DISABLED,
             Some(&emitter),
         )
         .await;
@@ -1144,7 +1167,7 @@ mod tests {
             &companies(),
             &mut seen,
             None,
-            SlackMode::Disabled,
+            SlackModes::DISABLED,
             None,
         )
         .await;

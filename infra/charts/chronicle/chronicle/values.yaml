@@ -21,6 +21,10 @@ nordicLive:
   # Slack channel ID (for example "C0123456789") that results releases are posted to.
   # Empty disables Slack posting. Invite the Argo CD notifications Slack app first.
   slackChannel: "C0CDPCD42Q2" # #nordic-reports
+  # Slack channel ID that company announcements are posted to (NEX-239), with the same bot
+  # token. Empty disables announcement posting; independent of slackChannel. Invite the Argo CD
+  # notifications Slack app to the channel first.
+  announcementsChannel: ""
 filings:
   lookbackDays: "90"
 resources:
