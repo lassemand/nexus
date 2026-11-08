@@ -298,7 +298,7 @@ keeps only its read position, `mfn_ingest_state` (feed cursor, calendar hash).
 |---|---|---|
 | `quarterly_report` | Interim report (`report_kind = interim`) | |
 | `annual_report` | Year-end report (`report_kind = annual`) | |
-| `report_correction` | `Correction:` / `Rättelse:` items, and same-day re-sends | signal links the report to its latest correction within 7 days (`superseded_by`) |
+| `report_correction` | `Correction:` / `Rättelse:` items that correct a report (the title without the marker looks like a report; a correction of other news is a `company_announcement`), and same-day re-sends | signal links the report to its latest correction within 7 days (`superseded_by`) |
 | `report_calendar` | Snapshot of a company's upcoming reports | not a row itself; applied to `status = 'scheduled'` rows |
 
 `status` is `scheduled` (from the calendar; `occurred_at` is the expected
