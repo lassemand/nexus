@@ -31,6 +31,9 @@ spec:
               env:
                 - name: RUST_LOG
                   value: {{ .Values.logLevel | quote }}
+                # Run metrics are pushed here when the job ends (docs/guides/metrics.md).
+                - name: PUSHGATEWAY_URL
+                  value: {{ .Values.pushgatewayUrl | quote }}
                 # Same topic as the SEC filings job: signal consumes
                 # insider.transactions. Set explicitly so a value in
                 # chronicle-secret can never redirect it.

@@ -130,6 +130,31 @@ pub fn batch(job: &'static str) -> Result<BatchMetrics> {
     Ok(BatchMetrics::new(job, install(&[])?))
 }
 
+/// Runs a CronJob body under [`batch`] and always calls [`BatchMetrics::finish`]
+/// with its outcome, so an early `?` return or an error never skips the push.
+///
+/// The value of `Ok(_)` is passed through untouched (a job may return a flag for
+/// its exit code); any `Ok` counts as a successful run. If the recorder cannot
+/// be installed the body still runs, without metrics, after an error log.
+/// A panic inside `body` still skips the push: bodies return errors, not panics.
+pub async fn run_batch<T, F>(job: &'static str, body: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    let batch = match batch(job) {
+        Ok(b) => Some(b),
+        Err(error) => {
+            tracing::error!(job, error = %format!("{error:#}"), "job metrics disabled");
+            None
+        }
+    };
+    let result = body.await;
+    if let Some(batch) = batch {
+        batch.finish(result.as_ref().map(|_| ())).await;
+    }
+    result
+}
+
 /// Metrics of one CronJob run; see [`batch`].
 pub struct BatchMetrics {
     job: &'static str,

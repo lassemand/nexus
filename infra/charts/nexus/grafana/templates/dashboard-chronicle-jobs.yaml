@@ -1,0 +1,1584 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-chronicle-jobs
+  namespace: nexus
+  annotations:
+    # Folder in Grafana (sidecar folderAnnotation, see values.yaml).
+    grafana_folder: Nexus
+  labels:
+    grafana_dashboard: "1"
+data:
+  chronicle-jobs.json: |
+    {
+      "uid": "nexus-chronicle-jobs",
+      "title": "Chronicle Jobs",
+      "tags": [
+        "nexus",
+        "chronicle",
+        "cronjobs"
+      ],
+      "timezone": "browser",
+      "time": {
+        "from": "now-7d",
+        "to": "now"
+      },
+      "refresh": "5m",
+      "schemaVersion": 39,
+      "templating": {
+        "list": []
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "table",
+          "title": "Jobs (last run)",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 9
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "description": "One row per job, from the metrics each run pushes. Age / threshold: 1 = the staleness alert limit (30 h daily jobs, 78 h weekday jobs). Main count: chronicle/market/earnings/filings items fetched (filings, bars, earnings records, Form 4 filings), pdmr rows, nordic-reports feed items seen, nordic-calendar upcoming reports.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Last run"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "dateTimeAsLocal"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Last success"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "dateTimeAsLocal"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Age of last success"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Age / threshold"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "percentunit"
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-background"
+                    }
+                  },
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "orange",
+                          "value": 0.8
+                        },
+                        {
+                          "color": "red",
+                          "value": 1
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Duration"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 1
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Last run ok"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "0": {
+                            "text": "failed",
+                            "color": "red"
+                          },
+                          "1": {
+                            "text": "ok",
+                            "color": "green"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Main count"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "none"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "sortBy": [
+              {
+                "displayName": "Job",
+                "desc": false
+              }
+            ]
+          },
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "Value #A": "Last run",
+                  "Value #B": "Last success",
+                  "Value #C": "Age of last success",
+                  "Value #D": "Age / threshold",
+                  "Value #E": "Duration",
+                  "Value #F": "Last run ok",
+                  "Value #G": "Main count",
+                  "job": "Job"
+                },
+                "indexByName": {
+                  "job": 0,
+                  "Value #A": 1,
+                  "Value #B": 2,
+                  "Value #C": 3,
+                  "Value #D": 4,
+                  "Value #E": 5,
+                  "Value #F": 6,
+                  "Value #G": 7
+                }
+              }
+            }
+          ],
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max by (job) (nexus_job_last_run_timestamp_seconds{job=~\"chronicle|earnings|nordic-reports|nordic-calendar|market|filings|pdmr\"}) * 1000",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max by (job) (nexus_job_last_success_timestamp_seconds{job=~\"chronicle|earnings|nordic-reports|nordic-calendar|market|filings|pdmr\"}) * 1000",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max by (job) (time() - nexus_job_last_success_timestamp_seconds{job=~\"chronicle|earnings|nordic-reports|nordic-calendar\"}) or max by (job) (time() - nexus_job_last_success_timestamp_seconds{job=~\"market|filings|pdmr\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "D",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max by (job) ((time() - nexus_job_last_success_timestamp_seconds{job=~\"chronicle|earnings|nordic-reports|nordic-calendar\"}) / (30 * 3600)) or max by (job) ((time() - nexus_job_last_success_timestamp_seconds{job=~\"market|filings|pdmr\"}) / (78 * 3600))",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "E",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max by (job) (nexus_job_duration_seconds{job=~\"chronicle|earnings|nordic-reports|nordic-calendar|market|filings|pdmr\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "F",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max by (job) (nexus_job_last_run_success{job=~\"chronicle|earnings|nordic-reports|nordic-calendar|market|filings|pdmr\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "G",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (job) (chronicle_items_fetched_total{job=\"chronicle\"} or market_items_fetched_total{job=\"market\"} or earnings_items_fetched_total{job=\"earnings\"} or filings_items_fetched_total{job=\"filings\"} or pdmr_rows_fetched_total{job=\"pdmr\"} or nordic_reports_items_seen_total{job=\"nordic-reports\"} or nordic_calendar_upcoming_reports{job=\"nordic-calendar\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "row",
+          "title": "chronicle (SEC EDGAR 8-K)",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 9,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "8-K filings fetched",
+          "gridPos": {
+            "x": 0,
+            "y": 10,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(chronicle_items_fetched_total{job=\"chronicle\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "EarningsEvents published",
+          "gridPos": {
+            "x": 4,
+            "y": 10,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(chronicle_events_published_total{job=\"chronicle\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "API errors",
+          "gridPos": {
+            "x": 8,
+            "y": 10,
+            "w": 8,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (status_class) (chronicle_api_errors_total{job=\"chronicle\"})",
+              "legendFormat": "{{ "{{" }}status_class{{ "}}" }}",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "row",
+          "title": "market (Polygon EOD bars)",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 14,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 7,
+          "type": "stat",
+          "title": "bars fetched",
+          "gridPos": {
+            "x": 0,
+            "y": 15,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(market_items_fetched_total{job=\"market\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "stat",
+          "title": "bars published",
+          "gridPos": {
+            "x": 4,
+            "y": 15,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(market_events_published_total{job=\"market\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "type": "stat",
+          "title": "API errors",
+          "gridPos": {
+            "x": 8,
+            "y": 15,
+            "w": 8,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (status_class) (market_api_errors_total{job=\"market\"})",
+              "legendFormat": "{{ "{{" }}status_class{{ "}}" }}",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "type": "row",
+          "title": "earnings (Polygon quarterly earnings)",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 19,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 11,
+          "type": "stat",
+          "title": "earnings records fetched",
+          "gridPos": {
+            "x": 0,
+            "y": 20,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(earnings_items_fetched_total{job=\"earnings\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "type": "stat",
+          "title": "EarningsEvents published",
+          "gridPos": {
+            "x": 4,
+            "y": 20,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(earnings_events_published_total{job=\"earnings\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 13,
+          "type": "stat",
+          "title": "API errors",
+          "gridPos": {
+            "x": 8,
+            "y": 20,
+            "w": 8,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (status_class) (earnings_api_errors_total{job=\"earnings\"})",
+              "legendFormat": "{{ "{{" }}status_class{{ "}}" }}",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "type": "row",
+          "title": "filings (SEC Form 4)",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 24,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 15,
+          "type": "stat",
+          "title": "Form 4 filings fetched",
+          "gridPos": {
+            "x": 0,
+            "y": 25,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(filings_items_fetched_total{job=\"filings\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "type": "stat",
+          "title": "insider transactions published",
+          "gridPos": {
+            "x": 4,
+            "y": 25,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(filings_events_published_total{job=\"filings\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 17,
+          "type": "stat",
+          "title": "API errors",
+          "gridPos": {
+            "x": 8,
+            "y": 25,
+            "w": 8,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (status_class) (filings_api_errors_total{job=\"filings\"})",
+              "legendFormat": "{{ "{{" }}status_class{{ "}}" }}",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 18,
+          "type": "row",
+          "title": "pdmr (FI insider register)",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 29,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 19,
+          "type": "stat",
+          "title": "Rows fetched",
+          "gridPos": {
+            "x": 0,
+            "y": 30,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(pdmr_rows_fetched_total{job=\"pdmr\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 20,
+          "type": "stat",
+          "title": "Transactions published",
+          "gridPos": {
+            "x": 4,
+            "y": 30,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(pdmr_transactions_published_total{job=\"pdmr\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 21,
+          "type": "stat",
+          "title": "Parse errors",
+          "gridPos": {
+            "x": 8,
+            "y": 30,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(pdmr_parse_errors_total{job=\"pdmr\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 22,
+          "type": "row",
+          "title": "nordic-reports (MFN feed)",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 34,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 23,
+          "type": "stat",
+          "title": "Companies",
+          "gridPos": {
+            "x": 0,
+            "y": 35,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (outcome) (nordic_reports_companies_total{job=\"nordic-reports\"})",
+              "legendFormat": "{{ "{{" }}outcome{{ "}}" }}",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 24,
+          "type": "stat",
+          "title": "Items seen",
+          "gridPos": {
+            "x": 4,
+            "y": 35,
+            "w": 3,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(nordic_reports_items_seen_total{job=\"nordic-reports\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 25,
+          "type": "stat",
+          "title": "Events published",
+          "gridPos": {
+            "x": 7,
+            "y": 35,
+            "w": 5,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (event_type) (nordic_reports_events_published_total{job=\"nordic-reports\"})",
+              "legendFormat": "{{ "{{" }}event_type{{ "}}" }}",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 26,
+          "type": "stat",
+          "title": "Calendar refreshes",
+          "gridPos": {
+            "x": 12,
+            "y": 35,
+            "w": 4,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (outcome) (nordic_reports_calendar_refreshes_total{job=\"nordic-reports\"})",
+              "legendFormat": "{{ "{{" }}outcome{{ "}}" }}",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 27,
+          "type": "stat",
+          "title": "MAR published / parse errors / zero price",
+          "gridPos": {
+            "x": 16,
+            "y": 35,
+            "w": 8,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(nordic_mar_transactions_published_total{job=\"nordic-reports\"})",
+              "legendFormat": "published",
+              "instant": true,
+              "range": false
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(nordic_mar_parse_errors_total{job=\"nordic-reports\"})",
+              "legendFormat": "parse errors",
+              "instant": true,
+              "range": false
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(nordic_mar_suspicious_zero_price_total{job=\"nordic-reports\"})",
+              "legendFormat": "zero price",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 28,
+          "type": "row",
+          "title": "nordic-calendar (MFN calendars)",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 39,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 29,
+          "type": "stat",
+          "title": "Companies",
+          "gridPos": {
+            "x": 0,
+            "y": 40,
+            "w": 12,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (outcome) (nordic_calendar_companies_total{job=\"nordic-calendar\"})",
+              "legendFormat": "{{ "{{" }}outcome{{ "}}" }}",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 30,
+          "type": "stat",
+          "title": "Upcoming reports published",
+          "gridPos": {
+            "x": 12,
+            "y": 40,
+            "w": 6,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "noValue": "no data"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(nordic_calendar_upcoming_reports{job=\"nordic-calendar\"})",
+              "legendFormat": "",
+              "instant": true,
+              "range": false
+            }
+          ]
+        },
+        {
+          "id": 31,
+          "type": "row",
+          "title": "Kubernetes Jobs",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 44,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 32,
+          "type": "timeseries",
+          "title": "Failed Jobs (kube-state-metrics)",
+          "gridPos": {
+            "x": 0,
+            "y": 45,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (job_name) (kube_job_status_failed{namespace=\"chronicle\"} > 0)",
+              "legendFormat": "{{ "{{" }}job_name{{ "}}" }}"
+            }
+          ],
+          "description": "Jobs that reached their failure limit (ChronicleJobFailed). Includes jobs that crashed before pushing metrics."
+        },
+        {
+          "id": 33,
+          "type": "timeseries",
+          "title": "Job pods restarted (per hour)",
+          "gridPos": {
+            "x": 12,
+            "y": 45,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace=\"chronicle\",pod!~\"nordic-live.*|saxo-stream.*\"}[1h]))",
+              "legendFormat": "{{ "{{" }}pod{{ "}}" }}"
+            }
+          ]
+        }
+      ]
+    }

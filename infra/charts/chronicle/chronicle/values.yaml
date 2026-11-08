@@ -11,6 +11,8 @@ schedules:
 # RUST_LOG for every chronicle workload. Needed: with tracing-subscriber's
 # env-filter feature, an unset RUST_LOG means errors only.
 logLevel: "info"
+# Pushgateway the CronJobs push their run metrics to (PUSHGATEWAY_URL).
+pushgatewayUrl: "http://pushgateway.nexus.svc.cluster.local:9091"
 saxo:
   # Saxo chart API version for daily bars (SAXO_CHART_VERSION). v1 answered
   # 404 for GOMX on the live gateway (NEX-183).

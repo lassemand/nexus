@@ -74,6 +74,24 @@ impl RunSummary {
     }
 }
 
+/// Registers the `nordic_reports_*` run metrics at zero, so a clean run pushes an
+/// explicit `0` for failures. Call once at the start of a run.
+pub fn describe_run_metrics() {
+    for outcome in ["ok", "failed"] {
+        metrics::counter!("nordic_reports_companies_total", "outcome" => outcome).absolute(0);
+        metrics::counter!("nordic_reports_calendar_refreshes_total", "outcome" => outcome)
+            .absolute(0);
+    }
+    metrics::counter!("nordic_reports_items_seen_total").absolute(0);
+    metrics::counter!("nordic_mar_parse_errors_total").absolute(0);
+}
+
+/// Counts a published event in `nordic_reports_events_published_total{event_type}`.
+fn count_event(event_type: &str) {
+    metrics::counter!("nordic_reports_events_published_total", "event_type" => event_type.to_string())
+        .increment(1);
+}
+
 /// Publish one company's MFN news feed.
 ///
 /// Pages newest first following `next_url`, until a page reaches items older
@@ -112,6 +130,7 @@ pub async fn ingest_company(
     loop {
         let page = fetch_feed_page(feed, url).await?;
         outcome.pages += 1;
+        metrics::counter!("nordic_reports_items_seen_total").increment(page.items.len() as u64);
         if page.skipped > 0 {
             warn!(ticker = %company.ticker, skipped = page.skipped, "feed items with bad publish_date skipped");
         }
@@ -131,12 +150,9 @@ pub async fn ingest_company(
             }
             let release = parse_calendar_release(item);
             if let Some(release) = &release {
-                publish(
-                    sink,
-                    company,
-                    &calendar_release_event(company, item, release),
-                )
-                .await?;
+                let event = calendar_release_event(company, item, release);
+                publish(sink, company, &event).await?;
+                count_event(&event.event_type);
                 outcome.calendar_releases += 1;
                 newest_published = newest_published.max(Some(item.published_at));
             }
@@ -151,12 +167,15 @@ pub async fn ingest_company(
                 }
                 if let Some(event) = release_event(company, item, &c) {
                     publish(sink, company, &event).await?;
+                    count_event(&event.event_type);
                     outcome.published += 1;
                     newest_published = newest_published.max(Some(item.published_at));
                 }
             }
             if is_announcement_class(&c, release.is_some()) {
-                publish(sink, company, &announcement_event(company, item)).await?;
+                let event = announcement_event(company, item);
+                publish(sink, company, &event).await?;
+                count_event(&event.event_type);
                 outcome.announcements += 1;
                 newest_published = newest_published.max(Some(item.published_at));
             }
@@ -216,6 +235,11 @@ fn refuse_wrong_company(company: &Company, slug: &str, item: &NewsItem) -> anyho
         company.ticker,
         problems.join("; ")
     )
+}
+
+/// Counts one company in `nordic_reports_companies_total{outcome}`.
+fn count_company(outcome: &'static str) {
+    metrics::counter!("nordic_reports_companies_total", "outcome" => outcome).increment(1);
 }
 
 /// Counters for the managers' transaction releases of one company.
@@ -328,9 +352,11 @@ pub async fn process_insiders_only(
                 summary.insiders_published += o.insiders_published;
                 summary.mar_parse_errors += o.insiders.parse_errors;
                 summary.mar_suspicious_zero_price += o.insiders.suspicious_zero_price;
+                count_company("ok");
             }
             Err(e) => {
                 summary.failed += 1;
+                count_company("failed");
                 error!(ticker = %c.ticker, error = %e, "insider re-read failed");
             }
         }
@@ -457,6 +483,7 @@ pub async fn process_companies(
                 summary.insiders_published += o.insiders_published;
                 summary.mar_parse_errors += o.insiders.parse_errors;
                 summary.mar_suspicious_zero_price += o.insiders.suspicious_zero_price;
+                count_company("ok");
                 if o.calendar_announced {
                     summary.calendar_updated.push(c.ticker.clone());
                     to_refresh.push(c);
@@ -464,6 +491,7 @@ pub async fn process_companies(
             }
             Err(e) => {
                 summary.failed += 1;
+                count_company("failed");
                 error!(ticker = %c.ticker, error = %e, "company failed, cursor not moved");
             }
         }
@@ -477,9 +505,15 @@ pub async fn process_companies(
             Ok(r) => {
                 info!(ticker = %c.ticker, outcome = ?r, "calendar refreshed after announcement");
                 summary.calendars_refreshed.push(c.ticker.clone());
+                metrics::counter!("nordic_reports_calendar_refreshes_total", "outcome" => "ok")
+                    .increment(1);
             }
             // The daily nordic-calendar job retries.
-            Err(e) => warn!(ticker = %c.ticker, error = %e, "calendar refresh failed"),
+            Err(e) => {
+                metrics::counter!("nordic_reports_calendar_refreshes_total", "outcome" => "failed")
+                    .increment(1);
+                warn!(ticker = %c.ticker, error = %e, "calendar refresh failed")
+            }
         }
     }
     summary

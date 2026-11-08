@@ -2,6 +2,8 @@ mod kafka;
 
 use std::collections::HashMap;
 
+use anyhow::Context;
+use chronicle_lib::job_metrics;
 use chrono::{Duration, NaiveDate, Utc};
 use clap::Parser;
 use kafka::{load_tickers, ChronicleProducer};
@@ -11,6 +13,7 @@ use model::{
     },
     insider::transaction_id,
 };
+use std::process::ExitCode;
 use tracing::{error, info, warn};
 
 #[derive(Parser)]
@@ -359,18 +362,40 @@ fn form4_xml_url(cik: &str, accession: &str) -> String {
     )
 }
 
+/// Job name in the Pushgateway and the prefix of the run metrics. Units: `items` are Form 4 filings parsed, `events` are `UnifiedInsiderTransaction`s published.
+const JOB: &str = "filings";
+
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
     tracing_subscriber::fmt::init();
+    match run_job(Args::parse()).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            error!(error = %format!("{e:#}"), "filings failed");
+            ExitCode::FAILURE
+        }
+    }
+}
 
-    let args = Args::parse();
+/// Runs the job and pushes its metrics, on success and on error alike.
+async fn run_job(args: Args) -> anyhow::Result<()> {
+    telemetry::run_batch(JOB, run(args)).await
+}
+
+async fn run(args: Args) -> anyhow::Result<()> {
+    job_metrics::register(JOB);
+    anyhow::ensure!(
+        args.lookback_days > 0,
+        "LOOKBACK_DAYS must be positive, got {}",
+        args.lookback_days
+    );
 
     let tickers = load_tickers(&args.kafka_brokers, &args.tickers_topic);
 
     if tickers.is_empty() {
         warn!("no tickers registered — publish a TickerRegistration to the company.tickers topic first");
-        return;
+        return Ok(());
     }
 
     info!(count = tickers.len(), "loaded tickers from kafka");
@@ -378,18 +403,20 @@ async fn main() {
     let client = reqwest::Client::builder()
         .user_agent("nexus lasse.alm@gsfleet.io")
         .build()
-        .expect("failed to build HTTP client");
+        .context("failed to build HTTP client")?;
 
     info!("fetching ticker→CIK map from EDGAR");
     let cik_map = match fetch_cik_map(&client).await {
         Ok(m) => m,
         Err(e) => {
             error!("failed to fetch CIK map: {e}");
-            return;
+            job_metrics::api_error(JOB, job_metrics::class_of_anyhow(&e));
+            return Err(e.context("failed to fetch CIK map"));
         }
     };
 
-    let producer = ChronicleProducer::new(&args.kafka_brokers).expect("failed to connect to Kafka");
+    let producer =
+        ChronicleProducer::new(&args.kafka_brokers).context("failed to connect to Kafka")?;
 
     let cutoff = Utc::now().date_naive() - Duration::days(args.lookback_days);
 
@@ -410,6 +437,7 @@ async fn main() {
             Ok(a) => a,
             Err(e) => {
                 error!(ticker = %ticker, error = %e, "failed to fetch Form 4 accessions");
+                job_metrics::api_error(JOB, job_metrics::class_of_anyhow(&e));
                 continue;
             }
         };
@@ -421,15 +449,22 @@ async fn main() {
 
             let url = form4_xml_url(&cik, accession);
             let xml = match client.get(&url).send().await {
+                Ok(r) if !r.status().is_success() => {
+                    error!(ticker = %ticker, accession = %accession, status = %r.status(), "Form 4 fetch returned an error status");
+                    job_metrics::api_error(JOB, job_metrics::class_of_status(r.status().as_u16()));
+                    continue;
+                }
                 Ok(r) => match r.text().await {
                     Ok(t) => t,
                     Err(e) => {
                         error!(ticker = %ticker, accession = %accession, error = %e, "failed to read Form 4 body");
+                        job_metrics::api_error(JOB, job_metrics::class_of_reqwest(&e));
                         continue;
                     }
                 },
                 Err(e) => {
                     error!(ticker = %ticker, accession = %accession, error = %e, "failed to fetch Form 4 XML");
+                    job_metrics::api_error(JOB, job_metrics::class_of_reqwest(&e));
                     continue;
                 }
             };
@@ -439,6 +474,7 @@ async fn main() {
             // Extract only the XML portion before parsing.
             let xml_content = extract_xml_block(&xml);
             let filings = parse_form4(xml_content, ticker, &cik, *filing_date);
+            job_metrics::items_fetched(JOB, filings.len());
 
             for filing in &filings {
                 if let Err(e) = producer
@@ -447,6 +483,7 @@ async fn main() {
                 {
                     error!(ticker = %ticker, error = %e, "failed to publish UnifiedInsiderTransaction");
                 } else {
+                    job_metrics::events_published(JOB, 1);
                     info!(
                         ticker = %ticker,
                         filer = %filing.person_name,
@@ -457,6 +494,38 @@ async fn main() {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A forced error (non-positive lookback) still pushes the run, as a failure.
+    #[tokio::test]
+    async fn a_failed_run_still_pushes_its_metrics() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        std::env::set_var("PUSHGATEWAY_URL", server.uri());
+        let args = Args::parse_from([
+            "filings",
+            "--kafka-brokers",
+            "none:1",
+            "--lookback-days",
+            "0",
+        ]);
+        assert!(run_job(args).await.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/metrics/job/filings");
+        let body = String::from_utf8(requests[0].body.clone()).unwrap();
+        assert!(body.contains("nexus_job_last_run_success{job=\"filings\"} 0"));
     }
 }
 
