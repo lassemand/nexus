@@ -53,6 +53,9 @@ impl ReportLanguage for English {
             "managers' transaction",
             "managers\u{2019} transaction",
             "share buyback",
+            // MAR insider notices of non-Finnish issuers: "Reporting of transactions
+            // made by members of the Board ... or their closely associated persons".
+            "closely associated",
         ]
     }
 

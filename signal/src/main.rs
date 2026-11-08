@@ -2,6 +2,8 @@ mod announcements;
 mod calendar_sources;
 mod daily_bars;
 mod db;
+#[cfg(test)]
+mod e2e_announcements;
 mod features;
 mod insider_store;
 mod reactions;
