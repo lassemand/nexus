@@ -19,3 +19,9 @@ dotenvy = "0.15"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+telemetry = { path = "../telemetry" }
+metrics = "0.24"
+
+[dev-dependencies]
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
+tokio = { version = "1", features = ["rt"] }

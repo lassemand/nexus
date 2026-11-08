@@ -116,4 +116,5 @@ warning) means the report was dropped and must be replayed from MFN.
 | saxo-stream | PodMonitor in `infra/charts/chronicle/chronicle/templates/` |
 | nordic-live | PodMonitor in `infra/charts/chronicle/chronicle/templates/`, dashboard `Nordic Live`, alerts `nexus.nordic-live` (`nordic_live_*`, `nordic_slack_posts_total`) |
 | signal | PodMonitor in `infra/charts/signal/signal/templates/`, dashboard `Signal`, alerts `nexus.signal` |
+| insight | PodMonitor in `infra/charts/insight/insight/templates/` (port 9464, not on the Service), dashboard `Insight`, alerts `nexus.insight` (`insight_tool_calls_total{tool,outcome}`, `insight_tool_duration_seconds`, `insight_db_query_duration_seconds`, `insight_tool_result_rows`, `insight_sse_sessions`, `insight_sse_connections_total`); every tool body runs through `observe` in `insight/src/metrics.rs` |
 | conductor | PodMonitor in `infra/charts/conductor/conductor/templates/`, dashboard `Conductor`, alerts `nexus.conductor` |

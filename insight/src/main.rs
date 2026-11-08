@@ -1,8 +1,14 @@
+mod metrics;
+
+use std::sync::Arc;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use clap::Parser;
 use rmcp::{model::*, tool, Error as McpError, ServerHandler};
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, PgPool};
+
+use crate::metrics::{db_error, observe, timed_db, SessionGuard, ToolOutput};
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 struct TradeResult {
@@ -21,6 +27,7 @@ struct TradeResult {
 #[derive(Clone)]
 struct InsightServer {
     pool: PgPool,
+    _session: Arc<SessionGuard>,
 }
 
 #[tool(tool_box)]
@@ -32,28 +39,7 @@ impl InsightServer {
         #[schemars(description = "Optional ticker symbol to filter by, e.g. AAPL")]
         ticker: Option<String>,
     ) -> Result<CallToolResult, McpError> {
-        let results: Vec<TradeResult> = match ticker {
-            Some(ref t) => {
-                sqlx::query_as(
-                    "SELECT * FROM trade_results WHERE ticker = $1 ORDER BY earnings_date DESC",
-                )
-                .bind(t)
-                .fetch_all(&self.pool)
-                .await
-            }
-
-            None => {
-                sqlx::query_as("SELECT * FROM trade_results ORDER BY earnings_date DESC")
-                    .fetch_all(&self.pool)
-                    .await
-            }
-        }
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let json = serde_json::to_string_pretty(&results)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        observe("fetch_trade_results", self.fetch_trade_results_body(ticker)).await
     }
 
     #[tool(
@@ -65,6 +51,52 @@ impl InsightServer {
         #[schemars(description = "Optional ticker symbol to filter by")]
         ticker: Option<String>,
     ) -> Result<CallToolResult, McpError> {
+        observe(
+            "summarise_trade_results",
+            self.summarise_trade_results_body(ticker),
+        )
+        .await
+    }
+}
+
+impl InsightServer {
+    async fn fetch_trade_results_body(
+        &self,
+        ticker: Option<String>,
+    ) -> Result<ToolOutput, McpError> {
+        let results: Vec<TradeResult> =
+            timed_db("fetch_trade_results", async {
+                match ticker {
+                    Some(ref t) => sqlx::query_as(
+                        "SELECT * FROM trade_results WHERE ticker = $1 ORDER BY earnings_date DESC",
+                    )
+                    .bind(t)
+                    .fetch_all(&self.pool)
+                    .await,
+
+                    None => {
+                        sqlx::query_as("SELECT * FROM trade_results ORDER BY earnings_date DESC")
+                            .fetch_all(&self.pool)
+                            .await
+                    }
+                }
+            })
+            .await
+            .map_err(db_error)?;
+
+        let json = serde_json::to_string_pretty(&results)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(ToolOutput {
+            result: CallToolResult::success(vec![Content::text(json)]),
+            rows: results.len(),
+        })
+    }
+
+    async fn summarise_trade_results_body(
+        &self,
+        ticker: Option<String>,
+    ) -> Result<ToolOutput, McpError> {
         let where_clause = if ticker.is_some() {
             "WHERE ticker = $1"
         } else {
@@ -98,12 +130,15 @@ impl InsightServer {
             winning_trades: i64,
         }
 
-        let rows: Vec<CurrencySummary> = if let Some(ref t) = ticker {
-            sqlx::query_as(&query).bind(t).fetch_all(&self.pool).await
-        } else {
-            sqlx::query_as(&query).fetch_all(&self.pool).await
-        }
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let rows: Vec<CurrencySummary> = timed_db("summarise_trade_results", async {
+            if let Some(ref t) = ticker {
+                sqlx::query_as(&query).bind(t).fetch_all(&self.pool).await
+            } else {
+                sqlx::query_as(&query).fetch_all(&self.pool).await
+            }
+        })
+        .await
+        .map_err(db_error)?;
 
         let by_currency: Vec<serde_json::Value> = rows
             .iter()
@@ -126,9 +161,13 @@ impl InsightServer {
 
         let summary = serde_json::json!({ "by_currency": by_currency });
 
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&summary).unwrap(),
-        )]))
+        let json = serde_json::to_string_pretty(&summary)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(ToolOutput {
+            result: CallToolResult::success(vec![Content::text(json)]),
+            rows: rows.len(),
+        })
     }
 }
 
@@ -157,6 +196,9 @@ struct Args {
 
     #[arg(long, env = "PORT", default_value = "8080")]
     port: u16,
+
+    #[arg(long, env = "METRICS_PORT", default_value = "9464")]
+    metrics_port: u16,
 }
 
 #[tokio::main]
@@ -165,6 +207,20 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
+
+    telemetry::serve_with_buckets(
+        "insight",
+        args.metrics_port,
+        &[
+            ("insight_tool_duration_seconds", metrics::DURATION_BUCKETS),
+            (
+                "insight_db_query_duration_seconds",
+                metrics::DURATION_BUCKETS,
+            ),
+            ("insight_tool_result_rows", metrics::ROW_BUCKETS),
+        ],
+    )
+    .await?;
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -176,7 +232,10 @@ async fn main() -> anyhow::Result<()> {
 
     rmcp::transport::SseServer::serve(addr)
         .await?
-        .with_service(move || InsightServer { pool: pool.clone() })
+        .with_service(move || InsightServer {
+            pool: pool.clone(),
+            _session: SessionGuard::open(),
+        })
         .cancelled()
         .await;
 

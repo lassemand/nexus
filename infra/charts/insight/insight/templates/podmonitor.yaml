@@ -1,0 +1,16 @@
+# Scrapes insight's /metrics (insight_*) on the `metrics` port. jobLabel makes the
+# `job` label `insight`.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: insight
+  labels:
+    app: insight
+spec:
+  jobLabel: app
+  selector:
+    matchLabels:
+      app: insight
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics

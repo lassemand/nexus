@@ -643,3 +643,34 @@ groups:
             The 95th percentile of receive time minus MFN publish_date has been
             {{ $value | humanizeDuration }} over 30 minutes. MFN may be
             delaying the stream, or clocks are skewed.
+
+  - name: nexus.insight
+    rules:
+      - alert: InsightToolErrors
+        expr: >
+          (
+            sum by (tool) (increase(insight_tool_calls_total{job="insight",outcome!="ok"}[15m]))
+            / sum by (tool) (increase(insight_tool_calls_total{job="insight"}[15m]))
+          ) > 0.2
+          and sum by (tool) (increase(insight_tool_calls_total{job="insight"}[15m])) >= 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "insight tool {{ $labels.tool }} fails on {{ $value | humanizePercentage }} of calls"
+          description: >-
+            More than 20 % of the last 15 minutes' calls to {{ $labels.tool }}
+            ended in error or invalid_params. Check the insight logs and the database.
+
+      - alert: InsightSlowTool
+        expr: >
+          histogram_quantile(0.95, sum by (tool, le) (rate(insight_tool_duration_seconds_bucket{job="insight"}[15m]))) > 5
+          and sum by (tool) (increase(insight_tool_calls_total{job="insight"}[15m])) >= 5
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "insight tool {{ $labels.tool }} p95 is {{ $value | humanizeDuration }}"
+          description: >-
+            The 95th percentile latency of {{ $labels.tool }} has been above 5 s
+            for the last 15 minutes. See the Insight dashboard and the database.

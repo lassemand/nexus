@@ -22,6 +22,11 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: IfNotPresent
           command: ["/usr/local/bin/insight"]
+
+          # Prometheus scrapes /metrics here (templates/podmonitor.yaml). Not on the Service.
+          ports:
+            - name: metrics
+              containerPort: 9464
           envFrom:
             - secretRef:
                 name: insight-secret
