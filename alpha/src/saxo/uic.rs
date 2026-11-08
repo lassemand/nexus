@@ -336,13 +336,14 @@ impl UicResolver {
         url.query_pairs_mut()
             .append_pair("Keywords", keywords)
             .append_pair("AssetTypes", asset_type);
-        let resp = self
-            .client
-            .get(url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(http)?;
+        let started = std::time::Instant::now();
+        let sent = self.client.get(url).bearer_auth(access_token).send().await;
+        super::api_metrics::record(
+            super::api_metrics::Endpoint::Instruments,
+            started,
+            sent.as_ref().ok().map(|r| r.status()),
+        );
+        let resp = sent.map_err(http)?;
         let status = resp.status();
         if !status.is_success() {
             let headers = resp.headers();

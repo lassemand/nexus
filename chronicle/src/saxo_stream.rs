@@ -25,8 +25,8 @@ use chronicle_lib::daily_bars::{self, BarSink, Instrument};
 use chrono::Utc;
 use clap::Parser;
 use kafka::ChronicleProducer;
-use metrics::{counter, describe_counter, describe_gauge, gauge};
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -96,6 +96,11 @@ struct Args {
 }
 
 const SAXO_TOKEN_SOURCE: &str = "saxo";
+
+/// Buckets (seconds) of `saxo_daily_bars_sweep_duration_seconds`: a recent-days
+/// sweep takes minutes (one chart request per second per instrument), a first
+/// backfill much longer.
+const SWEEP_DURATION_BUCKETS: &[f64] = &[10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0];
 
 /// Refresh the access token once it expires within this many seconds.
 const TOKEN_REFRESH_THRESHOLD_SECS: i64 = 120;
@@ -241,6 +246,20 @@ async fn daily_bars_sweep(
     shared_token: &SharedToken,
     mics: &[String],
 ) -> SweepResult {
+    let started = std::time::Instant::now();
+    let out = daily_bars_sweep_inner(pool, resolver, client, sink, shared_token, mics).await;
+    histogram!("saxo_daily_bars_sweep_duration_seconds").record(started.elapsed().as_secs_f64());
+    out
+}
+
+async fn daily_bars_sweep_inner(
+    pool: &sqlx::PgPool,
+    resolver: &UicResolver,
+    client: &mut ChartClient,
+    sink: &dyn BarSink,
+    shared_token: &SharedToken,
+    mics: &[String],
+) -> SweepResult {
     let tickers = match load_saxo_instruments(pool, mics).await {
         Ok(t) => t,
         Err(e) => {
@@ -252,6 +271,12 @@ async fn daily_bars_sweep(
             };
         }
     };
+    gauge!("saxo_daily_bars_sweep_instruments").set(tickers.len() as f64);
+    let registered: Vec<(String, String)> = tickers
+        .iter()
+        .map(|i| (i.ticker.clone(), i.exchange_mic.clone()))
+        .collect();
+    daily_bars::zero_deregistered(&registered);
     let mut out = SweepResult::default();
     for inst in &tickers {
         let ticker = &inst.ticker;
@@ -757,8 +782,27 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let prometheus_handle = PrometheusBuilder::new()
+        .set_buckets_for_metric(
+            Matcher::Full("saxo_daily_bars_sweep_duration_seconds".to_string()),
+            SWEEP_DURATION_BUCKETS,
+        )
+        .context("invalid sweep duration buckets")?
+        .set_buckets_for_metric(
+            Matcher::Full("saxo_api_request_duration_seconds".to_string()),
+            alpha::saxo::api_metrics::DURATION_BUCKETS,
+        )
+        .context("invalid API duration buckets")?
         .install_recorder()
         .context("failed to install Prometheus recorder")?;
+    // Same series `telemetry::serve` sets: this service has its own /metrics route
+    // because the health server is shared with /tokens.
+    gauge!("nexus_build_info", "service" => "saxo-stream", "version" => env!("CARGO_PKG_VERSION"))
+        .set(1.0);
+    alpha::saxo::api_metrics::describe();
+    for outcome in ["ok", "error"] {
+        counter!("saxo_token_refreshes_total", "outcome" => outcome).absolute(0);
+        counter!("saxo_daily_bars_backfills_total", "outcome" => outcome).absolute(0);
+    }
 
     describe_gauge!(
         "saxo_refresh_token_seconds_remaining",
@@ -777,6 +821,30 @@ async fn main() -> anyhow::Result<()> {
     describe_counter!(
         "saxo_daily_bars_failures_total",
         "Daily-bar sync failures (Uic resolution, chart fetch, publish) since startup."
+    );
+    describe_counter!(
+        "saxo_token_refreshes_total",
+        "Saxo token refresh attempts since startup, by outcome (ok, error)."
+    );
+    describe_histogram!(
+        "saxo_daily_bars_sweep_duration_seconds",
+        "Duration of a daily-bar sweep over every registered instrument."
+    );
+    describe_gauge!(
+        "saxo_daily_bars_sweep_instruments",
+        "Instruments in the last daily-bar sweep."
+    );
+    describe_counter!(
+        "saxo_daily_bars_published_total",
+        "Bars published to market.daily_bars, by exchange (recent days are re-published every sweep)."
+    );
+    describe_gauge!(
+        "saxo_daily_bars_latest_date_timestamp_seconds",
+        "Date of the newest bar per instrument as midnight UTC; 0 once the instrument is deregistered."
+    );
+    describe_counter!(
+        "saxo_daily_bars_backfills_total",
+        "Full history backfills (first sight of a ticker), by outcome."
     );
 
     let token_expires_at_unix = Arc::new(AtomicI64::new(0));

@@ -294,19 +294,25 @@ impl ChartClient {
     ) -> Result<Vec<DailyBarRow>, Attempt> {
         // Read the stream's current token; never refresh it.
         let access_token = self.token.lock().unwrap().access_token.clone();
-        let resp = self
+        let started = std::time::Instant::now();
+        let sent = self
             .http
             .get(url.clone())
             .bearer_auth(access_token)
             .send()
-            .await
-            .map_err(|e| Attempt {
-                error: ChartError::Http(e),
-                retryable: true,
-                rate_limited: false,
-                retry_after: None,
-                status: None,
-            })?;
+            .await;
+        super::api_metrics::record(
+            super::api_metrics::Endpoint::Chart,
+            started,
+            sent.as_ref().ok().map(|r| r.status()),
+        );
+        let resp = sent.map_err(|e| Attempt {
+            error: ChartError::Http(e),
+            retryable: true,
+            rate_limited: false,
+            retry_after: None,
+            status: None,
+        })?;
         let status = resp.status();
         if status.is_success() {
             let body = resp.text().await.map_err(Attempt::fatal)?;
