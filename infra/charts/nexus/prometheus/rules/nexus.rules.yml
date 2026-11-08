@@ -615,11 +615,16 @@ groups:
             publishes them later. See the Nordic Live dashboard and the
             nordic-live pod logs.
 
-      # Nordic markets publish around the clock, so 15 minutes without a newer
-      # publish_date is suspicious. If this is noisy at night, add a schedule
-      # (e.g. only 05:00-22:00 UTC) rather than silencing it in code.
+      # MFN publishes nothing for hours at night and at weekends, and the lag
+      # then only measures that quiet. So only Mon-Fri 06:00-20:00 UTC (the
+      # NordicLiveSilent window), and only when the newest item is from inside
+      # today's window (lag < seconds since 06:00): no alert on Monday morning
+      # for a weekend without releases.
       - alert: NordicLiveWatermarkLag
-        expr: nordic_live_watermark_lag_seconds{job="nordic-live"} > 900
+        expr: >
+          (nordic_live_watermark_lag_seconds{job="nordic-live"} > 900)
+          and on() (day_of_week() >= 1 and day_of_week() <= 5 and hour() >= 6 and hour() < 20)
+          and (nordic_live_watermark_lag_seconds{job="nordic-live"} < on() group_left() (hour() * 3600 + minute() * 60 - 21600))
         for: 10m
         labels:
           severity: warning

@@ -1078,16 +1078,18 @@ tests:
         alertname: NordicLiveEmitLosingEvents
         exp_alerts: []
 
-  # ── NordicLiveWatermarkLag: lag > 900 s for 10m ───────────────────────────
-  - name: NordicLiveWatermarkLag fires after 10 minutes above 15 minutes
+  # ── NordicLiveWatermarkLag: lag > 900 s for 10m, Mon-Fri 06:00-20:00 UTC ─
+  # promtool time 0 is 1970-01-01 00:00 UTC, a Thursday. The lag series starts
+  # at 07:00 UTC (420 missing samples first).
+  - name: NordicLiveWatermarkLag fires on a weekday after 10 minutes above 15 minutes
     input_series:
       - series: 'nordic_live_watermark_lag_seconds{job="nordic-live"}'
-        values: '60+60x40'
+        values: '_x420 60+60x40'
     alert_rule_test:
-      - eval_time: 20m
+      - eval_time: 7h20m
         alertname: NordicLiveWatermarkLag
         exp_alerts: []
-      - eval_time: 30m
+      - eval_time: 7h30m
         alertname: NordicLiveWatermarkLag
         exp_alerts:
           - exp_labels:
@@ -1100,9 +1102,44 @@ tests:
   - name: NordicLiveWatermarkLag is silent while the watermark is fresh
     input_series:
       - series: 'nordic_live_watermark_lag_seconds{job="nordic-live"}'
-        values: '5x60'
+        values: '5x1200'
     alert_rule_test:
-      - eval_time: 45m
+      - eval_time: 10h
+        alertname: NordicLiveWatermarkLag
+        exp_alerts: []
+
+  - name: NordicLiveWatermarkLag is silent at night
+    input_series:
+      - series: 'nordic_live_watermark_lag_seconds{job="nordic-live"}'
+        values: '0+60x1500'
+    alert_rule_test:
+      - eval_time: 21h
+        alertname: NordicLiveWatermarkLag
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: NordicLiveWatermarkLag
+        exp_alerts: []
+
+  - name: NordicLiveWatermarkLag is silent when the quiet began before the window
+    input_series:
+      - series: 'nordic_live_watermark_lag_seconds{job="nordic-live"}'
+        values: '0+60x1500'
+    alert_rule_test:
+      - eval_time: 6h20m
+        alertname: NordicLiveWatermarkLag
+        exp_alerts: []
+      - eval_time: 7h
+        alertname: NordicLiveWatermarkLag
+        exp_alerts: []
+
+  - name: NordicLiveWatermarkLag is silent at the weekend
+    # 1970-01-04 is a Sunday: 3 days = 259200 s. Lag grows from Sunday 00:00.
+    # Sunday 15:00 is the case that fired on 2026-11-08.
+    input_series:
+      - series: 'nordic_live_watermark_lag_seconds{job="nordic-live"}'
+        values: '_x4320 0+60x1500'
+    alert_rule_test:
+      - eval_time: 3d15h
         alertname: NordicLiveWatermarkLag
         exp_alerts: []
 
