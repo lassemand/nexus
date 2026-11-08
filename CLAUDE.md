@@ -57,6 +57,16 @@ may use real tickers as example fixtures. (Two early migrations seed GomSpace
 and Novo Nordisk; they are applied and cannot be edited, and do nothing on a
 database without those rows.)
 
+### Recorded fixtures: do not read
+
+Never read the files in `chronicle/tests/fixtures/mfn/e2e/`, neither the recorded
+MFN feed pages (`*.json`) nor the captured events (`*.pb`). They are large raw
+recordings (hundreds of KB each, protobuf is binary) and add nothing a task needs.
+Everything about them (what they contain, how to re-record them, the expected
+values) is in the doc comments of `chronicle/tests/announcements_e2e.rs` and
+`signal/src/e2e_announcements.rs`; work from those, and regenerate the `*.pb`
+files with `REFRESH_E2E_FIXTURES=1` instead of editing them.
+
 ## Commands
 
 ```bash
