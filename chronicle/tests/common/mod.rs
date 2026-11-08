@@ -1,5 +1,6 @@
 //! Ephemeral-database helper for the Nordic integration tests. Needs
-//! `TEST_DATABASE_URL` (a role allowed to CREATE DATABASE); tests skip when unset.
+//! `TEST_DATABASE_URL` (a role allowed to CREATE DATABASE); tests skip when unset,
+//! except under CI, where an unset value fails ([`test_database_url`]).
 #![allow(dead_code)]
 
 use async_trait::async_trait;
@@ -10,6 +11,19 @@ use sqlx::{Connection, PgConnection, PgPool};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
+
+/// `TEST_DATABASE_URL`, or `None` to skip a database test. Under CI (`CI=true`,
+/// set by GitHub Actions) a missing value panics: a skipped test would pass
+/// without running its assertions.
+pub fn test_database_url() -> Option<String> {
+    match std::env::var("TEST_DATABASE_URL") {
+        Ok(url) if !url.is_empty() => Some(url),
+        _ if std::env::var("CI").is_ok_and(|v| v == "true") => {
+            panic!("TEST_DATABASE_URL is not set under CI, so this database test would be skipped")
+        }
+        _ => None,
+    }
+}
 
 /// A throwaway migrated database containing company `GOMX`/`FNSE`
 /// (MFN slug `gomspace-group`).
@@ -30,7 +44,7 @@ impl TestDb {
 
     /// Create an empty database (no migrations applied).
     pub async fn create_empty() -> Option<Self> {
-        let url = std::env::var("TEST_DATABASE_URL").ok()?;
+        let url = test_database_url()?;
         let name = format!(
             "nordic_test_{}_{}",
             std::process::id(),

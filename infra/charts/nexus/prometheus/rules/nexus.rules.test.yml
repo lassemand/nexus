@@ -1238,4 +1238,213 @@ tests:
     alert_rule_test:
       - eval_time: 35m
         alertname: SaxoApiRateLimited
+
+  # ── ChronicleJobStale: 30 h (daily) / 78 h (weekday jobs) ─────────────────
+  - name: ChronicleJobStale fires for a daily job after 30 hours
+    input_series:
+      # Last success at t=0; no later push.
+      - series: 'nexus_job_last_success_timestamp_seconds{job="nordic-reports"}'
+        values: '0x2400'
+    alert_rule_test:
+      - eval_time: 29h
+        alertname: ChronicleJobStale
+        exp_alerts: []
+      - eval_time: 31h
+        alertname: ChronicleJobStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: nordic-reports
+            exp_annotations:
+              summary: "Chronicle job nordic-reports has not succeeded for 1d 7h 0m 0s"
+              description: "No successful run of nordic-reports for 1d 7h 0m 0s: it failed, was not scheduled, or its CronJob is suspended. See the Chronicle Jobs dashboard and `kubectl -n chronicle get cronjob`."
+
+  - name: ChronicleJobStale lets a weekday job skip the weekend
+    input_series:
+      # Friday 22:00 run, next run Monday 22:00 (72 h later).
+      - series: 'nexus_job_last_success_timestamp_seconds{job="market"}'
+        values: '0x4800'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="pdmr"}'
+        values: '0x4800'
+    alert_rule_test:
+      - eval_time: 72h
+        alertname: ChronicleJobStale
+        exp_alerts: []
+      - eval_time: 77h
+        alertname: ChronicleJobStale
+        exp_alerts: []
+      - eval_time: 79h
+        alertname: ChronicleJobStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: market
+            exp_annotations:
+              summary: "Chronicle job market has not succeeded for 3d 7h 0m 0s"
+              description: "No successful run of market for 3d 7h 0m 0s: it failed, was not scheduled, or its CronJob is suspended. See the Chronicle Jobs dashboard and `kubectl -n chronicle get cronjob`."
+          - exp_labels:
+              severity: warning
+              job: pdmr
+            exp_annotations:
+              summary: "Chronicle job pdmr has not succeeded for 3d 7h 0m 0s"
+              description: "No successful run of pdmr for 3d 7h 0m 0s: it failed, was not scheduled, or its CronJob is suspended. See the Chronicle Jobs dashboard and `kubectl -n chronicle get cronjob`."
+
+  - name: ChronicleJobStale ignores the backfill job
+    input_series:
+      - series: 'nexus_job_last_success_timestamp_seconds{job="nordic-reports-backfill"}'
+        values: '0x2400'
+    alert_rule_test:
+      - eval_time: 40h
+        alertname: ChronicleJobStale
+        exp_alerts: []
+
+  - name: ChronicleJobStale is silent for a job that keeps succeeding
+    input_series:
+      - series: 'nexus_job_last_success_timestamp_seconds{job="chronicle"}'
+        # The timestamp tracks time: a push every minute.
+        values: '0+60x2400'
+    alert_rule_test:
+      - eval_time: 40h
+        alertname: ChronicleJobStale
+        exp_alerts: []
+
+  # ── ChronicleJobNeverSucceeded: absent for 48 h (78 h for weekday jobs) ───
+  - name: ChronicleJobNeverSucceeded fires for a daily job that never reported
+    input_series:
+      - series: 'nexus_job_last_success_timestamp_seconds{job="earnings"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="nordic-reports"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="nordic-calendar"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="market"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="filings"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="pdmr"}'
+        values: '0+0x4000'
+    alert_rule_test:
+      - eval_time: 47h
+        alertname: ChronicleJobNeverSucceeded
+        exp_alerts: []
+      - eval_time: 49h
+        alertname: ChronicleJobNeverSucceeded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: chronicle
+            exp_annotations:
+              summary: "Chronicle job chronicle has never reported a success"
+              description: "No successful run of chronicle has been pushed for 48 hours after the rules were loaded. Check that its CronJob has PUSHGATEWAY_URL set and that it ran."
+
+  - name: ChronicleJobNeverSucceeded waits 78 hours for weekday jobs
+    input_series:
+      - series: 'nexus_job_last_success_timestamp_seconds{job="chronicle"}'
+        values: '0+0x4800'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="earnings"}'
+        values: '0+0x4800'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="nordic-reports"}'
+        values: '0+0x4800'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="nordic-calendar"}'
+        values: '0+0x4800'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="market"}'
+        values: '0+0x4800'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="filings"}'
+        values: '0+0x4800'
+    alert_rule_test:
+      - eval_time: 49h
+        alertname: ChronicleJobNeverSucceeded
+        exp_alerts: []
+      - eval_time: 79h
+        alertname: ChronicleJobNeverSucceeded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: pdmr
+            exp_annotations:
+              summary: "Chronicle job pdmr has never reported a success"
+              description: "No successful run of pdmr has been pushed for 78 hours after the rules were loaded. Check that its CronJob has PUSHGATEWAY_URL set and that it ran."
+
+  - name: ChronicleJobNeverSucceeded is silent once every job has reported
+    input_series:
+      - series: 'nexus_job_last_success_timestamp_seconds{job="chronicle"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="earnings"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="nordic-reports"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="nordic-calendar"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="market"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="filings"}'
+        values: '0+0x4000'
+      - series: 'nexus_job_last_success_timestamp_seconds{job="pdmr"}'
+        values: '0+0x4000'
+    alert_rule_test:
+      - eval_time: 60h
+        alertname: ChronicleJobNeverSucceeded
+        exp_alerts: []
+
+  # ── ChronicleJobPartialFailure: failed companies in the last run ──────────
+  - name: ChronicleJobPartialFailure fires for failed companies
+    input_series:
+      - series: 'nordic_reports_companies_total{job="nordic-reports",outcome="failed"}'
+        values: '1+0x10'
+      - series: 'nordic_reports_companies_total{job="nordic-reports",outcome="ok"}'
+        values: '29+0x10'
+      - series: 'nordic_calendar_companies_total{job="nordic-calendar",outcome="failed"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ChronicleJobPartialFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: nordic-reports
+              outcome: failed
+            exp_annotations:
+              summary: "nordic-reports: 1 companies failed in the last run"
+              description: "The last run of nordic-reports failed for 1 companies. See the Chronicle Jobs dashboard and the pod logs in Loki (`company failed`, `calendar refresh failed`)."
+
+  - name: ChronicleJobPartialFailure is silent when nothing failed or for the backfill
+    input_series:
+      - series: 'nordic_reports_companies_total{job="nordic-reports",outcome="failed"}'
+        values: '0+0x10'
+      - series: 'nordic_calendar_companies_total{job="nordic-calendar",outcome="failed"}'
+        values: '0+0x10'
+      - series: 'nordic_reports_companies_total{job="nordic-reports-backfill",outcome="failed"}'
+        values: '4+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ChronicleJobPartialFailure
+        exp_alerts: []
+
+  # ── NordicMarParseErrors: parse errors in the last nordic-reports run ─────
+  - name: NordicMarParseErrors sums the per-exchange counters
+    input_series:
+      - series: 'nordic_mar_parse_errors_total{job="nordic-reports",exchange_mic="XHEL"}'
+        values: '2+0x10'
+      - series: 'nordic_mar_parse_errors_total{job="nordic-reports",exchange_mic="FNFI"}'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NordicMarParseErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: nordic-reports
+            exp_annotations:
+              summary: "nordic-reports could not parse 3 Finnish insider releases"
+              description: "The last nordic-reports run read 3 managers' transaction releases it could not parse; they are not published. Find them in the logs (`managers' transaction not parsed, skipped`)."
+
+  - name: NordicMarParseErrors is silent at zero and for the backfill job
+    input_series:
+      - series: 'nordic_mar_parse_errors_total{job="nordic-reports",exchange_mic="XHEL"}'
+        values: '0+0x10'
+      - series: 'nordic_mar_parse_errors_total{job="nordic-reports-backfill",exchange_mic="XHEL"}'
+        values: '9+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NordicMarParseErrors
         exp_alerts: []

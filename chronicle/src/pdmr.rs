@@ -24,6 +24,7 @@
 mod db;
 mod kafka;
 
+use anyhow::Context;
 use chronicle_lib::insider_source::{fi_register::MAR_START, insider_source, SourceContext};
 use chronicle_lib::nordic::db::Company;
 use chronicle_lib::registry;
@@ -34,6 +35,7 @@ use model::asset::mic;
 use model::nordic;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
+use std::process::ExitCode;
 use tracing::{error, info, warn};
 
 // ── Args ──────────────────────────────────────────────────────────────────
@@ -83,24 +85,48 @@ async fn load_fnse_companies(pool: &sqlx::PgPool) -> anyhow::Result<Vec<(String,
 
 // ── Main ──────────────────────────────────────────────────────────────────
 
+/// Job name in the Pushgateway. Run metrics: `pdmr_rows_fetched_total` (FI register
+/// rows, one transaction each), `pdmr_transactions_published_total`,
+/// `pdmr_parse_errors_total` (rows skipped for an unreadable date).
+const JOB: &str = "pdmr";
+
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
     tracing_subscriber::fmt::init();
+    match run_job(Args::parse()).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            error!(error = %format!("{e:#}"), "pdmr failed");
+            ExitCode::FAILURE
+        }
+    }
+}
 
-    let args = Args::parse();
+/// Runs the job and pushes its metrics, on success and on error alike.
+async fn run_job(args: Args) -> anyhow::Result<()> {
+    telemetry::run_batch(JOB, run(args)).await
+}
 
+async fn run(args: Args) -> anyhow::Result<()> {
+    for name in [
+        "pdmr_rows_fetched_total",
+        "pdmr_transactions_published_total",
+        "pdmr_parse_errors_total",
+    ] {
+        metrics::counter!(name).absolute(0);
+    }
     // Connect to DB and run migrations so the companies table is up-to-date.
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&args.database_url)
         .await
-        .expect("failed to connect to postgres");
+        .context("failed to connect to postgres")?;
 
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
-        .expect("migrations failed");
+        .context("migrations failed")?;
 
     registry::sync_or_warn(&pool, Some(&args.kafka_brokers), &args.tickers_topic).await;
 
@@ -109,7 +135,7 @@ async fn main() {
         Ok(t) => t,
         Err(e) => {
             error!(error = %e, "failed to load FNSE tickers from companies table");
-            return;
+            return Err(e.context("failed to load FNSE tickers from companies table"));
         }
     };
 
@@ -118,7 +144,7 @@ async fn main() {
             "no FNSE tickers registered — register tickers via: \
              nexus register <TICKER> --exchange-mic FNSE"
         );
-        return;
+        return Ok(());
     }
 
     info!(
@@ -129,12 +155,13 @@ async fn main() {
     let client = reqwest::Client::builder()
         .user_agent("nexus lasse.alm@gsfleet.io")
         .build()
-        .expect("failed to build HTTP client");
+        .context("failed to build HTTP client")?;
 
-    let producer = ChronicleProducer::new(&args.kafka_brokers).expect("failed to connect to Kafka");
+    let producer =
+        ChronicleProducer::new(&args.kafka_brokers).context("failed to connect to Kafka")?;
 
     let to = Utc::now().date_naive();
-    let mar_start = NaiveDate::parse_from_str(MAR_START, "%Y-%m-%d").unwrap();
+    let mar_start = NaiveDate::parse_from_str(MAR_START, "%Y-%m-%d")?;
     // Pre-MAR data is unavailable — clamp from to 2016-07-03.
     let from = (to - Duration::days(args.lookback_days)).max(mar_start);
 
@@ -142,8 +169,7 @@ async fn main() {
     let Some(source) =
         nordic::country_for_mic(mic::FNSE).and_then(|c| insider_source(c.insider_source))
     else {
-        error!("{} has no insider source", mic::FNSE);
-        return;
+        anyhow::bail!("{} has no insider source", mic::FNSE);
     };
 
     for (i, (ticker, fi_issuer)) in tickers.iter().enumerate() {
@@ -177,6 +203,7 @@ async fn main() {
             count = transactions.len(),
             "fetched PDMR transactions"
         );
+        metrics::counter!("pdmr_rows_fetched_total").increment(transactions.len() as u64);
 
         for txn in transactions {
             if let Err(e) = producer
@@ -185,6 +212,7 @@ async fn main() {
             {
                 error!(ticker, error = %e, "failed to publish UnifiedInsiderTransaction");
             } else {
+                metrics::counter!("pdmr_transactions_published_total").increment(1);
                 info!(
                     ticker,
                     pdmr = %txn.person_name,
@@ -197,5 +225,37 @@ async fn main() {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A forced error (unusable database URL) still pushes the run, as a failure.
+    #[tokio::test]
+    async fn a_failed_run_still_pushes_its_metrics() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        std::env::set_var("PUSHGATEWAY_URL", server.uri());
+        let args = Args::parse_from([
+            "pdmr",
+            "--database-url",
+            "not-a-url",
+            "--kafka-brokers",
+            "none:1",
+        ]);
+        assert!(run_job(args).await.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/metrics/job/pdmr");
+        let body = String::from_utf8(requests[0].body.clone()).unwrap();
+        assert!(body.contains("nexus_job_last_run_success{job=\"pdmr\"} 0"));
     }
 }

@@ -28,6 +28,9 @@ spec:
               env:
                 - name: RUST_LOG
                   value: {{ .Values.logLevel | quote }}
+                # Run metrics are pushed here when the job ends (docs/guides/metrics.md).
+                - name: PUSHGATEWAY_URL
+                  value: {{ .Values.pushgatewayUrl | quote }}
               envFrom:
                 - secretRef:
                     name: chronicle-secret
