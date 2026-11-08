@@ -1485,3 +1485,75 @@ tests:
       - eval_time: 5m
         alertname: NordicMarParseErrors
         exp_alerts: []
+
+  # ── InsightToolErrors: error ratio > 20 % over 15m, at least 5 calls ──────
+  - name: InsightToolErrors fires at 50 percent errors
+    input_series:
+      - series: 'insight_tool_calls_total{job="insight",tool="fetch_trade_results",outcome="error"}'
+        values: '0+1x30'
+      - series: 'insight_tool_calls_total{job="insight",tool="fetch_trade_results",outcome="ok"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: InsightToolErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              tool: fetch_trade_results
+            exp_annotations:
+              summary: "insight tool fetch_trade_results fails on 50% of calls"
+              description: "More than 20 % of the last 15 minutes' calls to fetch_trade_results ended in error or invalid_params. Check the insight logs and the database."
+
+  - name: InsightToolErrors is silent for few calls and for a low error ratio
+    input_series:
+      - series: 'insight_tool_calls_total{job="insight",tool="fetch_trade_results",outcome="error"}'
+        values: '0x18 3x12'
+      - series: 'insight_tool_calls_total{job="insight",tool="summarise_trade_results",outcome="error"}'
+        values: '0+0x30'
+      - series: 'insight_tool_calls_total{job="insight",tool="summarise_trade_results",outcome="ok"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: InsightToolErrors
+        exp_alerts: []
+
+  # ── InsightSlowTool: p95 > 5s over 15m, at least 5 calls ──────────────────
+  - name: InsightSlowTool fires when every call takes 10 seconds
+    input_series:
+      - series: 'insight_tool_duration_seconds_bucket{job="insight",tool="fetch_trade_results",le="5"}'
+        values: '0+0x30'
+      - series: 'insight_tool_duration_seconds_bucket{job="insight",tool="fetch_trade_results",le="30"}'
+        values: '0+1x30'
+      - series: 'insight_tool_duration_seconds_bucket{job="insight",tool="fetch_trade_results",le="+Inf"}'
+        values: '0+1x30'
+      - series: 'insight_tool_calls_total{job="insight",tool="fetch_trade_results",outcome="ok"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: InsightSlowTool
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              tool: fetch_trade_results
+            exp_annotations:
+              summary: "insight tool fetch_trade_results p95 is 28.75s"
+              description: "The 95th percentile latency of fetch_trade_results has been above 5 s for the last 15 minutes. See the Insight dashboard and the database."
+
+  - name: InsightSlowTool is silent for fast tools and for few calls
+    input_series:
+      - series: 'insight_tool_duration_seconds_bucket{job="insight",tool="fetch_trade_results",le="5"}'
+        values: '0+1x30'
+      - series: 'insight_tool_duration_seconds_bucket{job="insight",tool="fetch_trade_results",le="+Inf"}'
+        values: '0+1x30'
+      - series: 'insight_tool_calls_total{job="insight",tool="fetch_trade_results",outcome="ok"}'
+        values: '0+1x30'
+      - series: 'insight_tool_duration_seconds_bucket{job="insight",tool="summarise_trade_results",le="5"}'
+        values: '0x18 0x12'
+      - series: 'insight_tool_duration_seconds_bucket{job="insight",tool="summarise_trade_results",le="+Inf"}'
+        values: '0x18 3x12'
+      - series: 'insight_tool_calls_total{job="insight",tool="summarise_trade_results",outcome="ok"}'
+        values: '0x18 3x12'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: InsightSlowTool
+        exp_alerts: []
