@@ -99,6 +99,18 @@ pub fn is_correction(title: &str) -> bool {
     check(title) || check(strip_issuer_prefix(title))
 }
 
+/// True if a correction notice corrects a periodic report: the title with
+/// the correction markers removed classifies as a report. A correction of
+/// business news is an ordinary announcement, not a `report_correction`.
+fn corrects_a_report(tags: &[String], title: &str) -> bool {
+    let mut rest = strip_issuer_prefix(title).to_lowercase();
+    for marker in languages().flat_map(|l| l.correction_markers().iter().copied()) {
+        rest = rest.replace(marker, " ");
+    }
+    let rest = rest.trim();
+    kind_from(tags, rest).is_some() || headline_looks_like_report(rest)
+}
+
 /// True if the headline announces a change to the financial calendar.
 pub fn is_calendar_update(headline: &str) -> bool {
     let l = headline.to_lowercase();
@@ -300,7 +312,7 @@ mod tests {
             ("prefixed correction", tags(&[REG, REPORT, INTERIM]), "GomSpace A/S: Correction: GomSpace Reports Strong Q2 Performance with Growth", None, true, false),
             ("unprefixed correction", tags(&[REG, REPORT, INTERIM]), "Correction: GomSpace Reports Strong Q2 Performance", None, true, false),
             ("rättelse", tags(&[REG, REPORT, INTERIM]), "Issuer AB: Rättelse: Delårsrapport januari-mars", None, true, false),
-            ("correction of non-report", tags(&[REG]), "GomSpace A/S: Correction: GomSpace signs a 19.5 MEUR contract", None, true, false),
+            ("correction of non-report", tags(&[REG]), "GomSpace A/S: Correction: GomSpace signs a 19.5 MEUR contract", None, false, false),
             // 5. same-day re-sends look like ordinary reports here (handled in SQL)
             ("re-send", tags(&[REG, REPORT, ANNUAL, INTERIM, Q4]), "GomSpace A/S: GomSpace (provider of nanosatellites) announces its quarterly results for the fourth quarter of 2018", Some(Annual), false, false),
             // 6. calendar notices, even with report tags or the word "report"/"results"
