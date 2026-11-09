@@ -1,0 +1,15 @@
+[package]
+name = "verdict-sample"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Sample analyst kernel for generic interim reports."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+verdict-sdk = { path = "../../sdk" }
+
+[dev-dependencies]
+serde_json = "1"
