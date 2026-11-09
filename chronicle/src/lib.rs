@@ -5,3 +5,4 @@ pub mod insider_source;
 pub mod job_metrics;
 pub mod nordic;
 pub mod registry;
+pub mod saxo_quotes;

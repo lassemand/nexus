@@ -31,6 +31,9 @@ spec:
             - name: health
               containerPort: 8080
               protocol: TCP
+            - name: quotes
+              containerPort: {{ .Values.saxo.quotePort }}
+              protocol: TCP
           livenessProbe:
             httpGet:
               path: /health
@@ -50,6 +53,8 @@ spec:
               value: {{ .Values.logLevel | quote }}
             - name: SAXO_CHART_VERSION
               value: {{ .Values.saxo.chartVersion | quote }}
+            - name: QUOTE_PORT
+              value: {{ .Values.saxo.quotePort | quote }}
           envFrom:
             - secretRef:
                 name: chronicle-secret

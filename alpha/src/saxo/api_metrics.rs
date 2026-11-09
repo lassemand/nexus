@@ -13,6 +13,8 @@ pub enum Endpoint {
     Chart,
     /// The reference-data instrument search (Uic resolution).
     Instruments,
+    /// The info-price API (live quotes).
+    InfoPrices,
 }
 
 impl Endpoint {
@@ -22,6 +24,7 @@ impl Endpoint {
             Endpoint::Token => "token",
             Endpoint::Chart => "chart",
             Endpoint::Instruments => "instruments",
+            Endpoint::InfoPrices => "infoprices",
         }
     }
 }
@@ -54,7 +57,12 @@ pub fn record(endpoint: Endpoint, started: Instant, status: Option<StatusCode>) 
 
 /// Registers every series at zero so `rate()` and alerts see them from the start.
 pub fn describe() {
-    for endpoint in [Endpoint::Token, Endpoint::Chart, Endpoint::Instruments] {
+    for endpoint in [
+        Endpoint::Token,
+        Endpoint::Chart,
+        Endpoint::Instruments,
+        Endpoint::InfoPrices,
+    ] {
         for class in ["2xx", "4xx", "5xx", "error"] {
             counter!("saxo_api_requests_total", "endpoint" => endpoint.label(), "status_class" => class)
                 .absolute(0);

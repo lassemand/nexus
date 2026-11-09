@@ -60,8 +60,16 @@ sets `nexus_build_info{service="saxo-stream"}` by hand. Series: the original fou
 re-published every sweep), `saxo_daily_bars_backfills_total{outcome}`,
 `saxo_daily_bars_latest_date_timestamp_seconds{ticker,exchange_mic}` (midnight UTC of the newest bar),
 `saxo_api_requests_total{endpoint,status_class}`, `saxo_api_request_duration_seconds{endpoint}` and
-`saxo_api_rate_limited_total`. `endpoint` is `token`, `chart` or `instruments`; `status_class` is
-`2xx`, `4xx`, `5xx` or `error` (no response). The HTTP series are recorded in `alpha::saxo`.
+`saxo_api_rate_limited_total`. `endpoint` is `token`, `chart`, `instruments` or `infoprices`;
+`status_class` is `2xx`, `4xx`, `5xx` or `error` (no response). The HTTP series are recorded in
+`alpha::saxo`.
+
+The internal quote endpoint (`GET /quote` on `QUOTE_PORT`, NEX-249) adds
+`saxo_quote_requests_total{outcome}` (`ok`, `not_found`, `no_token`, `rate_limited`, `saxo_error`,
+`bad_request`), the histograms `saxo_quote_seconds` (our total time, Saxo included) and
+`saxo_quote_upstream_seconds` (Saxo only), buckets 1 ms to 2.5 s, and
+`saxo_quote_instruments` (registered companies with a Uic in the quote map). Our own overhead is
+the difference of the two histograms; the target is p99 under 300 ms in all, under 5 ms of it ours.
 
 A deregistered ticker keeps no stale series: on every sweep, instruments that had a freshness gauge
 and are no longer registered are set to 0 (the `metrics` crate cannot delete a series) and
