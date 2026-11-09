@@ -431,6 +431,19 @@ mod tests {
     }
 
     #[test]
+    fn only_corrections_of_reports_are_corrections() {
+        let c = |title: &str| classify_item(&tags(&[REG]), title);
+        // GOMX 2025-06-25 21:40, without the issuer prefix.
+        let business =
+            c("Correction: GomSpace signs a 19.5 MEUR contract with a European customer");
+        assert!(!business.is_correction && business.report_kind.is_none());
+        // NOVO-B 2021-03-25 17:12.
+        let agm = c("Correction: Resolutions from the Annual General Meeting of Novo Nordisk A/S");
+        assert!(!agm.is_correction && agm.report_kind.is_none());
+        assert!(c("Correction: GomSpace Reports Strong Q2 Performance").is_correction);
+    }
+
+    #[test]
     fn fiscal_period_rules() {
         let f = |t: &[&str], title: &str| classify_item(&tags(t), title).fiscal_period;
         assert_eq!(
