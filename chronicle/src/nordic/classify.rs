@@ -41,6 +41,9 @@ pub struct Classification {
     pub report_kind: Option<ReportKind>,
     /// `Correction:` / `Rättelse:` notice.
     pub is_correction: bool,
+    /// A correction whose corrected item (the headline after the marker) is a
+    /// periodic report; only these are published as `report_correction`.
+    pub corrects_report: bool,
     /// Announces a change to the financial calendar.
     pub calendar_update: bool,
     /// `2026-Q3` or `2026`; only when unambiguous.
@@ -198,6 +201,16 @@ pub fn classify_item(tags: &[String], title: &str) -> Classification {
         })
     };
     let is_correction = !excluded && is_correction(title);
+    let corrects_report = is_correction && {
+        let lower = t.to_lowercase();
+        let rest = languages()
+            .flat_map(|l| l.correction_markers().iter().copied())
+            .find_map(|m| lower.strip_prefix(m))
+            .unwrap_or(&lower)
+            .trim_start()
+            .to_string();
+        kind_from(tags, &rest).is_some()
+    };
     let report_kind = if excluded || calendar_update || is_correction {
         None
     } else {
@@ -207,6 +220,7 @@ pub fn classify_item(tags: &[String], title: &str) -> Classification {
     Classification {
         report_kind,
         is_correction,
+        corrects_report,
         calendar_update,
         fiscal_period,
     }
@@ -414,8 +428,27 @@ mod tests {
             let c = classify_item(&tags, title);
             assert_eq!(c.report_kind, kind, "{name}: kind");
             assert_eq!(c.is_correction, corr, "{name}: correction");
+            assert_eq!(
+                c.corrects_report,
+                corr && name != "correction of non-report",
+                "{name}: corrects report"
+            );
             assert_eq!(c.calendar_update, cal, "{name}: calendar");
         }
+    }
+
+    #[test]
+    fn correction_of_a_non_report_does_not_correct_a_report() {
+        let c = classify_item(
+            &tags(&[REG]),
+            "Correction: GomSpace signs a 19.5 MEUR contract with a European customer",
+        );
+        assert!(c.is_correction && !c.corrects_report);
+        let c = classify_item(
+            &tags(&[REG]),
+            "Correction: GomSpace Reports Strong Q2 Performance",
+        );
+        assert!(c.is_correction && c.corrects_report);
     }
 
     #[test]
