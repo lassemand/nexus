@@ -109,6 +109,9 @@ pub fn release_event(
     c: &Classification,
 ) -> Option<SpecialEvent> {
     let (event_type, report_kind) = if c.is_correction {
+        if !c.corrects_report {
+            return None;
+        }
         ("report_correction", None)
     } else if c.calendar_update {
         return None;
@@ -338,6 +341,7 @@ mod tests {
         Classification {
             report_kind: kind,
             is_correction: correction,
+            corrects_report: correction,
             calendar_update: calendar,
             fiscal_period: kind.map(|_| "2026-Q3".into()),
         }
@@ -427,6 +431,9 @@ mod tests {
             (fix.event_type.as_str(), fix.is_correction),
             ("report_correction", true)
         );
+        let mut other = class(None, true, false);
+        other.corrects_report = false;
+        assert!(release_event(&c, &item(), &other).is_none());
         assert!(release_event(&c, &item(), &class(None, false, false)).is_none());
         assert!(release_event(&c, &item(), &class(None, false, true)).is_none());
     }
