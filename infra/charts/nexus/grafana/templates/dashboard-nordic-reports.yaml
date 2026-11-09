@@ -52,7 +52,7 @@ data:
           "id": 1,
           "type": "table",
           "title": "Upcoming reports",
-          "description": "Scheduled report dates from the company's MFN financial calendar, soonest first. The time is MFN's estimate (the previous report's time); \"not announced\" when MFN lists none.",
+          "description": "Scheduled report dates from the company's MFN financial calendar, soonest first. The date is as MFN lists it. The time is MFN's estimate (the previous report's time, which MFN lists in Stockholm time) shown in your own time zone; \"not announced\" when MFN lists none.",
           "gridPos": {
             "x": 0,
             "y": 0,
@@ -65,7 +65,24 @@ data:
           },
           "fieldConfig": {
             "defaults": {},
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Est. time"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "time: HH:mm"
+                  },
+                  {
+                    "id": "noValue",
+                    "value": "not announced"
+                  }
+                ]
+              }
+            ]
           },
           "options": {},
           "targets": [
@@ -76,7 +93,7 @@ data:
                 "uid": "nexus-postgres"
               },
               "format": "table",
-              "rawSql": "-- Scheduled reports from today (exchange-local date) on. expected_time is MFN's estimate; when MFN\n-- shows no time it is NULL and we say so instead of showing 00:00.\nWITH up AS (\n  SELECT\n    to_char(expected_date, 'YYYY-MM-DD') AS \"Date\",\n    COALESCE(to_char(expected_time, 'HH24:MI'), 'not announced') AS \"Est. time (estimated)\",\n    calendar_label AS \"Report\",\n    report_kind AS \"Kind\",\n    fiscal_period AS \"Fiscal period\"\n  FROM special_events\n  WHERE source IN ('mfn', 'mfn_release') AND superseded_by IS NULL AND event_type IN ('quarterly_report', 'annual_report') AND status = 'scheduled'\n    AND ticker = split_part(${company:sqlstring}, '|', 1) AND exchange_mic = split_part(${company:sqlstring}, '|', 2)\n    AND expected_date >= (now() AT TIME ZONE COALESCE((SELECT timezone FROM exchanges WHERE mic = exchange_mic), 'UTC'))::date\n)\nSELECT * FROM up\nUNION ALL\nSELECT 'No upcoming report dates published', NULL, NULL, NULL, NULL\nWHERE NOT EXISTS (SELECT 1 FROM up)\nORDER BY 1, 2"
+              "rawSql": "-- Scheduled reports from today (exchange-local date) on. expected_time is MFN's estimate (Stockholm\n-- local); occurred_at already holds that instant, so it is returned as a timestamptz and Grafana shows it in\n-- the viewer's time zone. When MFN shows no time the cell is NULL and the column's noValue says\n-- \"not announced\" instead of 00:00. The Date column and the from-today filter stay exchange-local.\nWITH up AS (\n  SELECT\n    to_char(expected_date, 'YYYY-MM-DD') AS \"Date\",\n    CASE WHEN expected_time IS NOT NULL THEN occurred_at END AS \"Est. time\",\n    calendar_label AS \"Report\",\n    report_kind AS \"Kind\",\n    fiscal_period AS \"Fiscal period\"\n  FROM special_events\n  WHERE source IN ('mfn', 'mfn_release') AND superseded_by IS NULL AND event_type IN ('quarterly_report', 'annual_report') AND status = 'scheduled'\n    AND ticker = split_part(${company:sqlstring}, '|', 1) AND exchange_mic = split_part(${company:sqlstring}, '|', 2)\n    AND expected_date >= (now() AT TIME ZONE COALESCE((SELECT timezone FROM exchanges WHERE mic = exchange_mic), 'UTC'))::date\n)\nSELECT * FROM up\nUNION ALL\nSELECT 'No upcoming report dates published', NULL, NULL, NULL, NULL\nWHERE NOT EXISTS (SELECT 1 FROM up)\nORDER BY 1, 2"
             }
           ]
         },
@@ -84,7 +101,7 @@ data:
           "id": 2,
           "type": "table",
           "title": "Release timing",
-          "description": "When the company's past reports came out relative to the exchange's local session (hours and time zone from the exchanges table, e.g. 09:00-17:30 in Stockholm with 13:00 on half days, 09:00-17:00 in Copenhagen).",
+          "description": "When the company's past reports came out relative to the trading session of the company's exchange, not your clock. The hours and time zone come from the exchanges table, so a newly added country needs no dashboard change. All in the exchange's local time: Stockholm 09:00-17:30 (13:00 on half days), Copenhagen 09:00-17:00, Helsinki 10:00-18:30. Pre-open: released before the open. Intraday: released during the session. After close: released after the close. Non-trading day: released on a weekend or holiday. No trading calendar: the holiday table does not cover that year, or the exchange is missing from the exchanges table. Not computed yet: signal has not processed the report yet. Not classified: any other report without a session.",
           "gridPos": {
             "x": 14,
             "y": 0,
@@ -108,7 +125,7 @@ data:
                 "uid": "nexus-postgres"
               },
               "format": "table",
-              "rawSql": "-- How the company's past reports were timed relative to the exchange's local session.\nSELECT\n  CASE release_session\n    WHEN 'pre_open' THEN 'pre-open'\n    WHEN 'intraday' THEN 'intraday'\n    WHEN 'after_close' THEN 'after close'\n    WHEN 'non_trading_day' THEN 'non-trading day'\n    ELSE 'not classified'\n  END AS \"Session\",\n  count(*) AS \"Reports\"\nFROM special_events\nWHERE source = 'mfn' AND event_type IN ('quarterly_report', 'annual_report') AND status = 'occurred' AND NOT is_correction\n  AND ticker = split_part(${company:sqlstring}, '|', 1) AND exchange_mic = split_part(${company:sqlstring}, '|', 2)\nGROUP BY release_session\nORDER BY min(CASE release_session\n  WHEN 'pre_open' THEN 1 WHEN 'intraday' THEN 2 WHEN 'after_close' THEN 3\n  WHEN 'non_trading_day' THEN 4 ELSE 5 END)"
+              "rawSql": "-- How the company's past reports were timed relative to the exchange's local session. A report\n-- without a session gets the reason: no trading calendar (data_status calendar_unknown), not computed\n-- yet (no reaction computed), otherwise not classified.\nSELECT \"Session\", count(*) AS \"Reports\"\nFROM (\n  SELECT\n    CASE\n      WHEN release_session = 'pre_open' THEN 'pre-open'\n      WHEN release_session = 'intraday' THEN 'intraday'\n      WHEN release_session = 'after_close' THEN 'after close'\n      WHEN release_session = 'non_trading_day' THEN 'non-trading day'\n      WHEN data_status = 'calendar_unknown' THEN 'no trading calendar'\n      WHEN data_status IS NULL THEN 'not computed yet'\n      ELSE 'not classified'\n    END AS \"Session\",\n    CASE\n      WHEN release_session = 'pre_open' THEN 1\n      WHEN release_session = 'intraday' THEN 2\n      WHEN release_session = 'after_close' THEN 3\n      WHEN release_session = 'non_trading_day' THEN 4\n      WHEN data_status = 'calendar_unknown' THEN 5\n      WHEN data_status IS NULL THEN 6\n      ELSE 7\n    END AS ord\n  FROM special_events\n  WHERE source = 'mfn' AND event_type IN ('quarterly_report', 'annual_report') AND status = 'occurred' AND NOT is_correction\n    AND ticker = split_part(${company:sqlstring}, '|', 1) AND exchange_mic = split_part(${company:sqlstring}, '|', 2)\n) s\nGROUP BY \"Session\", ord\nORDER BY ord"
             }
           ]
         },
@@ -130,6 +147,34 @@ data:
           "fieldConfig": {
             "defaults": {},
             "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Released"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "time: YYYY-MM-DD HH:mm"
+                  },
+                  {
+                    "id": "description",
+                    "value": "The release instant, shown in your own time zone (the dashboard follows the browser)."
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Session"
+                },
+                "properties": [
+                  {
+                    "id": "description",
+                    "value": "Relative to the trading hours of the company's exchange, not your clock. Example: a Helsinki report at 09:00 CET is at the Helsinki open (10:00 local), so it is intraday, not pre-open. No trading calendar: the holiday table does not cover that year, or the exchange is unknown. Not computed yet: signal has not processed the report yet. Not classified: any other report without a session."
+                  }
+                ]
+              },
               {
                 "matcher": {
                   "id": "byName",
@@ -290,7 +335,7 @@ data:
           "options": {
             "sortBy": [
               {
-                "displayName": "Released (local)",
+                "displayName": "Released",
                 "desc": true
               }
             ]
@@ -303,7 +348,7 @@ data:
                 "uid": "nexus-postgres"
               },
               "format": "table",
-              "rawSql": "-- Released reports, newest first. The reaction comes from the columns signal stores on the\n-- same row. When data_status is not 'ok' the status text replaces the number (never 0%).\nSELECT\n  to_char(occurred_at AT TIME ZONE COALESCE((SELECT timezone FROM exchanges WHERE mic = exchange_mic), 'UTC'), 'YYYY-MM-DD HH24:MI') AS \"Released (local)\",\n  CASE release_session\n    WHEN 'pre_open' THEN 'pre-open'\n    WHEN 'intraday' THEN 'intraday'\n    WHEN 'after_close' THEN 'after close'\n    WHEN 'non_trading_day' THEN 'non-trading day'\n  END AS \"Session\",\n  to_char(expected_date, 'YYYY-MM-DD') AS \"Expected date\",\n  to_char(reaction_date, 'YYYY-MM-DD') AS \"Reaction date\",\n  CASE WHEN data_status = 'ok'\n       THEN rtrim(rtrim(base_close::text, '0'), '.') || ' \u2192 ' || rtrim(rtrim(reaction_close::text, '0'), '.')\n  END AS \"Base \u2192 reaction close\",\n  CASE\n    WHEN data_status = 'ok' THEN\n      CASE WHEN move_pct > 0 THEN '+' ELSE '' END || to_char(move_pct, 'FM990.00') || ' %'\n    ELSE COALESCE(data_status, 'not computed')\n  END AS \"Move %\",\n  CASE WHEN needs_review THEN '\u26a0 check for split / share issue' END AS \"Review\",\n  CASE WHEN superseded_by IS NOT NULL THEN 'corrected' END AS \"Note\",\n  description AS \"Headline\",\n  url\nFROM special_events\nWHERE source = 'mfn' AND event_type IN ('quarterly_report', 'annual_report') AND status = 'occurred' AND NOT is_correction\n  AND ticker = split_part(${company:sqlstring}, '|', 1) AND exchange_mic = split_part(${company:sqlstring}, '|', 2)\nORDER BY occurred_at DESC"
+              "rawSql": "-- Released reports, newest first. The reaction comes from the columns signal stores on the\n-- same row. When data_status is not 'ok' the status text replaces the number (never 0%). Released is a\n-- timestamptz so Grafana shows it in the viewer's time zone. The price currency is the reaction bar's,\n-- else the exchange's.\nSELECT\n  e.occurred_at AS \"Released\",\n  CASE\n    WHEN e.release_session = 'pre_open' THEN 'pre-open'\n    WHEN e.release_session = 'intraday' THEN 'intraday'\n    WHEN e.release_session = 'after_close' THEN 'after close'\n    WHEN e.release_session = 'non_trading_day' THEN 'non-trading day'\n    WHEN e.data_status = 'calendar_unknown' THEN 'no trading calendar'\n    WHEN e.data_status IS NULL THEN 'not computed yet'\n    ELSE 'not classified'\n  END AS \"Session\",\n  to_char(e.expected_date, 'YYYY-MM-DD') AS \"Expected date\",\n  to_char(e.reaction_date, 'YYYY-MM-DD') AS \"Reaction date\",\n  CASE WHEN e.data_status = 'ok'\n       THEN rtrim(rtrim(e.base_close::text, '0'), '.') || ' \u2192 ' || rtrim(rtrim(e.reaction_close::text, '0'), '.') || COALESCE(' ' || COALESCE(c.currency, x.currency), '')\n  END AS \"Base \u2192 reaction close\",\n  CASE\n    WHEN e.data_status = 'ok' THEN\n      CASE WHEN e.move_pct > 0 THEN '+' ELSE '' END || to_char(e.move_pct, 'FM990.00') || ' %'\n    ELSE COALESCE(e.data_status, 'not computed')\n  END AS \"Move %\",\n  CASE WHEN e.needs_review THEN '\u26a0 check for split / share issue' END AS \"Review\",\n  CASE WHEN e.superseded_by IS NOT NULL THEN 'corrected' END AS \"Note\",\n  e.description AS \"Headline\",\n  e.url\nFROM special_events e\nLEFT JOIN LATERAL (\n  SELECT b.currency FROM daily_bars b\n  WHERE b.ticker = e.ticker AND b.exchange_mic = e.exchange_mic AND b.date = e.reaction_date\n) c ON true\nLEFT JOIN exchanges x ON x.mic = e.exchange_mic\nWHERE e.source = 'mfn' AND e.event_type IN ('quarterly_report', 'annual_report') AND e.status = 'occurred' AND NOT e.is_correction\n  AND e.ticker = split_part(${company:sqlstring}, '|', 1) AND e.exchange_mic = split_part(${company:sqlstring}, '|', 2)\nORDER BY e.occurred_at DESC"
             }
           ]
         },
