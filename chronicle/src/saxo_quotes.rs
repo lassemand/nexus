@@ -5,10 +5,12 @@
 //! current access token and never refreshes it.
 //!
 //! A quote never waits for anything but Saxo: Uics come from an in-memory map
-//! that saxo-stream fills before the first request and on every company
-//! reload. A pair that is not in the map answers 404 at once and is handed to
-//! a background resolver through a bounded queue. A rate limit or a missing
-//! token answers 503 with `retry_after_ms`; nothing is retried here.
+//! that saxo-stream fills once it has a token and on every company reload.
+//! Without a valid token every request answers 503 with `retry_after_ms`, so a
+//! registered company is never reported missing just because the map is not
+//! filled yet. With a token, a pair that is not in the map answers 404 at once
+//! and is handed to a background resolver through a bounded queue. A rate limit
+//! also answers 503 with `retry_after_ms`; nothing is retried here.
 
 use alpha::saxo::{QuoteClient, QuoteError, SaxoQuote, SharedToken};
 use axum::extract::{Query, State};
@@ -214,6 +216,10 @@ async fn answer(state: &QuoteState, params: QuoteParams) -> (&'static str, Respo
         }
     };
 
+    let Some(token) = access_token(&state.token) else {
+        return ("no_token", retry("no_token", NO_TOKEN_RETRY_AFTER));
+    };
+
     let instrument = state
         .uics
         .read()
@@ -239,10 +245,6 @@ async fn answer(state: &QuoteState, params: QuoteParams) -> (&'static str, Respo
                 }),
             ),
         );
-    };
-
-    let Some(token) = access_token(&state.token) else {
-        return ("no_token", retry("no_token", NO_TOKEN_RETRY_AFTER));
     };
 
     let upstream = Instant::now();
@@ -327,14 +329,18 @@ mod tests {
     }
 
     async fn start(saxo: &MockServer, token: Option<SharedToken>) -> Harness {
-        let slot: TokenSlot = Arc::new(OnceLock::new());
-        if let Some(t) = token {
-            let _ = slot.set(t);
-        }
         let uics: UicMap = Arc::default();
         uics.write()
             .unwrap()
             .insert(key("ABC", "XSTO"), QuoteInstrument { uic: 4711 });
+        start_with(saxo, token, uics).await
+    }
+
+    async fn start_with(saxo: &MockServer, token: Option<SharedToken>, uics: UicMap) -> Harness {
+        let slot: TokenSlot = Arc::new(OnceLock::new());
+        if let Some(t) = token {
+            let _ = slot.set(t);
+        }
         let (tx, rx) = mpsc::channel(16);
         let state = Arc::new(QuoteState {
             client: QuoteClient::new(reqwest::Client::new(), saxo.uri()),
@@ -475,6 +481,21 @@ mod tests {
         })));
         assert_eq!(h.get("?ticker=ABC&mic=XSTO").await.0, 503);
         assert!(saxo.received_requests().await.unwrap().is_empty());
+    }
+
+    /// During bootstrap there is no token and the Uic map is still empty: a
+    /// registered company must get 503 with a retry hint, not 404.
+    #[tokio::test]
+    async fn bootstrap_without_token_and_empty_map_is_503_not_404() {
+        let saxo = saxo_answering(200, TRADABLE).await;
+        let mut h = start_with(&saxo, None, Arc::default()).await;
+        let (status, body) = h.get("?ticker=ABC&mic=XSTO").await;
+        assert_eq!(status, 503, "{body}");
+        assert_eq!(body["error"], "no_token");
+        assert_eq!(body["retry_after_ms"], 1000);
+        assert!(h.unknown.try_recv().is_err());
+        assert!(saxo.received_requests().await.unwrap().is_empty());
+        assert_eq!(h.get("?ticker=ABC").await.0, 400);
     }
 
     /// Our own overhead: end-to-end time through the real HTTP server against
