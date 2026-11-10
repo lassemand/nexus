@@ -29,7 +29,10 @@ spec:
           command: ["/usr/local/bin/saxo_stream"]
           ports:
             - name: health
-              containerPort: 8080
+              containerPort: {{ .Values.saxo.healthPort }}
+              protocol: TCP
+            - name: quotes
+              containerPort: {{ .Values.saxo.quotePort }}
               protocol: TCP
           livenessProbe:
             httpGet:
@@ -50,6 +53,10 @@ spec:
               value: {{ .Values.logLevel | quote }}
             - name: SAXO_CHART_VERSION
               value: {{ .Values.saxo.chartVersion | quote }}
+            - name: HEALTH_PORT
+              value: {{ .Values.saxo.healthPort | quote }}
+            - name: QUOTE_PORT
+              value: {{ .Values.saxo.quotePort | quote }}
           envFrom:
             - secretRef:
                 name: chronicle-secret

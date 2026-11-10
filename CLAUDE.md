@@ -47,6 +47,10 @@ Polygon ────► market ────► market.bars       (MarketEvent)
 
 Known limitations: `bars` (fed by `market.bars`) holds only the **last minute bar** of each day for Nordic tickers, so its OHLC and volume are not daily values; use `daily_bars`. It is **unverified** whether Saxo's daily samples are adjusted for splits and share issues (the docs are silent and `/chart/v1` is unavailable on SIM): treat them as unadjusted.
 
+### Nordic live quotes
+
+`saxo-stream` serves the system's only live-price read: `GET /quote?ticker=<TICKER>&mic=<MIC>` on `QUOTE_PORT` (8080, exposed by the chart's ClusterIP Service `saxo-quotes` on port 8080; the NetworkPolicy `saxo-quotes` admits only namespace `analyst` to it). `/health`, `/metrics` and `POST /tokens` are on `HEALTH_PORT` (8081, NodePort 32080). It calls Saxo `/trade/v1/infoprices` once (`alpha::saxo::quote`, own keep-alive client, no throttle, sleep or retry) and answers bid/ask/sizes as **decimal strings** (raw JSON digits, padded to `DisplayAndFormat.Decimals`, never via `f64`), Saxo's `PriceType*`/`MarketState` strings unchanged, `null` for anything Saxo omits. Without a valid token every request is 503 `{"retry_after_ms"}` (checked before the map, so bootstrap never reports a registered company missing); with one, 404 for a pair without a Uic in the in-memory map (warmed at startup from the registered companies before the first daily-bar sweep, then kept current by each sweep's company reload; an unknown pair is resolved in the background), 503 `{"retry_after_ms"}` for no token or a 429 (`Retry-After`, capped at 2000), 502 for any other Saxo error, 400 for missing parameters. The client can only build info-price URLs; no order, position or account endpoint may exist. Metrics `saxo_quote_*` (`docs/guides/metrics.md`).
+
 ### Companies are runtime data
 
 Companies are registered at runtime (`nexus register` / `nexus unregister`) and

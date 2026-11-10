@@ -1,0 +1,28 @@
+# Ingress to saxo-stream (NEX-249). Selecting the pod makes every port deny by
+# default, so both ports are listed:
+# - quotes: only from the quote client namespace (analyst);
+# - health (8081: /health, /metrics, POST /tokens via NodePort 32080): from
+#   anywhere, as before this policy existed (probes, Prometheus, `nexus saxo auth`).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saxo-quotes
+  labels:
+    app: saxo-stream
+spec:
+  podSelector:
+    matchLabels:
+      app: saxo-stream
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.saxo.quoteClientNamespace | quote }}
+      ports:
+        - port: quotes
+          protocol: TCP
+    - ports:
+        - port: health
+          protocol: TCP

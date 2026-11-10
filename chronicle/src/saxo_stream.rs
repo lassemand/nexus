@@ -11,17 +11,22 @@
 /// re-registration after a rejected one, NEX-107 — reads as healthy).
 /// `POST /tokens` (used by `nexus saxo auth`) is a route on the same server.
 ///
+/// `GET /quote?ticker=&mic=` on `QUOTE_PORT` is the internal live-quote
+/// endpoint (NEX-249, [`chronicle_lib::saxo_quotes`]). It is a separate port so
+/// the chart can expose it to the `analyst` namespace only.
+///
 /// The live WebSocket price stream was removed (NEX-193); nothing consumed it.
 mod db;
 mod kafka;
 
 use alpha::saxo::{
-    error_chain, AuthError, ChartClient, ChartError, InstrumentQuery, RotatedToken, SaxoAuth,
-    SaxoToken, SharedToken, TokenStore, UicResolver,
+    error_chain, AuthError, ChartClient, ChartError, InstrumentQuery, QuoteClient, RotatedToken,
+    SaxoAuth, SaxoToken, SharedToken, TokenStore, UicResolver,
 };
 use anyhow::Context;
 use backon::{BackoffBuilder, ExponentialBuilder, Retryable};
 use chronicle_lib::daily_bars::{self, BarSink, Instrument};
+use chronicle_lib::saxo_quotes::{self, QuoteInstrument, QuoteState, TokenSlot, UicMap};
 use chrono::Utc;
 use clap::Parser;
 use kafka::ChronicleProducer;
@@ -68,8 +73,14 @@ struct Args {
     #[arg(long, env = "SAXO_CLIENT_SECRET")]
     saxo_client_secret: String,
 
-    #[arg(long, env = "HEALTH_PORT", default_value = "8080")]
+    /// Port of `/health`, `/metrics` and `POST /tokens`.
+    #[arg(long, env = "HEALTH_PORT", default_value = "8081")]
     health_port: u16,
+
+    /// Port of the internal quote endpoint (`GET /quote`), separate from
+    /// `HEALTH_PORT` so the chart can expose it to the `analyst` namespace only.
+    #[arg(long, env = "QUOTE_PORT", default_value = "8080")]
+    quote_port: u16,
 
     /// Topic for official daily bars (stored by signal in `daily_bars`).
     #[arg(long, env = "DAILY_BARS_TOPIC", default_value = "market.daily_bars")]
@@ -199,6 +210,13 @@ const DAILY_BARS_MINUTE: u32 = 30;
 /// request limits).
 const CHART_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
+/// A pair asked for but unknown is looked up again at most this often.
+const QUOTE_UNKNOWN_COOLDOWN: Duration = Duration::from_secs(60);
+/// Capacity of the queue of unknown pairs from the quote handler.
+const QUOTE_UNKNOWN_QUEUE: usize = 64;
+/// Upper bound on one Saxo quote request, connection included.
+const QUOTE_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// First and longest wait before re-running a daily-bar sweep that failed,
 /// instead of waiting for the next day's 18:30 run.
 const SWEEP_RETRY_START: Duration = Duration::from_secs(15 * 60);
@@ -237,7 +255,8 @@ fn is_transient_failure(e: &anyhow::Error) -> bool {
 }
 
 /// One pass over every registered Nordic instrument. Failures are logged and
-/// counted and never propagate.
+/// counted and never propagate. Its company reload also refreshes the quote
+/// path's Uic map (`quote_uics`).
 async fn daily_bars_sweep(
     pool: &sqlx::PgPool,
     resolver: &UicResolver,
@@ -245,9 +264,11 @@ async fn daily_bars_sweep(
     sink: &dyn BarSink,
     shared_token: &SharedToken,
     mics: &[String],
+    quote_uics: &UicMap,
 ) -> SweepResult {
     let started = std::time::Instant::now();
-    let out = daily_bars_sweep_inner(pool, resolver, client, sink, shared_token, mics).await;
+    let out =
+        daily_bars_sweep_inner(pool, resolver, client, sink, shared_token, mics, quote_uics).await;
     histogram!("saxo_daily_bars_sweep_duration_seconds").record(started.elapsed().as_secs_f64());
     out
 }
@@ -259,6 +280,7 @@ async fn daily_bars_sweep_inner(
     sink: &dyn BarSink,
     shared_token: &SharedToken,
     mics: &[String],
+    quote_uics: &UicMap,
 ) -> SweepResult {
     let tickers = match load_saxo_instruments(pool, mics).await {
         Ok(t) => t,
@@ -277,6 +299,7 @@ async fn daily_bars_sweep_inner(
         .map(|i| (i.ticker.clone(), i.exchange_mic.clone()))
         .collect();
     daily_bars::zero_deregistered(&registered);
+    prune_quote_uics(quote_uics, &tickers);
     let mut out = SweepResult::default();
     for inst in &tickers {
         let ticker = &inst.ticker;
@@ -295,6 +318,7 @@ async fn daily_bars_sweep_inner(
                 continue;
             }
         };
+        store_quote_uic(quote_uics, inst, resolved.uic);
         let instrument = Instrument {
             ticker: ticker.clone(),
             exchange_mic: inst.exchange_mic.clone(),
@@ -338,6 +362,7 @@ async fn run_daily_bars(
     shared_token: SharedToken,
     sink: Arc<KafkaBarSink>,
     mics: Vec<String>,
+    quote_uics: UicMap,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut retry = sweep_backoff().build();
@@ -353,6 +378,7 @@ async fn run_daily_bars(
                 resolver.clone(),
                 mics.clone(),
             );
+            let quote_uics = quote_uics.clone();
             tokio::spawn(async move {
                 let mut client =
                     ChartClient::new(http, &api_base, shared_token.clone(), CHART_MIN_INTERVAL)
@@ -364,6 +390,7 @@ async fn run_daily_bars(
                     sink.as_ref(),
                     &shared_token,
                     &mics,
+                    &quote_uics,
                 )
                 .await
             })
@@ -759,6 +786,159 @@ async fn bootstrap_from_registration(
     Ok((initial, auth))
 }
 
+/// Puts `inst`'s Uic into the quote path's map.
+fn store_quote_uic(uics: &UicMap, inst: &SaxoInstrument, uic: u64) {
+    uics.write().unwrap_or_else(|e| e.into_inner()).insert(
+        saxo_quotes::key(&inst.ticker, &inst.exchange_mic),
+        QuoteInstrument { uic },
+    );
+}
+
+/// Drops every company from the quote path's map that is not in `registered`,
+/// and returns how many remain. A registered company keeps its Uic even when a
+/// later lookup fails (a Uic never changes).
+fn prune_quote_uics(uics: &UicMap, registered: &[SaxoInstrument]) -> usize {
+    let keys: std::collections::HashSet<(String, String)> = registered
+        .iter()
+        .map(|i| saxo_quotes::key(&i.ticker, &i.exchange_mic))
+        .collect();
+    let mut map = uics.write().unwrap_or_else(|e| e.into_inner());
+    map.retain(|k, _| keys.contains(k));
+    gauge!("saxo_quote_instruments").set(map.len() as f64);
+    map.len()
+}
+
+/// The startup warm-up of the quote path's Uic map: resolves every registered
+/// company on `mics`, each Uic going into the map as soon as it resolves. Later
+/// company reloads (each daily-bar sweep) keep the map current.
+async fn warm_quote_uics(
+    pool: &sqlx::PgPool,
+    resolver: &UicResolver,
+    shared_token: &SharedToken,
+    uics: &UicMap,
+    mics: &[String],
+) {
+    let instruments = match load_saxo_instruments(pool, mics).await {
+        Ok(i) => i,
+        Err(e) => {
+            error!(error = %e, "quotes: failed to load registered companies for the warm-up");
+            return;
+        }
+    };
+    let mut failed = 0usize;
+    for inst in &instruments {
+        let access_token = shared_token.lock().unwrap().access_token.clone();
+        match resolver
+            .resolve_with_cfd_check(&inst.query(), &access_token)
+            .await
+        {
+            Ok(r) => store_quote_uic(uics, inst, r.uic),
+            Err(e) => {
+                failed += 1;
+                warn!(
+                    key = inst.key(),
+                    error = error_chain(&e),
+                    "quotes: Uic resolution failed"
+                );
+            }
+        }
+    }
+    let resolved = prune_quote_uics(uics, &instruments);
+    info!(
+        resolved,
+        registered = instruments.len(),
+        failed,
+        "quotes: Uic map warm"
+    );
+}
+
+/// Resolves a pair the quote handler did not know, if it is a registered
+/// company on `mics`.
+async fn resolve_unknown_quote_pair(
+    pool: &sqlx::PgPool,
+    resolver: &UicResolver,
+    shared_token: &SharedToken,
+    uics: &UicMap,
+    mics: &[String],
+    (ticker, mic): (String, String),
+) {
+    if !mics.contains(&mic) {
+        return;
+    }
+    let row = sqlx::query(
+        "SELECT ticker, exchange_mic, isin, currency FROM companies \
+         WHERE upper(ticker) = $1 AND exchange_mic = $2 LIMIT 1",
+    )
+    .bind(&ticker)
+    .bind(&mic)
+    .fetch_optional(pool)
+    .await;
+    let inst = match row {
+        Ok(Some(r)) => SaxoInstrument {
+            ticker: r.get("ticker"),
+            exchange_mic: r.get("exchange_mic"),
+            isin: r.get("isin"),
+            currency: r.get("currency"),
+        },
+        Ok(None) => return,
+        Err(e) => {
+            warn!(ticker, mic, error = %e, "quotes: company lookup failed");
+            return;
+        }
+    };
+    let access_token = shared_token.lock().unwrap().access_token.clone();
+    match resolver
+        .resolve_with_cfd_check(&inst.query(), &access_token)
+        .await
+    {
+        Ok(r) => {
+            info!(
+                key = inst.key(),
+                uic = r.uic,
+                "quotes: resolved a newly asked-for company"
+            );
+            store_quote_uic(uics, &inst, r.uic);
+            gauge!("saxo_quote_instruments")
+                .set(uics.read().unwrap_or_else(|e| e.into_inner()).len() as f64);
+        }
+        Err(e) => warn!(
+            key = inst.key(),
+            error = error_chain(&e),
+            "quotes: Uic resolution failed"
+        ),
+    }
+}
+
+/// Looks up each unknown pair the quote handler queues, at most once per
+/// `QUOTE_UNKNOWN_COOLDOWN` per pair.
+async fn run_quote_unknowns(
+    pool: sqlx::PgPool,
+    resolver: Arc<UicResolver>,
+    shared_token: SharedToken,
+    uics: UicMap,
+    mics: Vec<String>,
+    mut unknown: mpsc::Receiver<(String, String)>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut tried: std::collections::HashMap<(String, String), std::time::Instant> =
+        std::collections::HashMap::new();
+    loop {
+        tokio::select! {
+            Some(pair) = unknown.recv() => {
+                let now = std::time::Instant::now();
+                tried.retain(|_, at| now.duration_since(*at) < QUOTE_UNKNOWN_COOLDOWN);
+                if tried.contains_key(&pair) {
+                    continue;
+                }
+                tried.insert(pair.clone(), now);
+                resolve_unknown_quote_pair(&pool, &resolver, &shared_token, &uics, &mics, pair)
+                    .await;
+            }
+            _ = shutdown.changed() => return,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
@@ -792,6 +972,16 @@ async fn main() -> anyhow::Result<()> {
             alpha::saxo::api_metrics::DURATION_BUCKETS,
         )
         .context("invalid API duration buckets")?
+        .set_buckets_for_metric(
+            Matcher::Full("saxo_quote_seconds".to_string()),
+            saxo_quotes::QUOTE_BUCKETS,
+        )
+        .context("invalid quote duration buckets")?
+        .set_buckets_for_metric(
+            Matcher::Full("saxo_quote_upstream_seconds".to_string()),
+            saxo_quotes::QUOTE_BUCKETS,
+        )
+        .context("invalid quote upstream buckets")?
         .install_recorder()
         .context("failed to install Prometheus recorder")?;
     // Same series `telemetry::serve` sets: this service has its own /metrics route
@@ -799,6 +989,11 @@ async fn main() -> anyhow::Result<()> {
     gauge!("nexus_build_info", "service" => "saxo-stream", "version" => env!("CARGO_PKG_VERSION"))
         .set(1.0);
     alpha::saxo::api_metrics::describe();
+    saxo_quotes::describe();
+    describe_gauge!(
+        "saxo_quote_instruments",
+        "Registered companies with a resolved Uic in the quote path's map."
+    );
     for outcome in ["ok", "error"] {
         counter!("saxo_token_refreshes_total", "outcome" => outcome).absolute(0);
         counter!("saxo_daily_bars_backfills_total", "outcome" => outcome).absolute(0);
@@ -873,6 +1068,38 @@ async fn main() -> anyhow::Result<()> {
         registration_tx,
     ));
 
+    let saxo_mics: Vec<String> = args
+        .saxo_mics
+        .iter()
+        .map(|m| m.trim().to_uppercase())
+        .filter(|m| !m.is_empty())
+        .collect();
+
+    let quote_token: TokenSlot = Arc::new(std::sync::OnceLock::new());
+    let quote_uics: UicMap = Arc::default();
+    let (quote_unknown_tx, quote_unknown_rx) = mpsc::channel(QUOTE_UNKNOWN_QUEUE);
+    let quote_http = reqwest::Client::builder()
+        .user_agent("nexus lasse.alm@gsfleet.io")
+        .timeout(QUOTE_HTTP_TIMEOUT)
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()
+        .context("failed to build quote HTTP client")?;
+    let quote_listener = TcpListener::bind(format!("0.0.0.0:{}", args.quote_port))
+        .await
+        .with_context(|| format!("failed to bind quote endpoint on port {}", args.quote_port))?;
+    info!(port = args.quote_port, "quote endpoint listening");
+    let quote_router = saxo_quotes::router(Arc::new(QuoteState {
+        client: QuoteClient::new(quote_http, &args.saxo_api_base),
+        token: quote_token.clone(),
+        uics: quote_uics.clone(),
+        unknown: quote_unknown_tx,
+    }));
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(quote_listener, quote_router).await {
+            error!(error = %e, "quote endpoint stopped");
+        }
+    });
+
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let shutdown_tx = Arc::new(shutdown_tx);
     {
@@ -884,12 +1111,6 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let saxo_mics: Vec<String> = args
-        .saxo_mics
-        .iter()
-        .map(|m| m.trim().to_uppercase())
-        .filter(|m| !m.is_empty())
-        .collect();
     let tickers = load_saxo_instruments(&pool, &saxo_mics)
         .await
         .unwrap_or_default();
@@ -986,6 +1207,18 @@ async fn main() -> anyhow::Result<()> {
     drop(registration_rx);
 
     let shared_token: SharedToken = Arc::new(Mutex::new(initial_token));
+    if quote_token.set(shared_token.clone()).is_err() {
+        warn!("quote token slot was already set");
+    }
+    tokio::spawn(run_quote_unknowns(
+        pool.clone(),
+        uic_resolver.clone(),
+        shared_token.clone(),
+        quote_uics.clone(),
+        saxo_mics.clone(),
+        quote_unknown_rx,
+        shutdown_rx.clone(),
+    ));
 
     {
         let shared_token = shared_token.clone();
@@ -1037,7 +1270,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    tokio::spawn(run_daily_bars(
+    let daily_bars = run_daily_bars(
         pool.clone(),
         http.clone(),
         uic_resolver.clone(),
@@ -1049,8 +1282,21 @@ async fn main() -> anyhow::Result<()> {
             topic: args.daily_bars_topic.clone(),
         }),
         saxo_mics.clone(),
+        quote_uics.clone(),
         shutdown_rx.clone(),
-    ));
+    );
+    {
+        let (pool, resolver, shared_token, mics) = (
+            pool.clone(),
+            uic_resolver.clone(),
+            shared_token.clone(),
+            saxo_mics.clone(),
+        );
+        tokio::spawn(async move {
+            warm_quote_uics(&pool, &resolver, &shared_token, &quote_uics, &mics).await;
+            daily_bars.await;
+        });
+    }
 
     info!("token refresh and daily-bar sync running");
     let mut shutdown = shutdown_rx.clone();

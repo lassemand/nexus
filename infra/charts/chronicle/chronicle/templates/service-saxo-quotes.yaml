@@ -1,0 +1,17 @@
+# Internal live-quote endpoint of saxo-stream (GET /quote, NEX-249). ClusterIP
+# only; the NetworkPolicy `saxo-quotes` admits the analyst namespace alone.
+apiVersion: v1
+kind: Service
+metadata:
+  name: saxo-quotes
+  labels:
+    app: saxo-stream
+spec:
+  type: ClusterIP
+  selector:
+    app: saxo-stream
+  ports:
+    - name: quotes
+      port: 8080
+      targetPort: quotes
+      protocol: TCP
