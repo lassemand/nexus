@@ -8,8 +8,8 @@ when the release arrives, then kept for audit. The decision feeds a
 **simulated** trade.
 
 You edit `verdict/template` (crate `verdict-kernel`). The worked example is
-`verdict/kernels/sample` (crate `verdict-sample`). The SDK (`verdict/sdk`) holds
-only the ABI, the types and a test and timing harness.
+`verdict/kernels/sample` (crate `verdict-sample`) is the same skeleton. The SDK
+(`verdict/sdk`) holds only the ABI, the types and a test and timing harness.
 
 ## The principle
 
@@ -20,8 +20,9 @@ the previous reports prove is stable**, verify it cheaply, and fall back to a
 broader one only when the verification fails. A simple lookup beats text search
 whenever one is possible.
 
-**What you look for is yours too.** There is no standard list of metrics, labels
-or phrases, here or in the sample. Which metrics matter for this company and
+**What you look for is yours too.** The SDK and the sample assume no language
+and read nothing: there is no standard list of metrics, labels or phrases, and
+no number or language handling. Which metrics matter for this company and
 this report, and whether you find each one by a position (the third line), a
 phrase (`Net sales`), a value (a figure you expect near last year's), or
 something else, is your decision, taken from the company's previous reports.
@@ -54,8 +55,7 @@ pub fn analyze(report: &Report) -> Verdict
 ```
 
 * `report.text` is the release: the title, a blank line, then MFN's
-  `content.text`. `report.lang` is its `Lang` (`En`, `Sv`, `Da`, `Fi`, `No`,
-  `Other`).
+  `content.text`. `report.lang` is its `Lang`, as the feed tags it.
 * Return a `Verdict { decision, reason, metrics }`. `reason` is one short
   sentence. `metrics` lists every metric you found, as a `Metric { key, current,
   prior, expected, unit }`, with values as exact decimal strings
@@ -65,8 +65,8 @@ pub fn analyze(report: &Report) -> Verdict
 
 ## The lookup ladder
 
-Use the first rung that works on this company's previous reports, **in every
-language it publishes in**.
+Use the first rung that works on this company's previous reports, for every
+layout it has published.
 
 1. **Structural position.** The figure is always in the title, or on the first
    bullet line after the heading. Find the line with `memchr(b'\n')` (a few
@@ -78,14 +78,10 @@ language it publishes in**.
 3. **Several labels.** One Aho-Corasick pass, built once, with early exit.
 4. **Regex.** Only if nothing above works, compiled once.
 
-`verdict/kernels/sample` implements all of them as variants of one kernel, so
-you can compare: (a) anchored with a fallback to (c), (b) `memmem` per label in
-the first 2 KB, (c) Aho-Corasick, (d) regex, (e) `to_lowercase` + `find`.
-
 ### Verify, and have a fallback
 
-Every lookup checks that it found what it expected: the prefix matched, the
-number parsed, the unit is right (a margin is a percentage, an amount is not).
+Every lookup checks that it found what it expected: the position or prefix
+matched, the value parsed, the unit is right.
 
 * If a rung-1 or rung-2 check fails (the company changed its layout), fall back
   to a broader lookup that you also wrote.
@@ -118,23 +114,14 @@ reason, and never trade correctness for speed.
 
 ## Reading numbers exactly
 
-These are rules for **your own code**, written for this company's format. The
-sample's `number.rs` is one worked implementation; copy what you need.
+These are rules for **your own code**, written for this company's format:
 
 * `Decimal` only, never `f64`. Build values exactly (a mantissa and a scale),
   use `checked_div` and check a divisor for zero. Compare signs explicitly:
   going from −11.7 to −6.1 is an improvement (`-6.1 > -11.7`).
-* Know the company's separators: `67.3`, `67,3`, `1 234,5` (with no-break,
-  narrow no-break or thin spaces), `1.234,5`. `12,345` is 12.345 in Swedish and
-  12345 in English.
-* Minus signs: `-`, `−` (U+2212) and `–` (U+2013). A dash between two figures
-  (`2025–2026`) is a range, not a minus.
-* **Parentheses mean the prior period, not a negative number:** `67.3 (72.7)` is
-  this year (last year).
-* Skip footnote markers (`¹`, `^{1}`, `[1]`) and period labels (`Q3`, `H1`) and
-  years, if the layout has them.
-* A percentage before the amount (`increased by 12% to SEK 812.4 million`) is
-  not the amount.
+* Find out from the previous reports how this company writes figures (decimal
+  and thousands separators, minus signs, how the prior period is shown, what
+  surrounds a figure) and write exactly that. Never guess a format.
 * Test each of these on the fixtures.
 
 ## Speed rules, with the measured reasons
@@ -157,33 +144,27 @@ sample's `number.rs` is one worked implementation; copy what you need.
 
 Keep these in mind whenever your lookup is broader than a fixed line:
 
-* A label after a bullet `•`, a dash `–` or a no-break space must still be
-  found. Treat anything that is not alphabetic and not an ASCII digit as a word
-  boundary; `å`/`ö` are letters.
-* `revenue` matches inside `revenues`: use an open stem or a boundary check.
-* `EBIT margin` is not EBIT; the longer label must win at the same position.
-* "Periodens resultat per aktie" is EPS, not net income (the same overlap:
-  `periodens resultat` is a prefix of it).
-* Table column order varies by company (one shows the prior year first, e.g.
-  `3.73 │4.24`): check the header in previous reports and hard-code the column.
-* MFN wraps lines at about 80 columns. A label or a `(prior)` can be split by a
-  line break; allow one break, never a blank line.
-* Non-ASCII letters are not case-folded by ASCII-only matching: list both `Ø`/`ø`
-  where a phrase can start a sentence.
-* The first occurrence is not always the figure: a title or intro may mention
-  "revenue growth" without one, and when the expected line changes a broader
-  lookup can land on a later section (the year to date) and return its figure as
-  the quarter's. Check the position or the period, not only the label. Anchor on a phrase that only appears next to the
-  figure (`net sales amounted to`).
-* Use the company's own wording from its previous reports. Banks report net
-  interest income, property companies rental income, biotech often no sales.
+* A label can follow any separator, not only a space; decide word boundaries on
+  the character, not the byte.
+* A short label can match inside a longer word, and a short label can hide a
+  longer one at the same position: check boundaries and which phrase wins.
+* Table column order varies by company: check the header in previous reports and
+  hard-code the column.
+* The feed wraps lines at about 80 columns, so a label or a figure can be split
+  by a line break.
+* The first occurrence is not always the figure: a title or intro may mention a
+  metric without one, and when the expected line changes a broader lookup can
+  land on a later section (the year to date) and return its figure as the
+  quarter's. Check the position or the period, not only the label.
+* Use the company's own wording from its previous reports.
 
 ## Testing
 
 * Save the company's previous releases in `tests/fixtures/` as
   `<lang>__<slug>__<id>.txt` (title, blank line, `content.text`) and add a case
   per fixture in `tests/kernel.rs`. Use `harness::check_fixtures` (or
-  `assert_fixtures`) on **the last two reports in each language**; it asserts
+  `assert_fixtures`) on **the company's last two reports in each language it
+  publishes in**; it asserts
   every metric's current and prior value and the decision, and prints an exact
   per-value diff.
 * `harness::assert_abstains` on **another company's report**: it must give

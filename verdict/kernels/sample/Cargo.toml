@@ -3,15 +3,12 @@ name = "verdict-sample"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Sample analyst kernel for generic interim reports."
+description = "Skeleton kernel: the structure of a kernel with the lookup left to the agent."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-aho-corasick = "1.1"
-memchr = "2.8"
-regex = "1.12"
 verdict-sdk = { path = "../../sdk" }
 
 [dev-dependencies]
