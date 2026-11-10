@@ -4254,6 +4254,9 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 name = "verdict-sample"
 version = "0.0.0"
 dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex",
  "serde_json",
  "verdict-sdk",
 ]
@@ -4262,9 +4265,6 @@ dependencies = [
 name = "verdict-sdk"
 version = "0.0.0"
 dependencies = [
- "aho-corasick",
- "memchr",
- "regex",
  "rust_decimal",
  "serde",
  "serde_json",

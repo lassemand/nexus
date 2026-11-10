@@ -8,13 +8,24 @@ when the release arrives, then kept for audit. The decision feeds a
 **simulated** trade.
 
 You edit `verdict/template` (crate `verdict-kernel`). The worked example is
-`verdict/kernels/sample` (crate `verdict-sample`). Both use only
-`verdict-sdk` (`verdict/sdk`).
+`verdict/kernels/sample` (crate `verdict-sample`). The SDK (`verdict/sdk`) holds
+only the ABI, the types and a test and timing harness.
+
+## The principle
+
+**You decide how this report is read.** The SDK has no search and no number
+parsing; that is your code. You have read this company's previous reports, so
+you know where the figures are. Speed is key: choose the **cheapest lookup that
+the previous reports prove is stable**, verify it cheaply, and fall back to a
+broader one only when the verification fails. A simple lookup beats text search
+whenever one is possible.
 
 ## What you may use
 
-* Only `verdict-sdk`. It re-exports `aho_corasick`, `memchr`, `regex` and
-  `Decimal` (`rust_decimal`).
+* `verdict-sdk` (`Report`, `Lang`, `Metric`, `Decision`, `Verdict`,
+  `export_kernel!`, `Decimal`; the harness in tests).
+* Only if your lookup needs them: `memchr`, `aho-corasick`, `regex` (all
+  vendored; no approval needed).
 * No other dependencies, no build scripts, no proc-macro crates.
 * Keep the template's `crate-type = ["cdylib", "rlib"]`, its release profile and
   the `export_kernel!(crate::analyze)` line.
@@ -40,159 +51,137 @@ pub fn analyze(report: &Report) -> Verdict
 * Return a `Verdict { decision, reason, metrics }`. `reason` is one short
   sentence. `metrics` lists every metric you found, as a `Metric { key, current,
   prior, expected, unit }`, with values as exact decimal strings
-  (`num.value.to_string()`).
+  (`value.to_string()`).
 * `export_kernel!` exports the WASM ABI (`verdict_input`, `verdict_run`,
   `memory`; no imports). Don't write your own exports.
 
-## Why speed matters, and what was measured
+## The lookup ladder
 
-Measured on 1,555 real MFN interim-report releases (en/sv/fi/da; median 6.9 KB,
-p90 21 KB, max 220 KB; Apple M4 Pro):
+Use the first rung that works on this company's previous reports, **in every
+language it publishes in**.
+
+1. **Structural position.** The figure is always in the title, or on the first
+   bullet line after the heading. Find the line with `memchr(b'\n')` (a few
+   calls), check its expected prefix with `starts_with`, then read the number
+   directly at a known offset. This touches a few hundred bytes.
+2. **A single anchor in a known window.** One `memchr::memmem::Finder`, built
+   once in a `static LazyLock`, over just the window where previous reports had
+   it (e.g. the first 2 KB), with the exact casing the company uses.
+3. **Several labels.** One Aho-Corasick pass, built once, with early exit.
+4. **Regex.** Only if nothing above works, compiled once.
+
+`verdict/kernels/sample` implements all of them as variants of one kernel, so
+you can compare: (a) anchored with a fallback to (c), (b) `memmem` per label in
+the first 2 KB, (c) Aho-Corasick, (d) regex, (e) `to_lowercase` + `find`.
+
+### Verify, and have a fallback
+
+Every lookup checks that it found what it expected: the prefix matched, the
+number parsed, the unit is right (a margin is a percentage, an amount is not).
+
+* If a rung-1 or rung-2 check fails (the company changed its layout), fall back
+  to a broader lookup that you also wrote.
+* If that fails too, `Abstain` with the reason (`"net sales not found"`).
+* **Never return a number you did not verify.**
+
+Test the fallback with a fixture whose first line or a label prefix was changed.
+
+### Measure
+
+Use `harness::time_per_release` on the previous reports, for your chosen lookup
+and for your fallback, and record p50/p99 in `kernel.json`. State there why a
+faster rung did not work. Measured on 1,555 real MFN interim-report releases
+(en/sv/fi/da; median 6.9 KB, p90 21 KB, max 220 KB; Apple M4 Pro):
 
 | Search approach | native p50 | WASM p50 | WASM p99 |
 | -- | -- | -- | -- |
-| one Aho-Corasick pass over all labels (`Labels`), built once | 10 µs | 15 µs | 190 µs |
+| one Aho-Corasick pass over all labels, built once | 10 µs | 15 µs | 190 µs |
 | one regex per metric, compiled once | 12 µs | 38 µs | 382 µs |
 | `memmem::Finder` per phrase, built once | 19 µs | 48 µs | 592 µs |
 | `to_lowercase()` + `str::find` | 53 µs | 127 µs | 1,587 µs |
 | regex compiled on every call | 676 µs | 2,434 µs | 2,825 µs |
 
-* WASM costs about 1.5× native; `simd128` doesn't change the `Labels` time.
-* A fresh instance's first call (building the statics) takes about 0.4 ms,
-  against 15–20 µs warm.
-* The kernel is under 0.1 % of release-to-decision time (MFN delivery takes
-  0.5–2 s, a Saxo quote 50–200 ms). Don't make it slower without a reason,
-  and never trade correctness for speed.
+An anchored lookup is expected to be well under 1 µs, because it touches a few
+hundred bytes instead of the whole release. WASM costs about 1.5× native. A
+fresh instance's first call (building the statics) takes about 0.4 ms, against
+15–20 µs warm. The kernel is under 0.1 % of release-to-decision time (MFN
+delivery takes 0.5–2 s, a Saxo quote 50–200 ms): don't make it slower without a
+reason, and never trade correctness for speed.
 
-## Rules
+## Reading numbers exactly
 
-1. **One pass.** Find every label in one pass with `Labels`. Don't loop `find`
-   per phrase, and don't use regex to *find* labels. *Why:* one Aho-Corasick
-   pass is 15 µs in WASM; a regex per metric is 2.5× and a `Finder` per phrase
-   3× slower, and both grow with every phrase you add.
-2. **Build once.** Build `Labels` (and any `Regex`) once, in a
-   `static LazyLock`. *Why:* building per call is 65–160× slower than the
-   search. The host warms the kernel at load (first call about 0.4 ms with
-   `Labels`, 2.8 ms with regexes; warm about 18 µs), so don't defer other work to
-   the first real call.
-3. **Don't copy or lowercase the text.** *Why:* `to_lowercase()` + `find` is 5×
-   slower, and offsets shift when a character changes length, so figures are
-   then read from the wrong place. `Labels` is already ASCII case-insensitive.
-4. **Read figures with the SDK.** Use `next_number` / `current_and_prior` from
-   `hit.end` with a window of about 200 bytes, and `unit_after` for the unit.
-   Parentheses mean the prior period: `67.3 (72.7)` is this year (last year),
-   **not** a negative number. *Why:* the SDK already handles thousands
-   separators (including no-break and thin spaces), minus signs (`-`, `−`,
-   `–`), ranges (`2025–2026`), years, period names (`Q3`, `H1`) and footnote
-   markers (`^{1}`, `[1]`), which each broke hand-written parsing on real
-   releases.
-5. **Pass the language's number style.** Use `report.lang.number_style()`.
-   *Why:* `12,345` is 12.345 in Swedish and 12345 in English; `1.234,5` is
-   Danish.
-6. **Decimals only.** Use `Decimal` for every value and comparison, never
-   `f64`. Use `checked_div` and check a divisor for zero. Compare signs
-   explicitly: going from −11.7 to −6.1 is an improvement (`-6.1 > -11.7`).
-   *Why:* floats round (`0.1 + 0.1 + 0.1 != 0.3`), and the verdict must
-   reproduce exactly.
-7. **Never panic.** No `unwrap`, no `expect`, no out-of-bounds indexing
-   (`slice[i]`, `&text[a..b]`): use `get`. A missing metric means `Abstain`
-   with the reason (`"net sales not found"`). *Why:* the kernel is built with
-   `panic = "abort"`; a panic is a trap, and the host gets no verdict at all.
-8. **Allocate only the `Verdict`.** Read offsets and `Decimal`s, and build
-   strings only for the returned `Metric`s and `reason`. *Why:* everything
-   else is work on the release's hot path; copying the text was part of the 5×
-   cost of the `to_lowercase()` row above, and the warm `Labels` search itself
-   allocates only the hit vector.
+These are rules for **your own code**, written for this company's format. The
+sample's `number.rs` is one worked implementation; copy what you need.
 
-## Phrase lists
+* `Decimal` only, never `f64`. Build values exactly (a mantissa and a scale),
+  use `checked_div` and check a divisor for zero. Compare signs explicitly:
+  going from −11.7 to −6.1 is an improvement (`-6.1 > -11.7`).
+* Know the company's separators: `67.3`, `67,3`, `1 234,5` (with no-break,
+  narrow no-break or thin spaces), `1.234,5`. `12,345` is 12.345 in Swedish and
+  12345 in English.
+* Minus signs: `-`, `−` (U+2212) and `–` (U+2013). A dash between two figures
+  (`2025–2026`) is a range, not a minus.
+* **Parentheses mean the prior period, not a negative number:** `67.3 (72.7)` is
+  this year (last year).
+* Skip footnote markers (`¹`, `^{1}`, `[1]`) and period labels (`Q3`, `H1`) and
+  years, if the layout has them.
+* A percentage before the amount (`increased by 12% to SEK 812.4 million`) is
+  not the amount.
+* Test each of these on the fixtures.
 
-`Labels::new(&PHRASES)` takes one list of phrases per metric, in the order of
-your `KEYS`. `first_hits(text)` returns the first valid hit of each metric.
+## Speed rules, with the measured reasons
 
-* **Use open stems.** `revenue*` also matches `revenues`, and
-  `nettoomsättning*` also matches `nettoomsättningen`. Use an open stem rather
-  than listing inflections. A phrase without `*` must end at a word boundary.
-* **Non-ASCII letters match exactly.** Only ASCII is case-insensitive, so list
-  both `Ø`/`ø`, `Å`/`å`, `Ä`/`ä` forms where a phrase can start a sentence
-  (`Årets resultat`, `årets resultat`).
-* **The longest phrase at the same byte wins, across metrics.** `ebit margin`
-  correctly hides `ebit` in "EBIT margin 9.8%". But `periodens resultat` (net
-  income) also hides `resultat per aktie` (EPS) in "Periodens resultat per
-  aktie", because the EPS phrase starts later. **Add the long form to the right
-  metric**: the sample lists `periodens resultat per aktie` under `eps`.
-* **Cover every language the company publishes in.** Check its previous
-  releases; many publish Swedish and English, Finnish companies often Finnish,
-  Swedish and English.
-* **A label split across a line break is not matched.** MFN wraps text at about
-  80 columns; if a previous report wrapped a label, add the phrase that appears
-  before the break, or a shorter phrase.
-* **Use the company's own wording** from its previous reports. Banks report net
-  interest income, property companies rental income, biotech often no sales at
-  all. The first hit is the *first* occurrence: if the title or an intro
-  sentence mentions "revenue growth" without a figure, pick a phrase that only
-  appears next to the figure (`net sales amounted to`).
-* Boundaries are decided on the character: anything that is not alphabetic and
-  not an ASCII digit is a boundary, so bullets `•`, dashes `–`, no-break spaces
-  and superscripts `¹` are boundaries (`Earnings per share¹` ends at `share`),
-  and `å`/`ö` are letters.
+* **Build anything compiled** (`Finder`, automaton, regex) **once**, in a
+  `static LazyLock`. Building per call is 65–160× slower than the search, and
+  the host warms the kernel at load, so don't defer other work to the first real
+  call.
+* **Never copy or lowercase the text.** It is 5× slower, and offsets shift when
+  a character changes length, so figures are read from the wrong place.
+* `memmem` is **case-sensitive**: use the company's exact casing, or a
+  case-insensitive automaton.
+* **Allocate only the `Verdict`.** Read offsets and `Decimal`s; build strings
+  only for the returned `Metric`s and `reason`.
+* **Never panic.** No `unwrap`, no `expect`, no out-of-bounds indexing
+  (`slice[i]`, `&text[a..b]`): use `get`. The kernel is built with
+  `panic = "abort"`; a panic is a trap, and the host gets no verdict at all.
 
-## Tables
+## Lessons from real reports
 
-The summary bullets are the primary source. Table column order varies by
-company (one shows the prior year first, e.g. `3.73 │4.24`), so use a table
-only after checking its header in the company's previous reports, with the
-column index hard-coded. Read a table row with repeated `next_number` calls from
-the row label's `hit.end`.
+Keep these in mind whenever your lookup is broader than a fixed line:
 
-## Worked example
-
-From `verdict/kernels/sample/src/lib.rs` (shortened):
-
-```rust
-pub const KEYS: [&str; 5] = ["ebit_margin", "net_sales", "ebit", "net_income", "eps"];
-
-pub const PHRASES: [&[&str]; 5] = [
-    &["ebit margin", "operating margin", "rörelsemarginal*", /* ... */],
-    &["net sales", "revenue*", "nettoomsättning*", /* ... */],
-    &["ebit", "operating profit", "rörelseresultat*", /* ... */],
-    &["profit for the period", "periodens resultat", /* ... */],
-    &["earnings per share", "resultat per aktie", "periodens resultat per aktie", /* ... */],
-];
-
-static LABELS: LazyLock<Labels> = LazyLock::new(|| Labels::new(&PHRASES));
-
-pub fn analyze(report: &Report) -> Verdict {
-    let style = report.lang.number_style();
-    for (key, hit) in KEYS.iter().zip(LABELS.first_hits(report.text)) {
-        let Some(hit) = hit else { continue };
-        let Some((current, prior)) = current_and_prior(report.text, hit.end, 200, style) else {
-            continue;
-        };
-        let unit = unit_after(report.text, current.end);
-        /* ... build a Metric ... */
-    }
-    /* ... decide with Decimal comparisons, Abstain when a metric is missing ... */
-}
-
-export_kernel!(crate::analyze);
-```
-
-The sample also skips a figure followed by `%` when it reads an amount, so
-"Net sales increased by 12% to SEK 812.4 million (725.1)" gives 812.4, not 12.
-Its decision rule is a placeholder; yours comes from the task.
+* A label after a bullet `•`, a dash `–` or a no-break space must still be
+  found. Treat anything that is not alphabetic and not an ASCII digit as a word
+  boundary; `å`/`ö` are letters.
+* `revenue` matches inside `revenues`: use an open stem or a boundary check.
+* `EBIT margin` is not EBIT; the longer label must win at the same position.
+* "Periodens resultat per aktie" is EPS, not net income (the same overlap:
+  `periodens resultat` is a prefix of it).
+* Table column order varies by company (one shows the prior year first, e.g.
+  `3.73 │4.24`): check the header in previous reports and hard-code the column.
+* MFN wraps lines at about 80 columns. A label or a `(prior)` can be split by a
+  line break; allow one break, never a blank line.
+* Non-ASCII letters are not case-folded by ASCII-only matching: list both `Ø`/`ø`
+  where a phrase can start a sentence.
+* The first occurrence is not always the figure: a title or intro may mention
+  "revenue growth" without one. Anchor on a phrase that only appears next to the
+  figure (`net sales amounted to`).
+* Use the company's own wording from its previous reports. Banks report net
+  interest income, property companies rental income, biotech often no sales.
 
 ## Testing
 
 * Save the company's previous releases in `tests/fixtures/` as
   `<lang>__<slug>__<id>.txt` (title, blank line, `content.text`) and add a case
-  per fixture in `tests/kernel.rs`. **Assert every metric's current and prior
-  value on the company's last two reports in each language.**
-* **A release from another company must give `abstain`, not nonsense.** Keep the
-  template's foreign-release test and make it pass.
+  per fixture in `tests/kernel.rs`. Use `harness::check_fixtures` (or
+  `assert_fixtures`) on **the last two reports in each language**; it asserts
+  every metric's current and prior value and the decision, and prints an exact
+  per-value diff.
+* `harness::assert_abstains` on **another company's report**: it must give
+  `abstain`, not nonsense.
 * **The WASM output must equal the native output byte for byte.** The host runs
-  the WASM build; the native tests only prove it if both agree.
+  the WASM build; native tests only prove it if both agree.
 * Run `cargo clippy --all-targets -- -D warnings` and build the WASM release
-  before you finish.
+  before you finish, and fill in `kernel.json`.
 
 ## Corpus
 

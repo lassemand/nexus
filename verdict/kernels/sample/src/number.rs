@@ -1,6 +1,24 @@
-use rust_decimal::Decimal;
+use verdict_sdk::{Decimal, Lang};
 
-use crate::NumberStyle;
+/// How a company writes figures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumberStyle {
+    /// `1,234.5`: dot decimal, comma or space thousands.
+    DotDecimal,
+    /// `1 234,5`: comma decimal, space thousands.
+    CommaDecimal,
+    /// `1.234,5`: comma decimal, dot or space thousands.
+    DotThousands,
+}
+
+/// The number style this kernel assumes for releases in `lang`.
+pub fn style_of(lang: Lang) -> NumberStyle {
+    match lang {
+        Lang::En | Lang::Other => NumberStyle::DotDecimal,
+        Lang::Sv | Lang::Fi | Lang::No => NumberStyle::CommaDecimal,
+        Lang::Da => NumberStyle::DotThousands,
+    }
+}
 
 /// A figure read from the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

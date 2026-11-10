@@ -78,29 +78,13 @@ impl Labels {
         }
     }
 
-    /// The number of metrics.
-    pub fn len(&self) -> usize {
-        self.metrics
-    }
-
-    /// True when there are no metrics.
-    pub fn is_empty(&self) -> bool {
-        self.metrics == 0
-    }
-
     /// The first valid hit of each metric, indexed like the `metrics` passed to
     /// [`Labels::new`]. Stops as soon as every metric has one.
     pub fn first_hits(&self, hay: &str) -> Vec<Option<Hit>> {
-        self.scan(hay, true)
+        self.scan(hay)
     }
 
-    /// Like [`Labels::first_hits`] but always scans the whole text. For
-    /// benchmarks only.
-    pub fn first_hits_full_scan(&self, hay: &str) -> Vec<Option<Hit>> {
-        self.scan(hay, false)
-    }
-
-    fn scan(&self, hay: &str, stop_early: bool) -> Vec<Option<Hit>> {
+    fn scan(&self, hay: &str) -> Vec<Option<Hit>> {
         let mut hits = vec![None; self.metrics];
         let Some(automaton) = &self.automaton else {
             return hits;
@@ -126,7 +110,7 @@ impl Labels {
                 end: found.end(),
             });
             missing = missing.saturating_sub(1);
-            if stop_early && missing == 0 {
+            if missing == 0 {
                 break;
             }
         }
@@ -239,18 +223,15 @@ mod tests {
     }
 
     #[test]
-    fn first_hit_only_and_full_scan_agree() {
+    fn first_hits_per_metric() {
         let labels = Labels::new(&[&["a"], &["b"], &[]]);
         let hay = "a b a b";
-        assert_eq!(labels.first_hits(hay), labels.first_hits_full_scan(hay));
         assert_eq!(hits(&labels, hay), vec![Some((0, 1)), Some((2, 3)), None]);
-        assert_eq!(labels.len(), 3);
     }
 
     #[test]
     fn empty_labels_find_nothing() {
         let labels = Labels::new(&[]);
-        assert!(labels.is_empty());
         assert!(labels.first_hits("anything").is_empty());
         let labels = Labels::new(&[&["*"]]);
         assert_eq!(hits(&labels, "anything"), vec![None]);

@@ -12,8 +12,7 @@ pub struct Report<'a> {
 }
 
 impl<'a> Report<'a> {
-    /// The release text as bytes; offsets from [`crate::Labels`] and
-    /// [`crate::next_number`] index into it.
+    /// The release text as bytes; byte offsets into it index the text.
     pub fn bytes(&self) -> &'a [u8] {
         self.text.as_bytes()
     }

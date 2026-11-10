@@ -1,56 +1,18 @@
 //! Kernel for one company's report. Rules: `verdict/AGENT_GUIDE.md`.
 //!
-//! Replace the phrases with the company's own wording from its previous
-//! reports, in every language it publishes in, and replace the decision rule.
+//! Write the lookup for this company's layout, using the cheapest rung of the
+//! guide's lookup ladder that its previous reports prove stable. Verify what
+//! the lookup found, fall back to a broader lookup you also wrote, otherwise
+//! abstain. Replace the decision rule.
 
-use std::sync::LazyLock;
+use verdict_sdk::{export_kernel, Report, Verdict};
 
-use verdict_sdk::{
-    current_and_prior, export_kernel, unit_after, Decision, Labels, Metric, Report, Verdict,
-};
-
-/// Metric keys, in the order of [`PHRASES`].
+/// Metric keys this kernel returns.
 pub const KEYS: [&str; 2] = ["net_sales", "ebit"];
 
-/// Label phrases per metric. A trailing `*` is an open stem.
-pub const PHRASES: [&[&str]; 2] = [
-    &["net sales", "nettoomsättning*"],
-    &["operating profit", "ebit", "rörelseresultat*"],
-];
-
-static LABELS: LazyLock<Labels> = LazyLock::new(|| Labels::new(&PHRASES));
-
-const WINDOW: usize = 200;
-
 /// Reads the metrics and decides.
-pub fn analyze(report: &Report) -> Verdict {
-    let text = report.text;
-    let style = report.lang.number_style();
-    let metrics: Vec<Metric> = KEYS
-        .iter()
-        .zip(LABELS.first_hits(text))
-        .filter_map(|(key, hit)| {
-            let hit = hit?;
-            let (current, prior) = current_and_prior(text, hit.end, WINDOW, style)?;
-            Some(Metric {
-                key,
-                current: Some(current.value.to_string()),
-                prior: prior.map(|prior| prior.value.to_string()),
-                expected: None,
-                unit: unit_after(text, current.end).map(str::to_owned),
-            })
-        })
-        .collect();
-    let reason = if metrics.len() < KEYS.len() {
-        "metrics missing"
-    } else {
-        "decision rule not written"
-    };
-    Verdict {
-        decision: Decision::Abstain,
-        reason: reason.to_owned(),
-        metrics,
-    }
+pub fn analyze(_report: &Report) -> Verdict {
+    Verdict::abstain("kernel not written")
 }
 
 export_kernel!(crate::analyze);

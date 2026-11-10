@@ -9,7 +9,11 @@ description = "Sample analyst kernel for generic interim reports."
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+aho-corasick = "1.1"
+memchr = "2.8"
+regex = "1.12"
 verdict-sdk = { path = "../../sdk" }
 
 [dev-dependencies]
 serde_json = "1"
+verdict-sdk = { path = "../../sdk", features = ["harness"] }

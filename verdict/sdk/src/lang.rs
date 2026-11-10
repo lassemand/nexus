@@ -15,17 +15,6 @@ pub enum Lang {
     Other,
 }
 
-/// How a language writes figures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NumberStyle {
-    /// `1,234.5`: dot decimal, comma or space thousands.
-    DotDecimal,
-    /// `1 234,5`: comma decimal, space thousands.
-    CommaDecimal,
-    /// `1.234,5`: comma decimal, dot or space thousands.
-    DotThousands,
-}
-
 impl Lang {
     /// The code passed over the WASM ABI: 1 en, 2 sv, 3 da, 4 fi, 5 no, 0 other.
     pub fn code(self) -> u32 {
@@ -70,15 +59,6 @@ impl Lang {
             Lang::Other
         }
     }
-
-    /// How releases in this language write figures.
-    pub fn number_style(self) -> NumberStyle {
-        match self {
-            Lang::En | Lang::Other => NumberStyle::DotDecimal,
-            Lang::Sv | Lang::Fi | Lang::No => NumberStyle::CommaDecimal,
-            Lang::Da => NumberStyle::DotThousands,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -112,15 +92,5 @@ mod tests {
         assert_eq!(Lang::from_tag("en-GB"), Lang::En);
         assert_eq!(Lang::from_tag("de"), Lang::Other);
         assert_eq!(Lang::from_tag(""), Lang::Other);
-    }
-
-    #[test]
-    fn styles() {
-        assert_eq!(Lang::En.number_style(), NumberStyle::DotDecimal);
-        assert_eq!(Lang::Other.number_style(), NumberStyle::DotDecimal);
-        assert_eq!(Lang::Sv.number_style(), NumberStyle::CommaDecimal);
-        assert_eq!(Lang::Fi.number_style(), NumberStyle::CommaDecimal);
-        assert_eq!(Lang::No.number_style(), NumberStyle::CommaDecimal);
-        assert_eq!(Lang::Da.number_style(), NumberStyle::DotThousands);
     }
 }

@@ -6,7 +6,8 @@
 //! publishes in. Keep [`FOREIGN`] a release from another company.
 
 use verdict_kernel::analyze;
-use verdict_sdk::{Decision, Lang, Report, Verdict};
+use verdict_sdk::harness::{assert_abstains, assert_fixtures, time_per_release, Fixture};
+use verdict_sdk::{Decision, Lang};
 
 /// One fixture and what the kernel must read from it.
 struct Case {
@@ -23,54 +24,45 @@ const CASES: &[Case] = &[];
 const FOREIGN: &str = "Other Company Oyj: Interim report January–September 2026\n\n\
     Revenue increased to EUR 41.2 million (38.0). Operating profit was EUR 3.1 million (2.4).";
 
-fn run(text: &str, lang: Lang) -> Verdict {
-    analyze(&Report { text, lang })
-}
-
-fn fixture(name: &str) -> String {
+fn read_fixture(name: &str) -> String {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
     std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {path}: {err}"))
 }
 
+fn with_fixtures(check: impl FnOnce(&[Fixture])) {
+    let texts: Vec<String> = CASES
+        .iter()
+        .map(|case| read_fixture(case.fixture))
+        .collect();
+    let fixtures: Vec<Fixture> = CASES
+        .iter()
+        .zip(&texts)
+        .map(|(case, text)| Fixture {
+            name: case.fixture,
+            text,
+            lang: case.lang,
+            expected: case.metrics.to_vec(),
+            expected_decision: case.decision,
+        })
+        .collect();
+    check(&fixtures);
+}
+
 #[test]
 fn fixtures_give_expected_metrics() {
-    for case in CASES {
-        let text = fixture(case.fixture);
-        let verdict = run(&text, case.lang);
-        for (key, current, prior) in case.metrics {
-            let metric = verdict
-                .metrics
-                .iter()
-                .find(|metric| metric.key == *key)
-                .unwrap_or_else(|| panic!("{}: {key} not found", case.fixture));
-            assert_eq!(
-                metric.current.as_deref(),
-                *current,
-                "{}: {key} current",
-                case.fixture
-            );
-            assert_eq!(
-                metric.prior.as_deref(),
-                *prior,
-                "{}: {key} prior",
-                case.fixture
-            );
-        }
-        assert_eq!(
-            verdict.metrics.len(),
-            case.metrics.len(),
-            "{}: metric count",
-            case.fixture
-        );
-        assert_eq!(
-            verdict.decision, case.decision,
-            "{}: decision",
-            case.fixture
-        );
-    }
+    with_fixtures(|fixtures| assert_fixtures(analyze, fixtures));
 }
 
 #[test]
 fn foreign_release_abstains() {
-    assert_eq!(run(FOREIGN, Lang::En).decision, Decision::Abstain);
+    assert_abstains(analyze, FOREIGN, Lang::En);
+}
+
+#[test]
+#[ignore = "run with --ignored --nocapture and record p50/p99 in kernel.json"]
+fn timing() {
+    with_fixtures(|fixtures| {
+        let (p50, p99) = time_per_release(analyze, fixtures, 1000);
+        println!("p50 {p50:?} p99 {p99:?}");
+    });
 }

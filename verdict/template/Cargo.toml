@@ -11,6 +11,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 verdict-sdk = { path = "../sdk" }
 
+[dev-dependencies]
+verdict-sdk = { path = "../sdk", features = ["harness"] }
+
 [profile.release]
 opt-level = 3
 lto = "fat"
