@@ -184,7 +184,7 @@ enum SaxoAction {
         /// saxo_stream /tokens endpoint to POST the token pair to.
         /// Receiving this POST unblocks saxo_stream's startup and starts streaming.
         /// Reach it via kubectl port-forward:
-        ///   kubectl port-forward deploy/saxo-stream 8080:8080
+        ///   kubectl port-forward deploy/saxo-stream 8080:8081
         /// then pass: http://localhost:8080/tokens
         #[arg(long, env = "SAXO_REGISTER_ENDPOINT")]
         register_endpoint: String,

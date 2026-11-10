@@ -73,12 +73,13 @@ struct Args {
     #[arg(long, env = "SAXO_CLIENT_SECRET")]
     saxo_client_secret: String,
 
-    #[arg(long, env = "HEALTH_PORT", default_value = "8080")]
+    /// Port of `/health`, `/metrics` and `POST /tokens`.
+    #[arg(long, env = "HEALTH_PORT", default_value = "8081")]
     health_port: u16,
 
-    /// Port of the internal quote endpoint (`GET /quote`). Not 8080, which is
-    /// `HEALTH_PORT`'s; the chart's `saxo-quotes` Service maps its port 8080 here.
-    #[arg(long, env = "QUOTE_PORT", default_value = "8081")]
+    /// Port of the internal quote endpoint (`GET /quote`), separate from
+    /// `HEALTH_PORT` so the chart can expose it to the `analyst` namespace only.
+    #[arg(long, env = "QUOTE_PORT", default_value = "8080")]
     quote_port: u16,
 
     /// Topic for official daily bars (stored by signal in `daily_bars`).
@@ -209,8 +210,6 @@ const DAILY_BARS_MINUTE: u32 = 30;
 /// request limits).
 const CHART_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
-/// How often the quote path's Uic map is rebuilt from the registered companies.
-const QUOTE_RELOAD_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// A pair asked for but unknown is looked up again at most this often.
 const QUOTE_UNKNOWN_COOLDOWN: Duration = Duration::from_secs(60);
 /// Capacity of the queue of unknown pairs from the quote handler.
@@ -256,7 +255,8 @@ fn is_transient_failure(e: &anyhow::Error) -> bool {
 }
 
 /// One pass over every registered Nordic instrument. Failures are logged and
-/// counted and never propagate.
+/// counted and never propagate. Its company reload also refreshes the quote
+/// path's Uic map (`quote_uics`).
 async fn daily_bars_sweep(
     pool: &sqlx::PgPool,
     resolver: &UicResolver,
@@ -264,9 +264,11 @@ async fn daily_bars_sweep(
     sink: &dyn BarSink,
     shared_token: &SharedToken,
     mics: &[String],
+    quote_uics: &UicMap,
 ) -> SweepResult {
     let started = std::time::Instant::now();
-    let out = daily_bars_sweep_inner(pool, resolver, client, sink, shared_token, mics).await;
+    let out =
+        daily_bars_sweep_inner(pool, resolver, client, sink, shared_token, mics, quote_uics).await;
     histogram!("saxo_daily_bars_sweep_duration_seconds").record(started.elapsed().as_secs_f64());
     out
 }
@@ -278,6 +280,7 @@ async fn daily_bars_sweep_inner(
     sink: &dyn BarSink,
     shared_token: &SharedToken,
     mics: &[String],
+    quote_uics: &UicMap,
 ) -> SweepResult {
     let tickers = match load_saxo_instruments(pool, mics).await {
         Ok(t) => t,
@@ -296,6 +299,7 @@ async fn daily_bars_sweep_inner(
         .map(|i| (i.ticker.clone(), i.exchange_mic.clone()))
         .collect();
     daily_bars::zero_deregistered(&registered);
+    prune_quote_uics(quote_uics, &tickers);
     let mut out = SweepResult::default();
     for inst in &tickers {
         let ticker = &inst.ticker;
@@ -314,6 +318,7 @@ async fn daily_bars_sweep_inner(
                 continue;
             }
         };
+        store_quote_uic(quote_uics, inst, resolved.uic);
         let instrument = Instrument {
             ticker: ticker.clone(),
             exchange_mic: inst.exchange_mic.clone(),
@@ -357,6 +362,7 @@ async fn run_daily_bars(
     shared_token: SharedToken,
     sink: Arc<KafkaBarSink>,
     mics: Vec<String>,
+    quote_uics: UicMap,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut retry = sweep_backoff().build();
@@ -372,6 +378,7 @@ async fn run_daily_bars(
                 resolver.clone(),
                 mics.clone(),
             );
+            let quote_uics = quote_uics.clone();
             tokio::spawn(async move {
                 let mut client =
                     ChartClient::new(http, &api_base, shared_token.clone(), CHART_MIN_INTERVAL)
@@ -383,6 +390,7 @@ async fn run_daily_bars(
                     sink.as_ref(),
                     &shared_token,
                     &mics,
+                    &quote_uics,
                 )
                 .await
             })
@@ -778,12 +786,32 @@ async fn bootstrap_from_registration(
     Ok((initial, auth))
 }
 
-/// Refreshes the quote path's Uic map from every registered company on `mics`.
-/// Each Uic goes into the map as soon as it resolves, so the first warm-up
-/// serves early companies before the last one is looked up. A company whose
-/// lookup fails keeps the Uic it had (a Uic never changes); a deregistered one
-/// is dropped at the end.
-async fn reload_quote_uics(
+/// Puts `inst`'s Uic into the quote path's map.
+fn store_quote_uic(uics: &UicMap, inst: &SaxoInstrument, uic: u64) {
+    uics.write().unwrap_or_else(|e| e.into_inner()).insert(
+        saxo_quotes::key(&inst.ticker, &inst.exchange_mic),
+        QuoteInstrument { uic },
+    );
+}
+
+/// Drops every company from the quote path's map that is not in `registered`,
+/// and returns how many remain. A registered company keeps its Uic even when a
+/// later lookup fails (a Uic never changes).
+fn prune_quote_uics(uics: &UicMap, registered: &[SaxoInstrument]) -> usize {
+    let keys: std::collections::HashSet<(String, String)> = registered
+        .iter()
+        .map(|i| saxo_quotes::key(&i.ticker, &i.exchange_mic))
+        .collect();
+    let mut map = uics.write().unwrap_or_else(|e| e.into_inner());
+    map.retain(|k, _| keys.contains(k));
+    gauge!("saxo_quote_instruments").set(map.len() as f64);
+    map.len()
+}
+
+/// The startup warm-up of the quote path's Uic map: resolves every registered
+/// company on `mics`, each Uic going into the map as soon as it resolves. Later
+/// company reloads (each daily-bar sweep) keep the map current.
+async fn warm_quote_uics(
     pool: &sqlx::PgPool,
     resolver: &UicResolver,
     shared_token: &SharedToken,
@@ -793,7 +821,7 @@ async fn reload_quote_uics(
     let instruments = match load_saxo_instruments(pool, mics).await {
         Ok(i) => i,
         Err(e) => {
-            error!(error = %e, "quotes: failed to load registered companies, keeping the Uic map");
+            error!(error = %e, "quotes: failed to load registered companies for the warm-up");
             return;
         }
     };
@@ -804,12 +832,7 @@ async fn reload_quote_uics(
             .resolve_with_cfd_check(&inst.query(), &access_token)
             .await
         {
-            Ok(r) => {
-                uics.write().unwrap_or_else(|e| e.into_inner()).insert(
-                    saxo_quotes::key(&inst.ticker, &inst.exchange_mic),
-                    QuoteInstrument { uic: r.uic },
-                );
-            }
+            Ok(r) => store_quote_uic(uics, inst, r.uic),
             Err(e) => {
                 failed += 1;
                 warn!(
@@ -820,21 +843,12 @@ async fn reload_quote_uics(
             }
         }
     }
-    let registered: std::collections::HashSet<(String, String)> = instruments
-        .iter()
-        .map(|i| saxo_quotes::key(&i.ticker, &i.exchange_mic))
-        .collect();
-    let resolved = {
-        let mut map = uics.write().unwrap_or_else(|e| e.into_inner());
-        map.retain(|k, _| registered.contains(k));
-        map.len()
-    };
-    gauge!("saxo_quote_instruments").set(resolved as f64);
+    let resolved = prune_quote_uics(uics, &instruments);
     info!(
         resolved,
         registered = instruments.len(),
         failed,
-        "quotes: Uic map reloaded"
+        "quotes: Uic map warm"
     );
 }
 
@@ -883,10 +897,9 @@ async fn resolve_unknown_quote_pair(
                 uic = r.uic,
                 "quotes: resolved a newly asked-for company"
             );
-            uics.write().unwrap_or_else(|e| e.into_inner()).insert(
-                saxo_quotes::key(&ticker, &mic),
-                QuoteInstrument { uic: r.uic },
-            );
+            store_quote_uic(uics, &inst, r.uic);
+            gauge!("saxo_quote_instruments")
+                .set(uics.read().unwrap_or_else(|e| e.into_inner()).len() as f64);
         }
         Err(e) => warn!(
             key = inst.key(),
@@ -896,11 +909,9 @@ async fn resolve_unknown_quote_pair(
     }
 }
 
-/// Keeps the quote path's Uic map warm: a full reload at start and every
-/// `QUOTE_RELOAD_INTERVAL`, and a lookup of each unknown pair the handler
-/// queues (at most once per `QUOTE_UNKNOWN_COOLDOWN`).
-#[allow(clippy::too_many_arguments)]
-async fn run_quote_uics(
+/// Looks up each unknown pair the quote handler queues, at most once per
+/// `QUOTE_UNKNOWN_COOLDOWN` per pair.
+async fn run_quote_unknowns(
     pool: sqlx::PgPool,
     resolver: Arc<UicResolver>,
     shared_token: SharedToken,
@@ -909,14 +920,10 @@ async fn run_quote_uics(
     mut unknown: mpsc::Receiver<(String, String)>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let mut reload = interval(QUOTE_RELOAD_INTERVAL);
     let mut tried: std::collections::HashMap<(String, String), std::time::Instant> =
         std::collections::HashMap::new();
     loop {
         tokio::select! {
-            _ = reload.tick() => {
-                reload_quote_uics(&pool, &resolver, &shared_token, &uics, &mics).await;
-            }
             Some(pair) = unknown.recv() => {
                 let now = std::time::Instant::now();
                 tried.retain(|_, at| now.duration_since(*at) < QUOTE_UNKNOWN_COOLDOWN);
@@ -1203,11 +1210,11 @@ async fn main() -> anyhow::Result<()> {
     if quote_token.set(shared_token.clone()).is_err() {
         warn!("quote token slot was already set");
     }
-    tokio::spawn(run_quote_uics(
+    tokio::spawn(run_quote_unknowns(
         pool.clone(),
         uic_resolver.clone(),
         shared_token.clone(),
-        quote_uics,
+        quote_uics.clone(),
         saxo_mics.clone(),
         quote_unknown_rx,
         shutdown_rx.clone(),
@@ -1263,7 +1270,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    tokio::spawn(run_daily_bars(
+    let daily_bars = run_daily_bars(
         pool.clone(),
         http.clone(),
         uic_resolver.clone(),
@@ -1275,8 +1282,21 @@ async fn main() -> anyhow::Result<()> {
             topic: args.daily_bars_topic.clone(),
         }),
         saxo_mics.clone(),
+        quote_uics.clone(),
         shutdown_rx.clone(),
-    ));
+    );
+    {
+        let (pool, resolver, shared_token, mics) = (
+            pool.clone(),
+            uic_resolver.clone(),
+            shared_token.clone(),
+            saxo_mics.clone(),
+        );
+        tokio::spawn(async move {
+            warm_quote_uics(&pool, &resolver, &shared_token, &quote_uics, &mics).await;
+            daily_bars.await;
+        });
+    }
 
     info!("token refresh and daily-bar sync running");
     let mut shutdown = shutdown_rx.clone();

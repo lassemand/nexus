@@ -88,20 +88,35 @@ pub struct QuoteParams {
 /// is `null`.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct QuoteBody {
+    /// Requested ticker, upper-cased.
     pub ticker: String,
+    /// Requested MIC, upper-cased.
     pub mic: String,
+    /// Saxo's instrument id the quote was read for.
     pub uic: u64,
+    /// Best bid, the price a sale receives.
     pub bid: Option<String>,
+    /// Best ask, the price a purchase pays.
     pub ask: Option<String>,
+    /// Size at the best bid.
     pub bid_size: Option<String>,
+    /// Size at the best ask.
     pub ask_size: Option<String>,
+    /// Saxo's `Quote.PriceTypeBid`, unchanged.
     pub bid_type: Option<String>,
+    /// Saxo's `Quote.PriceTypeAsk`, unchanged.
     pub ask_type: Option<String>,
+    /// Saxo's `Quote.MarketState`, unchanged.
     pub market_state: Option<String>,
+    /// Saxo's `Quote.DelayedByMinutes`.
     pub delayed_minutes: Option<i64>,
+    /// Saxo's `DisplayAndFormat.Currency`.
     pub currency: Option<String>,
+    /// Saxo's `LastUpdated`, as Saxo formatted it.
     pub saxo_last_updated: Option<String>,
+    /// When saxo-stream had Saxo's answer (UTC, milliseconds).
     pub fetched_at: String,
+    /// Saxo's round trip in milliseconds.
     pub saxo_ms: u64,
 }
 

@@ -16,7 +16,7 @@ copy-paste into Vault or `.env` files needed.
 2. A running `saxo_stream` pod. Forward its health port to your machine:
 
    ```bash
-   kubectl port-forward deploy/saxo-stream 8080:8080
+   kubectl port-forward deploy/saxo-stream 8080:8081
    ```
 
 ## Usage
