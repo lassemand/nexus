@@ -20,6 +20,14 @@ the previous reports prove is stable**, verify it cheaply, and fall back to a
 broader one only when the verification fails. A simple lookup beats text search
 whenever one is possible.
 
+**What you look for is yours too.** There is no standard list of metrics, labels
+or phrases, here or in the sample. Which metrics matter for this company and
+this report, and whether you find each one by a position (the third line), a
+phrase (`Net sales`), a value (a figure you expect near last year's), or
+something else, is your decision, taken from the company's previous reports.
+Different companies, and different metrics of one company, can use different
+rungs of the ladder below.
+
 ## What you may use
 
 * `verdict-sdk` (`Report`, `Lang`, `Metric`, `Decision`, `Verdict`,
@@ -163,7 +171,9 @@ Keep these in mind whenever your lookup is broader than a fixed line:
 * Non-ASCII letters are not case-folded by ASCII-only matching: list both `Ø`/`ø`
   where a phrase can start a sentence.
 * The first occurrence is not always the figure: a title or intro may mention
-  "revenue growth" without one. Anchor on a phrase that only appears next to the
+  "revenue growth" without one, and when the expected line changes a broader
+  lookup can land on a later section (the year to date) and return its figure as
+  the quarter's. Check the position or the period, not only the label. Anchor on a phrase that only appears next to the
   figure (`net sales amounted to`).
 * Use the company's own wording from its previous reports. Banks report net
   interest income, property companies rental income, biotech often no sales.
