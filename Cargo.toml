@@ -7,8 +7,11 @@ members = [
     "insight",
     "cli",
     "conductor",
-    "telemetry"
+    "telemetry",
+    "verdict/sdk",
+    "verdict/kernels/sample"
 ]
+exclude = ["verdict/template"]
 resolver = "2"
 
 [workspace.package]

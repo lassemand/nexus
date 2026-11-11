@@ -18,3 +18,7 @@ target/release/build/**/out/*.rs
 
 # Vault init output — contains unseal key and root token; must never be committed
 .vault-init.json
+
+# verdict: benchmark corpus (verdict/fetch-corpus.sh) and the template's own build output
+verdict/corpus/
+verdict/template/target/

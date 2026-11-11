@@ -1,0 +1,23 @@
+[package]
+name = "verdict-kernel"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Analyst kernel for one company's report. Edited per report; see infra/agents/analyst.md."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+verdict-sdk = { path = "../sdk" }
+
+[dev-dependencies]
+verdict-sdk = { path = "../sdk", features = ["harness"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[workspace]
