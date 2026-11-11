@@ -5,7 +5,7 @@
 //! the ABI ([`run_into`], [`export_kernel!`]), the types ([`Lang`], [`Report`],
 //! [`Metric`], [`Decision`], [`Verdict`]) and, behind the `harness` feature, a
 //! test and timing harness. How a report is searched and how figures are read
-//! is the kernel's own code; see `verdict/AGENT_GUIDE.md`.
+//! is the kernel's own code; see `infra/charts/conductor/conductor/files/agents/analyst.md`.
 
 mod abi;
 mod lang;

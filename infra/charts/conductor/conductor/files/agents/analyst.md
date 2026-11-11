@@ -1,3 +1,8 @@
+---
+name: analyst
+description: Writes the per-report kernel (Rust compiled to WASM) that reads one company's report release and returns buy, no_buy or abstain
+---
+
 # Kernel agent guide
 
 You are writing a **kernel**: a small Rust crate that reads one company's
