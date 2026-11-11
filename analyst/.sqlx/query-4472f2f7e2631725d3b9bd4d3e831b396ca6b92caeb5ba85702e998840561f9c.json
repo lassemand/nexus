@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE report_targets SET\n                   fiscal_period = $2, expected_date = $3, expected_time_known = $4, expected_at = $5,\n                   signal_event_id = $6, prep_due_at = $7,\n                   status = CASE WHEN $8 THEN 'waiting' ELSE status END,\n                   prep_attempts = CASE WHEN $8 THEN 0 ELSE prep_attempts END,\n                   retry_after = CASE WHEN $8 THEN NULL ELSE retry_after END,\n                   updated_at = $9\n               WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Date",
+        "Bool",
+        "Timestamptz",
+        "Int8",
+        "Timestamptz",
+        "Bool",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4472f2f7e2631725d3b9bd4d3e831b396ca6b92caeb5ba85702e998840561f9c"
+}

@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE report_targets SET status = $2, retry_after = $3,\n                    prep_attempts = CASE WHEN $4 THEN 0 ELSE prep_attempts END,\n                    prepared_for_at = COALESCE($5, prepared_for_at), updated_at = $6\n             WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Timestamptz",
+        "Bool",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7011d734bc126af753863d436dc42ef9b916c6871f2544bac0ffbcdb91f02196"
+}

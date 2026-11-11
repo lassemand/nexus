@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE report_targets SET status = 'waiting', prep_attempts = GREATEST($2 - 1, 0),\n                    retry_after = NULL, updated_at = $3\n             WHERE id = $1 AND status = 'failed'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "00ed71719e7db14cd36d4ccea6d416714581898d34041af4dc8876262abc547e"
+}

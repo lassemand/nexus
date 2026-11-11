@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE prep_runs SET outcome = 'failed', finished_at = $2, detail = 'target cancelled'\n                 WHERE target_id = $1 AND outcome = 'running'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b2e99f950475cca8daf76f3241e2fccf30a958d3e29cccf5489e7076739a2eb8"
+}

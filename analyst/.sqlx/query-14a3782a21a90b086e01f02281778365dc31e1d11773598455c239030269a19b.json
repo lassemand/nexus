@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE report_targets SET status = 'cancelled', updated_at = $2\n             WHERE id = $1 AND status IN ('waiting', 'preparing')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "14a3782a21a90b086e01f02281778365dc31e1d11773598455c239030269a19b"
+}

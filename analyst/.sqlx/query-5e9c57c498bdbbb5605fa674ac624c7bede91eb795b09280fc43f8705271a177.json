@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE report_targets SET prep_due_at = LEAST(prep_due_at, $2), updated_at = $2 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5e9c57c498bdbbb5605fa674ac624c7bede91eb795b09280fc43f8705271a177"
+}

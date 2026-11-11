@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO report_targets\n                   (ticker, exchange_mic, report_kind, fiscal_period, expected_date, expected_time_known,\n                    expected_at, signal_event_id, status, prep_due_at, created_at, updated_at)\n               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'waiting', $9, $10, $10)\n               ON CONFLICT DO NOTHING\n               RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Date",
+        "Bool",
+        "Timestamptz",
+        "Int8",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e3fbf965824ef1581c6d4ccefe59b0e393ac3218490de24ac94438285a53faa8"
+}
