@@ -1,10 +1,265 @@
-�
+�:
 FFARMSquarterly_reportƓ��"=Delårsrapport 1. januar – 30. juni 2026 for FirstFarms A/S*XCSE2mfn:$25851072-6ccc-422d-bd3a-ed9c3dfedd7fB_https://mfn.se/one/a/firstfarms/delarsrapport-1-januar-30-juni-2026-for-firstfarms-a-s-25851072JdaR:regulatoryR
 sub:reportRsub:report:interimZinterimb2026-Q2r
-firstfarms�
+firstfarms��7Delårsrapport 1. januar – 30. juni 2026 for FirstFarms A/S
+
+Halvårsresultat påvirket af tørke i Slovakiet samt lave priser på grise og mælk
+
+
+FirstFarms A/S leverede et resultat før skat i første halvår 2026 på minus 50
+mDKK, hvilket ikke er tilfredsstillende.
+
+Det har været et halvår, som har været væsentligt påvirket af meget lave grise-
+og mælkepriser i perioden. Herudover har Europa været ramt af tørke. Tørken har
+betydet, at udbyttet i Slovakiet forventes at være 35 % under det budgetterede.
+I Rumænien har vækstbetingelserne derimod været særdeles gode, og vi forventer
+her gode udbytter på arealer uden vanding såvel som på arealer, der kan vandes.
+
+FirstFarms har i regnskabsperioden realiseret:
+
+* En omsætning på 200 mDKK (2025: 192 mDKK)
+* Et EBITDA på 3 mDKK (2025: 54 mDKK)
+* Et EBIT på -33 mDKK (2025: 22 mDKK)
+* Et resultat før skat på -50 mDKK (2025: 7 mDKK)
+
+Omsætningen er 7 mDKK højere end sidste år, mens EBITDA faldt med 52 mDKK og
+EBIT med 55 mDKK. Resultatet før skat afviger negativt med 57 mDKK i forhold til
+samme periode året før.
+
+Faldene i nøgletallene skyldes primært væsentligt lavere grisepriser, som
+påvirker resultatet negativt med 16 mDKK, samt en negativ værdiregulering på
+grisene på 10 mDKK (2025: +4 mDKK) som følge af ændringen i grisepriserne fra 1.
+januar til 30. juni 2026. Afgrøderne er indregnet med en positiv værdiregulering
+på 13 mDKK (2025: 25 mDKK), værdireguleringen i året er under forventningerne
+som følge af tørken i Slovakiet.
+
+Den samlede netto positive påvirkning på værdireguleringer, grise, kvæg og
+afgrøder, som ikke er høstet, er på 3 mDKK.
+
+Halvårsresultatet er ligeledes påvirket af, at priserne på mælk ikke levede op
+til det budgetterede. De lave priser bliver delvist opvejet af bedre resultater
+i mælkeproduktionen.
+
+”Vi har set et første halvår, hvor priserne har været meget lave på både grise
+og mælk, samt en produktion som skulle genstartes efter mund- og klovesyge
+(FMD). Prisen på grise er fortsat med at falde efter halvåret, men er dog
+efterfølgende kommet tilbage på niveauet i juni. Prisen på mælk har været
+stigende, og prisen i august er 15 % højere end prisen i juni. Herudover har vi
+i det meste af Europa oplevet tørke, som har påvirket afgrøderne specielt i
+Slovakiet og Ungarn. Vi forventer svagt stigende priser på grise, i forhold til
+det nuværende niveau, som følge af positive signaler i de lokale markeder.
+Herudover er der positive tegn på afgrødepriserne,” siger Co-CEO Michael
+Hyldgaard.
+
+Genopbygningen af besætningen efter FMD er gået planmæssigt, og produktionen er
+tilfredsstillende i forhold til besætningens sammensætning. Mejeriet ved farmen
+i Plavecky er samtidig ved at være færdigt, og de første test er blevet
+gennemført. Den endelige overlevering af et færdigtestet produktionsapparat
+forventes at ske i Q4-2026.
+
+“Det strategiske samarbejde med Interfood fungerer godt, og forventningerne til
+at vi sammen kan skabe en merværdi for mælken er store,” siger Co-CEO Søren
+Bredvig.
+
+Forventninger til 2026
+Som konsekvens af tørke i store dele af Europa, samt faldende grisepriser,
+nedjusterede koncernen den 26. august 2026 forventningerne til årets resultat
+med 20 mDKK til et EBITDA på minus 5 – 45 mDKK og et EBIT på minus 75 – minus 25
+mDKK.
+
+──────────────────────────────────────────────────────────
+Udmeldte forventninger 2026 EBITDA EBIT                   
+──────────────────────────────────────────────────────────
+26. august 2026 minus 5 – 45 mDKK minus 75 – minus 25 mDKK
+──────────────────────────────────────────────────────────
+8. juli 2026 15 – 65 mDKK minus 55 – minus 5 mDKK         
+──────────────────────────────────────────────────────────
+25. marts 2026 60 – 110 mDKK -10 - +40 mDKK               
+──────────────────────────────────────────────────────────
+
+FirstFarms’ fokusområde i den resterende del af 2026 vil være at få mejeriet i
+drift samt fokus på en effektiv omkostningsstyring.
+
+Med venlig hilsen
+FirstFarms A/S
+
+For yderligere information:
+Se venligst vores hjemmeside www.firstfarms.dk eller kontakt bestyrelsesformand
+Asbjørn Børsting på telefon 75 86 87 87.
+
+Om FirstFarms:
+FirstFarms er et dansk børsnoteret selskab. Vi driver FirstFarms med ansvar for
+de omkringliggende samfund, og vi leverer højeste kvalitet, som primært afsættes
+lokalt. Vi handler på nye muligheder, der skaber værdi for vores investorer og
+for omverdenen. Vi arbejder hver dag på at skabe en mere bæredygtig virksomhed.
+
+Fremtidsrettede udsagn:
+Denne selskabsmeddelelse indeholder fremtidsrettede udsagn, herunder, men ikke
+begrænset til, guidance, forventninger, strategier, målsætninger og udsagn om
+fremtidige begivenheder eller udsigter vedrørende koncernens fremtidige
+finansielle og driftsmæssige resultater.
+
+Fremtidsrettede udsagn omfatter, uden begrænsning, enhver erklæring der kan
+forudsige, prognosticere, indikere eller antyde fremtidige resultater,
+præstationer eller opnåelser, og kan indeholde ord som “forventer”, “estimerer”,
+“har til hensigt”, “vil være”, “vil fortsætte”, “vil resultere i”, “kunne”,
+“kan”, “måske” eller variationer af sådanne ord eller andre ord med lignende
+betydning.
+
+Fremtidsrettede udsagn er forbundet med risici og usikkerheder, som kan medføre,
+at koncernens faktiske resultater afviger væsentligt fra de resultater, der
+omtales i sådanne fremtidsrettede udsagn. Fremadskuende information er baseret
+på ledelsens aktuelle forventninger eller prognoser på det pågældende tidspunkt.
+Sådanne oplysninger er forbundet med risikoen for, at disse forventninger eller
+prognoser, eller de antagelser der ligger til grund for dem, kan ændre sig.
+
+Koncernen påtager sig ingen forpligtelse til at opdatere sådanne fremtidsrettede
+udsagn for at afspejle faktiske resultater, ændringer i antagelser eller
+ændringer i andre forhold, der påvirker disse fremtidsrettede udsagn.
+
+Derfor bør fremtidsrettede udsagn ikke betragtes som en forudsigelse af faktiske
+resultater.
+
+Attachments
+
+(7) H1 2026 rapport
+(7) H1-2026 meddelelse
+
+[1]: https://www.globenewswire.com/Tracker?data=cn2E0-nt_902g2uCMvAFebINy3GkybU-
+P6aOOJmSfV04peq6lRO4eV7tUjOTU-q02CJkwsTTtby6IDMHFuN3XXFUVc8glIeOHqe0V-Vw0Js=
+[2]: https://ml-eu.globenewswire.com/Resource/Download/cefd83c4-e5d8-4e89-bd73-1
+92316f5902d
+[3]: https://ml-eu.globenewswire.com/Resource/Download/d635e503-6316-47d2-b1c6-3
+515a4d2ebc3�8
 FFARMSquarterly_reportƓ��"EFirstFarms A/S’ interim financial report 1 January – 30 June 2026*XCSE2mfn:$597cb006-bf61-4f75-90d1-3dc8f5015e87Bghttps://mfn.se/one/a/firstfarms/firstfarms-a-s-interim-financial-report-1-january-30-june-2026-597cb006JenR:regulatoryR
 sub:reportRsub:report:interimZinterimb2026-Q2r
-firstfarms�#
+firstfarms��5FirstFarms A/S’ interim financial report 1 January – 30 June 2026
+
+Half year result impacted by drought in Slovakia and low pig and milk prices
+
+FirstFarms A/S reported a pre-tax result of minus 50 mDKK in the first half year
+of 2026, which is not satisfactory.
+
+The first half of the year has been significantly impacted by very low pig and
+milk prices during the period. In addition, Europe has been affected by drought.
+As a result, yields in Slovakia are expected to be 35% below the budgeted. In
+Romania, on the other hand, growing conditions have been particularly
+favourable, and here we expect yields both on non-irrigated areas and on areas
+that can be irrigated.
+
+FirstFarms has in the accounting period realised:
+· A turnover of 200 mDKK (2025: 192 mDKK)
+· An EBITDA of 3 mDKK (2025: 54 mDKK)
+· An EBIT of -33 mDKK (2025: 22 mDKK)
+· A pre-tax result of -50 mDKK (2025: 7 mDKK)
+
+The turnover is 7 mDKK higher than last year, while EBITDA decreased by 52 mDKK
+and EBIT by 55 mDKK. Compared with the same period last year, the pre-tax result
+declined by 57 mDKK.
+
+The decline in the key financial figures is primarily attributable to
+significantly lower pig prices, which had a negative impact on the result of 16
+mDKK, as well as a negative fair value adjustment of 10 mDKK on pigs (2025: +4
+mDKK) as a result of changes in pig prices from 1 January to 30 June 2026.Crops
+have been recognised with a positive fair value adjustment of 13 mDKK (2025: 25
+mDKK), which is below expectations due to the drought in Slovakia.
+
+The total net positive impact from value adjustments on pigs, cattle and
+unharvested crops amounts to 3 mDKK.
+
+The half-year result was also impacted by milk prices being below budgeted
+levels. The low prices are partly offset by better results in milk production.
+
+“We have seen a first half of the year in which prices have been very low for
+both pigs and milk, and a production had to be restarted following the outbreak
+of foot and mouth disease (FMD). Pig prices continued to decline after the first
+half of the year but have subsequently returned to the June level. Milk prices
+have been increasing, with the August price 15% higher than in June. In
+addition, most of Europe has experienced drought, which has affected crops,
+particularly in Slovakia and Hungary. We expect pig prices to increase slightly
+from their current level, driven by positive signals from local markets. There
+are also positive signs regarding crop prices,” says Co-CEO Michael Hyldgaard.
+
+The rebuilding of the herd following the FMD outbreak has progressed as planned,
+and production is satisfactory given the current composition of the herd. The
+dairy facility at the farm in Plavecky is also nearing completion, and the first
+tests have been carried out. Final handover of the fully tested production
+facility is expected to take place in Q4 2026.
+
+“The strategic partnership with Interfood is working well, and the expectations
+are high that together we can create added value from the milk,” says Co-CEO
+Søren Bredvig.
+
+Expectations to 2026
+Because of drought affecting large parts of Europe, and decreasing pig prices,
+the Group adjusted downwards the expectations for the year result by 20 mDKK on
+26 August 2026 to an EBITDA of minus 5 – 45 mDKK and an EBIT of minus 75 – minus
+25 mDKK.
+
+─────────────────────────────────────────────────────────
+Announced expectations 2026 EBITDA EBIT                  
+─────────────────────────────────────────────────────────
+26 August 2026 minus 5 – 45 mDKK minus 75 – minus 25 mDKK
+─────────────────────────────────────────────────────────
+8 July 2026 15 – 65 mDKK minus 55 – minus 5 mDKK         
+─────────────────────────────────────────────────────────
+25 March 2026 60 – 110 mDKK -10 - +40 mDKK               
+─────────────────────────────────────────────────────────
+
+FirstFarms’ focus area in the remaining part of 2026 is to get the dairy
+facility in operation and on effective cost management.
+
+Best regards,
+FirstFarms A/S
+
+For further information:
+Please visit our website www.firstfarms.com or contact chairman Asbjørn Børsting
+on phone +45 75 86 87 87.
+
+About FirstFarms:
+FirstFarms is a Danish stock exchange listed company. We operate FirstFarms with
+responsibility for the surrounding communities, and we deliver highest quality
+which is primarily sold locally. We act on new opportunities, that create value
+for our investors and for the surroundings. Every day, we work on creating a
+more sustainable company.
+
+Forward-looking statements:
+This company announcement contains forward-looking statements, including, but
+not limited to guidance, expectations, strategies, objectives and statements
+regarding future events or prospects relating to the Group’s future financial
+and operational performance.
+
+Forward-looking statements include, without limitation, any statement that may
+predict, forecast, indicate or imply future results, performance or
+achievements, and may contain words such as “expects”, “estimates”, “intends”,
+“will”, “will continue”, “will result in”, “could”, “may”, “might” or variations
+of such words or other words of similar meaning.
+
+Forward-looking statements involve risks and uncertainties that may cause the
+Group’s actual results to differ materially from the results referred to in such
+forward-looking statements. Forward-looking information is based on management’s
+current expectations or forecasts at the relevant time. Such information is
+subject to the risk that these expectations or forecasts, or the assumptions
+underlying them, may change.
+
+The Group undertakes no obligation to update such forward-looking statements to
+reflect actual results, changes in assumptions or changes in other circumstances
+affecting such forward-looking statements.
+
+Accordingly, forward-looking statements should not be regarded as a prediction
+of actual results.
+
+Attachments
+
+(7) H1 2026 report
+(7) H1-2026 announcement
+
+[1]: https://www.globenewswire.com/Tracker?data=cn2E0-nt_902g2uCMvAFefJxkfa7Gjt2
+B7XOjqSZlDPPsoA3qswTNMAfW9EI5-JY_yS32X-Z9D1njD0Gn8tov557eiBuHKa1eqybDzEAO0A=
+[2]: https://ml-eu.globenewswire.com/Resource/Download/19968c9d-aebf-4c62-a1cd-9
+92611057562
+[3]: https://ml-eu.globenewswire.com/Resource/Download/5361cd19-7a0e-4888-abe1-5
+07990790beb�#
 FFARMScompany_announcement����"cFirstFarms nedjusterer forventningerne til året grundet tørke i Slovakiet samt fald i grisepriser*XCSE2mfn:$b18b9719-0289-4462-b33c-981138f45a47B�https://mfn.se/one/a/firstfarms/firstfarms-nedjusterer-forventningerne-til-aret-grundet-torke-i-slovakiet-samt-fald-i-grisepriser-b18b9719JdaR:regulatoryr
 firstfarms�� Som konsekvens af tørke i store dele af Europa, og specielt i Slovakiet,
 forventes udbytterne på afgrøder i Slovakiet at blive 35 % lavere end forventet.
@@ -279,13 +534,181 @@ Attachments
 [1]: https://www.globenewswire.com/Tracker?data=Kpcpuz3PAulpnLBR4dEXvH4LI0FEZi_r
 cw_UeudPnSMjANW_79Z9mVhkBqI6kxxyWWbp2GZfdf3nMsnSuApJUSikKE32iny6rpT6rvC9wDg=
 [2]: https://ml-eu.globenewswire.com/Resource/Download/b692000c-ff4a-4871-a17d-9
-95de801afec�
+95de801afec�#
 FFARMSquarterly_report����"@Kvartalsopdatering 1. januar - 31. marts 2026 for FirstFarms A/S*XCSE2mfn:$da00914d-a87f-4b48-9a24-1d595fa5462dBehttps://mfn.se/one/a/firstfarms/kvartalsopdatering-1-januar-31-marts-2026-for-firstfarms-a-s-da00914dJdaR:regulatoryR
 sub:reportRsub:report:interimZinterimb2026-Q1r
-firstfarms�
+firstfarms��!Kvartalsopdatering 1. januar - 31. marts 2026 for FirstFarms A/S
+
+Resultat for 1. kvartal er som forventet
+
+FirstFarms A/S har i årets første tre måneder leveret et EBITDA på -7 mDKK og et
+EBIT på -23 mDKK. Resultatet er som forventet og følger guidance for 2026.
+FirstFarms fastholder de udmeldte forventninger for 2026 med et EBITDA i spændet
+60-110 mDKK og et EBIT på -10-+40 mDKK.
+
+Omsætningen er reduceret i forhold til samme periode sidste år fra 102 mDKK til
+73 mDKK, samtidig er EBITDA og EBIT faldet med 19 mDKK. Den væsentligste
+påvirkning på omsætning, EBITDA og EBIT har været de lave priser på mælk og
+grise.
+
+Mælk
+FirstFarms har i perioden produceret 6.016 tons mælk mod 7.736 tons i samme
+periode sidste år. Besætningen er ikke på samme niveau som før mund- og
+klovesyge, og ydelsen er ligeledes under niveauet fra tidligere, idet der er en
+meget stor andel af første laktationskøer. Produktionen og opbygning af
+besætningen følger forventningerne.
+
+Grise
+Omsætningen for små- og slagtegrise er faldet sammenlignet med samme periode
+sidste år. I Q1 2026 var salgsprisen for 25 kg smågrise 391 DKK/stk. mod 534
+DKK/stk. i Q1 2025, og på slagtegrise 10,55 DKK/kg mod 13,12 DKK/kg. Priserne på
+grise er steget i løbet af Q1, men ligger stadig på et lavt niveau. Priserne er
+på niveau med vores forventninger til Q1.
+
+Afgrøder
+Afgrødepriserne har været på et forventet niveau i Q1 2026. Der er afgrøder på
+lager som leveres i løbet af Q2. Vækstsæsonen har indtil videre været uden store
+udfordringer, og afgrøderne står generelt godt.
+
+Fokusområder i 2026
+Fokus i 2026 fortsætter med indkøring af malkekvægsbesætningen i Slovakiet,
+opstart af mejeri, optimering af vandingsanlægget i Rumænien samt på
+produktivitetsforbedringer og stram omkostningsstyring i et år, som ser ud til
+at blive udfordret af lave priser.
+
+Med venlig hilsen
+FirstFarms A/S
+
+For yderligere information:
+Se venligst vores hjemmeside www.firstfarms.dk eller kontakt bestyrelsesformand
+Asbjørn Børsting på telefon 75 86 87 87.
+
+Om FirstFarms:
+FirstFarms er et dansk børsnoteret selskab. Vi driver FirstFarms med ansvar for
+de omkringliggende samfund, og vi leverer højeste kvalitet, som primært afsættes
+lokalt. Vi handler på nye muligheder, der skaber værdi for vores investorer og
+for omverdenen. Vi arbejder hver dag på at skabe en mere bæredygtig virksomhed.
+
+Fremtidsrettede udsagn:
+Denne selskabsmeddelelse indeholder fremtidsrettede udsagn, herunder, men ikke
+begrænset til, guidance, forventninger, strategier, målsætninger og udsagn om
+fremtidige begivenheder eller udsigter vedrørende koncernens fremtidige
+finansielle og driftsmæssige resultater.
+
+Fremtidsrettede udsagn omfatter, uden begrænsning, enhver erklæring der kan
+forudsige, prognosticere, indikere eller antyde fremtidige resultater,
+præstationer eller opnåelser, og kan indeholde ord som “forventer”, “estimerer”,
+“har til hensigt”, “vil være”, “vil fortsætte”, “vil resultere i”, “kunne”,
+“kan”, “måske” eller variationer af sådanne ord eller andre ord med lignende
+betydning.
+
+Fremtidsrettede udsagn er forbundet med risici og usikkerheder, som kan medføre,
+at koncernens faktiske resultater afviger væsentligt fra de resultater, der
+omtales i sådanne fremtidsrettede udsagn. Fremadskuende information er baseret
+på ledelsens aktuelle forventninger eller prognoser på det pågældende tidspunkt.
+Sådanne oplysninger er forbundet med risikoen for, at disse forventninger eller
+prognoser, eller de antagelser der ligger til grund for dem, kan ændre sig.
+
+Koncernen påtager sig ingen forpligtelse til at opdatere sådanne fremtidsrettede
+udsagn for at afspejle faktiske resultater, ændringer i antagelser eller
+ændringer i andre forhold, der påvirker disse fremtidsrettede udsagn.
+
+Derfor bør fremtidsrettede udsagn ikke betragtes som en forudsigelse af faktiske
+resultater.
+
+Attachments
+
+(4) Kvartalsopdatering Q1 2026
+
+[1]: https://www.globenewswire.com/Tracker?data=D1y7IxgcwiYnJ2pBCyH9E3_290GQOT6V
+vFoJaeJi4sL_RgPePv2Derl2YPGYPQ_auEV05NwZJ3X__sj0B5I9DVFFFxIryWZ0Oe218GvPE5I=
+[2]: https://ml-eu.globenewswire.com/Resource/Download/c3782933-64a4-4c3b-ba23-9
+f5d491be80a�#
 FFARMSquarterly_report����"=Quarterly update 1 January - 31 March 2026 for FirstFarms A/S*XCSE2mfn:$e70906db-dff4-4442-9cfd-bdddf2d3d884Bdhttps://mfn.se/one/a/firstfarms/quarterly-update-1-january-31-march-2026-for-firstfarms-a-s-e70906dbJenR:regulatoryR
 sub:reportRsub:report:interimZinterimb2026-Q1r
-firstfarms�
+firstfarms�� Quarterly update 1 January - 31 March 2026 for FirstFarms A/S
+
+Result for first quarter as expected
+
+FirstFarms A/S delivered an EBITDA of -7 mDKK and an EBIT of -23 mDKK during the
+first three months of the year. The result is as expected and follows the
+guidance for 2026. FirstFarms maintains the expectation for 2026 of an EBITDA in
+the range of 60-110 mDKK and an EBIT of -10-+40 mDKK.
+
+Revenue is reduced compared to same period last year from 102 mDKK to 73 mDKK,
+while EBITDA and EBIT has decreased by 19 mDKK. The most significant impact on
+revenue, EBITDA and EBIT was the low prices for milk and pigs.
+
+Milk
+During the period, FirstFarms produced 6,016 tonnes of milk compared with 7,736
+tonnes in the same period last year. The herd has not yet returned to the same
+level as prior to the foot and mouth disease, and milk yield likewise remains
+below previous levels, as the herd currently consists of a very high proportion
+of first lactation cows. Production levels and rebuilding of the herd are
+progressing in line with the expectations.
+
+Pigs
+Revenue from piglets and slaughter pigs decreased compared with the same period
+last year. In Q1 2026, the sales price for 25 kg piglets was 391 DKK/pcs.
+compared with 534 DKK/pcs. in Q1 2025, while the price for slaughter pigs was
+10.55 DKK/kg compared with 13.12 DKK/kg. Pig prices increased during Q1 but
+remained at a low level. Prices are on par with our expectations for Q1.
+
+Crops
+Crop prices were at expected level in Q1 2026. Crops in storage are delivered
+during Q2. So far, the growing season has progressed without any major
+challenges, and crop conditions are generally good.
+
+Focus areas in 2026
+The focus in 2026 remains on the continued ramp-up of the dairy herd in
+Slovakia, the start-up of the dairy facility, optimisation of the irrigation
+system in Romania, as well as productivity improvements and strict cost
+management in a year that appears likely to be challenged by low prices.
+
+Best regards,
+FirstFarms A/S
+
+For further information:
+Please visit our website www.firstfarms.com or contact Chairman Asbjørn Børsting
+on phone +45 75 86 87 87.
+
+About FirstFarms:
+FirstFarms is a Danish stock exchange listed company. We operate FirstFarms with
+responsibility for the surrounding communities, and we deliver highest quality
+which is primarily sold locally. We act on new opportunities, that create value
+for our investors and for the surroundings. Every day, we work on creating a
+more sustainable company.
+
+Forward-looking statements:
+This company announcement contains forward-looking statements, including, but
+not limited to guidance, expectations, strategies, objectives and statements
+regarding future events or prospects relating to the Group’s future financial
+and operational performance.
+Forward-looking statements include, without limitation, any statement that may
+predict, forecast, indicate or imply future results, performance or
+achievements, and may contain words such as “expects”, “estimates”, “intends”,
+“will”, “will continue”, “will result in”, “could”, “may”, “might” or variations
+of such words or other words of similar meaning.
+Forward-looking statements involve risks and uncertainties that may cause the
+Group’s actual results to differ materially from the results referred to in such
+forward-looking statements. Forward-looking information is based on management’s
+current expectations or forecasts at the relevant time. Such information is
+subject to the risk that these expectations or forecasts, or the assumptions
+underlying them, may change.
+The Group undertakes no obligation to update such forward-looking statements to
+reflect actual results, changes in assumptions or changes in other circumstances
+affecting such forward-looking statements.
+Accordingly, forward-looking statements should not be regarded as a prediction
+of actual results.
+
+Attachments
+
+(4) Quarterly update Q1 2026
+
+[1]: https://www.globenewswire.com/Tracker?data=D1y7IxgcwiYnJ2pBCyH9E4HFjFiQZajz
+JzZEUgt4YlJT2uIgcBlVDrqmR1aUbU22gfinyOBPdBoTlRI-0_9Uduzw4V5rC7kgNvMpT0UiBG0=
+[2]: https://ml-eu.globenewswire.com/Resource/Download/507c874a-65b9-49c0-b96f-d
+12fb695442c�
 FFARMScompany_announcement����"7Forløb af ordinær generalforsamling i FirstFarms A/S *XCSE2mfn:$85a9d72b-3d5f-4312-9964-405557d697b7B^https://mfn.se/one/a/firstfarms/forlob-af-ordinaer-generalforsamling-i-firstfarms-a-s-85a9d72bJdaR:regulatoryr
 firstfarms��FirstFarms A/S har d.d. afholdt ordinær generalforsamling, der forløb som
 følger:
@@ -1031,13 +1454,234 @@ Indsendt_blanket_300000558
 [3]: https://ml-eu.globenewswire.com/Resource/Download/304d5aed-8558-400b-8944-8
 1c9e780f774
 [4]: https://ml-eu.globenewswire.com/Resource/Download/b6618e3e-2a41-400b-b9d5-7
-007057d08b4�
+007057d08b4�*
 FFARMSquarterly_report�њ�"JFirstFarms A/S’ interim financial report 1 January – 30 September 2025*XCSE2mfn:$2c989dfc-a63b-45f1-97da-b44f7fb05780Blhttps://mfn.se/one/a/firstfarms/firstfarms-a-s-interim-financial-report-1-january-30-september-2025-2c989dfcJenR:regulatoryR
 sub:reportRsub:report:interimZinterimb2025-Q3r
-firstfarms�
+firstfarms��'FirstFarms A/S’ interim financial report 1 January – 30 September 2025
+
+Unsatisfactory interim result – impacted by low prices
+
+FirstFarms delivered an interim result for the first 9 months of -6 mDKK.
+
+Yields in the field have generally been reasonable in 2025, but the prices are
+below the expected level. Foot and mouth disease (FMD) has had a significant
+impact on the result in Q2 and Q3 as a result of the lack of turnover from the
+milk production.
+
+The Board of Directors and Management of FirstFarms A/S have today reviewed and
+adopted the unaudited interim financial accounts for the period 1 January – 30
+September 2025.
+
+Main figures
+FirstFarms has in the accounting period realised:
+
+* Turnover: 284 mDKK (2024: 327 mDKK)
+* EBITDA: 72 mDKK (2024: 86 mDKK)
+* EBIT: 21 mDKK (2024: 41 mDKK)
+* Result before tax: -5 mDKK (2024: 13 mDKK)
+
+The turnover in the period has decreased by 13 percent. This is due to a lack of
+sale of milk and lower prices for pigs during the period.
+
+Result before tax is lower than last year, primarily due to the consequences in
+relation to FMD and negative value adjustment on the pig herd because of the low
+prices.
+
+The result for the first 9 months is affected by the fact that the settlement
+prices of pigs did not live up to the expectations, including also a negative
+value adjustment of the pigs due to the low prices at the end of the quarter.
+FirstFarms has had a harvest where the yields, seen across the entire Group,
+have been satisfactory, but the prices have been below expectations. This has a
+significant effect on the result for the first 9 months.
+
+"We are not satisfied with the result for the first 9 months. We have been
+affected by lack of milk production because of FMD, but low and decreasing
+prices for pigs and crops have also had a major impact on the result," says
+Co-CEO Michael Hyldgaard.
+
+Status FMD
+
+Since the authorities on 30 March 2025 confirmed that FirstFarms had an outbreak
+of FMD, and the subsequent culling of the animals on the cattle farm in Plavecky
+Stvrtok, extensive cleaning and disinfection work has been going on.
+Subsequently, 36 test animals were put on the farm on 4 September 2025. The
+animals were on the farm for 3 weeks, after which they were tested for FMD. All
+animals tested negative, and the farm was declared free of FMD by the Slovak
+authorities on 24 September 2025.
+
+After the farm has been released, smaller projects have begun in connection with
+optimisation and upgrading of the farm, before animals are expected to be
+introduced during December 2025. In addition to own breeding, 1,900 pregnant
+heifers and cows have been purchased.
+
+”We were at the end of September 2025 declared free of FMD after a great and
+dedicated work from all our employees. This is also why we now expect to be able
+to introduce the first animals at the beginning of December, and that the milk
+production will be back at pre-FMD level during the second half of 2026.,” says
+Co-CEO Søren Bredvig.
+
+Expectations to 2025
+
+As a direct consequence of the FMD outbreak, the Group adjusted the expectations
+for the year downwards by 45 mDKK on 31 March 2025.
+
+The herd was insured with a total of 31 mDKK, which is recognised under other
+operating income, of which 60 % was paid out at the end of Q3. FirstFarms
+expects the remaining part of the insurance sum to be paid out before the end of
+the year. It has not been possible to insure against operating losses.
+
+In September 2025, the Group applied for regional subsidy for investments in
+animals and to cover other costs related to the outbreak. The final subsidy is
+expected to be between 50-60 mDKK, of which 10-15 mDKK will have effect on
+earnings in 2025. The remaining part will be recognised as income in 2030 after
+maintaining the herd for a 5-year period. This is a condition for receiving the
+subsidy.
+
+FirstFarms expects in 2025:
+• An EBITDA of 60 - 90 mDKK
+• An EBIT of -10 - +20 mDKK
+
+We assume slightly increasing pig and crop prices for the rest of 2025. Pig
+prices have decreased at the beginning of Q4, and we thus expect pig prices to
+increase from the current level until the end of the year.
+
+Best regards,
+FirstFarms A/S
+
+For further information:
+Please visit our website www.firstfarms.com or contact chairman Asbjørn Børsting
+on phone +45 75 86 87 87.
+
+About FirstFarms:
+FirstFarms is a Danish stock exchange listed company. We operate FirstFarms with
+responsibility for the surrounding communities, and we deliver highest quality
+which is primarily sold locally. We act on new opportunities, that create value
+for our investors and for the surroundings. Every day, we work on creating a
+more sustainable company.
+
+Attachments
+
+(31) Q3-2025 announcement
+(31) Q3-2025 report
+
+[1]: https://www.globenewswire.com/Tracker?data=B7UCYqd2UX_sAooXvI2Oe_1tR4W-COdO
+_G7KxxWvDUmmDuRgasx4UdIoXcjw_DzB3dg5d4ObEub54Px8Gc_8aOj1M6wY3o1PndWEIS3bQyQ=
+[2]: https://ml-eu.globenewswire.com/Resource/Download/21dd762c-5078-4657-9574-4
+8f681d2dec1
+[3]: https://ml-eu.globenewswire.com/Resource/Download/1e4df44e-7913-4ce2-81bd-f
+0b6e5c56aa5�*
 FFARMSquarterly_report�њ�"BFirstFarms A/S – delårsrapport 1. januar – 30. september 2025*XCSE2mfn:$5019094d-d5dc-48f8-88ee-cb1588864efaB`https://mfn.se/one/a/firstfarms/firstfarms-a-s-delarsrapport-1-januar-30-september-2025-5019094dJdaR:regulatoryR
 sub:reportRsub:report:interimZinterimb2025-Q3r
-firstfarms�
+firstfarms��'FirstFarms A/S – delårsrapport 1. januar – 30. september 2025
+
+Utilfredsstillende delårsresultat – påvirket af lave priser
+
+FirstFarms leverede et delårsresultat for de første 9 måneder på -6 mDKK.
+
+Udbytterne i marken har overordnet set været fornuftige i 2025, men priserne er
+væsentlig under det forventede niveau. Mund- og klovesyge (FMD) har påvirket
+resultatet væsentligt i Q2 og Q3 som følge af den manglende omsætning fra
+mælkeproduktionen.
+
+Bestyrelsen og direktionen i FirstFarms A/S har d.d. behandlet og godkendt det
+ureviderede delårsregnskab for perioden 1. januar - 30. september 2025.
+
+Hovedtal
+FirstFarms har i regnskabsperioden realiseret:
+
+* Omsætning: 284 mDKK (2024: 327 mDKK)
+* EBITDA: 72 mDKK (2024: 86 mDKK)
+* EBIT: 21 mDKK (2024: 41 mDKK)
+* Resultat før skat: -5 mDKK (2024: 13 mDKK)
+
+Omsætningen i perioden er faldet med 13 procent. Det skyldes manglende salg af
+mælk samt lavere priser på grise i perioden.
+
+Resultat før skat er lavere end sidste år, primært som følge af konsekvenserne i
+forhold til FMD samt negativ værdiregulering på grisebesætningen som følge af de
+lave priser.
+
+Resultatet for de første 9 måneder er påvirket af at afregningspriserne på grise
+ikke levede op til forventningerne, herunder også en negativ værdiregulering på
+grisene som følge af de lave priser ved udgangen af kvartalet. FirstFarms har
+haft en høst hvor udbytterne, set over hele koncernen, har været
+tilfredsstillende, men priserne har været under det forventede. Dette har en
+væsentlig effekt på resultatet for de første 9 måneder.
+
+”Vi er ikke tilfredse med resultatet for de første 9 måneder. Vi har været ramt
+af manglende mælkeproduktion som følge af FMD, men også lave og faldende priser
+på grise samt afgrøder har haft stor betydning på resultatet.” siger Co-CEO
+Michael Hyldgaard.
+
+Status FMD
+
+Siden myndighederne den 30. marts 2025 bekræftede, at FirstFarms havde udbrud af
+FMD, og den efterfølgende aflivning af dyrene på kvægejendommen i Plavecky
+Stvrtok, har der pågået et omfattende rengørings- og desinfektionsarbejde. Der
+blev efterfølgende indsat 36 testdyr den 4. september 2025. Dyrene var på farmen
+i 3 uger, hvorefter de blev testet for FMD. Alle dyr testede negativ, og farmen
+blev den 24. september 2025 erklæret fri for FMD af de slovakiske myndigheder.
+
+Der er efter farmen er frigivet påbegyndt mindre projekter i forbindelse med
+optimering og opgradering af farmen, inden der forventes indsættelse af dyr i
+løbet af december 2025. Der er udover eget opdræt købt 1.900 drægtige kvier samt
+køer.
+
+”Vi blev i slutningen af september 2025 erklæret fri for FMD efter et stort og
+dedikeret arbejde fra alle vores medarbejdere. Det er også derfor vi nu
+forventer at kunne sætte de første dyr ind i starten af december, og at
+mælkeproduktionen vil være tilbage på niveau, som før FMD, i løbet af andet
+halvår 2026,” siger Co-CEO Søren Bredvig.
+
+Forventninger til 2025
+
+Som en direkte konsekvens af FMD-udbruddet nedjusterede koncernen den 31. marts
+2025 forventningerne til årets resultat med 45 mDKK.
+
+Besætningen var forsikret med samlet 31 mDKK som er indregnet under andre
+driftsindtægter, heraf er 60% udbetalt ved udgangen af Q3. FirstFarms forventer
+den resterende del af forsikringssummen bliver udbetalt inden årets udgang. Det
+har ikke været muligt at forsikre mod driftstab.
+
+I september 2025 søgte koncernen regionalt tilskud til investeringer i dyr og
+til dækning af andre omkostninger i relation til udbruddet. Det endelige tilskud
+forventes at være mellem 50-60 mDKK, heraf vil 10-15 mDKK have resultateffekt i
+2025. Den resterende del vil blive indtægtsført i 2030 efter opretholdelse af
+besætningen i en 5-årig periode. Dette er en betingelse for at opnå tilskuddet.
+
+FirstFarms forventer i 2025:
+• Et EBITDA på 60 - 90 mDKK
+• Et EBIT på -10 - +20 mDKK
+
+Vi antager svagt stigende grise- og afgrødepriser i resten af 2025.
+Grisepriserne er faldet i starten af Q4, og vi forventer at grisepriserne vil
+stige fra det nuværende niveau frem mod årsskiftet.
+
+Med venlig hilsen
+FirstFarms A/S
+
+For yderligere information:
+Se venligst vores hjemmeside www.firstfarms.dk eller kontakt bestyrelsesformand
+Asbjørn Børsting på telefon +45 75 86 87 87.
+
+Om FirstFarms:
+
+FirstFarms er et dansk børsnoteret selskab. Vi driver FirstFarms med ansvar for
+de omkringliggende samfund, og vi leverer højeste kvalitet, som primært afsættes
+lokalt. Vi handler på nye muligheder, der skaber værdi for vores investorer og
+for omverdenen. Vi arbejder hver dag på at skabe en mere bæredygtig virksomhed.
+
+Attachments
+
+(31) Q3-2025 meddelelse
+(31) Q3-2025 rapport
+
+[1]: https://www.globenewswire.com/Tracker?data=B7UCYqd2UX_sAooXvI2Oe5fKBShtMDcv
+vdtIil0G8PWpUdHV5mWR9ng_nBoHyeCdMhPvxYqPf1zqgr_q00PZ5jGVES284jOG2jXF5-TNlrE=
+[2]: https://ml-eu.globenewswire.com/Resource/Download/c52d11aa-dd05-4e34-ba16-5
+4f113d1c861
+[3]: https://ml-eu.globenewswire.com/Resource/Download/dcb47254-3bcd-44d2-8e7e-b
+70e43bae550�
 FFARMScompany_announcement����"QFirstFarms nedjusterer forventningerne til året baseret på faldende grisepriser*XCSE2mfn:$55ff26ba-24cc-4ce8-98a8-9ad41032ca55Bxhttps://mfn.se/one/a/firstfarms/firstfarms-nedjusterer-forventningerne-til-aret-baseret-pa-faldende-grisepriser-55ff26baJdaR:regulatoryr
 firstfarms��
 Baseret navnlig på det seneste fald i grisepriser og forudsat, at disse priser

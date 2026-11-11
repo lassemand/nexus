@@ -1128,6 +1128,34 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn report_text_does_not_change_the_stored_row(pool: PgPool) {
+        let plain = item("a", QUARTERLY, at(2026, 8, 26, 6, 0), "en");
+        let mut with_text = item("b", QUARTERLY, at(2026, 8, 26, 6, 0), "en");
+        with_text.ticker = "OTHR".into();
+        with_text.text = format!("headline b\n\n{}", "x".repeat(200_000));
+        let dump = |pool: PgPool| async move {
+            sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+                "SELECT event_type, status, lang, body_text FROM special_events",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(store(&pool, &plain).await, "Inserted");
+        let before = dump(pool.clone()).await;
+        sqlx::query("DELETE FROM special_events")
+            .execute(&pool)
+            .await
+            .unwrap();
+        with_text.ticker = plain.ticker.clone();
+        with_text.source_id = plain.source_id.clone();
+        with_text.description = plain.description.clone();
+        with_text.url = plain.url.clone();
+        assert_eq!(store(&pool, &with_text).await, "Inserted");
+        assert_eq!(dump(pool.clone()).await, before);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn same_item_twice_is_one_row(pool: PgPool) {
         let e = item("a", QUARTERLY, at(2026, 8, 26, 6, 0), "en");
         assert_eq!(store(&pool, &e).await, "Inserted");

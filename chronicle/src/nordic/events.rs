@@ -136,8 +136,24 @@ pub fn release_event(
         is_correction: c.is_correction,
         company_name: company.name.clone().unwrap_or_default(),
         calendar: None,
-        text: String::new(),
+        text: report_text(company, item),
     })
+}
+
+/// `"<title>\n\n<content.text>"` for a report, the text trimmed and cut to
+/// [`MAX_RELEASE_TEXT_BYTES`] (a cut is logged at `warn`); `""` when MFN has no
+/// text.
+fn report_text(company: &Company, item: &NewsItem) -> String {
+    let full = item.text.as_deref().unwrap_or_default().trim();
+    if full.is_empty() {
+        return String::new();
+    }
+    let body = bounded_text(full, MAX_RELEASE_TEXT_BYTES);
+    if body.len() < full.len() {
+        warn!(ticker = %company.ticker, news_id = %item.news_id, original_len = full.len(),
+              "report text truncated");
+    }
+    format!("{}\n\n{}", item.title, body)
 }
 
 fn scheduled(e: &CalendarEntry) -> ScheduledReport {
@@ -226,9 +242,10 @@ pub fn calendar_release_event(
     }
 }
 
-/// Largest `text` of a `company_announcement`, in bytes (256 KiB), so one
-/// message stays well under Kafka's default 1 MB limit.
-pub const MAX_ANNOUNCEMENT_TEXT_BYTES: usize = 262_144;
+/// Largest MFN `content.text` carried in a `SpecialEvent.text`, in bytes
+/// (256 KiB), for reports and announcements alike, so one message stays well
+/// under Kafka's default 1 MiB limit.
+pub const MAX_RELEASE_TEXT_BYTES: usize = 262_144;
 
 /// `text` trimmed and cut to at most `max` bytes on a char boundary.
 fn bounded_text(text: &str, max: usize) -> &str {
@@ -244,12 +261,12 @@ fn bounded_text(text: &str, max: usize) -> &str {
 }
 
 /// One `company_announcement` event for `item` of `company`: one event per
-/// language version, `text` trimmed and cut to [`MAX_ANNOUNCEMENT_TEXT_BYTES`]
+/// language version, `text` trimmed and cut to [`MAX_RELEASE_TEXT_BYTES`]
 /// (a cut is logged at `warn`). Shared by the poll and `nordic-live`; signal
 /// dedupes by `(source, source_id)`.
 pub fn announcement_event(company: &Company, item: &NewsItem) -> SpecialEvent {
     let full = item.text.as_deref().unwrap_or_default().trim();
-    let text = bounded_text(full, MAX_ANNOUNCEMENT_TEXT_BYTES);
+    let text = bounded_text(full, MAX_RELEASE_TEXT_BYTES);
     if text.len() < full.len() {
         warn!(ticker = %company.ticker, news_id = %item.news_id, original_len = full.len(),
               "announcement text truncated");
@@ -388,18 +405,61 @@ mod tests {
     #[test]
     fn long_announcement_text_is_cut_on_a_char_boundary() {
         let mut i = item();
-        let mut s = "a".repeat(MAX_ANNOUNCEMENT_TEXT_BYTES - 1);
+        let mut s = "a".repeat(MAX_RELEASE_TEXT_BYTES - 1);
         s.push_str("øøø");
         i.text = Some(s);
         let e = announcement_event(&company(), &i);
-        assert_eq!(e.text.len(), MAX_ANNOUNCEMENT_TEXT_BYTES - 1);
+        assert_eq!(e.text.len(), MAX_RELEASE_TEXT_BYTES - 1);
         assert!(e.text.chars().all(|c| c == 'a'));
-        let mut s = "a".repeat(MAX_ANNOUNCEMENT_TEXT_BYTES - 2);
+        let mut s = "a".repeat(MAX_RELEASE_TEXT_BYTES - 2);
         s.push_str("øøø");
         i.text = Some(s);
         let e = announcement_event(&company(), &i);
-        assert_eq!(e.text.len(), MAX_ANNOUNCEMENT_TEXT_BYTES);
+        assert_eq!(e.text.len(), MAX_RELEASE_TEXT_BYTES);
         assert!(e.text.ends_with('ø'));
+    }
+
+    fn interim() -> Classification {
+        class(Some(ReportKind::Interim), false, false)
+    }
+
+    #[test]
+    fn report_text_is_title_blank_line_and_content() {
+        let mut i = item();
+        i.text = Some("  Revenue grew.\n".into());
+        let e = release_event(&company(), &i, &interim()).unwrap();
+        assert_eq!(e.text, "GomSpace: Interim report Q3\n\nRevenue grew.");
+        let fix = release_event(&company(), &i, &class(None, true, false)).unwrap();
+        assert_eq!(fix.text, e.text);
+    }
+
+    #[test]
+    fn report_without_text_has_an_empty_text() {
+        let mut i = item();
+        assert_eq!(release_event(&company(), &i, &interim()).unwrap().text, "");
+        i.text = Some("  \n".into());
+        assert_eq!(release_event(&company(), &i, &interim()).unwrap().text, "");
+    }
+
+    #[test]
+    fn long_report_text_is_cut_on_a_char_boundary() {
+        let mut i = item();
+        let mut s = "a".repeat(MAX_RELEASE_TEXT_BYTES - 1);
+        s.push('ø');
+        i.text = Some(s);
+        let e = release_event(&company(), &i, &interim()).unwrap();
+        let prefix = format!("{}\n\n", i.title);
+        assert_eq!(e.text.len(), prefix.len() + MAX_RELEASE_TEXT_BYTES - 1);
+        assert!(e.text.ends_with('a'));
+    }
+
+    #[test]
+    fn the_same_item_gives_the_same_event_on_every_path() {
+        let mut i = item();
+        i.text = Some("Body".into());
+        let a = release_event(&company(), &i, &interim()).unwrap();
+        let b = release_event(&company(), &i.clone(), &interim()).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]
