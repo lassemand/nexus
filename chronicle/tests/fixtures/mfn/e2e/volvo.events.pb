@@ -81,11 +81,169 @@ shares are listed on Nasdaq Stockholm.
 
 [1]: mailto:press@volvo.com
 [2]: https://www.volvogroup.com/en/
-[3]: https://www.linkedin.com/company/volvo-group�
+[3]: https://www.linkedin.com/company/volvo-group�
 VOLV Bquarterly_report����"$Volvo Group - the third quarter 2026*XSTO2mfn:$84dc5b2b-4ee5-5e43-a755-d570338896b2BFhttps://mfn.se/cis/a/volvo/volvo-group-the-third-quarter-2026-84dc5b2bJenR:regulatoryR
-sub:reportRsub:report:interimZinterimb2026-Q3rvolvo�
+sub:reportRsub:report:interimZinterimb2026-Q3rvolvo��Volvo Group - the third quarter 2026
+
+"The positive development in the Volvo Group's performance continued in Q3. We
+delivered net sales of SEK 119.5 billion, with an organic sales growth of 7%.
+Vehicle sales increased by 8% and service sales grew by 5% organically. We
+maintained good profitability, with adjusted operating income of SEK 14.7
+billion (11.7) and an adjusted operating margin of 12.3% (10.6), supported by
+dedicated work across the Group. Operating cash flow in the Industrial
+Operations improved to SEK 7.2 billion," says Martin Lundstedt, President and
+CEO.
+
+
+* In Q3 2026, net sales increased by 8% and amounted to SEK 119.5 billion
+  (110.7). The organic sales growth was 7%.
+* Adjusted operating income amounted to SEK 14,693 M (11,707), corresponding to
+  an adjusted operating margin of 12.3% (10.6). In Q3 2026, costs of SEK 339 M
+  were excluded from adjusted operating income. In Q3 2025, a positive effect of
+  SEK 811 M was excluded.
+* Reported operating income amounted to SEK 14,354 M (12,517), corresponding to
+  an operating margin of 12.0% (11.3).
+* Compared with Q3 2025, currency movements had a positive impact on operating
+  income amounting to SEK 970 M.
+* Earnings per share amounted to SEK 5.29 (3.71).
+* Operating cash flow in the Industrial Operations amounted to SEK 7,195 M
+  (-1,739).
+* Return on capital employed in the Industrial Operations amounted to 27.5%
+  (25.2).
+
+
+Press and Analyst Conference Call. An online presentation of the report,
+followed by a question and answer session will start at 09:00 CEST. Link to
+webcast: qreport.volvogroup.com.
+
+More information, including an interview with CEO Martin Lundstedt, will soon be
+available on www.volvogroup.com/en/investors.
+
+
+
+October 23, 2026
+
+
+
+This information is information that AB Volvo (publ) is obliged to make public
+pursuant to the EU Market Abuse Regulation and the Securities Markets Act. The
+information was submitted for publication, through the agency of the contact
+person set out below, at 07:20 CEST on October 23, 2026.
+
+
+Aktiebolaget Volvo (publ) 556012-5790
+
+Investor Relations
+SE-405 08 Göteborg, Sweden
+Tel +46 31 66 00 00
+www.volvogroup.com
+
+Contact Media Relations:
+Claes Eliasson +46 765 53 72 29
+
+Contacts Investor Relations:
+Johan Bartler +46 739 02 21 93
+Anders Christensson +46 765 53 59 66
+
+
+For more information, please visit volvogroup.com
+For frequent updates, follow us on LinkedIn
+
+The Volvo Group drives prosperity through transport and infrastructure
+solutions, offering trucks, buses, construction equipment, power solutions for
+marine and industrial applications, financing and services that increase our
+customers' uptime and productivity. Founded in 1927, the Volvo Group is
+committed to shaping the future landscape of sustainable transport and
+infrastructure solutions. The Volvo Group is headquartered in Gothenburg,
+Sweden, employs almost 100,000 people and serves customers in almost 180
+markets. In 2025, net sales amounted to SEK 479 billion (EUR 43 billion). Volvo
+shares are listed on Nasdaq Stockholm.
+
+[1]: https://qreport.volvogroup.com/
+[2]: https://www.volvogroup.com/en/investors.html
+[3]: http://www.volvogroup.com
+[4]: https://www.volvogroup.com/en/
+[5]: https://www.linkedin.com/company/volvo-group�
 VOLV Bquarterly_report����"*Volvokoncernen - det tredje kvartalet 2026*XSTO2mfn:$62375027-86f5-5b73-b467-8e481d2bb5d3BLhttps://mfn.se/cis/a/volvo/volvokoncernen-det-tredje-kvartalet-2026-62375027JsvR:regulatoryR
-sub:reportRsub:report:interimZinterimb2026-Q3rvolvo�6
+sub:reportRsub:report:interimZinterimb2026-Q3rvolvo��Volvokoncernen - det tredje kvartalet 2026
+
+"Den positiva utvecklingen i Volvokoncernens lönsamhet fortsatte under Q3. Vi
+levererade en nettoomsättning på 119,5 miljarder kronor, med en organisk
+försäljningstillväxt på 7%. Fordonsförsäljningen ökade med 8% och
+serviceförsäljningen växte organiskt med 5%. Vi bibehöll en god lönsamhet, med
+ett justerat rörelseresultat på 14,7 miljarder kronor (11,7) och en justerad
+rörelsemarginal på 12,3% (10,6), med stöd av hängivet arbete i hela koncernen.
+Det operativa kassaflödet i Industriverksamheten förbättrades till 7,2 miljarder
+kronor", säger Martin Lundstedt, vd och koncernchef.
+
+
+* Under Q3 2026 ökade nettoomsättningen med 8% och uppgick till 119,5 miljarder
+  kronor (110,7). Den organiska försäljningstillväxten var 7%.
+* Det justerade rörelseresultatet uppgick till 14.693 Mkr (11.707), motsvarande
+  en justerad rörelsemarginal på 12,3% (10,6). Under Q3 2026 exkluderades
+  kostnader på 339 Mkr från det justerade rörelseresultatet. Under Q3 2025
+  exkluderades en positiv effekt på 811 Mkr.
+* Det rapporterade rörelseresultatet uppgick till 14.354 Mkr (12.517),
+  motsvarande en rörelsemarginal på 12,0% (11,3).
+* Jämfört med Q3 2025 hade förändrade valutakurser en positiv påverkan på
+  rörelseresultatet om 970 Mkr.
+* Resultatet per aktie uppgick till 5,29 kronor (3,71).
+* Det operativa kassaflödet i Industriverksamheten uppgick till 7.195 Mkr
+  (-1.739).
+* Avkastningen på sysselsatt kapital i Industriverksamheten uppgick till 27,5%
+  (25,2).
+
+
+Telefonkonferens för press och analytiker
+En presentation av rapporten kommer att webbsändas kl. 09.00 följt av en
+frågestund. Länk till webbsändningen: qreport.volvogroup.com.
+
+Mer information, inklusive en intervju med vd och koncernchef Martin Lundstedt,
+finns inom kort på www.volvogroup.com/se/investors.
+
+
+
+23 oktober 2026
+
+
+
+Denna information är sådan information som AB Volvo (publ) är skyldigt att
+offentliggöra enligt EU:s marknadsmissbruksförordning och lagen om
+värdepappersmarknaden. Informationen lämnades, genom nedanstående kontaktpersons
+försorg, för offentliggörande kl. 07.20 den 23 oktober 2026.
+
+
+Aktiebolaget Volvo (publ) 556012-5790
+
+Investor Relations
+405 08 Göteborg, Sweden
+Tel. 031-66 00 00
+www.volvogroup.com
+
+Kontaktuppgifter Media Relations:
+Claes Eliasson 0765-53 72 29
+
+Kontaktuppgifter Investor Relations:
+Johan Bartler 0739-02 21 93
+Anders Christensson 0765-53 59 66
+
+
+För mer information, gå till volvogroup.se
+För löpande uppdateringar, följ oss på LinkedIn
+
+Volvokoncernen bidrar till ett ökat välstånd genom att erbjuda transport- och
+infrastrukturlösningar som lastbilar, bussar, anläggningsmaskiner och motorer
+för marina och industriella applikationer samt finansiering och tjänster som
+ökar kundernas drifttid och produktivitet. Volvo grundades 1927 och är i dag
+drivande i utvecklingen av framtidens hållbara transport- och
+infrastrukturlösningar. Volvokoncernen har sitt huvudkontor i Göteborg, har
+närmare 100.000 medarbetare och kunder på närmare 180 marknader. 2025 uppgick
+nettoomsättningen till cirka 479 miljarder kronor. Volvoaktien är noterad på
+Nasdaq Stockholm.
+
+[1]: https://qreport.volvogroup.com/
+[2]: https://www.volvogroup.com/se/investors.html
+[3]: https://www.volvogroup.se/sv-se/home.html�6
 VOLV Bcompany_announcement����"ZAB Volvo: Volvo Group establishes dedicated entity to capture the growing demand in mining*XSTO2mfn:$62525647-9420-564d-a23b-a71aef8eeadfB}https://mfn.se/cis/a/volvo/ab-volvo-volvo-group-establishes-dedicated-entity-to-capture-the-growing-demand-in-mining-62525647Jenrvolvo��3Volvo Group is creating a dedicated mining entity to strengthen its position in
 the global mining industry. Volvo Mining aims to bring together the Group's
 capabilities, expertise, and offer for mining customers under a single,
@@ -1665,11 +1823,189 @@ shares are listed on Nasdaq Stockholm.
 
 [1]: mailto:press@volvo.com
 [2]: https://www.volvogroup.com/en/
-[3]: https://www.linkedin.com/company/volvo-group�
+[3]: https://www.linkedin.com/company/volvo-group�
 VOLV Bquarterly_report����")Volvokoncernen - det andra kvartalet 2026*XSTO2mfn:$f900d8ad-959d-57c2-91e4-ce4a7e747865BKhttps://mfn.se/cis/a/volvo/volvokoncernen-det-andra-kvartalet-2026-f900d8adJsvR:regulatoryR
-sub:reportRsub:report:interimZinterimb2026-Q2rvolvo�
+sub:reportRsub:report:interimZinterimb2026-Q2rvolvo��Volvokoncernen - det andra kvartalet 2026
+
+"Det andra kvartalet 2026 visar Volvokoncernens styrka och anpassningsförmåga.
+Vi levererade en nettoomsättning på 126,3 miljarder kronor, med en organisk
+försäljningstillväxt på 7%. Förbättringen var bred, med en fordonsförsäljning
+som ökade med 6% och en serviceförsäljning som ökade med 7% organiskt - vilket
+återspeglar både kvaliteten på vårt produkterbjudande och den fortsatt höga
+utnyttjandegraden av våra kunders flottor på de flesta marknader. Lönsamheten
+nådde sin högsta nivå under de senaste kvartalen. Det justerade
+rörelseresultatet steg till 14,8 miljarder kronor (13,5), med en justerad
+rörelsemarginal på 11,7%, upp från 11,0% under andra kvartalet 2025, en
+utveckling som visar vår förmåga att generera bra resultat genom
+konjunkturcykeln", säger Martin Lundstedt, vd och koncernchef.
+
+* Under Q2 2026 ökade nettoomsättningen med 3% och uppgick till 126,3 miljarder
+  kronor (122,9). Den organiska försäljningstillväxten var 7%.
+
+* Det justerade rörelseresultatet uppgick till 14.783 Mkr (13.484), motsvarande
+  en justerad rörelsemarginal på 11,7% (11,0). Under Q2 2026 exkluderades
+  negativa effekter på totalt 1.305 Mkr från det justerade rörelseresultatet.
+  Under Q2 2025 exkluderades negativa effekter på 3.523 Mkr.
+
+* Det rapporterade rörelseresultatet uppgick till 13.478 Mkr (9.961),
+  motsvarande en rörelsemarginal på 10,7% (8,1).
+
+* Jämfört med Q2 2025 hade förändrade valutakurser en positiv påverkan på
+  rörelseresultatet om 491 Mkr.
+
+* Resultatet per aktie uppgick till 5,10 kronor (3,64).
+
+* Det operativa kassaflödet i Industriverksamheten uppgick till 5.837 Mkr
+  (2.948).
+
+* Avkastningen på sysselsatt kapital i Industriverksamheten uppgick till 26,8%
+  (25,7).
+
+
+Telefonkonferens för press och analytiker
+En presentation av rapporten kommer att webbsändas kl. 09.00 följt av en
+frågestund. Länk till webbsändningen: https://qreport.volvogroup.com/.
+
+Mer information, inklusive en intervju med vd och koncernchef Martin Lundstedt,
+finns inom kort på https://www.volvogroup.com/se/investors.html.
+
+
+
+Den 17 juli 2026
+
+
+Denna information är sådan information som AB Volvo (publ) är skyldigt att
+offentliggöra enligt EU:s marknadsmissbruksförordning och lagen om
+värdepappersmarknaden. Informationen lämnades, genom nedanstående kontaktpersons
+försorg, för offentliggörande kl. 07.20 den 17 juli 2026.
+
+Aktiebolaget Volvo (publ) 556012-5790
+
+Investor Relations
+405 08 Göteborg, Sweden
+Tel. 031-66 00 00
+
+www.volvogroup.com
+
+
+Kontaktuppgifter Media Relations:
+Claes Eliasson 0765-53 72 29
+
+Kontaktuppgifter Investor Relations:
+Johan Bartler 0739-02 21 93
+Anders Christensson 0765-53 59 66
+
+För mer information, gå till volvogroup.se
+För löpande uppdateringar, följ oss på LinkedIn
+
+Volvokoncernen bidrar till ett ökat välstånd genom att erbjuda transport- och
+infrastrukturlösningar som lastbilar, bussar, anläggningsmaskiner och motorer
+för marina och industriella applikationer samt finansiering och tjänster som
+ökar kundernas drifttid och produktivitet. Volvo grundades 1927 och är i dag
+drivande i utvecklingen av framtidens hållbara transport- och
+infrastrukturlösningar. Volvokoncernen har sitt huvudkontor i Göteborg, har
+närmare 100.000 medarbetare och kunder på närmare 180 marknader. 2025 uppgick
+nettoomsättningen till cirka 479 miljarder kronor. Volvoaktien är noterad på
+Nasdaq Stockholm.
+
+[1]: https://qreport.volvogroup.com/
+[2]: https://www.volvogroup.com/se/investors.html
+[3]: http://www.volvogroup.com
+[4]: https://www.volvogroup.se/sv-se/home.html
+[5]: https://www.linkedin.com/company/volvo-group�
 VOLV Bquarterly_report����"%Volvo Group - the second quarter 2026*XSTO2mfn:$65c1b68c-875e-578d-acc8-ca05ed0ea99cBGhttps://mfn.se/cis/a/volvo/volvo-group-the-second-quarter-2026-65c1b68cJenR:regulatoryR
-sub:reportRsub:report:interimZinterimb2026-Q2rvolvo�
+sub:reportRsub:report:interimZinterimb2026-Q2rvolvo��Volvo Group - the second quarter 2026
+
+"The second quarter of 2026 demonstrates the strength and adaptability of the
+Volvo Group. We delivered net sales of SEK 126.3 billion, with an organic sales
+growth of 7%. This improvement was broad-based with vehicle sales growing 6% and
+service sales 7% organically - reflecting both the quality of our product
+offering and the continued high utilization of our customers' fleets across most
+markets. Profitability reached its highest level in recent quarters. Adjusted
+operating income rose to SEK 14.8 billion (13.5), with an adjusted operating
+margin of 11.7%, up from 11.0% in Q2 2025, progress that demonstrates our
+capacity to achieve good earnings through the business cycle," says Martin
+Lundstedt, President and CEO.
+
+* In Q2 2026, net sales increased by 3% and amounted to SEK 126.3 billion
+  (122.9). The organic sales growth was 7%.
+
+* Adjusted operating income amounted to SEK 14,783 M (13,484), corresponding to
+  an adjusted operating margin of 11.7% (11.0). In Q2 2026, effects totaling a
+  negative SEK 1,305 M were excluded from adjusted operating income. In Q2 2025,
+  negative effects of SEK 3,523 M were excluded.
+
+* Reported operating income amounted to SEK 13,478 M (9,961), corresponding to
+  an operating margin of 10.7% (8.1).
+
+* Compared with Q2 2025, currency movements had a positive impact on operating
+  income amounting to SEK 491 M.
+
+* Earnings per share amounted to SEK 5.10 (3.64).
+
+* Operating cash flow in the Industrial Operations amounted to SEK 5,837 M
+  (2,948).
+
+* Return on capital employed in the Industrial Operations amounted to 26.8%
+  (25.7).
+
+
+Press and Analyst Conference Call.
+An online presentation of the report, followed by a question and answer session
+will start at 09:00 CEST. Link to webcast: https://qreport.volvogroup.com/.
+
+More information, including an interview with CEO Martin Lundstedt, will soon be
+available on https://www.volvogroup.com/en/investors.html.
+
+
+
+
+July 17, 2026
+
+
+
+This information is information that AB Volvo (publ) is obliged to make public
+pursuant to the EU Market Abuse Regulation and the Securities Markets Act. The
+information was submitted for publication, through the agency of the contact
+person set out below, at 07:20 CEST on July 17, 2026.
+
+Aktiebolaget Volvo (publ) 556012-5790
+
+
+Investor Relations
+SE-405 08 Göteborg, Sweden
+Tel +46 31 66 00 00
+
+www.volvogroup.com
+
+
+Contact Media Relations:
+Claes Eliasson +46 765 53 72 29
+
+
+Contacts Investor Relations:
+Johan Bartler +46 739 02 21 93
+Anders Christensson +46 765 53 59 66
+
+
+For more information, please visit volvogroup.com
+For frequent updates, follow us on LinkedIn
+
+The Volvo Group drives prosperity through transport and infrastructure
+solutions, offering trucks, buses, construction equipment, power solutions for
+marine and industrial applications, financing and services that increase our
+customers' uptime and productivity. Founded in 1927, the Volvo Group is
+committed to shaping the future landscape of sustainable transport and
+infrastructure solutions. The Volvo Group is headquartered in Gothenburg,
+Sweden, employs almost 100,000 people and serves customers in almost 180
+markets. In 2025, net sales amounted to SEK 479 billion (EUR 43 billion). Volvo
+shares are listed on Nasdaq Stockholm.
+
+[1]: https://qreport.volvogroup.com/
+[2]: https://www.volvogroup.com/en/investors.html
+[3]: http://www.volvogroup.com
+[4]: https://www.volvogroup.com/en/
+[5]: https://www.linkedin.com/company/volvo-group�
 VOLV Bcompany_announcement譝�"IAB Volvo: Invitation to the Volvo Group report on the second quarter 2026*XSTO2mfn:$2c9ce1f4-2f0e-5a5f-a3fd-30d2b81d9534Blhttps://mfn.se/cis/a/volvo/ab-volvo-invitation-to-the-volvo-group-report-on-the-second-quarter-2026-2c9ce1f4Jenrvolvo��The Volvo Group report for the second quarter 2026 will be published on July 17,
 at 7.20 a.m. CEST. There will be a conference call for press and analysts
 starting at 9.00 a.m. CEST.
