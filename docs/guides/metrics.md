@@ -135,6 +135,17 @@ committed (`outcome="db_error_committed"`). The producer does not resend it, so 
 alert `SignalReportRejected` (`increase(signal_report_db_errors_total[15m]) > 0`,
 warning) means the report was dropped and must be replayed from MFN.
 
+## analyst kernel runtime
+
+`analyst` runs AI-written WASM kernels in `wasmtime` (`analyst/src/runtime.rs`) and records,
+through `analyst::metrics`: `analyst_kernel_run_seconds` (histogram, every run, successful or
+not), `analyst_kernel_errors_total{kind}` (`timeout`, `trap`, `bad_output`, `too_large`,
+`input_too_large`), `analyst_kernel_load_seconds{step}` (histogram; `validate`, `compile`,
+`instantiate`, `warm`) and `analyst_kernels_loaded` (gauge). The service passes explicit bucket
+bounds (`RUN_BUCKETS` from 1 µs to 100 ms, `LOAD_BUCKETS` from 0.1 ms to 2.5 s) to
+`telemetry::serve_with_buckets` so `histogram_quantile` works on them. Measured results are in
+`analyst/BENCHMARK.md`.
+
 ## Cluster pieces
 
 | Piece | Where |

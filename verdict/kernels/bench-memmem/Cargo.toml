@@ -1,0 +1,16 @@
+[package]
+name = "verdict-bench-memmem"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Benchmark kernel: one memmem Finder per label in a known window."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+verdict-sdk = { path = "../../sdk" }
+memchr = "2.8"
+
+[dev-dependencies]
+verdict-sdk = { path = "../../sdk", features = ["harness"] }

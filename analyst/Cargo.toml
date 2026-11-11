@@ -1,0 +1,46 @@
+[package]
+name = "analyst"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "analyst"
+path = "src/lib.rs"
+
+[[bin]]
+name = "analyst"
+path = "src/bin/analyst.rs"
+
+[[bin]]
+name = "analyst-bench"
+path = "src/bin/analyst-bench.rs"
+required-features = ["bench"]
+
+[dependencies]
+anyhow = "1"
+metrics = "0.24"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+telemetry = { path = "../telemetry" }
+hex = "0.4"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+verdict-sdk = { path = "../verdict/sdk" }
+verdict-bench-anchored = { path = "../verdict/kernels/bench-anchored", optional = true }
+verdict-bench-memmem = { path = "../verdict/kernels/bench-memmem", optional = true }
+verdict-bench-aho = { path = "../verdict/kernels/bench-aho", optional = true }
+wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std"] }
+
+[features]
+bench = ["dep:verdict-bench-anchored", "dep:verdict-bench-memmem", "dep:verdict-bench-aho"]
+
+[dev-dependencies]
+wat = "1"
+verdict-sdk = { path = "../verdict/sdk", features = ["harness"] }
+verdict-bench-anchored = { path = "../verdict/kernels/bench-anchored" }
+verdict-bench-memmem = { path = "../verdict/kernels/bench-memmem" }
+verdict-bench-aho = { path = "../verdict/kernels/bench-aho" }

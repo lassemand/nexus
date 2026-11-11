@@ -8,8 +8,12 @@ members = [
     "cli",
     "conductor",
     "telemetry",
+    "analyst",
     "verdict/sdk",
-    "verdict/kernels/sample"
+    "verdict/kernels/sample",
+    "verdict/kernels/bench-anchored",
+    "verdict/kernels/bench-memmem",
+    "verdict/kernels/bench-aho"
 ]
 exclude = ["verdict/template"]
 resolver = "2"
