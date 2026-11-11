@@ -22,7 +22,7 @@ package nexus;
 //                       report, correction, calendar notice or calendar
 //                       release): source = "mfn", source_id = MFN news_id,
 //                       description = its title; occurred_at = its publish
-//                       instant; report_kind = ""; text = content.text. One
+//                       instant; report_kind = ""; text = content.text (no title). One
 //                       event per language version.
 //
 // Producers key Kafka messages by "{ticker}:{exchange_mic}" so one company's
@@ -44,7 +44,11 @@ message SpecialEvent {
   bool   is_correction  = 13;
   string company_name   = 14;  // display name from companies.name, "" if unknown
   ReportCalendar calendar = 15; // only when event_type is "report_calendar" or "report_calendar_release"
-  string text           = 16;  // company_announcement: the release as plain text, "" if MFN has none
+  // report_released (quarterly_report, annual_report, report_correction):
+  // title, blank line, MFN content.text ("" if MFN has none). company_announcement:
+  // MFN content.text only, without the title (unchanged for existing consumers).
+  // Text is trimmed and cut to 256 KiB on a char boundary.
+  string text           = 16;
 }
 
 // A company's upcoming reports as listed on its MFN page at fetched_at.
