@@ -1,4 +1,6 @@
-# Agent definitions, copied into $HOME/.claude/agents/ by the entrypoint on
+# Agent definitions (the files live in infra/agents/; files/agents here is a
+# relative symlink to it, because Helm only reads files inside the chart),
+# copied into $HOME/.claude/agents/ by the entrypoint on
 # every start — so this ConfigMap is the source of truth and an edit here takes
 # effect on the next restart.
 #

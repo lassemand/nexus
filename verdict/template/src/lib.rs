@@ -1,4 +1,4 @@
-//! Kernel for one company's report. Rules: `infra/charts/conductor/conductor/files/agents/analyst.md`.
+//! Kernel for one company's report. Rules: `infra/agents/analyst.md`.
 //!
 //! Write the lookup for this company's layout, using the cheapest rung of the
 //! guide's lookup ladder that its previous reports prove stable. Verify what

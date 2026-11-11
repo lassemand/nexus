@@ -3,7 +3,7 @@ name = "verdict-kernel"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Analyst kernel for one company's report. Edited per report; see infra/charts/conductor/conductor/files/agents/analyst.md."
+description = "Analyst kernel for one company's report. Edited per report; see infra/agents/analyst.md."
 
 [lib]
 crate-type = ["cdylib", "rlib"]

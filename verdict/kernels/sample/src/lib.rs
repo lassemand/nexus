@@ -3,7 +3,7 @@
 //! The SDK and this crate assume no language and read nothing. What to look
 //! for, and how to look it up, is the kernel author's decision for one company
 //! and report, taken from that company's previous reports. See
-//! `infra/charts/conductor/conductor/files/agents/analyst.md`.
+//! `infra/agents/analyst.md`.
 
 use verdict_sdk::{export_kernel, Report, Verdict};
 
