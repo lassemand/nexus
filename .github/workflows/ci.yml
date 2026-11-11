@@ -67,8 +67,8 @@ jobs:
 
       - name: Verdict kernel for WASM
         run: |
-          cargo clippy -p verdict-sdk -p verdict-sample --target wasm32-unknown-unknown -- -D warnings
-          cargo build -p verdict-sample --target wasm32-unknown-unknown --release
+          cargo clippy -p verdict-sdk -p verdict-sample -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho --target wasm32-unknown-unknown -- -D warnings
+          cargo build --release --target wasm32-unknown-unknown -p verdict-sample -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho
 
       - name: Verdict template
         working-directory: verdict/template

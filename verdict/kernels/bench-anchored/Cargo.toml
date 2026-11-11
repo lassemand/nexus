@@ -1,0 +1,16 @@
+[package]
+name = "verdict-bench-anchored"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Benchmark kernel: anchored lookup (paragraph prefixes) with a memmem fallback."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+verdict-sdk = { path = "../../sdk" }
+memchr = "2.8"
+
+[dev-dependencies]
+verdict-sdk = { path = "../../sdk", features = ["harness"] }

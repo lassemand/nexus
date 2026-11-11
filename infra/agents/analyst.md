@@ -110,12 +110,28 @@ faster rung did not work. Measured on 1,555 real MFN interim-report releases
 | `to_lowercase()` + `str::find` | 53 µs | 127 µs | 1,587 µs |
 | regex compiled on every call | 676 µs | 2,434 µs | 2,825 µs |
 
-An anchored lookup is expected to be well under 1 µs, because it touches a few
-hundred bytes instead of the whole release. WASM costs about 1.5× native. A
-fresh instance's first call (building the statics) takes about 0.4 ms, against
-15–20 µs warm. The kernel is under 0.1 % of release-to-decision time (MFN
-delivery takes 0.5–2 s, a Saxo quote 50–200 ms): don't make it slower without a
-reason, and never trade correctness for speed.
+Measured later with `analyst-bench` on one company's last eight quarterly
+reports (3–4.5 KB, so shorter than the median above), on the Linux VM of the
+Mac mini the analyst runs on (a busy host; `analyst/BENCHMARK.md` has all runs):
+
+| Lookup, one company's reports, three metrics read | native p50 | WASM p50 | WASM p99 |
+| -- | -- | -- | -- |
+| anchored: known paragraph prefixes, then a direct read | 1.5 µs | 3.7 µs | 5.9 µs |
+| one `memmem::Finder` per label in a 6 KB window | 1.5 µs | 3.8 µs | 7.8 µs |
+| one Aho-Corasick pass over all labels | 3.1 µs | 11.0 µs | 19.9 µs |
+| empty kernel (the runtime's cost of one call) | | 0.5 µs | 1.4 µs |
+
+The anchored lookup was expected to be well under 1 µs; measured, the call is
+3.7 µs, of which 0.5 µs is the runtime and the rest is the lookup, reading the
+figures and writing the JSON. It is still about 3× faster than one
+Aho-Corasick pass. Over all 2,399 corpus releases (up to 220 KB) the same
+Aho-Corasick kernel takes 18.5 µs p50 and 183 µs p99 in WASM. WASM costs 2.5–3×
+native in these runs, against 1.5× in the first table. A fresh instance's first
+call (building the statics) took about 0.4 ms in the first measurement; here the
+host's two warm-up calls at load take 0.02–0.14 ms together, so the first real
+call is a warm one. The kernel is under 0.1 % of release-to-decision time
+(MFN delivery takes 0.5–2 s, a Saxo quote 50–200 ms): don't make it slower
+without a reason, and never trade correctness for speed.
 
 ## Reading numbers exactly
 

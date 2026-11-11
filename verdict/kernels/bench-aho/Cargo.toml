@@ -1,0 +1,16 @@
+[package]
+name = "verdict-bench-aho"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Benchmark kernel: one Aho-Corasick pass over all labels."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+verdict-sdk = { path = "../../sdk" }
+aho-corasick = "1.1"
+
+[dev-dependencies]
+verdict-sdk = { path = "../../sdk", features = ["harness"] }
