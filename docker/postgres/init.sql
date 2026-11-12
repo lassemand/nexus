@@ -1,2 +1,3 @@
 CREATE DATABASE chronicle;
 CREATE DATABASE backtest;
+CREATE DATABASE analyst;
