@@ -52,7 +52,11 @@ pub const PREP_FAILED_TOTAL: &str = "analyst_prep_failed_total";
 /// Gauge: seconds until the soonest report that has no ready kernel; -1 when there is none.
 pub const NEXT_REPORT_SECONDS: &str = "analyst_next_report_seconds";
 
-/// Describes the scheduler's metrics.
+/// Counter: notes consumed, labelled `outcome` (`stored`, `duplicate`, `rejected_unregistered`,
+/// `rejected_too_large`, `rejected_invalid`).
+pub const NOTES_TOTAL: &str = "analyst_notes_total";
+
+/// Describes the scheduler's and the notes consumer's metrics.
 pub fn describe() {
     metrics::describe_gauge!(TARGETS, "Report targets by status");
     metrics::describe_counter!(PREP_STARTED_TOTAL, "Kernel preparations started");
@@ -64,6 +68,7 @@ pub fn describe() {
         NEXT_REPORT_SECONDS,
         "Seconds until the soonest report with no ready kernel (-1 when none)"
     );
+    metrics::describe_counter!(NOTES_TOTAL, "Report notes consumed, by outcome");
 }
 
 pub(crate) fn targets(status: &'static str, count: i64) {
@@ -80,4 +85,8 @@ pub(crate) fn prep_failed(reason: &'static str) {
 
 pub(crate) fn next_report(seconds: f64) {
     metrics::gauge!(NEXT_REPORT_SECONDS).set(seconds);
+}
+
+pub(crate) fn note(outcome: &'static str) {
+    metrics::counter!(NOTES_TOTAL, "outcome" => outcome).increment(1);
 }

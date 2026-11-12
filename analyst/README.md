@@ -13,10 +13,12 @@ This crate holds:
 * the **database** (`migrations/`, `Store`): report targets, kernels, preparation
   runs and notes, applied by the service at startup;
 * the **scheduler** (`Scheduler`): decides, per upcoming report, when to start
-  preparing a kernel.
+  preparing a kernel;
+* the **notes consumer** (`NoteHandler`): stores the notes users add through
+  `nexus expect` and wakes the scheduler.
 
 Not here yet: the launcher that starts the real preparation Job and accepts kernels
-(the service uses `NoopLauncher`), the notes consumer, releases and trades.
+(the service uses `NoopLauncher`), releases and trades.
 
 ## Configuration
 
@@ -40,7 +42,7 @@ crate: `12h`, `1h30m`, `50ms`.
 
 ## How the scheduler works
 
-Every tick, one pass:
+Every tick, and right after a note is stored, one pass:
 
 1. **Reads the schedule.** The winning scheduled reports of signal's `special_events`:
    `status = 'scheduled' AND superseded_by IS NULL AND source IN ('mfn','mfn_release')
@@ -58,20 +60,40 @@ Every tick, one pass:
    (`expected_at − PREP_LEAD`). A report that left the schedule cancels a `waiting` or
    `preparing` target.
 4. **Prepares again when it matters.** A `ready` target is prepared again (its old kernel
-   is superseded only when the new one is accepted) when its date moved later by more than
-   `PREP_LEAD` past the date the kernel was prepared for. A date that moves earlier keeps
-   the kernel.
+   is superseded only when the new one is accepted) when a note for its company and period
+   (or with no period) arrived after the accepted kernel was created, or when its date moved
+   later by more than `PREP_LEAD` past the date the kernel was prepared for. A date that
+   moves earlier keeps the kernel. A `failed` target gets one more attempt when a new note
+   arrives.
 5. **Starts what is due.** A `waiting` target is due when `now ≥ prep_due_at` and
    `expected_at − now ≥ PREP_MIN_LEAD`; at most `PREP_MAX_CONCURRENT` run at once, the
-   soonest report first. A `PrepLauncher` starts each; the service uses `NoopLauncher`, which starts nothing.
+   soonest report first. A `PrepLauncher` starts each, with the notes that apply to the report; the service uses
+   `NoopLauncher`, which starts nothing.
+
+## Notes
+
+`nexus expect` produces a `ReportNote` event (`model/proto/report_note.proto`) on
+`NOTES_TOPIC`; `analyst` consumes it in group `analyst`. Each note is stored once by its
+`note_id` (a redelivery is a duplicate, not a second row), and the offset is committed only
+after the note was handled, so a database outage holds the partition instead of losing a note.
+A note is rejected (counted in `analyst_notes_total`, never stored) when the company is not
+registered, the text is over 4 KiB, or the event is not valid. A note without a fiscal period
+applies to the company's next report after it arrived. Storing a note wakes the scheduler.
+
+## Database
+
+`report_targets`, `kernels`, `prep_runs` and `notes` (`migrations/`). The database
+enforces at most one `accepted` kernel per target, one live target per report, and that
+kernels are never deleted: a kernel becomes `spent` once its report is decided. Queries are
+plain `sqlx::query` / `query_as`.
 
 ## Tests
 
 `cargo test -p analyst` needs a Postgres reachable through `DATABASE_URL` (as `#[sqlx::test]`
-does elsewhere in the workspace). The scheduler tests run signal's real migrations in a second
+does elsewhere in the workspace). The scheduler and notes tests run signal's real migrations in a second
 schema of the test database, so they read the real `special_events` and `exchanges` tables.
 Never point `DATABASE_URL` at a shared database: each test creates and drops its own.
 
 ## Metrics
 
-See `docs/guides/metrics.md` ("analyst kernel runtime", "analyst scheduler").
+See `docs/guides/metrics.md` ("analyst kernel runtime", "analyst scheduler and notes").
