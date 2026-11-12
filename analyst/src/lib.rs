@@ -8,13 +8,16 @@
 //! about it and adds only a fixed, small per-call cost.
 //!
 //! Around the runtime sit the analyst's database ([`Store`]) and its settings
-//! ([`Config`]). See the crate README.
+//! ([`Config`]) and the scheduler that decides when to start preparing a kernel
+//! for each upcoming report ([`Scheduler`]). See the crate README.
 
 pub mod clock;
 pub mod config;
 mod error;
 pub mod metrics;
 mod runtime;
+pub mod schedule;
+pub mod scheduler;
 pub mod store;
 mod types;
 mod verdict;
@@ -26,6 +29,11 @@ pub use runtime::{
     run_blocking, KernelId, KernelRuntime, LoadTimings, LoadedKernel, RunOutcome, RuntimeConfig,
     KERNEL_DEADLINE, MAX_INPUT_BYTES, MAX_MODULE_BYTES, MAX_OUTPUT_BYTES, MEMORY_LIMIT_BYTES,
     WARM_SAMPLE,
+};
+pub use schedule::SignalSchedule;
+pub use scheduler::{
+    LaunchError, LaunchInfo, NoopLauncher, PassReport, PrepLauncher, PrepRequest, RunResult,
+    Scheduler, SchedulerConfig, SchedulerError,
 };
 pub use store::{AcceptedKernel, PrepRun, Store, Target};
 pub use types::{ReportKind, ScheduledReport, TargetStatus};

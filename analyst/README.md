@@ -11,7 +11,12 @@ This crate holds:
   with no imports, a 64 MiB memory cap and a 50 ms deadline, and runs it. Results and
   how it was measured: `BENCHMARK.md`;
 * the **database** (`migrations/`, `Store`): report targets, kernels, preparation
-  runs and notes, applied by the service at startup.
+  runs and notes, applied by the service at startup;
+* the **scheduler** (`Scheduler`): decides, per upcoming report, when to start
+  preparing a kernel.
+
+Not here yet: the launcher that starts the real preparation Job and accepts kernels
+(the service uses `NoopLauncher`), the notes consumer, releases and trades.
 
 ## Configuration
 
@@ -32,3 +37,41 @@ crate: `12h`, `1h30m`, `50ms`.
 | `KERNEL_DEADLINE` | `50ms` | How long a kernel may run on a release. |
 | `NOTES_TOPIC` | `analyst.notes` | Kafka topic of `ReportNote` events (consumer group `analyst`). |
 | `METRICS_PORT` | `9464` | `/metrics` port. |
+
+## How the scheduler works
+
+Every tick, one pass:
+
+1. **Reads the schedule.** The winning scheduled reports of signal's `special_events`:
+   `status = 'scheduled' AND superseded_by IS NULL AND source IN ('mfn','mfn_release')
+   AND event_type IN ('quarterly_report','annual_report')`, looking ahead
+   `PREP_LEAD + 7 days`. This is how signal marks the winner of the two calendar sources
+   (`signal/src/calendar_sources.rs`, `docs/guides/nordic-companies.md`).
+2. **Places each report in time.** With a time of day, `expected_at` is signal's
+   `occurred_at` (the Stockholm-local time as an instant). Without one it is the start of
+   `expected_date` in the exchange's own time zone (`exchanges.timezone`), the earliest the
+   report can come. All instants are `timestamptz`/UTC; one `Clock` provides "now".
+3. **Follows changes.** A target is matched to its report by the `special_events` row id,
+   or, when the other calendar source starts to win and the row id changes, by ticker,
+   exchange, kind and fiscal period (the period must be known). Any other report is a new
+   target. A changed date or time updates the target and its `prep_due_at`
+   (`expected_at − PREP_LEAD`). A report that left the schedule cancels a `waiting` or
+   `preparing` target.
+4. **Prepares again when it matters.** A `ready` target is prepared again (its old kernel
+   is superseded only when the new one is accepted) when its date moved later by more than
+   `PREP_LEAD` past the date the kernel was prepared for. A date that moves earlier keeps
+   the kernel.
+5. **Starts what is due.** A `waiting` target is due when `now ≥ prep_due_at` and
+   `expected_at − now ≥ PREP_MIN_LEAD`; at most `PREP_MAX_CONCURRENT` run at once, the
+   soonest report first. A `PrepLauncher` starts each; the service uses `NoopLauncher`, which starts nothing.
+
+## Tests
+
+`cargo test -p analyst` needs a Postgres reachable through `DATABASE_URL` (as `#[sqlx::test]`
+does elsewhere in the workspace). The scheduler tests run signal's real migrations in a second
+schema of the test database, so they read the real `special_events` and `exchanges` tables.
+Never point `DATABASE_URL` at a shared database: each test creates and drops its own.
+
+## Metrics
+
+See `docs/guides/metrics.md` ("analyst kernel runtime", "analyst scheduler").

@@ -42,3 +42,42 @@ pub(crate) fn loaded(delta: f64) {
         metrics::gauge!(KERNELS_LOADED).decrement(-delta);
     }
 }
+
+/// Gauge: report targets, labelled `status`.
+pub const TARGETS: &str = "analyst_targets";
+/// Counter: preparations started.
+pub const PREP_STARTED_TOTAL: &str = "analyst_prep_started_total";
+/// Counter: failed preparations, labelled `reason` (`launch`, `failed`, `timed_out`, `rejected`).
+pub const PREP_FAILED_TOTAL: &str = "analyst_prep_failed_total";
+/// Gauge: seconds until the soonest report that has no ready kernel; -1 when there is none.
+pub const NEXT_REPORT_SECONDS: &str = "analyst_next_report_seconds";
+
+/// Describes the scheduler's metrics.
+pub fn describe() {
+    metrics::describe_gauge!(TARGETS, "Report targets by status");
+    metrics::describe_counter!(PREP_STARTED_TOTAL, "Kernel preparations started");
+    metrics::describe_counter!(
+        PREP_FAILED_TOTAL,
+        "Kernel preparations that failed, by reason"
+    );
+    metrics::describe_gauge!(
+        NEXT_REPORT_SECONDS,
+        "Seconds until the soonest report with no ready kernel (-1 when none)"
+    );
+}
+
+pub(crate) fn targets(status: &'static str, count: i64) {
+    metrics::gauge!(TARGETS, "status" => status).set(count as f64);
+}
+
+pub(crate) fn prep_started() {
+    metrics::counter!(PREP_STARTED_TOTAL).increment(1);
+}
+
+pub(crate) fn prep_failed(reason: &'static str) {
+    metrics::counter!(PREP_FAILED_TOTAL, "reason" => reason).increment(1);
+}
+
+pub(crate) fn next_report(seconds: f64) {
+    metrics::gauge!(NEXT_REPORT_SECONDS).set(seconds);
+}
