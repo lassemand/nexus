@@ -14,7 +14,6 @@
 
 pub mod clock;
 pub mod config;
-pub mod duration;
 mod error;
 pub mod metrics;
 pub mod notes;

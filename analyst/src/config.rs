@@ -2,8 +2,6 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::duration::{parse_duration, DurationError};
-
 /// How long a failed preparation waits before it is tried again.
 pub const PREP_RETRY_BACKOFF: Duration = Duration::from_secs(5 * 60);
 
@@ -11,7 +9,7 @@ pub const PREP_RETRY_BACKOFF: Duration = Duration::from_secs(5 * 60);
 pub const MAX_NOTE_BYTES: usize = 4096;
 
 /// A setting that is missing or unreadable.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum ConfigError {
     /// A required variable is not set.
     #[error("{0} is required")]
@@ -22,7 +20,7 @@ pub enum ConfigError {
         /// The variable.
         name: &'static str,
         /// What was wrong.
-        source: DurationError,
+        source: humantime::DurationError,
     },
     /// A number could not be read, or is out of range.
     #[error("{name}: `{value}` is not a valid number")]
@@ -79,7 +77,7 @@ impl Config {
         };
         let required = |name: &'static str| text(name).ok_or(ConfigError::Missing(name));
         let duration = |name: &'static str, default: &str| {
-            parse_duration(&text(name).unwrap_or_else(|| default.to_owned()))
+            humantime::parse_duration(&text(name).unwrap_or_else(|| default.to_owned()))
                 .map_err(|source| ConfigError::Duration { name, source })
         };
         let number = |name: &'static str, default: u32| match text(name) {
@@ -155,6 +153,8 @@ mod tests {
         let mut pairs = REQUIRED.to_vec();
         pairs.extend([
             ("PREP_LEAD", "1h30m"),
+            ("PREP_MIN_LEAD", "45 min"),
+            ("SCHEDULER_TICK", "1 minute 30 seconds"),
             ("PREP_MAX_CONCURRENT", "5"),
             ("ANALYST_TICKERS", "AAA:XSTO, BBB:XHEL,"),
             ("NOTES_TOPIC", "notes.test"),
@@ -162,6 +162,8 @@ mod tests {
         ]);
         let config = Config::from_lookup(lookup(&pairs)).expect("valid");
         assert_eq!(config.prep_lead, Duration::from_secs(5400));
+        assert_eq!(config.prep_min_lead, Duration::from_secs(45 * 60));
+        assert_eq!(config.scheduler_tick, Duration::from_secs(90));
         assert_eq!(config.prep_max_concurrent, 5);
         assert_eq!(config.kernel_deadline, Duration::from_millis(20));
         assert_eq!(config.notes_topic, "notes.test");

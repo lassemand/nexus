@@ -23,7 +23,7 @@ Not here yet: the launcher that starts the real preparation Job and accepts kern
 ## Configuration
 
 All settings are environment variables. Durations use the syntax of the `humantime`
-crate: `12h`, `1h30m`, `50ms` (read by `analyst::duration`).
+crate: `12h`, `1h30m`, `50ms`.
 
 | Variable | Default | Meaning |
 |---|---|---|
