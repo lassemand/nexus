@@ -9,6 +9,14 @@
 //! `http-listener` feature, which would add hyper's server stack and `ipnet`.
 //! The exporter's own `push-gateway` feature is not used: it pushes periodically
 //! with HTTP PUT, which would erase `last_success` metrics after a failed run.
+//!
+//! Logging and distributed tracing live in [`trace`] (`trace::init`); W3C trace
+//! context in Kafka headers in `kafka` (feature `kafka`). See `docs/guides/tracing.md`.
+
+pub mod trace;
+
+#[cfg(feature = "kafka")]
+pub mod kafka;
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
