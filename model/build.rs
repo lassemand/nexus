@@ -11,6 +11,7 @@ fn main() {
             "proto/insider_transaction.proto",
             "proto/unified_insider_transaction.proto",
             "proto/report_note.proto",
+            "proto/analyst_decision.proto",
         ],
         &["proto/"],
     )

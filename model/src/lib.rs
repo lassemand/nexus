@@ -413,3 +413,41 @@ mod report_note_tests {
         assert_eq!(decoded.fiscal_period, "");
     }
 }
+
+#[cfg(test)]
+mod analyst_decision_tests {
+    use super::generated::{AnalystDecision, DecisionMetric};
+    use prost::Message;
+
+    #[test]
+    fn a_decision_round_trips_with_decimal_strings() {
+        let decision = AnalystDecision {
+            ticker: "ABC".into(),
+            exchange_mic: "XSTO".into(),
+            news_id: "6f9619ff-8b86-d011-b42d-00cf4fc964ff".into(),
+            lang: "en".into(),
+            fiscal_period: "2026-Q3".into(),
+            decision: "buy".into(),
+            reason: "group and farming EBIT up".into(),
+            metrics: vec![DecisionMetric {
+                key: "group_ebit".into(),
+                current: "459".into(),
+                prior: "15".into(),
+                expected: String::new(),
+                unit: "million".into(),
+            }],
+            published_at_unix_millis: 1_790_000_000_123,
+            received_at_unix_millis: 1_790_000_001_456,
+            decided_at_unix_millis: 1_790_000_001_460,
+            kernel_micros: 17,
+            error: String::new(),
+            trace_id: "0af7651916cd43dd8448eb211c80319c".into(),
+            target_id: 42,
+            kernel_id: 7,
+        };
+        let decoded =
+            AnalystDecision::decode(decision.encode_to_vec().as_slice()).expect("decodes");
+        assert_eq!(decoded, decision);
+        assert_eq!(decoded.metrics[0].current, "459");
+    }
+}

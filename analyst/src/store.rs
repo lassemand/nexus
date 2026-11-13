@@ -3,7 +3,7 @@ use sqlx::PgPool;
 
 use crate::types::{ReportKind, ScheduledReport, TargetStatus};
 
-const TARGET_COLUMNS: &str =
+pub(crate) const TARGET_COLUMNS: &str =
     "id, ticker, exchange_mic, report_kind, fiscal_period, expected_date, \
      expected_time_known, expected_at, signal_event_id, status, prep_due_at, prep_attempts, \
      retry_after, prepared_for_at, created_at, updated_at";
@@ -128,7 +128,7 @@ pub struct PrepRun {
 /// The analyst's database.
 #[derive(Debug, Clone)]
 pub struct Store {
-    pool: PgPool,
+    pub(crate) pool: PgPool,
 }
 
 impl Store {
