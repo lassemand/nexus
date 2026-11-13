@@ -4,10 +4,19 @@ use async_trait::async_trait;
 use model::generated::AnalystDecision;
 use prost::Message;
 use rdkafka::error::KafkaError;
+use rdkafka::message::{Headers, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The trace context of the current span as message headers: `traceparent`, and
+/// `tracestate` when it is not empty. Empty outside a span with an OpenTelemetry
+/// context, so a send without a span carries no trace headers. It is called
+/// inside the `send analyst.decisions` span, so `signal` continues the same trace.
+pub fn trace_headers() -> OwnedHeaders {
+    telemetry::kafka::inject_current(OwnedHeaders::new())
+}
 
 /// Where decisions are emitted once they are durable.
 #[async_trait]
@@ -44,7 +53,11 @@ impl KafkaDecisionSink {
 impl DecisionSink for KafkaDecisionSink {
     async fn emit(&self, key: &str, decision: &AnalystDecision) -> Result<(), String> {
         let payload = decision.encode_to_vec();
-        let record = FutureRecord::to(&self.topic).key(key).payload(&payload);
+        let headers = trace_headers();
+        let mut record = FutureRecord::to(&self.topic).key(key).payload(&payload);
+        if headers.count() > 0 {
+            record = record.headers(headers);
+        }
         self.producer
             .send(record, SEND_TIMEOUT)
             .await

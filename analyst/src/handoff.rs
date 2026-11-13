@@ -1,10 +1,11 @@
 use chrono::{DateTime, Utc};
+use telemetry::trace::opentelemetry::Context;
 use tokio::sync::mpsc;
 
 use crate::decision::DecisionKind;
 
 /// A decision handed to the trade scheduler, which simulates the trade.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct TradeSignal {
     /// MFN's news id of the release.
     pub news_id: String,
@@ -26,6 +27,9 @@ pub struct TradeSignal {
     pub received_at: DateTime<Utc>,
     /// When it was decided.
     pub decided_at: DateTime<Utc>,
+    /// The OpenTelemetry context of the `analyst.hand_off` span, so that the
+    /// simulated trade's spans join the release's trace.
+    pub context: Context,
 }
 
 /// Where a decision goes the moment it is made, before the database write, so

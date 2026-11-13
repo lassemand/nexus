@@ -29,6 +29,7 @@ mod runtime;
 pub mod schedule;
 pub mod scheduler;
 pub mod sink;
+pub mod spans;
 pub mod store;
 mod types;
 mod verdict;
@@ -42,10 +43,10 @@ pub use matching::{pick_target, MatchKind, Matched, Release};
 pub use notes::{NoteHandler, NoteOutcome};
 pub use registry::{preload, KernelRegistry, PreloadReport, KERNEL_RETENTION};
 pub use release::{
-    classify, is_transient, with_retry, Classified, Processed, Receipt, ReleaseInput,
-    ReleaseProcessor, RetryPolicy,
+    classify, is_transient, with_retry, with_retry_counted, Classified, Processed, Receipt,
+    ReleaseInput, ReleaseProcessor, RetryPolicy,
 };
-pub use releases::{run_release_consumer, RELEASES_GROUP};
+pub use releases::{consumer_span, prepare, run_release_consumer, Prepared, RELEASES_GROUP};
 pub use runtime::{
     run_blocking, KernelId, KernelRuntime, LoadTimings, LoadedKernel, RunOutcome, RuntimeConfig,
     KERNEL_DEADLINE, MAX_INPUT_BYTES, MAX_MODULE_BYTES, MAX_OUTPUT_BYTES, MEMORY_LIMIT_BYTES,
@@ -56,7 +57,8 @@ pub use scheduler::{
     LaunchError, LaunchInfo, NoopLauncher, PassReport, PrepLauncher, PrepRequest, RunResult,
     Scheduler, SchedulerConfig, SchedulerError,
 };
-pub use sink::{DecisionSink, KafkaDecisionSink};
+pub use sink::{trace_headers, DecisionSink, KafkaDecisionSink};
+pub use spans::trace_id_of;
 pub use store::{AcceptedKernel, NewNote, Note, PrepRun, Store, Target};
 pub use types::{ReportKind, ScheduledReport, TargetStatus};
 pub use verdict::{KernelMetric, KernelVerdict};

@@ -220,3 +220,24 @@ export); `OTEL_SERVICE_NAME` is `nordic-live`.
 An item the poll already stored ends its trace at the check (`already_ingested`). `KafkaSink`
 adds `traceparent` (and `tracestate`) to every message sent inside a span; the poll binaries send
 without a span and add no header. Consumers that do not read headers (signal) are unaffected.
+
+## analyst
+
+The release path continues the release's trace from `special.events` and carries it on to
+`analyst.decisions`. Only a release that passes the filter gets a span; the other events on the topic
+cost no traces. `telemetry::trace::init("analyst")` is installed at startup; `OTEL_EXPORTER_OTLP_ENDPOINT`
+unset or unreachable changes nothing but the missing traces (traced p99 with a dead collector:
+about 1 ms more than untraced, see the PR of NEX-254).
+
+| Span | Notes |
+|---|---|
+| `process special.events` (consumer) | parent is the message's `traceparent`; without one it is a root and `nexus.trace_parent_missing=true`. `messaging.*`, `nexus.ticker`, `nexus.exchange_mic`, `mfn.news_id`, `nexus.lang`, `nexus.fiscal_period`, and `nexus.decision` once decided |
+| `analyst.match_target` | `analyst.target_id`, `analyst.match` |
+| `analyst.kernel_run` | `analyst.kernel_id`, `analyst.kernel_micros`, `nexus.decision`; ERROR with the error kind when the kernel fails |
+| `analyst.hand_off` | the OpenTelemetry context of this span goes with the `TradeSignal`, so the simulated trade joins the trace |
+| `analyst.decision_write` | `analyst.write_attempts`; ERROR when the write gives up |
+| `send analyst.decisions` (producer) | `traceparent` is added to the Kafka message |
+| `analyst.commit_offset` | the offset commit after the release is done |
+
+`decisions.trace_id` and `AnalystDecision.trace_id` hold the trace id, so a decision can be found in Tempo from
+the database, and the other way round.

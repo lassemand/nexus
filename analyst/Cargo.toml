@@ -32,12 +32,11 @@ uuid = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-telemetry = { path = "../telemetry" }
+telemetry = { path = "../telemetry", features = ["kafka"] }
 hex = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "signal", "sync", "time"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 verdict-sdk = { path = "../verdict/sdk" }
 verdict-bench-anchored = { path = "../verdict/kernels/bench-anchored", optional = true }
 verdict-bench-memmem = { path = "../verdict/kernels/bench-memmem", optional = true }
@@ -48,6 +47,7 @@ wasmtime = { version = "50", default-features = false, features = ["cranelift", 
 bench = ["dep:verdict-bench-anchored", "dep:verdict-bench-memmem", "dep:verdict-bench-aho"]
 
 [dev-dependencies]
+telemetry = { path = "../telemetry", features = ["kafka", "testing"] }
 tokio = { version = "1", features = ["test-util"] }
 wat = "1"
 verdict-sdk = { path = "../verdict/sdk", features = ["harness"] }

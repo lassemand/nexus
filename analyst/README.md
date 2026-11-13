@@ -162,6 +162,11 @@ from memory an hour later (twins may still arrive).
 A redelivery does **not** emit the event again: the decision row is the record, and a crash between the write and the
 emit leaves the event unsent (the row can be replayed from the table).
 
+**Tracing.** Every release that passes the filter is a `process special.events` span that continues the trace
+from `nordic-live` (parent from the message's `traceparent`), with a child span per step above; the trace id is
+stored in `decisions.trace_id`, set on `AnalystDecision.trace_id`, and the `traceparent` goes out on the decision
+event and, as an OpenTelemetry context, with the `TradeSignal`. Spans: `docs/guides/tracing.md`.
+
 Metrics: `analyst_release_to_decision_seconds` (consumed to handed on), `analyst_publish_to_decision_seconds` (MFN
 publish to handed on; includes MFN's and `nordic-live`'s delay, for dashboards), `analyst_release_events_total{outcome}`,
 `analyst_decisions_total{decision}`, `analyst_decision_retries_total{step}`. One `info` line per decision with ticker,
