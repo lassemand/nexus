@@ -62,7 +62,7 @@ dependencies = [
  "humantime",
  "metrics",
  "model",
- "prost",
+ "prost 0.13.5",
  "rdkafka",
  "serde",
  "serde_json",
