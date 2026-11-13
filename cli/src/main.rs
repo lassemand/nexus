@@ -5,7 +5,7 @@ use alpha::CalendarProvider;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures::future::join_all;
-use model::generated::TickerRegistration;
+use model::generated::{ReportNote, TickerRegistration};
 use prost::Message;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
@@ -92,6 +92,42 @@ enum Commands {
 
         /// Kafka topic for ticker registrations.
         #[arg(long, env = "KAFKA_TICKERS_TOPIC", default_value = "company.tickers")]
+        topic: String,
+    },
+
+    /// Add a note the analyst agent must take into account for a company's report.
+    ///
+    /// A note made before the report's kernel is prepared is included in the
+    /// preparation; a note that arrives after it triggers a new preparation.
+    /// The analyst ignores notes for companies that are not registered.
+    ///
+    /// Example: nexus expect GOMX.ST --period 2026-Q4 "Order intake above SEK 1.2 bn matters"
+    Expect {
+        /// Ticker symbol, as given to `register` (e.g. GOMX or GOMX.ST).
+        ticker: String,
+
+        /// The MIC the listing is on. Skips the Yahoo Finance lookup.
+        #[arg(long)]
+        mic: Option<String>,
+
+        /// Fiscal period the note is about, e.g. `2026-Q4`, `2026-H1` or `2026`.
+        /// Without it the note is about the company's next report.
+        #[arg(long, value_parser = parse_period)]
+        period: Option<String>,
+
+        /// Author of the note. Defaults to the OS user name.
+        #[arg(long)]
+        author: Option<String>,
+
+        /// The note, at most 4 KiB. `-` reads it from stdin.
+        text: String,
+
+        /// Kafka broker addresses.
+        #[arg(long, env = "KAFKA_BROKERS", default_value = "localhost:9092")]
+        brokers: String,
+
+        /// Kafka topic for report notes.
+        #[arg(long, env = "ANALYST_NOTES_TOPIC", default_value = "analyst.notes")]
         topic: String,
     },
 
@@ -248,6 +284,7 @@ _nexus() {
       commands=(
         'register:Register tickers for signal tracking'
         'unregister:Withdraw ticker registrations'
+        'expect:Add a note for the analyst about a company report'
         'calendar:Fetch and store trading holiday data for an exchange'
         'saxo:Saxo Bank OAuth2 operations'
         'completions:Print shell completion scripts'
@@ -305,6 +342,33 @@ async fn main() -> Result<()> {
             brokers,
             topic,
         } => cmd_unregister(tickers, mic, brokers, topic).await,
+
+        Commands::Expect {
+            ticker,
+            mic,
+            period,
+            author,
+            text,
+            brokers,
+            topic,
+        } => {
+            let text = if text == "-" {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                    .context("failed to read the note from stdin")?;
+                buf
+            } else {
+                text
+            };
+            let text = match validate_note_text(&text) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("✗ {e}");
+                    std::process::exit(2);
+                }
+            };
+            cmd_expect(ticker, mic, period, author, text, brokers, topic).await
+        }
 
         Commands::Calendar {
             action:
@@ -618,6 +682,121 @@ async fn cmd_unregister(
     Ok(())
 }
 
+/// Maximum size of a note's text in bytes, after trimming.
+const MAX_NOTE_BYTES: usize = 4096;
+
+/// Validates a fiscal period: `2026`, `2026-Q1`..`2026-Q4` or `2026-H1`/`2026-H2`.
+fn parse_period(input: &str) -> Result<String, String> {
+    let (year, rest) = input.split_at_checked(4).unwrap_or((input, ""));
+    let valid = year.len() == 4
+        && year.bytes().all(|b| b.is_ascii_digit())
+        && matches!(rest, "" | "-Q1" | "-Q2" | "-Q3" | "-Q4" | "-H1" | "-H2");
+    if valid {
+        Ok(input.to_string())
+    } else {
+        Err(format!(
+            "invalid period '{input}': expected e.g. 2026, 2026-Q4 or 2026-H1"
+        ))
+    }
+}
+
+/// Trims a note's text and rejects it when blank or longer than 4 KiB.
+fn validate_note_text(text: &str) -> Result<String, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("the note is blank".to_string());
+    }
+    if text.len() > MAX_NOTE_BYTES {
+        return Err(format!(
+            "the note is {} bytes; the limit is {MAX_NOTE_BYTES}",
+            text.len()
+        ));
+    }
+    Ok(text.to_string())
+}
+
+/// The OS user name from the environment, or `unknown`.
+fn os_user() -> String {
+    ["USER", "USERNAME", "LOGNAME"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Builds the `ReportNote` and its Kafka key `TICKER:MIC`.
+fn build_note(
+    ticker: String,
+    exchange_mic: String,
+    period: Option<String>,
+    author: Option<String>,
+    text: String,
+    now_unix_secs: i64,
+) -> (String, ReportNote) {
+    let key = format!("{ticker}:{exchange_mic}");
+    let note = ReportNote {
+        ticker,
+        exchange_mic,
+        fiscal_period: period.unwrap_or_default(),
+        text,
+        author: author
+            .filter(|a| !a.trim().is_empty())
+            .unwrap_or_else(os_user),
+        created_at_unix_secs: now_unix_secs,
+        note_id: uuid::Uuid::new_v4().to_string(),
+    };
+    (key, note)
+}
+
+/// Resolves the listing like `register`, publishes one `ReportNote` and waits
+/// for the broker's acknowledgement; exits with code 1 on any failure.
+async fn cmd_expect(
+    ticker: String,
+    mic: Option<String>,
+    period: Option<String>,
+    author: Option<String>,
+    text: String,
+    brokers: String,
+    topic: String,
+) -> Result<()> {
+    let http = reqwest::Client::new();
+    let (ticker, exchange_mic) = match resolve_for_unregister(&http, &ticker, mic.as_deref()).await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("✗ {ticker} — {e}");
+            std::process::exit(1);
+        }
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_secs() as i64;
+    let (key, note) = build_note(ticker, exchange_mic, period, author, text, now);
+
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .set("message.timeout.ms", "5000")
+        .create()
+        .context("failed to create Kafka producer")?;
+    let payload = note.encode_to_vec();
+    let record = FutureRecord::to(&topic)
+        .key(key.as_str())
+        .payload(payload.as_slice());
+    match producer.send(record, Duration::from_secs(5)).await {
+        Ok(_) => {
+            println!(
+                "✓ Queued note {} for {key}; the analyst ignores notes for companies that aren't registered.",
+                note.note_id
+            );
+            Ok(())
+        }
+        Err((e, _)) => {
+            eprintln!("✗ {key} — delivery failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Publishes each message to `topic`, keyed by its ticker, and prints the
 /// outcome per ticker. Returns whether every message was delivered.
 async fn publish(brokers: &str, topic: &str, messages: Vec<TickerRegistration>) -> Result<bool> {
@@ -738,9 +917,95 @@ async fn cmd_calendar_sync(country: String, year: i32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use model::asset::mic;
     use model::generated::TickerRegistration;
     use prost::Message;
+
+    #[test]
+    fn period_accepts_year_quarter_and_half() {
+        for ok in ["2026", "2026-Q4", "2026-Q1", "2026-H1", "2026-H2"] {
+            assert_eq!(parse_period(ok).as_deref(), Ok(ok));
+        }
+        for bad in [
+            "",
+            "26",
+            "2026-Q5",
+            "2026-Q0",
+            "2026-H3",
+            "2026Q4",
+            "2026-q4",
+            "20267",
+            "2026-",
+            "abcd",
+            "２０２６",
+        ] {
+            assert!(parse_period(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn note_text_is_trimmed_and_limited() {
+        assert_eq!(validate_note_text("  hi \n").as_deref(), Ok("hi"));
+        assert!(validate_note_text("  \n ").is_err());
+        assert!(validate_note_text(&"a".repeat(4096)).is_ok());
+        assert!(validate_note_text(&"a".repeat(4097)).is_err());
+        assert!(validate_note_text(&format!("  {}  ", "a".repeat(4096))).is_ok());
+    }
+
+    #[test]
+    fn expect_parses_defaults_and_stdin_marker() {
+        let cli = Cli::try_parse_from(["nexus", "expect", "GOMX.ST", "-"]).expect("parses");
+        match cli.command {
+            Commands::Expect {
+                ticker,
+                mic,
+                period,
+                author,
+                text,
+                topic,
+                ..
+            } => {
+                assert_eq!(ticker, "GOMX.ST");
+                assert!(mic.is_none() && period.is_none() && author.is_none());
+                assert_eq!(text, "-");
+                assert_eq!(topic, "analyst.notes");
+            }
+            _ => panic!("expected the expect command"),
+        }
+        assert!(
+            Cli::try_parse_from(["nexus", "expect", "GOMX", "x", "--period", "2026-Q9"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["nexus", "expect", "GOMX"]).is_err());
+    }
+
+    #[test]
+    fn note_defaults_author_and_round_trips_every_field() {
+        let (key, note) = build_note(
+            "GOMX".into(),
+            "FNSE".into(),
+            Some("2026-Q4".into()),
+            Some("mogens".into()),
+            "order intake".into(),
+            1_700_000_000,
+        );
+        assert_eq!(key, "GOMX:FNSE");
+        assert_eq!(
+            uuid::Uuid::parse_str(&note.note_id)
+                .expect("uuid")
+                .get_version_num(),
+            4
+        );
+        let decoded = ReportNote::decode(note.encode_to_vec().as_slice()).expect("decodes");
+        assert_eq!(decoded, note);
+        assert_eq!(decoded.author, "mogens");
+        assert_eq!(decoded.fiscal_period, "2026-Q4");
+        assert_eq!(decoded.created_at_unix_secs, 1_700_000_000);
+
+        let (_, defaulted) = build_note("A".into(), "XSTO".into(), None, None, "t".into(), 1);
+        assert_eq!(defaulted.fiscal_period, "");
+        assert!(!defaulted.author.is_empty());
+    }
 
     #[test]
     fn ticker_registration_round_trip() {
