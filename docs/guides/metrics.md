@@ -146,6 +146,16 @@ bounds (`RUN_BUCKETS` from 1 µs to 100 ms, `LOAD_BUCKETS` from 0.1 ms to 2.5 s)
 `telemetry::serve_with_buckets` so `histogram_quantile` works on them. Measured results are in
 `analyst/BENCHMARK.md`.
 
+## analyst scheduler and notes
+
+The scheduler (`analyst/src/scheduler.rs`) decides, per upcoming report, when to start preparing
+a kernel (`PREP_LEAD` before it, 12 h by default), and records `analyst_targets{status}` (gauge, every
+status every pass, 0 when empty), `analyst_prep_started_total`, `analyst_prep_failed_total{reason}`
+(`launch`, `failed`, `timed_out`, `rejected`) and `analyst_next_report_seconds` (gauge: seconds until the
+soonest report that has no ready kernel, -1 when there is none). The notes consumer records
+`analyst_notes_total{outcome}` (`stored`, `duplicate`, `rejected_unregistered`, `rejected_too_large`,
+`rejected_invalid`). Settings and behaviour: `analyst/README.md`.
+
 ## Tracing
 
 `telemetry::trace` (`docs/guides/tracing.md`) counts spans it could not queue for export in

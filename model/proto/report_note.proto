@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package nexus;
+
+// A note a user adds for a company's report, produced by `nexus expect` and
+// consumed by `analyst`. The agent that prepares the report's kernel must take
+// every applicable note into account.
+message ReportNote {
+  string ticker = 1;
+  string exchange_mic = 2;
+  // The fiscal period the note is about; "" means the company's next report.
+  string fiscal_period = 3;
+  // The note, at most 4 KiB.
+  string text = 4;
+  string author = 5;
+  int64 created_at_unix_secs = 6;
+  // A UUID set by the producer; the consumer stores each note once by it.
+  string note_id = 7;
+}

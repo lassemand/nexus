@@ -480,7 +480,7 @@ the gap within seconds. The socket never waits for it.
 - Metrics: `nordic_live_catchup_runs_total{result="ok|capped|failed"}`, `nordic_live_catchup_items_total` (relevant items
   that were new; non-zero means the socket missed something), `nordic_live_catchup_pages_total` and
   `nordic_live_watermark_lag_seconds`. Both are on the `Nordic Live` dashboard. Alert `NordicLiveWatermarkLag`: lag over
-  900 s for 10 minutes (Nordic markets publish around the clock; if this is noisy at night, give it a schedule instead of
+  3600 s for 15 minutes (Mon-Fri 06:00-20:00 UTC only) (Nordic markets publish around the clock; if this is noisy at night, give it a schedule instead of
   silencing it). One `info` line per run: pages, items, new relevant items, watermark before and after.
 
 ```bash
