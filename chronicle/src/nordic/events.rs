@@ -16,10 +16,11 @@ use chrono_tz::Tz;
 use model::generated::{ReportCalendar, ScheduledReport, SpecialEvent};
 use model::nordic::MFN_TIMEZONE;
 use prost::Message;
+use rdkafka::message::{Headers, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
 use std::time::Duration;
-use tracing::warn;
+use tracing::{warn, Span};
 
 /// Default topic signal consumes special events from.
 pub const SPECIAL_EVENTS_TOPIC: &str = "special.events";
@@ -37,6 +38,19 @@ pub fn company_key(company: &Company) -> String {
 pub trait EventSink {
     /// Delivers one event; returns once the broker acknowledged it.
     async fn send(&self, key: &str, event: &SpecialEvent) -> anyhow::Result<()>;
+
+    /// The topic events go to, for the `messaging.destination.name` attribute and
+    /// the `send <topic>` span name.
+    fn destination(&self) -> &str {
+        SPECIAL_EVENTS_TOPIC
+    }
+}
+
+/// The trace context of the current span as message headers: `traceparent`, and
+/// `tracestate` when it is not empty. Empty outside a span with an OpenTelemetry
+/// context, so a send without a span carries no trace headers.
+pub fn trace_headers() -> OwnedHeaders {
+    telemetry::kafka::inject_current(OwnedHeaders::new())
 }
 
 /// Publishes `event` about `company`, keyed by [`company_key`].
@@ -88,14 +102,24 @@ impl KafkaSink {
 impl EventSink for KafkaSink {
     async fn send(&self, key: &str, event: &SpecialEvent) -> anyhow::Result<()> {
         let payload = event.encode_to_vec();
-        self.producer
-            .send(
-                FutureRecord::to(&self.topic).key(key).payload(&payload),
-                Duration::from_secs(10),
-            )
+        let headers = trace_headers();
+        let mut record = FutureRecord::to(&self.topic).key(key).payload(&payload);
+        if headers.count() > 0 {
+            record = record.headers(headers);
+        }
+        let (partition, offset) = self
+            .producer
+            .send(record, Duration::from_secs(10))
             .await
             .map_err(|(e, _)| anyhow::anyhow!("publishing {} for {key}: {e}", event.event_type))?;
+        let span = Span::current();
+        span.record("messaging.kafka.partition", i64::from(partition));
+        span.record("messaging.kafka.offset", offset);
         Ok(())
+    }
+
+    fn destination(&self) -> &str {
+        &self.topic
     }
 }
 

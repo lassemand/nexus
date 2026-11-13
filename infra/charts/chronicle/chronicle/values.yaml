@@ -35,6 +35,11 @@ nordicLive:
   # token. Empty disables announcement posting; independent of slackChannel. Invite the Argo CD
   # notifications Slack app to the channel first.
   announcementsChannel: ""
+  # OTLP/HTTP endpoint that trace spans are exported to (NEX-266; Alloy, see
+  # docs/guides/tracing.md). Empty disables export: nothing is sent and the service
+  # runs as before. While the endpoint does not answer, spans are dropped and the
+  # export failure is logged at most once a minute.
+  otlpEndpoint: "http://alloy.nexus.svc.cluster.local:4318"
 filings:
   lookbackDays: "90"
 resources:

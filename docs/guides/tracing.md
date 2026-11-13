@@ -105,3 +105,28 @@ and whose children are the spans created inside it. `tracing` spans always start
 `nexus.start_time_unix_nano` field that the tracer installed by `init` turns into the start
 time. A start in the future (clock skew) is clamped to now and flagged with
 `nexus.clock_skew_ms`.
+
+`span_between(name, start, end, parent, attributes)` is the same for a span that also ends in
+the past; the end time is applied by a span processor before export, because `tracing` ends
+spans when they close. With the cargo feature `testing`, `telemetry::trace::testing::Harness`
+gives tests a subscriber over an in-memory exporter.
+
+## nordic-live
+
+`nordic-live` starts one trace per item of a registered company (items of other companies get no
+span). Chart value `nordicLive.otlpEndpoint` sets `OTEL_EXPORTER_OTLP_ENDPOINT` (empty disables
+export); `OTEL_SERVICE_NAME` is `nordic-live`.
+
+| Span | Starts / ends | Notes |
+|---|---|---|
+| `nordic_live.release` (root) | MFN's publish instant, until the last step of the item is done | `nexus.ticker`, `nexus.exchange_mic`, `mfn.news_id`, `nexus.event_type`, `nexus.lang`, `nexus.fiscal_period`, `nordic_live.path` (`socket` or `catch_up`), `nordic_live.publish_to_receive_ms` (negative: clock skew), `nordic_live.disposition` (`new`, `already_ingested`) |
+| `mfn.delivery` | publish instant to `received_at` | `nexus.clock=external`: both ends come from MFN's clock and ours; zero length with `nexus.clock_skew_ms` when MFN is ahead |
+| `nordic_live.parse` | parsing and classifying the message | a child of the **first relevant item's** trace only, with `nordic_live.items_in_message`; none when the message has no relevant item |
+| `nordic_live.ingested_check` | the lookup in signal's database | `nordic_live.disposition`; not made without `SIGNAL_DATABASE_URL` |
+| `nordic_live.emit_queue` | announcements: time in the emit queue | |
+| `send special.events` | producer span, until the broker acknowledged | `messaging.*`, partition and offset when acknowledged; ERROR on failure, also on the root |
+| `nordic_live.slack` | the Slack post | `nordic_live.slack.kind`, `nordic_live.slack.outcome`; runs on the Slack worker, after publishing |
+
+An item the poll already stored ends its trace at the check (`already_ingested`). `KafkaSink`
+adds `traceparent` (and `tracestate`) to every message sent inside a span; the poll binaries send
+without a span and add no header. Consumers that do not read headers (signal) are unaffected.

@@ -18,7 +18,7 @@ use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{error, info, info_span, warn, Instrument};
 
 /// Capacity of the queue between the WebSocket loop and the Slack worker.
 pub const QUEUE_CAPACITY: usize = 256;
@@ -361,7 +361,19 @@ pub fn describe_metrics() {
 /// Delivers jobs from `rx` until the channel closes. Logs one `slack_post` event per job.
 pub async fn run_worker(pool: PgPool, api: Box<dyn SlackApi>, mut rx: mpsc::Receiver<SlackJob>) {
     while let Some(job) = rx.recv().await {
-        let outcome = deliver(&pool, api.as_ref(), &job).await;
+        let step = info_span!(
+            parent: job.item.span.span(),
+            "nordic_live.slack",
+            nordic_live.slack.kind = job.kind.as_str(),
+            nordic_live.slack.outcome = tracing::field::Empty,
+        );
+        let outcome = deliver(&pool, api.as_ref(), &job)
+            .instrument(step.clone())
+            .await;
+        step.record("nordic_live.slack.outcome", outcome.as_str());
+        if outcome == Outcome::Failed {
+            super::live::fail_span(&step, "posting to Slack failed");
+        }
         match outcome {
             Outcome::Posted => count(job.kind, "posted"),
             Outcome::Updated => count(job.kind, "updated"),
@@ -520,6 +532,7 @@ mod tests {
             event: None,
             announcement: None,
             emit: None,
+            span: Default::default(),
         }
     }
 

@@ -69,6 +69,15 @@
 //! in the future (clock skew) is clamped to now and the span gets
 //! `nexus.clock_skew_ms` with the difference.
 //!
+//! [`span_between`] also sets the end time, for a step measured elsewhere (a queue
+//! wait, a delivery against another clock). `tracing` ends a span when it closes, so
+//! the requested end travels as the attribute `nexus.end_time_unix_nano` and the
+//! processor installed by `init` applies it before export; an end before the start
+//! gives a zero-length span flagged with `nexus.clock_skew_ms`.
+//!
+//! With the feature `testing`, [`testing::Harness`] is a subscriber over an
+//! in-memory exporter, for asserting on the spans of another crate.
+//!
 //! # Conventions for traced services
 //!
 //! * **Span names**: `<service>.<step>` for internal steps (`analyst.kernel_run`). Kafka
@@ -125,6 +134,7 @@ use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::registry::{LookupSpan, Registry};
 use tracing_subscriber::util::SubscriberInitExt;
 
+pub use opentelemetry;
 pub use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// Default of `OTEL_TRACES_FILTER`: `info` for nexus code, `warn` for the dependencies
@@ -142,6 +152,11 @@ pub const START_TIME_FIELD: &str = "nexus.start_time_unix_nano";
 /// Attribute set on a span whose requested start time was in the future, with the
 /// difference in milliseconds.
 pub const CLOCK_SKEW_ATTRIBUTE: &str = "nexus.clock_skew_ms";
+
+/// Attribute that carries the requested end time (nanoseconds since the Unix epoch,
+/// `i64`) of a span made by [`span_between`]; moved into the span's end time and
+/// removed before export.
+pub const END_TIME_ATTRIBUTE: &str = "nexus.end_time_unix_nano";
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_LOG_FILTER: &str = "info";
@@ -303,6 +318,27 @@ pub fn span_from(
     span
 }
 
+/// [`span_from`] for a span that also ends in the past, at `end`: a step measured
+/// elsewhere (the time an item spent in a queue, a delivery measured against another
+/// clock). Drop the returned span right away, or let it close when it goes out of
+/// scope; the exported end time is `end` either way.
+///
+/// An `end` before the exported start is raised to the start (zero length) and the
+/// span gets `nexus.clock_skew_ms` with the difference, unless a future start already
+/// set it. The end time is applied by the processor `init` installs (`tracing` ends
+/// spans at the moment they close), so it needs the subscriber from [`init`].
+pub fn span_between(
+    name: &str,
+    start: SystemTime,
+    end: SystemTime,
+    parent: Option<&Context>,
+    attributes: impl IntoIterator<Item = KeyValue>,
+) -> tracing::Span {
+    let span = span_from(name, start, parent, attributes);
+    span.set_attribute(END_TIME_ATTRIBUTE, unix_nanos(end));
+    span
+}
+
 fn unix_nanos(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH)
         .map(|elapsed| i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX))
@@ -427,7 +463,9 @@ where
     let builder = SdkTracerProvider::builder().with_resource(resource(service));
     match exporter {
         Some(exporter) => builder
-            .with_span_processor(BoundedProcessor::new(exporter, batch))
+            .with_span_processor(EndTimeProcessor::new(BoundedProcessor::new(
+                exporter, batch,
+            )))
             .build(),
         None => builder.build(),
     }
@@ -604,6 +642,71 @@ where
         })
 }
 
+/// Applies the end time asked for with [`span_between`] before handing the span on.
+#[derive(Debug)]
+pub(crate) struct EndTimeProcessor<P> {
+    inner: P,
+}
+
+impl<P: SpanProcessor> EndTimeProcessor<P> {
+    pub(crate) fn new(inner: P) -> Self {
+        EndTimeProcessor { inner }
+    }
+}
+
+fn apply_end_time(span: &mut SpanData) {
+    let Some(position) = span
+        .attributes
+        .iter()
+        .position(|attribute| attribute.key.as_str() == END_TIME_ATTRIBUTE)
+    else {
+        return;
+    };
+    let Value::I64(nanos) = span.attributes.remove(position).value else {
+        return;
+    };
+    let end = UNIX_EPOCH + Duration::from_nanos(u64::try_from(nanos).unwrap_or(0));
+    match span.start_time.duration_since(end) {
+        Ok(skew) if !skew.is_zero() => {
+            span.end_time = span.start_time;
+            let flagged = span
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == CLOCK_SKEW_ATTRIBUTE);
+            if !flagged {
+                span.attributes.push(KeyValue::new(
+                    CLOCK_SKEW_ATTRIBUTE,
+                    i64::try_from(skew.as_millis()).unwrap_or(i64::MAX),
+                ));
+            }
+        }
+        _ => span.end_time = end,
+    }
+}
+
+impl<P: SpanProcessor> SpanProcessor for EndTimeProcessor<P> {
+    fn on_start(&self, span: &mut opentelemetry_sdk::trace::Span, cx: &Context) {
+        self.inner.on_start(span, cx);
+    }
+
+    fn on_end(&self, mut span: SpanData) {
+        apply_end_time(&mut span);
+        self.inner.on_end(span);
+    }
+
+    fn force_flush(&self) -> OTelSdkResult {
+        self.inner.force_flush()
+    }
+
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+        self.inner.shutdown_with_timeout(timeout)
+    }
+
+    fn set_resource(&mut self, resource: &Resource) {
+        self.inner.set_resource(resource);
+    }
+}
+
 /// `BatchSpanProcessor` with an admission count in front of it, so a full queue drops
 /// spans here, where they can be counted.
 #[derive(Debug)]
@@ -750,22 +853,28 @@ impl ErrorLog {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod testing {
+/// In-memory tracing harness for tests (feature `testing`).
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    pub use opentelemetry_sdk::trace::SpanData;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 
-    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
     use tracing_subscriber::fmt::MakeWriter;
     use tracing_subscriber::registry::LookupSpan;
 
-    use super::{resource, subscriber, tracer, LogFormat, DEFAULT_OTEL_TRACES_FILTER};
+    use super::{
+        resource, subscriber, tracer, EndTimeProcessor, LogFormat, DEFAULT_OTEL_TRACES_FILTER,
+    };
 
+    /// Captured log output.
     #[derive(Clone, Default)]
-    pub(crate) struct Logs(Arc<Mutex<Vec<u8>>>);
+    pub struct Logs(Arc<Mutex<Vec<u8>>>);
 
     impl Logs {
-        pub(crate) fn lines(&self) -> Vec<serde_json::Value> {
+        /// The captured lines parsed as JSON.
+        pub fn lines(&self) -> Vec<serde_json::Value> {
             let bytes = self.0.lock().expect("log buffer poisoned").clone();
             String::from_utf8(bytes)
                 .expect("logs are UTF-8")
@@ -797,18 +906,31 @@ pub(crate) mod testing {
         }
     }
 
-    pub(crate) struct Harness {
-        pub(crate) exporter: InMemorySpanExporter,
-        pub(crate) provider: SdkTracerProvider,
-        pub(crate) logs: Logs,
+    /// A tracer provider with an in-memory exporter and a subscriber that logs JSON into [`Logs`].
+    pub struct Harness {
+        /// Receives every finished span.
+        pub exporter: InMemorySpanExporter,
+        /// The provider behind the subscriber.
+        pub provider: SdkTracerProvider,
+        /// Captured logs.
+        pub logs: Logs,
+    }
+
+    impl Default for Harness {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl Harness {
-        pub(crate) fn new() -> Self {
+        /// A harness with its own exporter and log buffer.
+        pub fn new() -> Self {
             let exporter = InMemorySpanExporter::default();
             let provider = SdkTracerProvider::builder()
                 .with_resource(resource("test"))
-                .with_simple_exporter(exporter.clone())
+                .with_span_processor(EndTimeProcessor::new(SimpleSpanProcessor::new(
+                    exporter.clone(),
+                )))
                 .build();
             Harness {
                 exporter,
@@ -817,7 +939,8 @@ pub(crate) mod testing {
             }
         }
 
-        pub(crate) fn subscriber(
+        /// A fresh subscriber (fmt layer at `trace`, OTel layer with the default filter) over the provider.
+        pub fn subscriber(
             &self,
         ) -> impl tracing::Subscriber + Send + Sync + for<'a> LookupSpan<'a> {
             subscriber(
@@ -830,13 +953,15 @@ pub(crate) mod testing {
             .expect("valid filters")
         }
 
-        pub(crate) fn spans(&self) -> Vec<opentelemetry_sdk::trace::SpanData> {
+        /// The finished spans exported so far.
+        pub fn spans(&self) -> Vec<opentelemetry_sdk::trace::SpanData> {
             self.exporter
                 .get_finished_spans()
                 .expect("in-memory exporter")
         }
 
-        pub(crate) fn span(&self, name: &str) -> opentelemetry_sdk::trace::SpanData {
+        /// The finished span called `name`; panics when there is none.
+        pub fn span(&self, name: &str) -> opentelemetry_sdk::trace::SpanData {
             self.spans()
                 .into_iter()
                 .find(|span| span.name == name)
@@ -1105,6 +1230,44 @@ mod tests {
             Some(Value::I64(skew)) => assert!((1_900..=2_000).contains(&skew), "skew {skew}"),
             other => panic!("unexpected clock skew attribute {other:?}"),
         }
+    }
+
+    #[test]
+    fn span_between_ends_at_the_given_instant() {
+        let harness = Harness::new();
+        let start = SystemTime::now() - Duration::from_secs(10);
+        let end = start + Duration::from_millis(850);
+        tracing::subscriber::with_default(harness.subscriber(), || {
+            let parent = tracing::info_span!("parent");
+            let cx = parent.context();
+            span_between("mfn.delivery", start, end, Some(&cx), []).in_scope(|| {});
+        });
+        let span = harness.span("mfn.delivery");
+        assert_eq!(span.start_time, start);
+        assert_eq!(span.end_time, end);
+        assert_eq!(attribute(&span, END_TIME_ATTRIBUTE), None);
+        assert_eq!(attribute(&span, CLOCK_SKEW_ATTRIBUTE), None);
+        assert_eq!(
+            span.parent_span_id,
+            harness.span("parent").span_context.span_id()
+        );
+    }
+
+    #[test]
+    fn span_between_with_an_end_before_the_start_has_zero_length_and_is_flagged() {
+        let harness = Harness::new();
+        let end = SystemTime::now() - Duration::from_secs(10);
+        let start = end + Duration::from_millis(2_000);
+        tracing::subscriber::with_default(harness.subscriber(), || {
+            span_between("mfn.delivery", start, end, None, []).in_scope(|| {});
+        });
+        let span = harness.span("mfn.delivery");
+        assert_eq!(span.start_time, start);
+        assert_eq!(span.end_time, start);
+        assert_eq!(
+            attribute(&span, CLOCK_SKEW_ATTRIBUTE),
+            Some(Value::I64(2_000))
+        );
     }
 
     #[test]

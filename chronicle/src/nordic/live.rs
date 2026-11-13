@@ -39,12 +39,15 @@ use model::generated::SpecialEvent;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
+use telemetry::trace::opentelemetry::trace::Status;
+use telemetry::trace::opentelemetry::{Context as OtelContext, KeyValue};
+use telemetry::trace::{span_between, span_from, OpenTelemetrySpanExt};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::USER_AGENT;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, info_span, warn, Instrument, Span};
 use uuid::Uuid;
 
 /// Default stream: all Nordic news.
@@ -172,6 +175,56 @@ impl SeenSet {
 
 // ── Items ───────────────────────────────────────────────────────────────────
 
+/// The root span (`nordic_live.release`) of one item's trace. Cloned into everything
+/// that carries the item on (publish tasks, the emit queue, Slack jobs); the span
+/// ends, at the moment the last clone is dropped, so it covers the whole trace.
+/// Two of these always compare equal, so items can still be compared in tests.
+#[derive(Debug, Clone)]
+pub struct ItemSpan(Span);
+
+impl Default for ItemSpan {
+    fn default() -> Self {
+        ItemSpan(Span::none())
+    }
+}
+
+impl PartialEq for ItemSpan {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Drop for ItemSpan {
+    fn drop(&mut self) {
+        self.0.in_scope(|| ());
+    }
+}
+
+impl ItemSpan {
+    /// The root span, to use as the explicit parent of the item's step spans.
+    pub fn span(&self) -> &Span {
+        &self.0
+    }
+
+    /// The OpenTelemetry context of the root span.
+    pub fn context(&self) -> OtelContext {
+        self.0.context()
+    }
+
+    /// Marks the root span as failed and records an `exception` event.
+    pub fn fail(&self, message: &str) {
+        fail_span(&self.0, message);
+    }
+}
+
+pub(crate) fn fail_span(span: &Span, message: &str) {
+    span.set_status(Status::error(message.to_string()));
+    span.add_event(
+        "exception",
+        vec![KeyValue::new("exception.message", message.to_string())],
+    );
+}
+
 /// A relevant item with everything the log line carries.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveItem {
@@ -207,6 +260,8 @@ pub struct LiveItem {
     /// What happened to the announcement: `queued`, `dropped` or `disabled`.
     /// `None` for items that are not announcements.
     pub emit: Option<&'static str>,
+    /// The item's trace; see [`ItemSpan`].
+    pub span: ItemSpan,
 }
 
 impl LiveItem {
@@ -332,7 +387,7 @@ pub fn process_message(
         }
     };
     out.bad_items = doc.bad_items;
-    pick_relevant(&mut out, doc.items, received_at, companies, seen);
+    pick_relevant(&mut out, doc.items, received_at, companies, seen, "socket");
     out
 }
 
@@ -345,7 +400,7 @@ pub fn process_items(
     seen: &mut SeenSet,
 ) -> Processed {
     let mut out = Processed::default();
-    pick_relevant(&mut out, items, received_at, companies, seen);
+    pick_relevant(&mut out, items, received_at, companies, seen, "catch_up");
     out
 }
 
@@ -355,6 +410,7 @@ fn pick_relevant(
     received_at: DateTime<Utc>,
     companies: &Companies,
     seen: &mut SeenSet,
+    path: &'static str,
 ) {
     for item in items {
         out.items_seen += 1;
@@ -371,6 +427,25 @@ fn pick_relevant(
         let event = release_event(&company.as_company(), &item, &c);
         let announcement = is_announcement_class(&c, parse_calendar_release(&item).is_some())
             .then(|| announcement_event(&company.as_company(), &item));
+        let event_type = event
+            .as_ref()
+            .or(announcement.as_ref())
+            .map(|e| e.event_type.clone())
+            .unwrap_or_else(|| {
+                if c.calendar_update {
+                    "calendar_update".to_string()
+                } else {
+                    "company_news".to_string()
+                }
+            });
+        let span = release_span(
+            &item,
+            company,
+            &event_type,
+            c.fiscal_period.as_deref(),
+            received_at,
+            path,
+        );
         out.relevant.push(LiveItem {
             news_id: item.news_id,
             ticker: company.ticker.clone(),
@@ -393,8 +468,50 @@ fn pick_relevant(
             event,
             announcement,
             emit: None,
+            span,
         });
     }
+}
+
+/// Starts the item's trace: the root span `nordic_live.release` at MFN's publish
+/// instant, and its child `mfn.delivery` from then to `received_at`.
+fn release_span(
+    item: &NewsItem,
+    company: &Registered,
+    event_type: &str,
+    fiscal_period: Option<&str>,
+    received_at: DateTime<Utc>,
+    path: &'static str,
+) -> ItemSpan {
+    let publish: std::time::SystemTime = item.published_at.into();
+    let received: std::time::SystemTime = received_at.into();
+    let mut attributes = vec![
+        KeyValue::new("nexus.ticker", company.ticker.clone()),
+        KeyValue::new("nexus.exchange_mic", company.exchange_mic.clone()),
+        KeyValue::new("mfn.news_id", item.news_id.to_string()),
+        KeyValue::new("nexus.event_type", event_type.to_string()),
+        KeyValue::new("nordic_live.path", path),
+        KeyValue::new(
+            "nordic_live.publish_to_receive_ms",
+            (received_at - item.published_at).num_milliseconds(),
+        ),
+    ];
+    if let Some(lang) = &item.lang {
+        attributes.push(KeyValue::new("nexus.lang", lang.clone()));
+    }
+    if let Some(period) = fiscal_period {
+        attributes.push(KeyValue::new("nexus.fiscal_period", period.to_string()));
+    }
+    let root = span_from("nordic_live.release", publish, None, attributes);
+    span_between(
+        "mfn.delivery",
+        publish,
+        received,
+        Some(&root.context()),
+        [KeyValue::new("nexus.clock", "external")],
+    )
+    .in_scope(|| ());
+    ItemSpan(root)
 }
 
 // ── The poll's "cancel" ─────────────────────────────────────────────────────
@@ -438,18 +555,38 @@ pub enum Disposition {
 /// item is treated as new (logged at `warn` on failure): the live path must not
 /// depend on the database being up.
 pub async fn dispose(item: LiveItem, check: Option<&dyn IngestedCheck>) -> Disposition {
-    if let Some(check) = check {
+    let Some(check) = check else {
+        item.span.0.set_attribute("nordic_live.disposition", "new");
+        return Disposition::New(Box::new(item));
+    };
+    let step = info_span!(
+        parent: item.span.span(),
+        "nordic_live.ingested_check",
+        nordic_live.disposition = tracing::field::Empty,
+    );
+    let already = async {
         match check.already_ingested(item.news_id).await {
-            Ok(true) => return Disposition::AlreadyIngested(item.news_id),
-            Ok(false) => {}
+            Ok(already) => already,
             Err(e) => {
                 counter!("nordic_live_signal_check_failures_total").increment(1);
                 warn!(news_id = %item.news_id, error = %e,
                       "signal database lookup failed, treating the item as new");
+                false
             }
         }
     }
-    Disposition::New(Box::new(item))
+    .instrument(step.clone())
+    .await;
+    let disposition = if already { "already_ingested" } else { "new" };
+    step.record("nordic_live.disposition", disposition);
+    item.span
+        .0
+        .set_attribute("nordic_live.disposition", disposition);
+    if already {
+        Disposition::AlreadyIngested(item.news_id)
+    } else {
+        Disposition::New(Box::new(item))
+    }
 }
 
 /// The Slack channel IDs of the two kinds of post. A kind without a channel is not posted.
@@ -518,24 +655,40 @@ pub fn report_labelled(d: &Disposition, channels: &SlackChannels, stale: bool) {
 
 // ── Publishing ──────────────────────────────────────────────────────────────
 
+/// One `special.events` message for a new item, with the item's trace.
+#[derive(Debug, Clone)]
+pub struct Publication {
+    /// Kafka key, `ticker:exchange_mic`.
+    pub key: String,
+    /// The event.
+    pub event: SpecialEvent,
+    /// The item's root span, for [`publish_live`].
+    pub span: ItemSpan,
+}
+
 /// The `special.events` messages for new items, keyed like the poll's
-/// (`ticker:exchange_mic`). Items the poll already stored are skipped.
-pub fn events_to_publish(dispositions: &[Disposition]) -> Vec<(String, SpecialEvent)> {
+/// (`ticker:exchange_mic`), each with its item's trace. Items the poll already
+/// stored are skipped.
+pub fn publications(dispositions: &[Disposition]) -> Vec<Publication> {
     dispositions
         .iter()
         .filter_map(|d| match d {
-            Disposition::New(item) => item.event.clone().map(|e| {
-                let key = company_key(&Company {
-                    ticker: item.ticker.clone(),
-                    exchange_mic: item.exchange_mic.clone(),
-                    mfn_slug: None,
-                    name: None,
-                    isin: None,
-                });
-                (key, e)
+            Disposition::New(item) => item.event.clone().map(|event| Publication {
+                key: item.key(),
+                event,
+                span: item.span.clone(),
             }),
             Disposition::AlreadyIngested(_) => None,
         })
+        .collect()
+}
+
+/// The `special.events` messages for new items, keyed like the poll's
+/// (`ticker:exchange_mic`). Items the poll already stored are skipped.
+pub fn events_to_publish(dispositions: &[Disposition]) -> Vec<(String, SpecialEvent)> {
+    publications(dispositions)
+        .into_iter()
+        .map(|p| (p.key, p.event))
         .collect()
 }
 
@@ -546,14 +699,34 @@ pub fn describe_publish_metrics() {
     }
 }
 
-/// Publishes one event to `special.events`. A failure is logged and counted,
-/// not returned: the nightly poll publishes the same item again.
+/// The producer span of one send to `special.events`, a child of the item's root
+/// span. The sink records the partition and offset on it once the broker acknowledged.
+pub fn send_span(root: &Span, destination: &str, key: &str) -> Span {
+    info_span!(
+        parent: root,
+        "send",
+        otel.name = %format!("send {destination}"),
+        otel.kind = "producer",
+        messaging.system = "kafka",
+        messaging.destination.name = destination,
+        messaging.kafka.message.key = key,
+        messaging.kafka.partition = tracing::field::Empty,
+        messaging.kafka.offset = tracing::field::Empty,
+    )
+}
+
+/// Publishes one event to `special.events`, as a `send special.events` span under
+/// `root` (the item's root span, or `Span::none()`). A failure is logged and
+/// counted, not returned: the nightly poll publishes the same item again. The span
+/// and `root` are marked as failed.
 pub async fn publish_live(
     sink: &(dyn EventSink + Send + Sync),
     key: &str,
     event: &SpecialEvent,
+    root: &Span,
 ) -> bool {
-    match sink.send(key, event).await {
+    let step = send_span(root, sink.destination(), key);
+    match sink.send(key, event).instrument(step.clone()).await {
         Ok(()) => {
             counter!("nordic_live_events_published_total", "result" => "published").increment(1);
             info!(key, news_id = %event.source_id, event_type = %event.event_type,
@@ -561,8 +734,11 @@ pub async fn publish_live(
             true
         }
         Err(e) => {
+            let message = format!("{e:#}");
+            fail_span(&step, &message);
+            fail_span(root, &message);
             counter!("nordic_live_events_published_total", "result" => "failed").increment(1);
-            warn!(key, news_id = %event.source_id, error = format!("{e:#}"),
+            warn!(key, news_id = %event.source_id, error = message,
                   "publishing to special.events failed; the poll will publish it");
             false
         }
@@ -722,7 +898,9 @@ pub async fn handle_message_full(
     seen: &mut SeenSet,
     h: &Handling<'_>,
 ) -> Handled {
+    let parse_started = std::time::SystemTime::now();
     let processed = process_message(msg, received_at, companies, seen);
+    trace_parse(&processed, parse_started);
     counter!("nordic_live_messages_total").increment(1);
     gauge!("nordic_live_last_message_timestamp_seconds")
         .set(received_at.timestamp_millis() as f64 / 1000.0);
@@ -752,19 +930,43 @@ pub async fn handle_catchup_items(
     seen: &mut SeenSet,
     h: &Handling<'_>,
 ) -> Handled {
+    let parse_started = std::time::SystemTime::now();
     let processed = process_items(items, received_at, companies, seen);
+    trace_parse(&processed, parse_started);
     dispatch(processed, h, false).await
+}
+
+/// Records the parsing and classification of one message (or catch-up batch) as
+/// `nordic_live.parse`, a child of the **first relevant item's** trace with
+/// `nordic_live.items_in_message`. Parsing is shared work, so only that one trace
+/// gets it; a message without relevant items gets no span at all.
+fn trace_parse(processed: &Processed, started: std::time::SystemTime) {
+    let Some(first) = processed.relevant.first() else {
+        return;
+    };
+    span_between(
+        "nordic_live.parse",
+        started,
+        std::time::SystemTime::now(),
+        Some(&first.span.context()),
+        [KeyValue::new(
+            "nordic_live.items_in_message",
+            i64::try_from(processed.items_seen).unwrap_or(i64::MAX),
+        )],
+    )
+    .in_scope(|| ());
 }
 
 async fn dispatch(mut processed: Processed, h: &Handling<'_>, from_socket: bool) -> Handled {
     for item in &mut processed.relevant {
         if let Some(event) = item.announcement.clone() {
             item.emit = Some(match h.emitter {
-                Some(e) => e.offer(EmitJob {
-                    key: item.key(),
+                Some(e) => e.offer(EmitJob::new(
+                    item.key(),
                     event,
-                    received_at: item.received_at,
-                }),
+                    item.received_at,
+                    item.span.clone(),
+                )),
                 None => "disabled",
             });
         }
@@ -1329,7 +1531,7 @@ mod tests {
         assert_eq!(out[0].0, "GOMX:FNSE");
 
         let sink = VecSink::default();
-        assert!(publish_live(&sink, &out[0].0, &out[0].1).await);
+        assert!(publish_live(&sink, &out[0].0, &out[0].1, &Span::none()).await);
         assert_eq!(sink.sent.lock().unwrap().len(), 1);
 
         let down = VecSink {
@@ -1337,7 +1539,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            !publish_live(&down, &out[0].0, &out[0].1).await,
+            !publish_live(&down, &out[0].0, &out[0].1, &Span::none()).await,
             "a failure is reported, not raised"
         );
     }

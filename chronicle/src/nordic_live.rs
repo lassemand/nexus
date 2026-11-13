@@ -18,10 +18,10 @@ use chronicle_lib::nordic::calendar::MfnClient;
 /// start). Network trouble never ends the process.
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
 use chronicle_lib::nordic::live::{
-    describe_metrics, describe_publish_metrics, events_to_publish, handle_catchup_items,
-    handle_message_full, publish_live, Companies, Counters, Handling, IngestedCheck, Listener,
-    Registered, SeenSet, SignalDb, SlackChannels, DEFAULT_SLACK_MAX_AGE, DEFAULT_WS_URL,
-    LATENCY_BUCKETS, SEEN_CAPACITY,
+    describe_metrics, describe_publish_metrics, handle_catchup_items, handle_message_full,
+    publications, publish_live, Companies, Counters, Handling, IngestedCheck, Listener, Registered,
+    SeenSet, SignalDb, SlackChannels, DEFAULT_SLACK_MAX_AGE, DEFAULT_WS_URL, LATENCY_BUCKETS,
+    SEEN_CAPACITY,
 };
 use chronicle_lib::nordic::live_catchup::{
     self, describe_catchup_metrics, page_backoff, run_coordinator, run_once, Fetched,
@@ -45,6 +45,7 @@ use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use telemetry::trace::LogFormat;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -156,16 +157,18 @@ async fn load_sessions(signal: Option<&SignalDb>, previous: &Sessions) -> Sessio
 async fn main() -> ExitCode {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
     let args = Args::parse();
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    if args.log_format == "text" {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
+    let format = if args.log_format == "text" {
+        LogFormat::Text
     } else {
-        tracing_subscriber::fmt()
-            .json()
-            .with_env_filter(filter)
-            .init();
-    }
+        LogFormat::Json
+    };
+    let _tracing = match telemetry::trace::init_with("nordic-live", format) {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("nordic-live: initialising logging failed: {e:#}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     match run(args).await {
         Ok(()) => ExitCode::SUCCESS,
@@ -348,9 +351,11 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 // Independent of Slack, and off the socket loop: a slow broker
                 // never delays the next message.
                 if let Some(sink) = &events {
-                    for (key, event) in events_to_publish(&dispositions) {
+                    for p in publications(&dispositions) {
                         let sink = sink.clone();
-                        tokio::spawn(async move { publish_live(sink.as_ref(), &key, &event).await });
+                        tokio::spawn(async move {
+                            publish_live(sink.as_ref(), &p.key, &p.event, p.span.span()).await
+                        });
                     }
                 }
                 if let Some(jobs) = &slack_tx {
@@ -378,9 +383,11 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 };
                 live_catchup::log_run(&fetched, handled.dispositions.len(), after);
                 if let Some(sink) = &events {
-                    for (key, event) in events_to_publish(&handled.dispositions) {
+                    for p in publications(&handled.dispositions) {
                         let sink = sink.clone();
-                        tokio::spawn(async move { publish_live(sink.as_ref(), &key, &event).await });
+                        tokio::spawn(async move {
+                            publish_live(sink.as_ref(), &p.key, &p.event, p.span.span()).await
+                        });
                     }
                 }
                 if let Some(jobs) = &slack_tx {

@@ -37,6 +37,14 @@ spec:
           env:
             - name: RUST_LOG
               value: {{ .Values.nordicLive.logLevel | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: nordic-live
+            {{- if .Values.nordicLive.otlpEndpoint }}
+            # Where trace spans go (empty/unset: no export). HOSTNAME, the pod name,
+            # becomes the host.name resource attribute.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.nordicLive.otlpEndpoint | quote }}
+            {{- end }}
             {{- if .Values.nordicLive.slackChannel }}
             # Slack channel ID (not the name); empty/unset disables Slack posting.
             - name: SLACK_CHANNEL
