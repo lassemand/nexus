@@ -1,17 +1,21 @@
 //! The analyst service: applies its migrations, runs the scheduler that starts
-//! the preparation of a kernel before each upcoming report, and consumes report
-//! notes. The launcher is a no-op until the Job launcher exists; the release
-//! path and trades come in later tasks.
+//! the preparation of a kernel before each upcoming report, consumes report
+//! notes, and decides on each report release with the prepared kernel. The
+//! launcher and the trade scheduler are no-ops until they exist.
 
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use analyst::metrics::{LOAD_BUCKETS, LOAD_SECONDS, RUN_BUCKETS, RUN_SECONDS};
+use analyst::metrics::{
+    LOAD_BUCKETS, LOAD_SECONDS, PUBLISH_BUCKETS, PUBLISH_TO_DECISION_SECONDS, RELEASE_BUCKETS,
+    RELEASE_TO_DECISION_SECONDS, RUN_BUCKETS, RUN_SECONDS,
+};
 use analyst::notes::run_consumer;
 use analyst::{
-    Config, KernelRuntime, NoopLauncher, NoteHandler, RuntimeConfig, Scheduler, SchedulerConfig,
-    SignalSchedule, Store, SystemClock,
+    preload, run_release_consumer, Config, KafkaDecisionSink, KernelRegistry, KernelRuntime,
+    NoopHandOff, NoopLauncher, NoteHandler, ReleaseProcessor, RuntimeConfig, Scheduler,
+    SchedulerConfig, SignalSchedule, Store, SystemClock,
 };
 use anyhow::{Context, Result};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -59,10 +63,16 @@ async fn main() -> Result<()> {
     telemetry::serve_with_buckets(
         "analyst",
         port,
-        &[(RUN_SECONDS, RUN_BUCKETS), (LOAD_SECONDS, LOAD_BUCKETS)],
+        &[
+            (RUN_SECONDS, RUN_BUCKETS),
+            (LOAD_SECONDS, LOAD_BUCKETS),
+            (RELEASE_TO_DECISION_SECONDS, RELEASE_BUCKETS),
+            (PUBLISH_TO_DECISION_SECONDS, PUBLISH_BUCKETS),
+        ],
     )
     .await?;
     analyst::metrics::describe();
+    analyst::metrics::describe_releases();
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -80,10 +90,10 @@ async fn main() -> Result<()> {
         .acquire_timeout(Duration::from_secs(5))
         .connect_lazy_with(signal_options);
 
-    let _runtime = KernelRuntime::new(RuntimeConfig {
+    let runtime = Arc::new(KernelRuntime::new(RuntimeConfig {
         deadline: config.kernel_deadline,
         ..RuntimeConfig::default()
-    })?;
+    })?);
 
     let clock = Arc::new(SystemClock);
     let wake = Arc::new(Notify::new());
@@ -96,12 +106,30 @@ async fn main() -> Result<()> {
         clock.clone(),
         Arc::new(NoopLauncher),
     );
-    let notes = NoteHandler::new(store, signal, clock, wake.clone());
+    let notes = NoteHandler::new(store.clone(), signal, clock.clone(), wake.clone());
+
+    let registry = Arc::new(KernelRegistry::new());
+    preload(&store, &runtime, &registry)
+        .await
+        .context("cannot load the accepted kernels")?;
+    let sink = KafkaDecisionSink::new(&config.kafka_brokers, &config.decisions_topic)
+        .context("cannot create the decisions producer")?;
+    let releases = Arc::new(ReleaseProcessor::new(
+        store,
+        Arc::clone(&registry),
+        clock,
+        Arc::new(sink),
+        Arc::new(NoopHandOff),
+        config.max_release_age,
+    ));
     info!(
         prep_lead = ?config.prep_lead,
         tick = ?config.scheduler_tick,
         allowlist = config.analyst_tickers.len(),
         topic = %config.notes_topic,
+        releases_topic = %config.special_events_topic,
+        decisions_topic = %config.decisions_topic,
+        max_release_age = ?config.max_release_age,
         "analyst starting"
     );
 
@@ -122,7 +150,23 @@ async fn main() -> Result<()> {
             error!(%error, "notes consumer stopped");
         }
     };
-    tokio::join!(scheduler.run(wake, stopped(stop_rx.clone())), consumer);
+    let release_consumer = async {
+        if let Err(error) = run_release_consumer(
+            &config.kafka_brokers,
+            &config.special_events_topic,
+            releases,
+            stopped(stop_rx.clone()),
+        )
+        .await
+        {
+            error!(%error, "release consumer stopped");
+        }
+    };
+    tokio::join!(
+        scheduler.run(wake, stopped(stop_rx.clone())),
+        consumer,
+        release_consumer
+    );
     info!("analyst stopped");
     Ok(())
 }

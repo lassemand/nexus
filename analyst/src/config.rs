@@ -57,6 +57,12 @@ pub struct Config {
     pub kernel_deadline: Duration,
     /// The Kafka topic of report notes.
     pub notes_topic: String,
+    /// The Kafka topic report releases arrive on.
+    pub special_events_topic: String,
+    /// The Kafka topic the analyst's decisions are produced on.
+    pub decisions_topic: String,
+    /// A release published longer ago than this is recorded as `stale` and never traded.
+    pub max_release_age: Duration,
 }
 
 impl Config {
@@ -97,6 +103,11 @@ impl Config {
             analyst_tickers: parse_tickers(&text("ANALYST_TICKERS").unwrap_or_default())?,
             kernel_deadline: duration("KERNEL_DEADLINE", "50ms")?,
             notes_topic: text("NOTES_TOPIC").unwrap_or_else(|| "analyst.notes".to_owned()),
+            special_events_topic: text("SPECIAL_EVENTS_TOPIC")
+                .unwrap_or_else(|| "special.events".to_owned()),
+            decisions_topic: text("DECISIONS_TOPIC")
+                .unwrap_or_else(|| "analyst.decisions".to_owned()),
+            max_release_age: duration("MAX_RELEASE_AGE", "15m")?,
         })
     }
 }
@@ -142,6 +153,9 @@ mod tests {
         assert_eq!(config.scheduler_tick, Duration::from_secs(60));
         assert_eq!(config.kernel_deadline, Duration::from_millis(50));
         assert_eq!(config.notes_topic, "analyst.notes");
+        assert_eq!(config.special_events_topic, "special.events");
+        assert_eq!(config.decisions_topic, "analyst.decisions");
+        assert_eq!(config.max_release_age, Duration::from_secs(15 * 60));
         assert!(config.analyst_tickers.is_empty());
     }
 
@@ -155,6 +169,9 @@ mod tests {
             ("PREP_MAX_CONCURRENT", "5"),
             ("ANALYST_TICKERS", "AAA:XSTO, BBB:XHEL,"),
             ("NOTES_TOPIC", "notes.test"),
+            ("DECISIONS_TOPIC", "decisions.test"),
+            ("SPECIAL_EVENTS_TOPIC", "events.test"),
+            ("MAX_RELEASE_AGE", "5m"),
             ("KERNEL_DEADLINE", "20ms"),
         ]);
         let config = Config::from_lookup(lookup(&pairs)).expect("valid");
@@ -164,6 +181,9 @@ mod tests {
         assert_eq!(config.prep_max_concurrent, 5);
         assert_eq!(config.kernel_deadline, Duration::from_millis(20));
         assert_eq!(config.notes_topic, "notes.test");
+        assert_eq!(config.decisions_topic, "decisions.test");
+        assert_eq!(config.special_events_topic, "events.test");
+        assert_eq!(config.max_release_age, Duration::from_secs(300));
         assert_eq!(
             config.analyst_tickers,
             vec![("AAA".into(), "XSTO".into()), ("BBB".into(), "XHEL".into())]

@@ -324,3 +324,34 @@ pub fn note_payload(ticker: &str, mic: &str, period: &str, text: &str, id: &str)
     }
     .encode_to_vec()
 }
+
+pub mod wasm {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::sync::OnceLock;
+
+    fn workspace() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+    }
+
+    /// The WASM build of a kernel crate of the workspace, built once per test binary.
+    pub fn bytes(package: &str) -> Vec<u8> {
+        static BUILT: OnceLock<()> = OnceLock::new();
+        BUILT.get_or_init(|| {
+            let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+                .current_dir(workspace())
+                .args(["build", "--release", "--target", "wasm32-unknown-unknown"])
+                .args(["-p", "verdict-bench-anchored"])
+                .status()
+                .expect("cargo runs");
+            assert!(status.success(), "building the kernels for wasm32 failed");
+        });
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace().join("target"));
+        let path = target
+            .join("wasm32-unknown-unknown/release")
+            .join(format!("{}.wasm", package.replace('-', "_")));
+        std::fs::read(&path).unwrap_or_else(|error| panic!("reading {path:?}: {error}"))
+    }
+}

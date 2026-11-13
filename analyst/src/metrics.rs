@@ -90,3 +90,60 @@ pub(crate) fn next_report(seconds: f64) {
 pub(crate) fn note(outcome: &'static str) {
     metrics::counter!(NOTES_TOTAL, "outcome" => outcome).increment(1);
 }
+
+/// Histogram: seconds from consuming a release to its decision being handed on.
+pub const RELEASE_TO_DECISION_SECONDS: &str = "analyst_release_to_decision_seconds";
+/// Histogram: seconds from MFN publishing a release to its decision being handed on.
+/// Includes MFN's and `nordic-live`'s delay: for dashboards, not alerts.
+pub const PUBLISH_TO_DECISION_SECONDS: &str = "analyst_publish_to_decision_seconds";
+/// Counter: release events, labelled `outcome` (`decided`, `duplicate`, `ignored_<reason>`).
+pub const RELEASE_EVENTS_TOTAL: &str = "analyst_release_events_total";
+/// Counter: decisions recorded, labelled `decision`.
+pub const DECISIONS_TOTAL: &str = "analyst_decisions_total";
+/// Counter: retried attempts to write a decision or to emit it, labelled `step`.
+pub const DECISION_RETRIES_TOTAL: &str = "analyst_decision_retries_total";
+
+/// Bucket bounds (seconds) for [`RELEASE_TO_DECISION_SECONDS`]: 100 µs to 5 s.
+pub const RELEASE_BUCKETS: &[f64] = &[
+    1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+];
+/// Bucket bounds (seconds) for [`PUBLISH_TO_DECISION_SECONDS`]: 0.5 s to 30 min.
+pub const PUBLISH_BUCKETS: &[f64] = &[0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0, 1800.0];
+
+/// Describes the release path's metrics.
+pub fn describe_releases() {
+    metrics::describe_histogram!(
+        RELEASE_TO_DECISION_SECONDS,
+        "Seconds from consuming a release to its decision being handed on"
+    );
+    metrics::describe_histogram!(
+        PUBLISH_TO_DECISION_SECONDS,
+        "Seconds from MFN publishing a release to its decision being handed on"
+    );
+    metrics::describe_counter!(RELEASE_EVENTS_TOTAL, "Release events by outcome");
+    metrics::describe_counter!(DECISIONS_TOTAL, "Decisions recorded by decision");
+    metrics::describe_counter!(
+        DECISION_RETRIES_TOTAL,
+        "Retried attempts to write or emit a decision, by step"
+    );
+}
+
+pub(crate) fn release_event(outcome: &str) {
+    metrics::counter!(RELEASE_EVENTS_TOTAL, "outcome" => outcome.to_owned()).increment(1);
+}
+
+pub(crate) fn decision(decision: &'static str) {
+    metrics::counter!(DECISIONS_TOTAL, "decision" => decision).increment(1);
+}
+
+pub(crate) fn decision_retry(step: &'static str) {
+    metrics::counter!(DECISION_RETRIES_TOTAL, "step" => step).increment(1);
+}
+
+pub(crate) fn release_to_decision(elapsed: Duration) {
+    metrics::histogram!(RELEASE_TO_DECISION_SECONDS).record(elapsed.as_secs_f64());
+}
+
+pub(crate) fn publish_to_decision(seconds: f64) {
+    metrics::histogram!(PUBLISH_TO_DECISION_SECONDS).record(seconds.max(0.0));
+}

@@ -12,16 +12,23 @@
 //! for each upcoming report ([`Scheduler`]) and the consumer of report notes
 //! ([`NoteHandler`]). See the crate README.
 
+pub mod claims;
 pub mod clock;
 pub mod config;
 pub mod decision;
 mod error;
+pub mod handoff;
 pub mod matching;
 pub mod metrics;
 pub mod notes;
+pub mod offsets;
+pub mod registry;
+pub mod release;
+pub mod releases;
 mod runtime;
 pub mod schedule;
 pub mod scheduler;
+pub mod sink;
 pub mod store;
 mod types;
 mod verdict;
@@ -30,8 +37,15 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{Config, ConfigError};
 pub use decision::{DecisionKind, NewDecision, Recorded, StoredDecision};
 pub use error::{KernelError, LoadError};
+pub use handoff::{ChannelHandOff, NoopHandOff, TradeHandOff, TradeSignal};
 pub use matching::{pick_target, MatchKind, Matched, Release};
 pub use notes::{NoteHandler, NoteOutcome};
+pub use registry::{preload, KernelRegistry, PreloadReport, KERNEL_RETENTION};
+pub use release::{
+    classify, is_transient, with_retry, Classified, Processed, Receipt, ReleaseInput,
+    ReleaseProcessor, RetryPolicy,
+};
+pub use releases::{run_release_consumer, RELEASES_GROUP};
 pub use runtime::{
     run_blocking, KernelId, KernelRuntime, LoadTimings, LoadedKernel, RunOutcome, RuntimeConfig,
     KERNEL_DEADLINE, MAX_INPUT_BYTES, MAX_MODULE_BYTES, MAX_OUTPUT_BYTES, MEMORY_LIMIT_BYTES,
@@ -42,6 +56,7 @@ pub use scheduler::{
     LaunchError, LaunchInfo, NoopLauncher, PassReport, PrepLauncher, PrepRequest, RunResult,
     Scheduler, SchedulerConfig, SchedulerError,
 };
+pub use sink::{DecisionSink, KafkaDecisionSink};
 pub use store::{AcceptedKernel, NewNote, Note, PrepRun, Store, Target};
 pub use types::{ReportKind, ScheduledReport, TargetStatus};
 pub use verdict::{KernelMetric, KernelVerdict};

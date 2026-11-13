@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
+use model::generated::{AnalystDecision, DecisionMetric};
 use sqlx::types::Json;
 
 use crate::store::Store;
@@ -128,6 +129,43 @@ pub struct NewDecision {
     pub error: Option<String>,
     /// The trace the decision was made in (32 lowercase hex).
     pub trace_id: Option<String>,
+}
+
+impl NewDecision {
+    /// The `AnalystDecision` message of this decision, with `kind` as the
+    /// decision that was stored (a decision for a report that was already
+    /// settled is stored as a twin). Absent values are empty strings, absent
+    /// ids and times of the kernel are 0.
+    pub fn to_proto(&self, kind: DecisionKind) -> AnalystDecision {
+        AnalystDecision {
+            ticker: self.ticker.clone(),
+            exchange_mic: self.exchange_mic.clone(),
+            news_id: self.news_id.clone(),
+            lang: self.lang.clone(),
+            fiscal_period: self.fiscal_period.clone().unwrap_or_default(),
+            decision: kind.as_str().to_owned(),
+            reason: self.reason.clone().unwrap_or_default(),
+            metrics: self
+                .metrics
+                .iter()
+                .map(|metric| DecisionMetric {
+                    key: metric.key.clone(),
+                    current: metric.current.clone().unwrap_or_default(),
+                    prior: metric.prior.clone().unwrap_or_default(),
+                    expected: metric.expected.clone().unwrap_or_default(),
+                    unit: metric.unit.clone().unwrap_or_default(),
+                })
+                .collect(),
+            published_at_unix_millis: self.published_at.timestamp_millis(),
+            received_at_unix_millis: self.received_at.timestamp_millis(),
+            decided_at_unix_millis: self.decided_at.timestamp_millis(),
+            kernel_micros: self.kernel_micros.unwrap_or(0),
+            error: self.error.clone().unwrap_or_default(),
+            trace_id: self.trace_id.clone().unwrap_or_default(),
+            target_id: self.target_id.unwrap_or(0),
+            kernel_id: self.kernel_id.unwrap_or(0),
+        }
+    }
 }
 
 /// A stored decision.
