@@ -615,19 +615,19 @@ groups:
             dashboard and the nordic-live pod logs.
 
       # MFN is quiet at night and at weekends, so only Mon-Fri 06:00-20:00 UTC.
-      # The window is also applied to 30 minutes ago (vector(time() - 1800)),
+      # The window is also applied to 1 hour ago (vector(time() - 3600)),
       # so the silence must have started inside the window: no false alert at
       # 06:00 after a quiet night.
       - alert: NordicLiveSilent
         expr: >
-          (time() - nordic_live_last_message_timestamp_seconds{job="nordic-live"} > 1800)
-          and on() (day_of_week(vector(time() - 1800)) >= 1 and day_of_week(vector(time() - 1800)) <= 5)
-          and on() (hour(vector(time() - 1800)) >= 6 and hour() < 20)
-        for: 5m
+          (time() - nordic_live_last_message_timestamp_seconds{job="nordic-live"} > 3600)
+          and on() (day_of_week(vector(time() - 3600)) >= 1 and day_of_week(vector(time() - 3600)) <= 5)
+          and on() (hour(vector(time() - 3600)) >= 6 and hour() < 20)
+        for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "nordic-live has received no MFN message for 30 minutes"
+          summary: "nordic-live has received no MFN message for 1 hour"
           description: >-
             Nothing has arrived on the MFN WebSocket during working hours. The
             socket may be connected but dead, or MFN changed the feed. The
@@ -653,14 +653,14 @@ groups:
       # for a weekend without releases.
       - alert: NordicLiveWatermarkLag
         expr: >
-          (nordic_live_watermark_lag_seconds{job="nordic-live"} > 900)
+          (nordic_live_watermark_lag_seconds{job="nordic-live"} > 3600)
           and on() (day_of_week() >= 1 and day_of_week() <= 5 and hour() >= 6 and hour() < 20)
           and (nordic_live_watermark_lag_seconds{job="nordic-live"} < on() group_left() (hour() * 3600 + minute() * 60 - 21600))
-        for: 10m
+        for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "nordic-live has seen no newer MFN item for 15 minutes"
+          summary: "nordic-live has seen no newer MFN item for 1 hour"
           description: >-
             The newest publish_date nordic-live has processed is
             {{ $value | humanizeDuration }} old. The socket may be dead, or MFN

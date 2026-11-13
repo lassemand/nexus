@@ -989,7 +989,7 @@ tests:
         alertname: NordicLiveDisconnected
         exp_alerts: []
 
-  # ── NordicLiveSilent: 30m without a message, Mon-Fri 06:00-20:00 UTC ─────
+  # ── NordicLiveSilent: 1h without a message, Mon-Fri 06:00-20:00 UTC ─────
   # promtool time 0 is 1970-01-01 00:00 UTC, a Thursday. The last message is
   # at 07:00 UTC (25200 s); eval_time is relative to 00:00.
   - name: NordicLiveSilent fires on a weekday afternoon
@@ -997,17 +997,20 @@ tests:
       - series: 'nordic_live_last_message_timestamp_seconds{job="nordic-live"}'
         values: '25200x1200'
     alert_rule_test:
-      - eval_time: 7h20m
+      - eval_time: 8h
         alertname: NordicLiveSilent
         exp_alerts: []
-      - eval_time: 8h
+      - eval_time: 8h5m
+        alertname: NordicLiveSilent
+        exp_alerts: []
+      - eval_time: 8h15m
         alertname: NordicLiveSilent
         exp_alerts:
           - exp_labels:
               severity: warning
               job: nordic-live
             exp_annotations:
-              summary: "nordic-live has received no MFN message for 30 minutes"
+              summary: "nordic-live has received no MFN message for 1 hour"
               description: "Nothing has arrived on the MFN WebSocket during working hours. The socket may be connected but dead, or MFN changed the feed. The 22:00 poll is the fallback."
 
   - name: NordicLiveSilent is silent at night
@@ -1078,26 +1081,29 @@ tests:
         alertname: NordicLiveEmitLosingEvents
         exp_alerts: []
 
-  # ── NordicLiveWatermarkLag: lag > 900 s for 10m, Mon-Fri 06:00-20:00 UTC ─
+  # ── NordicLiveWatermarkLag: lag > 3600 s for 15m, Mon-Fri 06:00-20:00 UTC ─
   # promtool time 0 is 1970-01-01 00:00 UTC, a Thursday. The lag series starts
   # at 07:00 UTC (420 missing samples first).
-  - name: NordicLiveWatermarkLag fires on a weekday after 10 minutes above 15 minutes
+  - name: NordicLiveWatermarkLag fires on a weekday after 15 minutes above 1 hour
     input_series:
       - series: 'nordic_live_watermark_lag_seconds{job="nordic-live"}'
-        values: '_x420 60+60x40'
+        values: '_x420 60+60x100'
     alert_rule_test:
-      - eval_time: 7h20m
+      - eval_time: 7h30m
         alertname: NordicLiveWatermarkLag
         exp_alerts: []
-      - eval_time: 7h30m
+      - eval_time: 8h10m
+        alertname: NordicLiveWatermarkLag
+        exp_alerts: []
+      - eval_time: 8h20m
         alertname: NordicLiveWatermarkLag
         exp_alerts:
           - exp_labels:
               severity: warning
               job: nordic-live
             exp_annotations:
-              summary: "nordic-live has seen no newer MFN item for 15 minutes"
-              description: "The newest publish_date nordic-live has processed is 31m 0s old. The socket may be dead, or MFN published nothing. The catch-up after each reconnect and the 22:00 poll are the fallback. See the Nordic Live dashboard."
+              summary: "nordic-live has seen no newer MFN item for 1 hour"
+              description: "The newest publish_date nordic-live has processed is 1h 21m 0s old. The socket may be dead, or MFN published nothing. The catch-up after each reconnect and the 22:00 poll are the fallback. See the Nordic Live dashboard."
 
   - name: NordicLiveWatermarkLag is silent while the watermark is fresh
     input_series:
