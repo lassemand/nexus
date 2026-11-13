@@ -106,3 +106,51 @@ spec:
   replicas: 1
   config:
     retention.ms: "604800000"   # 7 days
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: analyst-notes
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  topicName: analyst.notes
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"   # 7 days
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: analyst-decisions
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  topicName: analyst.decisions
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "2592000000"   # 30 days
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: analyst-trades
+  namespace: nexus
+  labels:
+    strimzi.io/cluster: nexus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  topicName: analyst.trades
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "7776000000"   # 90 days, at least 30 so signal can replay

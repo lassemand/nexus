@@ -1,0 +1,111 @@
+# The analyst service. One replica, Recreate: the trade timers are in-process, so two
+# replicas would double the quotes. Prep Jobs are started by the service itself with
+# automountServiceAccountToken: false and no OTEL_* variables.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analyst
+  labels:
+    app: analyst
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: analyst
+  template:
+    metadata:
+      labels:
+        app: analyst
+    spec:
+      serviceAccountName: analyst
+      containers:
+        - name: analyst
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/analyst"]
+          ports:
+            - name: api
+              containerPort: {{ .Values.ports.api }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.ports.metrics }}
+              protocol: TCP
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.analyst.logLevel | quote }}
+            - name: KAFKA_BROKERS
+              value: {{ .Values.analyst.kafkaBrokers | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.ports.metrics | quote }}
+            - name: PREP_LEAD
+              value: {{ .Values.analyst.prepLead | quote }}
+            - name: PREP_MIN_LEAD
+              value: {{ .Values.analyst.prepMinLead | quote }}
+            - name: PREP_MAX_CONCURRENT
+              value: {{ .Values.analyst.prepMaxConcurrent | quote }}
+            - name: PREP_MAX_ATTEMPTS
+              value: {{ .Values.analyst.prepMaxAttempts | quote }}
+            - name: PREP_TIMEOUT
+              value: {{ .Values.analyst.prepTimeout | quote }}
+            - name: SCHEDULER_TICK
+              value: {{ .Values.analyst.schedulerTick | quote }}
+            - name: HOLD
+              value: {{ .Values.analyst.hold | quote }}
+            - name: OBS_HORIZONS
+              value: {{ .Values.analyst.obsHorizons | quote }}
+            - name: CLOSE_BUFFER
+              value: {{ .Values.analyst.closeBuffer | quote }}
+            - name: ENTRY_MAX_WAIT
+              value: {{ .Values.analyst.entryMaxWait | quote }}
+            - name: MAX_RELEASE_AGE
+              value: {{ .Values.analyst.maxReleaseAge | quote }}
+            - name: KERNEL_DEADLINE
+              value: {{ .Values.analyst.kernelDeadline | quote }}
+            - name: ANALYST_TICKERS
+              value: {{ .Values.analyst.tickers | quote }}
+            - name: NOTES_TOPIC
+              value: {{ .Values.analyst.notesTopic | quote }}
+            - name: ANALYST_DECISIONS_TOPIC
+              value: {{ .Values.analyst.decisionsTopic | quote }}
+            - name: ANALYST_TRADES_TOPIC
+              value: {{ .Values.analyst.tradesTopic | quote }}
+            - name: SPECIAL_EVENTS_TOPIC
+              value: {{ .Values.analyst.releasesTopic | quote }}
+            - name: SAXO_QUOTES_URL
+              value: {{ .Values.analyst.saxoQuotesUrl | quote }}
+            - name: PREP_UPLOAD_URL
+              value: {{ .Values.analyst.prepUploadUrl | quote }}
+            - name: PREP_IMAGE
+              value: {{ .Values.analyst.prepImage | quote }}
+            - name: PREP_NAMESPACE
+              value: {{ .Values.analyst.prepNamespace | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: analyst
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.analyst.otlpEndpoint | quote }}
+          envFrom:
+            # DATABASE_URL (analyst) and SIGNAL_DATABASE_URL (read-only use).
+            - secretRef:
+                name: analyst-secret
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+              memory: {{ .Values.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu | quote }}
+              memory: {{ .Values.resources.limits.memory | quote }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.livenessPath }}
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readinessPath }}
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 5

@@ -40,6 +40,7 @@ spec:
     backtest: nexus             # signal crate: trade_results, companies
     terraform: nexus            # Terraform remote state (infra/terraform) — not an application schema
     conductor: nexus            # conductor session registry (groups, pending events, delivery dedup)
+    analyst: nexus              # analyst crate: report targets, kernels, preparation runs, notes
   resources:
     requests:
       cpu: 100m

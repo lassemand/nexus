@@ -1563,3 +1563,161 @@ tests:
       - eval_time: 20m
         alertname: InsightSlowTool
         exp_alerts: []
+
+  # ── nexus.analyst ────────────────────────────────────────────────────────
+  - name: AnalystDown fires when a wanted pod is not scraped
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="analyst",deployment="analyst"}'
+        values: '1+0x20'
+      - series: 'up{job="analyst"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AnalystDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: analyst
+              deployment: analyst
+            exp_annotations:
+              summary: "analyst has not been up for 5 minutes"
+              description: "No analyst pod answers its scrape. Releases are not decided and open simulated trades are not closed while it is down. See docs/guides/analyst.md."
+
+  - name: AnalystDown is silent at replicas 0
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="analyst",deployment="analyst"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AnalystDown
+        exp_alerts: []
+
+  - name: AnalystDown is silent while up
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="analyst",deployment="analyst"}'
+        values: '1+0x20'
+      - series: 'up{job="analyst"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AnalystDown
+        exp_alerts: []
+
+  - name: AnalystKernelMissingSoon fires within an hour
+    input_series:
+      - series: 'analyst_next_report_seconds{job="analyst"}'
+        values: '1800+0x20'
+      - series: 'analyst_targets{job="analyst",status="preparing"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AnalystKernelMissingSoon
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: analyst
+            exp_annotations:
+              summary: "A report is 30m 0s away and has no ready kernel"
+              description: "The soonest report without an accepted kernel is less than an hour away, so it will be abstained. Check the preparation runs on the Analyst dashboard and the analyst logs."
+
+  - name: AnalystKernelMissingSoon is silent at -1 and beyond an hour
+    input_series:
+      - series: 'analyst_next_report_seconds{job="analyst",k="a"}'
+        values: '-1+0x20'
+      - series: 'analyst_next_report_seconds{job="analyst",k="b"}'
+        values: '7200+0x20'
+      - series: 'analyst_targets{job="analyst",status="waiting"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AnalystKernelMissingSoon
+        exp_alerts: []
+
+  - name: AnalystPrepFailing fires at 3 failures in 6h
+    input_series:
+      - series: 'analyst_prep_failed_total{job="analyst",reason="failed"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AnalystPrepFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "9.5 kernel preparations failed in 6 hours"
+              description: "Preparations fail by reason (launch, failed, timed_out, rejected). Read the Job logs in namespace analyst and the Anthropic key in analyst-prep-secret."
+
+  - name: AnalystPrepFailing is silent below 3
+    input_series:
+      - series: 'analyst_prep_failed_total{job="analyst",reason="failed"}'
+        values: '0+0x30 1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AnalystPrepFailing
+        exp_alerts: []
+
+  - name: AnalystDecisionSlow is silent when fast
+    input_series:
+      - series: 'analyst_release_to_decision_seconds_bucket{job="analyst",le="0.01"}'
+        values: '0+10x40'
+      - series: 'analyst_release_to_decision_seconds_bucket{job="analyst",le="0.1"}'
+        values: '0+10x40'
+      - series: 'analyst_release_to_decision_seconds_bucket{job="analyst",le="+Inf"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AnalystDecisionSlow
+        exp_alerts: []
+
+  - name: AnalystDecisionSlow fires when p99 is above 50 ms
+    input_series:
+      - series: 'analyst_release_to_decision_seconds_bucket{job="analyst",le="0.05"}'
+        values: '0+0x40'
+      - series: 'analyst_release_to_decision_seconds_bucket{job="analyst",le="0.5"}'
+        values: '0+10x40'
+      - series: 'analyst_release_to_decision_seconds_bucket{job="analyst",le="+Inf"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AnalystDecisionSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "analyst release to decision p99 is 495ms"
+              description: "The 99th percentile from a release arriving to its decision has been above 50 ms for 10 minutes. Check CPU throttling of the analyst pod and kernel run times on the Analyst dashboard."
+
+  - name: SaxoQuotesDown fires on no_token and is silent otherwise
+    input_series:
+      - series: 'saxo_quote_requests_total{outcome="no_token"}'
+        values: '0+1x30'
+      - series: 'saxo_quote_requests_total{outcome="ok"}'
+        values: '0+5x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SaxoQuotesDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "saxo-stream answers quote requests with no_token"
+              description: "saxo-stream has no valid Saxo access token, so every quote request is 503. Re-authenticate (docs/guides/saxo-oauth-setup.md); simulated entries fail until then."
+
+  - name: AnalystQuoteErrors fires during market hours and is silent at night
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",outcome="ok"}'
+        values: '0+5x700'
+      - series: 'analyst_quotes_total{job="analyst",outcome="timeout"}'
+        values: '0+5x700'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: AnalystQuoteErrors
+        exp_alerts: []
+      - eval_time: 9h
+        alertname: AnalystQuoteErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "50% of analyst quotes are not ok"
+              description: "More than 20 % of the quotes the analyst asked saxo-stream for failed over the last 10 minutes. See the outcome split on the Analyst dashboard and the Saxo dashboard."
