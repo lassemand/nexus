@@ -156,6 +156,13 @@ soonest report that has no ready kernel, -1 when there is none). The notes consu
 `analyst_notes_total{outcome}` (`stored`, `duplicate`, `rejected_unregistered`, `rejected_too_large`,
 `rejected_invalid`). Settings and behaviour: `analyst/README.md`.
 
+## Tracing
+
+`telemetry::trace` (`docs/guides/tracing.md`) counts spans it could not queue for export in
+`telemetry_spans_dropped_total` (counter, no labels): the export queue (4096 spans by default)
+was full, usually because the collector is down or slow. It is exposed by the service's
+`/metrics` like any other counter.
+
 ## Cluster pieces
 
 | Piece | Where |

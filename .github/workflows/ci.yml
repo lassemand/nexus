@@ -65,6 +65,11 @@ jobs:
       - name: Tests
         run: cargo test --all
 
+      - name: Telemetry Kafka trace context and collector-down timing
+        run: |
+          cargo test -p telemetry --features kafka --lib kafka::
+          cargo test -p telemetry --release --lib trace::tests::collector_down_never_blocks
+
       - name: Verdict kernel for WASM
         run: |
           cargo clippy -p verdict-sdk -p verdict-sample -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho --target wasm32-unknown-unknown -- -D warnings
