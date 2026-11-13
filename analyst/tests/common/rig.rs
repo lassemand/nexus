@@ -214,3 +214,18 @@ impl Rig {
         row.0
     }
 }
+
+/// A kernel that traps when the release text starts with `U`.
+pub fn trapping_kernel() -> Vec<u8> {
+    let json = r#"{\"decision\":\"abstain\",\"reason\":\"ok\",\"metrics\":[]}"#;
+    wat::parse_str(format!(
+        r#"(module
+  (memory (export "memory") 17)
+  (data (i32.const 1024) "{json}")
+  (func (export "verdict_input") (param i32) (result i32) (i32.const 65536))
+  (func (export "verdict_run") (param i32 i32) (result i64)
+    (if (i32.eq (i32.load8_u (i32.const 65536)) (i32.const 85)) (then unreachable))
+    (i64.or (i64.shl (i64.const 1024) (i64.const 32)) (i64.const 49))))"#
+    ))
+    .expect("valid WAT")
+}

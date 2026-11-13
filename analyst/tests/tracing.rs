@@ -4,13 +4,13 @@
 mod common;
 
 use analyst::{prepare, Prepared, Processed, Receipt};
-use common::rig::{at, Rig};
+use common::rig::{at, trapping_kernel, Rig};
 use model::generated::SpecialEvent;
 use prost::Message;
 use rdkafka::message::{Header, OwnedHeaders, OwnedMessage};
 use rdkafka::Timestamp;
 use sqlx::PgPool;
-use telemetry::trace::opentelemetry::trace::{SpanId, TraceContextExt};
+use telemetry::trace::opentelemetry::trace::{SpanId, Status, TraceContextExt};
 use telemetry::trace::opentelemetry::KeyValue;
 use telemetry::trace::testing::Harness;
 use tracing::instrument::WithSubscriber;
@@ -212,4 +212,36 @@ async fn events_that_are_not_releases_make_no_spans(pool: PgPool) {
         .await;
     assert!(matches!(prepared, Prepared::Ignore(_)));
     assert!(harness.spans().is_empty());
+}
+
+#[sqlx::test]
+async fn a_trapping_kernel_gives_an_error_span(pool: PgPool) {
+    let harness = Harness::new();
+    let rig = Rig::new(pool);
+    let target = rig
+        .target("AAA", Some("2026-Q3"), "2026-11-10", "ready")
+        .await;
+    rig.accept_kernel(target, &trapping_kernel()).await;
+    let mut event = report();
+    event.text = "Upset: Interim report".into();
+    let message = message(&event, None);
+    let processed = async {
+        let Prepared::Process(input, span) = prepare(&message) else {
+            panic!("the report passes the filter");
+        };
+        let receipt = Receipt::now(rig.clock.as_ref());
+        rig.processor
+            .process(*input, receipt)
+            .instrument(span)
+            .await
+    }
+    .with_subscriber(harness.subscriber())
+    .await;
+    assert!(matches!(processed, Processed::Decided { .. }));
+    let run = harness.span("analyst.kernel_run");
+    assert!(
+        matches!(run.status, Status::Error { .. }),
+        "{:?}",
+        run.status
+    );
 }
