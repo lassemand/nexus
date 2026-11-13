@@ -111,7 +111,8 @@ infra/
       prometheus/            # kube-prometheus-stack umbrella (operator, Prometheus, Alertmanager, node-exporter, kube-state-metrics, nexus alert rules; Grafana disabled)
       loki/                  # Grafana Loki (SingleBinary) umbrella on Backblaze B2, 30-day retention; see docs/guides/loki.md
       pushgateway/           # Prometheus Pushgateway umbrella (CronJob metrics, ServiceMonitor, persistent); see docs/guides/metrics.md
-      alloy/                 # Grafana Alloy DaemonSet shipping all pod logs to Loki; see docs/guides/loki.md
+      alloy/                 # Grafana Alloy DaemonSet shipping all pod logs to Loki; also the OTLP entry point (4317/4318, ClusterIP) forwarding traces to Tempo; see docs/guides/loki.md
+      tempo/                 # Grafana Tempo (single binary) umbrella on Backblaze B2, 30-day retention, ClusterIP only; see docs/guides/tracing.md
       servicelb/             # label-only Node manifest that turns off k3s ServiceLB (MetalLB serves LoadBalancers)
     signal/
       signal/                # nexus signal service (Helm chart, Deployment)
@@ -140,6 +141,8 @@ Node metrics (`node_*` from node-exporter) describe the OrbStack Linux VM that h
 | Prometheus | `prometheus-kube-prometheus-prometheus.nexus.svc.cluster.local:9090` | `localhost:32090` |
 | Alertmanager (ClusterIP, not exposed) | `prometheus-kube-prometheus-alertmanager.nexus.svc.cluster.local:9093` | — |
 | Loki (ClusterIP, not exposed; Grafana datasource `Loki`) | `loki.nexus.svc.cluster.local:3100` | — |
+| Tempo (ClusterIP, not exposed; Grafana datasource `Tempo`; OTLP gRPC `4317`, query HTTP `3200`) | `tempo.nexus.svc.cluster.local:3200` | — |
+| Alloy OTLP (ClusterIP, not exposed; services set `OTEL_EXPORTER_OTLP_ENDPOINT` to this) | `http://alloy.nexus.svc.cluster.local:4318` | — |
 | Pushgateway (ClusterIP, not exposed; CronJobs POST to `/metrics/job/<job>`) | `pushgateway.nexus.svc.cluster.local:9091` | — |
 | Grafana | — | `localhost:32300` |
 | ArgoCD | — | `localhost:30443` |

@@ -1,5 +1,95 @@
 # Tracing
 
+Traces are stored by Grafana Tempo (single binary, namespace `nexus`, chart `infra/charts/nexus/tempo/`, wrapping `grafana/tempo`). Services export spans over OTLP to Grafana Alloy (chart `infra/charts/nexus/alloy/`), which forwards them to Tempo. Grafana has Tempo as the provisioned datasource **Tempo** (`uid: nexus-tempo`). The first part of this guide is the backend and Grafana; the second part, "Instrumenting a service", is the Rust side.
+
+```
+service ──OTLP/HTTP──► alloy:4318 ──OTLP/gRPC──► tempo:4317 ──► B2 bucket nexus-tempo
+                                                    └─ metrics generator ──remote write──► Prometheus
+```
+
+Everything here is ClusterIP: neither Tempo nor Alloy's OTLP ports are exposed outside the cluster.
+
+## Prerequisites (by hand, once)
+
+Tempo starts without these but cannot flush blocks to storage.
+
+1. Create a **private** B2 bucket `nexus-tempo` in region **EU Central (`eu-central-003`)**, with default encryption (SSE-B2) on.
+2. **Lifecycle rule: "Keep only the last version of the file"** (`daysFromHidingToDeleting = 1`). **This is critical.** B2 keeps every old version by default, so the blocks Tempo's compactor deletes for retention would stay stored and billed for ever.
+3. Create an **application key** restricted to bucket `nexus-tempo`, with read and write. Note the `keyID` and `applicationKey`.
+4. Store it in Vault from the Mac mini:
+   `vault kv put secret/nexus/tempo AWS_ACCESS_KEY_ID=<keyID> AWS_SECRET_ACCESS_KEY=<applicationKey>`
+   **Never paste keys into a PR, an issue or chat.**
+
+The `tempo-s3` ExternalSecret creates the Kubernetes secret `tempo-s3`, injected as env into the Tempo pod. The Tempo config holds only `${AWS_ACCESS_KEY_ID}` / `${AWS_SECRET_ACCESS_KEY}` placeholders (`-config.expand-env=true`). The Vault policy `nexus-read` grants `secret/data/nexus/*`, which covers `nexus/tempo`.
+
+## Where traces are kept, and for how long
+
+- Blocks are stored in the B2 bucket `nexus-tempo` (S3 API, virtual-hosted style).
+- Retention is **30 days** (compactor `block_retention: 720h`). The B2 lifecycle rule above makes B2 purge deleted blocks.
+- A 2Gi `local-path` PVC holds the WAL (`/var/tempo/wal`), blocks not yet flushed, and the metrics generator's working directories, so a pod restart loses no traces. `local-path` does not enforce the size, so local data is kept small: the ingester cuts a block at 30 minutes or 100 MB (whichever first) and flushes it to B2, and completed blocks are removed locally after 15 minutes. A normal day is a few MB.
+- Ingestion limit: `max_bytes_per_trace` is 10 MB (a release trace is ~20-40 spans, a few tens of KB).
+- Resources: requests 100m / 256Mi, memory limit 1Gi, the chart's memory ballast is switched off so the limit is not eaten by it.
+
+**Deleting the bucket deletes the trace history.** Deleting the PVC only loses spans not yet flushed (up to ~30 minutes).
+
+## Late spans and clock skew
+
+A span may arrive hours after the rest of its trace (a report released before the market opens, whose trade entry span ends at the open). Tempo's defaults allow this and none are overridden: there is no limit on how late a span may be, and the ingester's `trace_idle_period` does not reject anything, it only decides when a block is cut. Late spans end up in a later block; a query by trace ID reads every block holding a piece of the trace and returns the merged whole. Only a trace over `max_bytes_per_trace` loses spans.
+
+Span times come from the sender. A span that starts at MFN's publish instant uses **MFN's clock**, the rest use the cluster's, so a few hundred milliseconds of skew between them is normal (the instrumentation clamps a start in the future and flags it with `nexus.clock_skew_ms`).
+
+## How a service sends traces
+
+Set two environment variables on the workload, nothing else is needed:
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy.nexus.svc.cluster.local:4318
+OTEL_SERVICE_NAME=<binary>
+```
+
+The endpoint is the OTLP/HTTP port of Alloy's Service `alloy` (namespace `nexus`; the Service name is the chart's, checked with `helm template`). Alloy is a DaemonSet and the Service may hand a pod's spans to Alloy on any node; with one node that is the same one. Alloy adds `k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name` and `k8s.node.name` (it has extra read-only RBAC for ReplicaSets and nodes in `infra/charts/nexus/alloy/templates/otel-rbac.yaml`).
+
+Sending is asynchronous and off every hot path. If Alloy or Tempo is down, Alloy queues up to 1000 batches and then drops, and services drop spans from their own full queue; nothing waits.
+
+## Browsing
+
+Grafana → Explore → datasource **Tempo**.
+
+- By trace ID: query type "TraceQL" or "Search" with the ID pasted in.
+- TraceQL examples:
+
+```traceql
+{resource.service.name="analyst" && name="process special.events"}
+{span.nexus.ticker="<TICKER>"}
+{resource.service.name="nordic-live" && duration > 2s}
+{status=error}
+```
+
+  Slowest traces: `{duration > 5s}`, or sort the Search results by duration.
+- **Trace → logs:** the "Logs" button on a span opens Loki with `{namespace=~".+"} | json | trace_id="<id>"`, ±5 minutes around the span.
+- **Logs → trace:** in Loki, a line with `"trace_id":"<32 hex>"` has a "View trace" link (derived field `trace_id` on the Loki datasource).
+- **Trace → metrics:** on a span, "Span rate" and "Span duration p95" query the span-metrics series in Prometheus.
+- **Service graph:** the "Service Graph" tab of the Tempo datasource (backed by `traces_service_graph_*` series from Prometheus). It fills a few minutes after the first traces.
+
+## Metrics generated from traces
+
+Tempo's metrics generator (processors `service-graphs` and `span-metrics`) remote-writes to Prometheus (`/api/v1/write`, which needs `prometheusSpec.enableRemoteWriteReceiver: true`). The samples land in the same TSDB blocks, so the Thanos sidecar uploads them like scraped ones. Span-metrics dimensions are only `service`, `span_name`, `span_kind` and `status_code`. **Never add ticker, news id or trace id as a dimension**: each value would create new series. Tempo's own metrics are scraped through its ServiceMonitor.
+
+## Verifying
+
+Send a test span from inside the cluster (OTLP/JSON to Alloy):
+
+```bash
+kubectl --context orbstack -n nexus run otlp-test --rm -i --restart=Never --image=curlimages/curl -- \
+  sh -c 'T=$(date +%s)000000000; E=$(( $(date +%s) + 1 ))000000000;
+  curl -sS -X POST http://alloy.nexus.svc.cluster.local:4318/v1/traces -H "Content-Type: application/json" -d "{\"resourceSpans\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"otlp-test\"}}]},\"scopeSpans\":[{\"spans\":[{\"traceId\":\"5b8efff798038103d269b633813fc60c\",\"spanId\":\"eee19b7ec3c1b174\",\"name\":\"test span\",\"kind\":2,\"startTimeUnixNano\":\"$T\",\"endTimeUnixNano\":\"$E\"}]}]}]}"'
+```
+
+It answers `{"partialSuccess":{}}`. After a few seconds the trace `5b8efff798038103d269b633813fc60c` is found in Explore → Tempo by ID, and `{resource.service.name="otlp-test"}` finds it by search.
+
+- Blocks reach B2: after the ingester has cut a block (up to 30 minutes), `tempo_ingester_blocks_flushed_total` is above 0, and the bucket has `single-tenant/<block id>/` prefixes. The compactor runs: `kubectl -n nexus logs statefulset/tempo | grep -i compact` shows its cycles once there are blocks to combine.
+- Service graph: the `otlp-test` service appears under metrics `traces_spanmetrics_calls_total{service="otlp-test"}` within a minute or two; the graph itself needs client/server span pairs.
+
 ## Instrumenting a service
 
 Every traced service initialises logging and tracing with the `telemetry` crate and keeps

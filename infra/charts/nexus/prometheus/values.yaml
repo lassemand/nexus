@@ -153,6 +153,11 @@ kube-prometheus-stack:
       # IP of prometheus-server is supplied (see PR checklist). Never guess it.
 
     prometheusSpec:
+      # Tempo's metrics generator remote-writes span metrics and service graph
+      # series to /api/v1/write (docs/guides/tracing.md). They land in the same
+      # TSDB blocks, so the Thanos sidecar uploads them like scraped samples.
+      enableRemoteWriteReceiver: true
+
       # Keep 14 days of full-detail metrics on a 20Gi local-path volume so
       # history survives pod restarts. Older data lives in Backblaze B2 (Thanos
       # sidecar below, up to 90 days).
