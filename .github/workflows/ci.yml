@@ -82,3 +82,11 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test
           cargo build --release --target wasm32-unknown-unknown
+
+      - name: Verdict prep entrypoint
+        run: |
+          export PREP_CARGO_HOME="$HOME/.cargo"
+          for script in entrypoint workspace smoke test_entrypoint; do
+            bash -n "verdict/prep/$script.sh"
+          done
+          bash verdict/prep/test_entrypoint.sh

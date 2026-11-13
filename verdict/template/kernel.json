@@ -2,8 +2,16 @@
   "lookup": null,
   "fallback": null,
   "why_not_faster": null,
+  "rung": null,
   "native_p50_us": null,
   "native_p99_us": null,
   "fallback_p50_us": null,
-  "fallback_p99_us": null
+  "fallback_p99_us": null,
+  "metrics": [],
+  "decision_rule": null,
+  "languages": [],
+  "fixtures": [],
+  "notes_used": [],
+  "model": null,
+  "generated_at": null
 }
