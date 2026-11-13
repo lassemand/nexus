@@ -12,7 +12,7 @@ use crate::clock::Clock;
 use crate::config::{Config, PREP_RETRY_BACKOFF};
 use crate::metrics;
 use crate::schedule::{match_reports, SignalSchedule};
-use crate::store::{PrepRun, Store, Target};
+use crate::store::{Note, PrepRun, Store, Target};
 use crate::types::{ScheduledReport, TargetStatus};
 
 const LOOK_AHEAD_EXTRA: Duration = Duration::days(7);
@@ -26,6 +26,8 @@ pub struct PrepRequest {
     pub run_id: i64,
     /// Which attempt of the cycle this is, from 1.
     pub attempt: i32,
+    /// The notes the kernel must take into account.
+    pub notes: Vec<Note>,
 }
 
 /// What a launcher records about the Job it started.
@@ -65,6 +67,7 @@ impl PrepLauncher for NoopLauncher {
             ticker = %request.target.ticker,
             exchange_mic = %request.target.exchange_mic,
             attempt = request.attempt,
+            notes = request.notes.len(),
             "no launcher is configured: a preparation is due and was not started"
         );
         Err(LaunchError("no launcher configured".to_owned()))
@@ -154,6 +157,8 @@ pub struct PassReport {
     pub updated: u32,
     /// Ready targets sent back to be prepared again.
     pub reprepared: u32,
+    /// Failed targets given one more attempt.
+    pub retried: u32,
     /// Targets cancelled because their report left the schedule.
     pub cancelled: u32,
     /// Preparations started.
@@ -205,7 +210,7 @@ impl Scheduler {
         }
     }
 
-    /// One pass: follow signal's schedule, prepare again what date
+    /// One pass: follow signal's schedule, prepare again what notes and date
     /// moves made stale, start what is due, publish the metrics. Passes never
     /// overlap.
     pub async fn pass(&self) -> Result<PassReport, SchedulerError> {
@@ -213,6 +218,7 @@ impl Scheduler {
         let now = self.clock.now();
         let mut report = PassReport::default();
         self.reconcile(now, &mut report).await?;
+        self.reprepare_on_notes(now, &mut report).await?;
         self.start_due(now, &mut report).await?;
         self.publish_metrics(now).await?;
         Ok(report)
@@ -360,6 +366,62 @@ impl Scheduler {
         }
     }
 
+    async fn reprepare_on_notes(
+        &self,
+        now: DateTime<Utc>,
+        report: &mut PassReport,
+    ) -> Result<(), SchedulerError> {
+        let min_lead = lead(self.config.prep_min_lead);
+        for target in self.store.active_targets().await? {
+            if target.expected_at - now < min_lead {
+                continue;
+            }
+            match target.status().map_err(SchedulerError::Data)? {
+                TargetStatus::Ready => {
+                    let Some(kernel) = self.store.accepted_kernel(target.id).await? else {
+                        continue;
+                    };
+                    let notes = self.store.notes_for(&target).await?;
+                    if notes
+                        .iter()
+                        .any(|note| note.received_at > kernel.created_at)
+                    {
+                        self.store
+                            .set_target_state(
+                                target.id,
+                                TargetStatus::Waiting,
+                                None,
+                                true,
+                                None,
+                                now,
+                            )
+                            .await?;
+                        self.store.pull_due_forward(target.id, now).await?;
+                        report.reprepared += 1;
+                        info!(target_id = target.id, ticker = %target.ticker, kernel_version = kernel.version, "a note arrived after the accepted kernel: preparing again");
+                    }
+                }
+                TargetStatus::Failed => {
+                    let finished = self.store.last_run_finished(target.id).await?;
+                    let notes = self.store.notes_for(&target).await?;
+                    if notes
+                        .iter()
+                        .any(|note| finished.is_none_or(|at| note.received_at > at))
+                    {
+                        let max = i32::try_from(self.config.prep_max_attempts).unwrap_or(i32::MAX);
+                        self.store
+                            .give_one_more_attempt(target.id, max, now)
+                            .await?;
+                        report.retried += 1;
+                        info!(target_id = target.id, ticker = %target.ticker, "a note arrived for a failed target: one more attempt");
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     async fn start_due(
         &self,
         now: DateTime<Utc>,
@@ -375,10 +437,12 @@ impl Scheduler {
             let Some(run) = self.store.start_preparation(target.id, now).await? else {
                 continue;
             };
+            let notes = self.store.notes_for(&target).await?;
             let request = PrepRequest {
                 target,
                 run_id: run.id,
                 attempt: run.attempt,
+                notes,
             };
             metrics::prep_started();
             match self.launcher.launch(&request).await {

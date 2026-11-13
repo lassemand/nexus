@@ -119,6 +119,20 @@ impl SignalSchedule {
         let rows = sqlx::query(&sql).bind(ids).fetch_all(&self.pool).await?;
         Ok(rows.iter().filter_map(|row| self.to_report(row)).collect())
     }
+
+    /// Whether `(ticker, exchange_mic)` is a registered company.
+    pub async fn is_registered(
+        &self,
+        ticker: &str,
+        exchange_mic: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let found = sqlx::query("SELECT 1 FROM companies WHERE ticker = $1 AND exchange_mic = $2")
+            .bind(ticker)
+            .bind(exchange_mic)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(found.is_some())
+    }
 }
 
 /// How targets and the schedule line up. Indexes refer to the slices given.

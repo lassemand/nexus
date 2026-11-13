@@ -1,16 +1,17 @@
 //! The analyst service: applies its migrations, runs the scheduler that starts
-//! the preparation of a kernel before each upcoming report. The launcher is a
-//! no-op until the Job launcher exists; notes, the release path and trades come
-//! in later tasks.
+//! the preparation of a kernel before each upcoming report, and consumes report
+//! notes. The launcher is a no-op until the Job launcher exists; the release
+//! path and trades come in later tasks.
 
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use analyst::metrics::{LOAD_BUCKETS, LOAD_SECONDS, RUN_BUCKETS, RUN_SECONDS};
+use analyst::notes::run_consumer;
 use analyst::{
-    Config, KernelRuntime, NoopLauncher, RuntimeConfig, Scheduler, SchedulerConfig, SignalSchedule,
-    Store, SystemClock,
+    Config, KernelRuntime, NoopLauncher, NoteHandler, RuntimeConfig, Scheduler, SchedulerConfig,
+    SignalSchedule, Store, SystemClock,
 };
 use anyhow::{Context, Result};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -89,16 +90,18 @@ async fn main() -> Result<()> {
     let store = Store::new(pool);
     let signal = SignalSchedule::new(signal_pool, config.analyst_tickers.clone());
     let scheduler = Scheduler::new(
-        store,
-        signal,
+        store.clone(),
+        signal.clone(),
         SchedulerConfig::from(&config),
         clock.clone(),
         Arc::new(NoopLauncher),
     );
+    let notes = NoteHandler::new(store, signal, clock, wake.clone());
     info!(
         prep_lead = ?config.prep_lead,
         tick = ?config.scheduler_tick,
         allowlist = config.analyst_tickers.len(),
+        topic = %config.notes_topic,
         "analyst starting"
     );
 
@@ -107,7 +110,19 @@ async fn main() -> Result<()> {
         wait_for_signal().await;
         let _ = stop_tx.send(true);
     });
-    scheduler.run(wake, stopped(stop_rx)).await;
+    let consumer = async {
+        if let Err(error) = run_consumer(
+            &config.kafka_brokers,
+            &config.notes_topic,
+            &notes,
+            stopped(stop_rx.clone()),
+        )
+        .await
+        {
+            error!(%error, "notes consumer stopped");
+        }
+    };
+    tokio::join!(scheduler.run(wake, stopped(stop_rx.clone())), consumer);
     info!("analyst stopped");
     Ok(())
 }

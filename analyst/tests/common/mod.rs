@@ -5,11 +5,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use analyst::{
-    Clock, LaunchError, LaunchInfo, ManualClock, PrepLauncher, PrepRequest, Scheduler,
+    Clock, LaunchError, LaunchInfo, ManualClock, NoteHandler, PrepLauncher, PrepRequest, Scheduler,
     SchedulerConfig, SignalSchedule, Store, Target,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
+use model::generated::ReportNote;
+use prost::Message;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use tokio::sync::Notify;
@@ -110,6 +112,7 @@ pub struct World {
     pub store: Store,
     pub signal: SignalSchedule,
     pub wake: Arc<Notify>,
+    pub notes: NoteHandler,
 }
 
 impl World {
@@ -162,6 +165,7 @@ impl World {
             launcher.clone(),
         );
         let wake = Arc::new(Notify::new());
+        let notes = NoteHandler::new(store.clone(), signal.clone(), clock.clone(), wake.clone());
         World {
             analyst: pool,
             signal_writer: writer,
@@ -171,6 +175,7 @@ impl World {
             store,
             signal,
             wake,
+            notes,
         }
     }
 
@@ -297,4 +302,25 @@ impl World {
             .await
             .expect("ready");
     }
+
+    pub async fn note_count(&self) -> i64 {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes")
+            .fetch_one(&self.analyst)
+            .await
+            .expect("count");
+        row.0
+    }
+}
+
+pub fn note_payload(ticker: &str, mic: &str, period: &str, text: &str, id: &str) -> Vec<u8> {
+    ReportNote {
+        ticker: ticker.into(),
+        exchange_mic: mic.into(),
+        fiscal_period: period.into(),
+        text: text.into(),
+        author: "tester".into(),
+        created_at_unix_secs: 1_790_000_000,
+        note_id: id.into(),
+    }
+    .encode_to_vec()
 }

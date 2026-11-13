@@ -57,6 +57,48 @@ impl Target {
     }
 }
 
+/// A note a user added for a report.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Note {
+    /// The note's id.
+    pub id: i64,
+    /// The company's ticker.
+    pub ticker: String,
+    /// The company's exchange.
+    pub exchange_mic: String,
+    /// The fiscal period; none means the next report after it arrived.
+    pub fiscal_period: Option<String>,
+    /// The note.
+    pub text: String,
+    /// Who wrote it.
+    pub author: String,
+    /// When the author wrote it.
+    pub created_at: DateTime<Utc>,
+    /// When analyst stored it.
+    pub received_at: DateTime<Utc>,
+}
+
+/// A note to store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewNote {
+    /// The company's ticker.
+    pub ticker: String,
+    /// The company's exchange.
+    pub exchange_mic: String,
+    /// The fiscal period; none means the next report.
+    pub fiscal_period: Option<String>,
+    /// The note.
+    pub text: String,
+    /// Who wrote it.
+    pub author: String,
+    /// When the author wrote it.
+    pub created_at: DateTime<Utc>,
+    /// When analyst received it.
+    pub received_at: DateTime<Utc>,
+    /// The producer's id for the note.
+    pub source_event_id: uuid::Uuid,
+}
+
 /// The accepted kernel of a target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::FromRow)]
 pub struct AcceptedKernel {
@@ -417,6 +459,54 @@ impl Store {
         )
         .bind(target_id)
         .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Stores a note once by its producer id; false when it was already stored.
+    pub async fn insert_note(&self, note: &NewNote) -> Result<bool, sqlx::Error> {
+        let inserted = sqlx::query(
+            "INSERT INTO notes (ticker, exchange_mic, fiscal_period, text, author, created_at, received_at, source_event_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (source_event_id) DO NOTHING",
+        )
+        .bind(&note.ticker)
+        .bind(&note.exchange_mic)
+        .bind(&note.fiscal_period)
+        .bind(&note.text)
+        .bind(&note.author)
+        .bind(note.created_at)
+        .bind(note.received_at)
+        .bind(note.source_event_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(inserted > 0)
+    }
+
+    /// The notes that apply to a target: those for its period, and those with
+    /// no period that arrived after the company's previous report and before
+    /// this one.
+    pub async fn notes_for(&self, target: &Target) -> Result<Vec<Note>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT n.id, n.ticker, n.exchange_mic, n.fiscal_period, n.text, n.author, n.created_at, n.received_at
+             FROM notes n
+             WHERE n.ticker = $1 AND n.exchange_mic = $2
+               AND ( ($3::text IS NOT NULL AND n.fiscal_period = $3)
+                  OR ( n.fiscal_period IS NULL
+                       AND n.received_at < $4
+                       AND n.received_at >= COALESCE(
+                             (SELECT MAX(p.expected_at) FROM report_targets p
+                               WHERE p.ticker = $1 AND p.exchange_mic = $2
+                                 AND p.expected_at < $4 AND p.status <> 'cancelled' AND p.id <> $5),
+                             '-infinity'::timestamptz) ) )
+             ORDER BY n.received_at, n.id",
+        )
+        .bind(&target.ticker)
+        .bind(&target.exchange_mic)
+        .bind(&target.fiscal_period)
+        .bind(target.expected_at)
+        .bind(target.id)
+        .fetch_all(&self.pool)
         .await
     }
 }

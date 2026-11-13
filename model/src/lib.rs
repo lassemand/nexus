@@ -391,3 +391,25 @@ mod insider_transaction_tests {
         assert_eq!(decoded.instrument_type, "Warrant");
     }
 }
+
+#[cfg(test)]
+mod report_note_tests {
+    use super::generated::ReportNote;
+    use prost::Message;
+
+    #[test]
+    fn a_note_round_trips() {
+        let note = ReportNote {
+            ticker: "ABC".into(),
+            exchange_mic: "XSTO".into(),
+            fiscal_period: String::new(),
+            text: "order intake matters most this quarter".into(),
+            author: "mogens".into(),
+            created_at_unix_secs: 1_790_000_000,
+            note_id: "6f9619ff-8b86-d011-b42d-00cf4fc964ff".into(),
+        };
+        let decoded = ReportNote::decode(note.encode_to_vec().as_slice()).expect("decodes");
+        assert_eq!(decoded, note);
+        assert_eq!(decoded.fiscal_period, "");
+    }
+}
