@@ -1,0 +1,168 @@
+# Preparation Job image for `analyst`.
+#
+# One Kubernetes Job per upcoming report runs this image: Claude Code writes,
+# tests and builds a small Rust kernel for that report (against `verdict-sdk`)
+# and uploads it to the analyst service, which checks it before accepting it.
+#
+# Building AI-written Rust runs code at compile time (build scripts, proc
+# macros). The template forbids both, but the real boundary is the Job: an
+# isolated pod with no secrets but the Claude API key, a read-only root
+# filesystem, outbound HTTPS only. So this image carries everything the build
+# needs and the build never touches the network:
+#
+#   * the toolchain `rust-toolchain.toml` selects, with the wasm32 target;
+#   * the crates a kernel may use (the SDK's, and memchr / aho-corasick /
+#     regex), vendored, with cargo set to build offline;
+#   * a pre-built target directory, so a kernel build only compiles the kernel
+#     and the SDK (about 10 to 30 s) instead of every dependency.
+#
+# `/work` is the only writable path at runtime (an emptyDir, with /tmp): the
+# entrypoint copies the template, the pre-built target and the cargo config
+# there and points HOME, CARGO_HOME and CARGO_TARGET_DIR at it.
+#
+# Built and released independently of the nexus image (tags `analyst-prep-v*`).
+
+ARG VERSION=0.0.0
+# Pinned, never floating: the image is the version record, and DISABLE_AUTOUPDATER
+# below stops the CLI changing underneath it at runtime. Kept at the version
+# infra/Dockerfile.conductor pins.
+ARG CLAUDE_CODE_VERSION=2.1.285
+
+# ── claude ───────────────────────────────────────────────────────────────────
+#
+# Separate stage so the download and its checksum check are cached on the
+# version alone, and so curl/jq are not needed in the final image for this.
+#
+# The official install.sh is deliberately not used. It always fetches the
+# *latest* build first and then delegates pinning to `claude install <version>`,
+# which leaves a launcher under $HOME/.local — and at runtime HOME is a mounted
+# volume, so anything written there at build time is hidden. Fetching the
+# versioned binary directly is both reproducible and a single file.
+
+FROM debian:bookworm-slim AS claude
+
+ARG CLAUDE_CODE_VERSION
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl jq \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    case "${TARGETARCH:-arm64}" in \
+      arm64) platform='linux-arm64' ;; \
+      amd64) platform='linux-x64' ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    base='https://downloads.claude.ai/claude-code-releases'; \
+    curl -fsSL "${base}/${CLAUDE_CODE_VERSION}/manifest.json" -o /tmp/manifest.json; \
+    checksum="$(jq -r --arg p "$platform" '.platforms[$p].checksum // empty' /tmp/manifest.json)"; \
+    test -n "$checksum" || { echo "no checksum for $platform in ${CLAUDE_CODE_VERSION}" >&2; exit 1; }; \
+    curl -fsSL "${base}/${CLAUDE_CODE_VERSION}/${platform}/claude" -o /tmp/claude; \
+    echo "${checksum}  /tmp/claude" | sha256sum -c -; \
+    chmod 0755 /tmp/claude
+
+# ── vendor ───────────────────────────────────────────────────────────────────
+#
+# The kernel's dependencies, fetched once here (the only step that needs the
+# network) and vendored. A kernel may add memchr, aho-corasick and regex, so
+# they are vendored too, with the default features; the template's own
+# Cargo.lock keeps every version it already pins.
+
+FROM rust:bookworm AS vendor
+
+WORKDIR /opt/vendor-src
+COPY rust-toolchain.toml /opt/toolchain/rust-toolchain.toml
+COPY verdict/sdk      sdk
+COPY verdict/template kernel
+
+RUN set -eux; \
+    cd /opt/toolchain; \
+    rustup toolchain install --profile minimal; \
+    cd /opt/vendor-src/kernel; \
+    rm -rf target; \
+    cargo add memchr@2.8 aho-corasick@1.1 regex@1.12; \
+    cargo vendor /opt/vendor > /dev/null
+
+# ── runtime ──────────────────────────────────────────────────────────────────
+
+FROM rust:bookworm AS runtime
+
+ARG CLAUDE_CODE_VERSION
+
+# jq and curl are the entrypoint's: it downloads the previous reports, builds the
+# upload and posts it. tini is PID 1, so cargo's and claude's orphaned
+# grandchildren are reaped.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl jq tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# The toolchain the repository selects (rust-toolchain.toml: channel and the
+# wasm32-unknown-unknown target), minimal profile: a kernel needs rustc, cargo
+# and the target, not clippy or rustdoc. It must be the toolchain rustup selects
+# by default, because /work/kernel has no rust-toolchain.toml of its own.
+COPY rust-toolchain.toml /opt/toolchain/rust-toolchain.toml
+RUN set -eux; \
+    cd /opt/toolchain; \
+    rustup toolchain install --profile minimal; \
+    channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"; \
+    rustup default "$channel"; \
+    rustup target list --installed --toolchain "$channel" | grep -qx wasm32-unknown-unknown
+
+# uid/gid 1000. The Job spec says runAsNonRoot, so the image needs a numeric
+# non-root user for the kubelet to verify.
+RUN groupadd --gid 1000 prep \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin prep
+
+COPY --from=claude /tmp/claude /usr/local/bin/claude
+
+# The agent guide, installed as Claude Code agent `analyst`
+# (`claude --agent analyst`). One file, the same one the conductor chart ships;
+# there is no copy under verdict/. The entrypoint copies it into the writable
+# HOME it uses at runtime, because the root filesystem is read-only there.
+COPY --chown=1000:1000 infra/agents/analyst.md /home/prep/.claude/agents/analyst.md
+
+# The SDK, the template, and the prompt and scripts of the preparation.
+COPY verdict/sdk      /verdict/sdk
+COPY verdict/template /verdict/template
+COPY verdict/prep     /verdict/prep
+RUN chmod 0755 /verdict/prep/entrypoint.sh /verdict/prep/smoke.sh
+
+# Vendored crates, and the cargo config that builds from them and never from
+# the network: crates.io is replaced by the vendor directory and cargo is
+# offline. The entrypoint copies this file into its own CARGO_HOME.
+COPY --from=vendor /opt/vendor /opt/vendor
+RUN printf '%s\n' \
+      '[source.crates-io]' \
+      'replace-with = "vendored-sources"' \
+      '' \
+      '[source.vendored-sources]' \
+      'directory = "/opt/vendor"' \
+      '' \
+      '[net]' \
+      'offline = true' \
+      > /opt/cargo-config.toml
+
+# The pre-built target directory: the template and the dependencies a kernel may
+# add, built once the way a kernel is built (release for wasm32, and the test
+# build). Only the kernel and the SDK are rebuilt at runtime, because their paths
+# differ; every registry crate is reused.
+COPY --from=vendor /opt/vendor-src /opt/prebuild-src
+RUN set -eux; \
+    export CARGO_HOME=/tmp/prebuild-cargo CARGO_TARGET_DIR=/opt/prebuilt/target; \
+    mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"; \
+    cp /opt/cargo-config.toml "$CARGO_HOME/config.toml"; \
+    cd /opt/prebuild-src/kernel; \
+    cargo build --release --target wasm32-unknown-unknown; \
+    cargo test --no-run; \
+    rm -rf "$CARGO_HOME" /opt/prebuild-src
+
+# The version is fixed by the image, so the CLI must not replace itself.
+ENV DISABLE_AUTOUPDATER=1
+ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
+
+RUN mkdir -p /work && chown 1000:1000 /work
+USER prep
+WORKDIR /work
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/verdict/prep/entrypoint.sh"]

@@ -1,0 +1,109 @@
+name: Release analyst-prep image
+
+# The preparation Job's image (infra/Dockerfile.analyst-prep), released on its
+# own tag stream like conductor's, so a nexus release never rebuilds it and a
+# change to it never restarts anything else.
+#
+# `analyst-prep-v*`, `conductor-v*` and `v*` cannot overlap: `v*` is anchored at
+# the start, and the other two differ from their first character on.
+
+on:
+  push:
+    tags:
+      - 'analyst-prep-v*'
+  workflow_dispatch:
+
+jobs:
+  docker:
+    name: Build and push analyst-prep image
+    runs-on: ubuntu-24.04-arm
+    environment: production
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Derive version
+        id: version
+        run: |
+          # analyst-prep-v1.2.3 -> 1.2.3 (a manual run builds 0.0.0-dispatch)
+          if [[ "$GITHUB_REF_NAME" == analyst-prep-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#analyst-prep-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-dispatch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read pinned Claude Code version
+        id: claude
+        run: |
+          # Single source of truth is the Dockerfile's default, so a local
+          # build and a released build pin the same CLI.
+          version="$(sed -n 's/^ARG CLAUDE_CODE_VERSION=\(.*\)$/\1/p' infra/Dockerfile.analyst-prep | head -1)"
+          if [[ -z "$version" ]]; then
+            echo "could not read CLAUDE_CODE_VERSION from infra/Dockerfile.analyst-prep" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Pinning Claude Code ${version}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          platforms: linux/arm64
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Built and loaded locally first, so the smoke checks below decide
+      # whether it is fit to publish.
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: infra/Dockerfile.analyst-prep
+          platforms: linux/arm64
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            CLAUDE_CODE_VERSION=${{ steps.claude.outputs.version }}
+          load: true
+          push: false
+          tags: nexus-analyst-prep:candidate
+          cache-from: type=gha,scope=analyst-prep
+          cache-to: type=gha,mode=max,scope=analyst-prep
+
+      # Run the way the Job runs it (see the Job spec in analyst's launcher):
+      # non-root, read-only root filesystem, /work and /tmp writable. The checks
+      # are in verdict/prep/smoke.sh: claude --version is the pinned one, the
+      # template builds offline for wasm32 from the vendored crates, and the
+      # analyst guide reaches the model as the system prompt of `--agent
+      # analyst` (verified with a dummy API key, so nothing is spent).
+      - name: Smoke-check the image
+        env:
+          EXPECTED_CLAUDE: ${{ steps.claude.outputs.version }}
+        run: |
+          docker run --rm --read-only --user 1000:1000 \
+            --tmpfs /work:rw,exec,uid=1000,gid=1000,size=4g \
+            --tmpfs /tmp:rw,exec,uid=1000,gid=1000,size=1g \
+            -e EXPECTED_CLAUDE="$EXPECTED_CLAUDE" \
+            --entrypoint /verdict/prep/smoke.sh \
+            nexus-analyst-prep:candidate
+
+      - name: Push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: infra/Dockerfile.analyst-prep
+          platforms: linux/arm64
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            CLAUDE_CODE_VERSION=${{ steps.claude.outputs.version }}
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/nexus-analyst-prep:${{ steps.version.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/nexus-analyst-prep:latest
+          cache-from: type=gha,scope=analyst-prep
+          cache-to: type=gha,mode=max,scope=analyst-prep
