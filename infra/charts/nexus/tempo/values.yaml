@@ -1,0 +1,106 @@
+# Tempo (single binary) on Backblaze B2 (S3 API). See docs/guides/tracing.md
+# for the manual B2 and Vault prerequisites. Without the bucket and the
+# nexus/tempo Vault key Tempo starts but cannot flush blocks.
+# All values are nested under `tempo:` because this is an umbrella chart.
+tempo:
+  replicas: 1
+
+  # Tempo reads credentials from env (tempo-s3 secret) through
+  # -config.expand-env=true; the values below contain placeholders only.
+  tempo:
+    reportingEnabled: false
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+
+    # Memory ballast off: it only inflates the resident size, which is not
+    # useful under a 1Gi limit.
+    memBallastSizeMbs: 0
+
+    extraArgs:
+      "config.expand-env": "true"
+    extraEnvFrom:
+      - secretRef:
+          name: tempo-s3
+
+    # 30 days of traces (compactor block_retention). B2 only hides deleted
+    # blocks; the bucket lifecycle rule in docs/guides/tracing.md removes them.
+    retention: 720h
+
+    ingester:
+      # Defaults are kept on purpose so a span arriving hours after the rest of
+      # its trace still lands in the same trace when queried by ID: every
+      # block holding a piece of the trace is read and the pieces are merged.
+      # Do not add limits on how late a span may be.
+      # Local data stays bounded on the 2Gi PVC (local-path does not enforce
+      # size): blocks are cut at 30m or 100MB, and flushed to B2 right after.
+      max_block_duration: 30m
+      max_block_bytes: 104857600
+      complete_block_timeout: 15m
+
+    overrides:
+      defaults:
+        global:
+          # Per-trace ceiling (default 5MB); the release path is ~20-40 spans.
+          max_bytes_per_trace: 10000000
+        metrics_generator:
+          processors:
+            - service-graphs
+            - span-metrics
+
+    metricsGenerator:
+      enabled: true
+      remoteWriteUrl: http://prometheus-kube-prometheus-prometheus.nexus.svc.cluster.local:9090/api/v1/write
+      processor:
+        service_graphs:
+          wait: 10s
+          max_items: 10000
+        span_metrics:
+          # Cardinality: no extra dimensions, so the series carry only
+          # service, span_name, span_kind and status_code. Never add ticker,
+          # news id or trace id.
+          dimensions: []
+          enable_target_info: false
+      storage:
+        path: /var/tempo/generator/wal
+      traces_storage:
+        path: /var/tempo/generator/traces
+
+    storage:
+      trace:
+        backend: s3
+        s3:
+          bucket: nexus-tempo
+          endpoint: s3.eu-central-003.backblazeb2.com
+          region: eu-central-003
+          access_key: ${AWS_ACCESS_KEY_ID}
+          secret_key: ${AWS_SECRET_ACCESS_KEY}
+          forcepathstyle: false
+          insecure: false
+        wal:
+          path: /var/tempo/wal
+        local:
+          path: /var/tempo/traces
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
+
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClassName: local-path
+
+  service:
+    type: ClusterIP
+
+  serviceMonitor:
+    enabled: true
