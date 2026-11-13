@@ -97,3 +97,30 @@ Never point `DATABASE_URL` at a shared database: each test creates and drops its
 ## Metrics
 
 See `docs/guides/metrics.md` ("analyst kernel runtime", "analyst scheduler and notes").
+
+## Decisions (releases)
+
+Every report release the analyst acts on ends in one `decisions` row (`migrations/20261113000000_create_decisions.sql`), keyed by the release's MFN `news_id`:
+
+| `decision` | Meaning | Target becomes | Kernel |
+|---|---|---|---|
+| `buy`, `no_buy`, `abstain` | the kernel's verdict | `decided` | `spent` |
+| `kernel_error` | the kernel trapped, timed out or returned a bad output | `decided` | `spent` |
+| `stale` | the release was older than `MAX_RELEASE_AGE`; never traded | `skipped` | `spent` |
+| `skipped_no_kernel` | no prepared kernel was ready (or no target at all) | `skipped` | none |
+| `twin_ignored` | another language version of the same report already decided | unchanged | unchanged |
+
+`Store::record_decision` writes the row and applies those effects in one transaction. It is idempotent
+(`ON CONFLICT (news_id) DO NOTHING`: a redelivery returns `Recorded::Duplicate` and changes nothing), and it
+locks the target row first, so two language versions racing each other still give one decision per report: the
+second is stored as `twin_ignored`.
+
+**Matching a release to its target** (`matching::pick_target`, `Store::match_target`), among the company's
+targets of the same kind that are not cancelled: first the same fiscal period (both set and equal); otherwise
+the target whose scheduled date is nearest to the release's Stockholm date, within 5 days, skipping targets
+whose period differs when both are set. Targets that are not yet settled are preferred to decided or skipped
+ones; decided and skipped targets are still candidates, so that a twin finds the target already decided.
+`Store::earlier_decision` finds the decision of an earlier language version: for the same target, or, for a
+report with no target, for the same company published within 10 minutes.
+
+`AnalystDecision` (`model/proto/analyst_decision.proto`) mirrors the row on `analyst.decisions`.

@@ -14,7 +14,9 @@
 
 pub mod clock;
 pub mod config;
+pub mod decision;
 mod error;
+pub mod matching;
 pub mod metrics;
 pub mod notes;
 mod runtime;
@@ -26,7 +28,9 @@ mod verdict;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{Config, ConfigError};
+pub use decision::{DecisionKind, NewDecision, Recorded, StoredDecision};
 pub use error::{KernelError, LoadError};
+pub use matching::{pick_target, MatchKind, Matched, Release};
 pub use notes::{NoteHandler, NoteOutcome};
 pub use runtime::{
     run_blocking, KernelId, KernelRuntime, LoadTimings, LoadedKernel, RunOutcome, RuntimeConfig,

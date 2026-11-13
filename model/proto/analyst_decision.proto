@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package nexus;
+
+// The analyst's decision on one report release, produced on `analyst.decisions`
+// (keyed "{ticker}:{exchange_mic}") and mirroring the analyst's `decisions` row.
+//
+// `decision` is one of "buy", "no_buy", "abstain", "skipped_no_kernel",
+// "kernel_error", "stale", "twin_ignored". Only "buy" and "no_buy" and
+// "abstain" come from a kernel's verdict. "skipped_no_kernel" means no
+// prepared kernel was ready for the release; it is still simulated downstream,
+// as a baseline, but is marked as such by this value.
+message AnalystDecision {
+  string ticker        = 1;
+  string exchange_mic  = 2;
+  // MFN's news id of the release that was decided on.
+  string news_id       = 3;
+  string lang          = 4;
+  // The release's fiscal period; "" when MFN gave none.
+  string fiscal_period = 5;
+  string decision      = 6;
+  string reason        = 7;
+  repeated DecisionMetric metrics = 8;
+  // Times in unix milliseconds (UTC).
+  int64 published_at_unix_millis = 9;   // when MFN published the release
+  int64 received_at_unix_millis  = 10;  // when the analyst consumed it
+  int64 decided_at_unix_millis   = 11;  // when the decision was made
+  // Microseconds the kernel took; 0 when no kernel ran.
+  int64 kernel_micros  = 12;
+  // The error kind of a "kernel_error"; "" otherwise.
+  string error         = 13;
+  // The OpenTelemetry trace the decision was made in (32 lowercase hex); "" if none.
+  string trace_id      = 14;
+  // The analyst's report target and kernel; 0 when there is none.
+  int64 target_id      = 15;
+  int64 kernel_id      = 16;
+}
+
+// One metric a kernel found. Values are exact decimal strings; "" means absent.
+message DecisionMetric {
+  string key      = 1;
+  string current  = 2;
+  string prior    = 3;
+  string expected = 4;
+  string unit     = 5;
+}
