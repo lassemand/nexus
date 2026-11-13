@@ -71,7 +71,7 @@ urlencoding = "2"
 async-trait = "0.1"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
-telemetry = { path = "../telemetry" }
+telemetry = { path = "../telemetry", features = ["kafka"] }
 scraper = "0.29.0"
 uuid = { version = "1.29.0", features = ["serde"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
@@ -80,6 +80,7 @@ slack-morphism = { version = "2.31.1", features = ["hyper"] }
 axum = "0.8"
 
 [dev-dependencies]
+telemetry = { path = "../telemetry", features = ["testing"] }
 # In-process mock HTTP server for the PR smoke test (chronicle/tests/smoke_test.rs) —
 # stubs FI's public API and Nager.Date so the check logic can be exercised
 # deterministically without depending on the real internet endpoints.

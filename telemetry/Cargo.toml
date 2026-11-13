@@ -21,6 +21,7 @@ rdkafka = { version = "0.36", features = ["cmake-build", "tokio"], optional = tr
 
 [features]
 kafka = ["dep:rdkafka"]
+testing = ["opentelemetry_sdk/testing"]
 
 [dev-dependencies]
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "testing"] }

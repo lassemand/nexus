@@ -23,5 +23,7 @@ pub mod live;
 pub mod live_catchup;
 pub mod live_emit;
 pub mod live_slack;
+#[cfg(test)]
+mod live_trace_tests;
 pub mod mar_release;
 pub mod slack;

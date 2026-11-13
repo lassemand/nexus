@@ -9,14 +9,16 @@
 //! same event and signal dedupes by `(source, source_id)`.
 
 use super::events::EventSink;
+use super::live::{send_span, ItemSpan};
 use backon::{ExponentialBuilder, Retryable};
 use chrono::{DateTime, Utc};
 use metrics::{counter, gauge, histogram};
 use model::generated::SpecialEvent;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+use telemetry::trace::span_between;
 use tokio::sync::mpsc;
-use tracing::{error, warn};
+use tracing::{error, warn, Instrument};
 
 /// Capacity of the emit queue.
 pub const QUEUE_CAPACITY: usize = 10_000;
@@ -35,6 +37,28 @@ pub struct EmitJob {
     pub event: SpecialEvent,
     /// When the item was read from the socket.
     pub received_at: DateTime<Utc>,
+    /// The item's trace; the producer continues it.
+    pub span: ItemSpan,
+    /// When the job was created, for the `nordic_live.emit_queue` span.
+    pub queued_at: SystemTime,
+}
+
+impl EmitJob {
+    /// A job queued now, carrying `span` (the item's root span).
+    pub fn new(
+        key: String,
+        event: SpecialEvent,
+        received_at: DateTime<Utc>,
+        span: ItemSpan,
+    ) -> Self {
+        Self {
+            key,
+            event,
+            received_at,
+            span,
+            queued_at: SystemTime::now(),
+        }
+    }
 }
 
 /// The queue's sending side, cheap to clone.
@@ -100,13 +124,31 @@ pub async fn run_producer(
 ) {
     while let Some(job) = rx.recv().await {
         gauge!("nordic_live_emit_queue_depth").set(rx.len() as f64);
-        let sent = (|| sink.send(&job.key, &job.event))
-            .retry(backoff)
-            .notify(|e: &anyhow::Error, retry_in| {
-                warn!(key = %job.key, news_id = %job.event.source_id, error = format!("{e:#}"),
-                      ?retry_in, "producing announcement failed, retrying");
-            })
-            .await;
+        span_between(
+            "nordic_live.emit_queue",
+            job.queued_at,
+            SystemTime::now(),
+            Some(&job.span.context()),
+            [],
+        )
+        .in_scope(|| ());
+        let sent = (|| async {
+            let step = send_span(job.span.span(), sink.destination(), &job.key);
+            let result = sink
+                .send(&job.key, &job.event)
+                .instrument(step.clone())
+                .await;
+            if let Err(e) = &result {
+                super::live::fail_span(&step, &format!("{e:#}"));
+            }
+            result
+        })
+        .retry(backoff)
+        .notify(|e: &anyhow::Error, retry_in| {
+            warn!(key = %job.key, news_id = %job.event.source_id, error = format!("{e:#}"),
+                  ?retry_in, "producing announcement failed, retrying");
+        })
+        .await;
         match sent {
             Ok(()) => {
                 let latency =
@@ -116,6 +158,7 @@ pub async fn run_producer(
             }
             Err(e) => {
                 counter!("nordic_live_events_total", "result" => "failed").increment(1);
+                job.span.fail(&format!("{e:#}"));
                 error!(key = %job.key, news_id = %job.event.source_id, error = format!("{e:#}"),
                        "announcement not produced after retrying; the poll will publish it");
             }
@@ -138,6 +181,8 @@ mod tests {
                 ..Default::default()
             },
             received_at: Utc::now(),
+            span: ItemSpan::default(),
+            queued_at: SystemTime::now(),
         }
     }
 
