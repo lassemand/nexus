@@ -241,3 +241,22 @@ about 1 ms more than untraced, see the PR of NEX-254).
 
 `decisions.trace_id` and `AnalystDecision.trace_id` hold the trace id, so a decision can be found in Tempo from
 the database, and the other way round.
+
+### analyst: simulated trades
+
+A trade lasts from minutes to a whole session, so it is two traces. Spans of a trade take their start and end from the
+analyst's clock (`spans::clock_span`, `end_span`), not from when they happen to be created.
+
+| Span | Notes |
+|---|---|
+| `analyst.trade_entry` | in the **release trace**, a child of the decision's `analyst.hand_off` span (after a restart, of the stored `release_traceparent`): from receiving the decision to the entry quote being accepted (or `no_entry_quote`, `calendar_unknown`, `invalid_entry`). `nexus.ticker`, `nexus.exchange_mic`, `nexus.decision`, `analyst.shadow`, `analyst.entry_target_at`, `analyst.release_to_entry_ms`, `analyst.trade_status`, `analyst.resumed` |
+| `analyst.wait_for_session` | child of the entry span when the decision is outside continuous trading: decision to session open. For a pre-open release this lasts hours; Tempo joins the late span to the trace by id |
+| `analyst.quote` | one per `GET /quote`: `analyst.quote_purpose` (`entry`, `exit`, `observation`), `analyst.attempt`, `http.response.status_code`, `analyst.ask_type` (entry) or `analyst.bid_type`, `analyst.accepted`; the wait for a `retry_after_ms` is the gap between two |
+| `analyst.trade` | a **new root** (own trace) from `entry_at` to the last observation or exit, with a **span link** to the decision's span and `nexus.release_trace_id`. After a restart a new root is made with `analyst.resumed=true`, linked through `release_traceparent` |
+| `analyst.observation` | child of `analyst.trade`, one per horizon: `analyst.horizon`, `analyst.late`, `analyst.observation_status` (`ok`, `missed` and `beyond_close` are zero length; `missed` is an ERROR) |
+| `analyst.exit` | child of `analyst.trade`: the exit quote, retried for up to 30 s |
+| `send analyst.trades` (producer) | a child of the span that caused the state change (`analyst.trade_entry` for the entry, the observation or exit span afterwards); `traceparent` is added to the message |
+
+`sim_trades.trace_id` is the release trace, `release_traceparent` the decision span, `trade_trace_id` the holding trace (a
+resumed trade gets a new one); `AnalystTrade` carries `trace_id` and `trade_trace_id`. Tracing never delays a quote: the
+entry request leaves within about 70 µs of the hand-off with tracing on and the collector down (5 ms is the target).

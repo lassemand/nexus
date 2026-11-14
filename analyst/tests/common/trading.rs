@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 use model::generated::AnalystTrade;
 use model::session::{Calendar, Exchange, Sessions};
+use rdkafka::message::Headers;
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use telemetry::trace::opentelemetry::Context;
@@ -85,6 +86,7 @@ pub struct FakeQuotes {
     clock: Arc<dyn Clock>,
     script: Box<Script>,
     pub requests: Mutex<Vec<(String, DateTime<Utc>)>>,
+    pub real_times: Mutex<Vec<std::time::Instant>>,
     latency: Duration,
     in_flight: AtomicUsize,
     pub max_in_flight: AtomicUsize,
@@ -100,6 +102,7 @@ impl FakeQuotes {
             clock,
             script: Box::new(script),
             requests: Mutex::new(Vec::new()),
+            real_times: Mutex::new(Vec::new()),
             latency,
             in_flight: AtomicUsize::new(0),
             max_in_flight: AtomicUsize::new(0),
@@ -119,6 +122,10 @@ impl FakeQuotes {
 #[async_trait]
 impl QuoteSource for FakeQuotes {
     async fn quote(&self, ticker: &str, _mic: &str) -> Result<Quote, QuoteError> {
+        self.real_times
+            .lock()
+            .expect("lock")
+            .push(std::time::Instant::now());
         let now = self.clock.now();
         self.requests
             .lock()
@@ -134,19 +141,45 @@ impl QuoteSource for FakeQuotes {
     }
 }
 
+type SentHeaders = Vec<(i64, Vec<(String, String)>)>;
+
 #[derive(Default)]
-pub struct MemSink(pub Mutex<Vec<(String, AnalystTrade)>>);
+pub struct MemSink {
+    messages: Mutex<Vec<(String, AnalystTrade)>>,
+    headers: Mutex<SentHeaders>,
+}
 
 impl MemSink {
     pub fn messages(&self) -> Vec<(String, AnalystTrade)> {
-        self.0.lock().expect("lock").clone()
+        self.messages.lock().expect("lock").clone()
+    }
+
+    /// The trace headers each version was sent with.
+    pub fn headers(&self) -> SentHeaders {
+        self.headers.lock().expect("lock").clone()
     }
 }
 
 #[async_trait]
 impl TradeSink for MemSink {
     async fn emit(&self, key: &str, trade: &AnalystTrade) -> Result<(), String> {
-        self.0
+        let headers = analyst::trace_headers()
+            .iter()
+            .map(|header| {
+                (
+                    header.key.to_owned(),
+                    header
+                        .value
+                        .map(|value| String::from_utf8_lossy(value).into_owned())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        self.headers
+            .lock()
+            .expect("lock")
+            .push((trade.version, headers));
+        self.messages
             .lock()
             .expect("lock")
             .push((key.to_owned(), trade.clone()));
@@ -323,6 +356,14 @@ impl TradeStore for MemStore {
     ) -> Result<StoredTrade, sqlx::Error> {
         self.update(id, |t| t.status = status.as_str().to_owned())
     }
+
+    async fn set_trade_trace(&self, id: i64, trade_trace_id: &str) -> Result<(), sqlx::Error> {
+        let mut state = self.0.lock().expect("lock");
+        if let Some(trade) = state.trades.iter_mut().find(|t| t.id == id) {
+            trade.trade_trace_id = Some(trade_trace_id.to_owned());
+        }
+        Ok(())
+    }
 }
 
 pub struct Rig {
@@ -340,6 +381,7 @@ pub fn settings(concurrency: usize) -> RunnerSettings {
         close_buffer: Duration::from_secs(5 * 60),
         entry_max_wait: Duration::from_secs(5 * 60),
         quote_concurrency: concurrency,
+        trades_topic: "analyst.trades".to_owned(),
     }
 }
 
