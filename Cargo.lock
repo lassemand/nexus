@@ -64,6 +64,8 @@ dependencies = [
  "model",
  "prost 0.13.5",
  "rdkafka",
+ "reqwest 0.12.28",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -79,6 +81,7 @@ dependencies = [
  "verdict-sdk",
  "wasmtime",
  "wat",
+ "wiremock",
 ]
 
 [[package]]
@@ -3896,6 +3899,7 @@ dependencies = [
  "memchr",
  "once_cell",
  "percent-encoding",
+ "rust_decimal",
  "rustls",
  "serde",
  "serde_json",
@@ -3980,6 +3984,7 @@ dependencies = [
  "percent-encoding",
  "rand 0.8.6",
  "rsa",
+ "rust_decimal",
  "serde",
  "sha1 0.10.6",
  "sha2 0.10.9",
@@ -4019,6 +4024,7 @@ dependencies = [
  "memchr",
  "once_cell",
  "rand 0.8.6",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sha2 0.10.9",

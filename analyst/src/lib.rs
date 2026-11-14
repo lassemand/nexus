@@ -22,6 +22,8 @@ pub mod matching;
 pub mod metrics;
 pub mod notes;
 pub mod offsets;
+pub mod pnl;
+pub mod quotes;
 pub mod registry;
 pub mod release;
 pub mod releases;
@@ -31,6 +33,7 @@ pub mod scheduler;
 pub mod sink;
 pub mod spans;
 pub mod store;
+pub mod trades;
 pub mod trading;
 mod types;
 mod verdict;
@@ -42,6 +45,8 @@ pub use error::{KernelError, LoadError};
 pub use handoff::{ChannelHandOff, NoopHandOff, TradeHandOff, TradeSignal};
 pub use matching::{pick_target, MatchKind, Matched, Release};
 pub use notes::{NoteHandler, NoteOutcome};
+pub use pnl::{compute as compute_pnl, Pnl, PnlProblem};
+pub use quotes::{HttpQuoteSource, Quote, QuoteError, QuoteSource};
 pub use registry::{preload, KernelRegistry, PreloadReport, KERNEL_RETENTION};
 pub use release::{
     classify, is_transient, with_retry, with_retry_counted, Classified, Processed, Receipt,
@@ -61,6 +66,10 @@ pub use scheduler::{
 pub use sink::{trace_headers, DecisionSink, KafkaDecisionSink};
 pub use spans::trace_id_of;
 pub use store::{AcceptedKernel, NewNote, Note, PrepRun, Store, Target};
+pub use trades::{
+    to_proto as trade_to_proto, Entry, Exit, NewObservation, NewTrade, ObservationStatus,
+    StoredObservation, StoredTrade, TradeStatus,
+};
 pub use trading::{exit_target, observation_slots, plan_entry, session_cutoff, EntryPlan, Slot};
 pub use types::{ReportKind, ScheduledReport, TargetStatus};
 pub use verdict::{KernelMetric, KernelVerdict};
