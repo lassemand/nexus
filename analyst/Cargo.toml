@@ -48,6 +48,7 @@ wasmtime = { version = "50", default-features = false, features = ["cranelift", 
 bench = ["dep:verdict-bench-anchored", "dep:verdict-bench-memmem", "dep:verdict-bench-aho"]
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 wat = "1"
 verdict-sdk = { path = "../verdict/sdk", features = ["harness"] }
 verdict-bench-anchored = { path = "../verdict/kernels/bench-anchored" }

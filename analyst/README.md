@@ -38,6 +38,9 @@ crate: `12h`, `1h30m`, `50ms`.
 | `ANALYST_TICKERS` | empty | Optional `TICKER:MIC,TICKER:MIC` allowlist for rollout; empty means every registered company. |
 | `KERNEL_DEADLINE` | `50ms` | How long a kernel may run on a release. |
 | `NOTES_TOPIC` | `analyst.notes` | Kafka topic of `ReportNote` events (consumer group `analyst`). |
+| `SPECIAL_EVENTS_TOPIC` | `special.events` | Kafka topic report releases arrive on (consumer group `analyst-releases`, starting from the latest offset). |
+| `DECISIONS_TOPIC` | `analyst.decisions` | Kafka topic the decisions (`AnalystDecision`) are produced on, keyed `ticker:mic`. |
+| `MAX_RELEASE_AGE` | `15m` | A release published longer ago than this when it is consumed is recorded as `stale` and never traded. |
 | `METRICS_PORT` | `9464` | `/metrics` port. |
 
 ## How the scheduler works
@@ -124,3 +127,42 @@ ones; decided and skipped targets are still candidates, so that a twin finds the
 report with no target, for the same company published within 10 minutes.
 
 `AnalystDecision` (`model/proto/analyst_decision.proto`) mirrors the row on `analyst.decisions`.
+
+## The release path
+
+`ReleaseProcessor::process` (`release.rs`) decides on one release; `run_release_consumer` (`releases.rs`)
+feeds it from `special.events`.
+
+**Which events.** Only a released `quarterly_report` or `annual_report` from `source = "mfn"` that is not a
+correction and has text. Everything else is counted as `analyst_release_events_total{outcome="ignored_<reason>"}`
+(`event_type`, `source`, `correction`, `no_text`, `no_news_id`, `invalid`, `undecodable`) and does nothing else.
+The consumer starts from the **latest** offset on its first start: the poll fallback replays history, and replayed
+reports must not open trades.
+
+**Per release**, in its own task (one company's slow database write never holds another's):
+
+1. a redelivery (the `news_id` already has a decision) stops here;
+2. match the target (`matching.rs`) and find out whether this is a twin: a target that is already `decided` or
+   `skipped`, or a claim another version of the report holds in memory (`claims.rs`), which is what keeps two
+   language versions arriving at the same moment from both being traded;
+3. a twin is `twin_ignored`; a release published more than `MAX_RELEASE_AGE` ago is `stale`; a release whose target
+   has no ready, loaded kernel (or no target) is `skipped_no_kernel`; otherwise the kernel runs on the blocking
+   pool, giving `buy`, `no_buy`, `abstain`, or `kernel_error` with the error kind;
+4. **hand off** `buy`, `no_buy`, `abstain` and `skipped_no_kernel` (marked as a baseline) to the trade scheduler's
+   in-memory channel (`TradeHandOff`, a no-op until the next task), before anything is written;
+5. write the `decisions` row (`Store::record_decision`), retrying with backoff: a database that is unreachable is
+   retried until it comes back, any other failure 5 times, after which the decision is logged in full;
+6. emit `AnalystDecision` on `analyst.decisions`, retrying until it is accepted;
+7. commit the Kafka offset, only once everything before it is done (`offsets.rs`): releases finish out of order.
+
+The kernels are loaded and warmed ahead of the release (`KernelRegistry`): at startup `preload` loads every accepted
+kernel of a report that is not yet decided; acceptance inserts a new one. A decided report's kernel instance is dropped
+from memory an hour later (twins may still arrive).
+
+A redelivery does **not** emit the event again: the decision row is the record, and a crash between the write and the
+emit leaves the event unsent (the row can be replayed from the table).
+
+Metrics: `analyst_release_to_decision_seconds` (consumed to handed on), `analyst_publish_to_decision_seconds` (MFN
+publish to handed on; includes MFN's and `nordic-live`'s delay, for dashboards), `analyst_release_events_total{outcome}`,
+`analyst_decisions_total{decision}`, `analyst_decision_retries_total{step}`. One `info` line per decision with ticker,
+period, decision, reason and the three times is the operator's audit line.

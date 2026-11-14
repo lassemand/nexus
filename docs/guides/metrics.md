@@ -163,6 +163,17 @@ soonest report that has no ready kernel, -1 when there is none). The notes consu
 was full, usually because the collector is down or slow. It is exposed by the service's
 `/metrics` like any other counter.
 
+## analyst release path
+
+For each report release the analyst decides with the prepared kernel and records `analyst_release_events_total{outcome}`
+(`decided`, `duplicate`, `ignored_<reason>`), `analyst_decisions_total{decision}` (`buy`, `no_buy`, `abstain`,
+`skipped_no_kernel`, `kernel_error`, `stale`, `twin_ignored`), `analyst_decision_retries_total{step}` (`decision_read`,
+`target_match`, `twin_lookup`, `decision_write`, `decision_emit`) and two histograms.
+`analyst_release_to_decision_seconds` runs from consuming the event to the decision being handed to the trade scheduler;
+its bounds go from 100 µs to 5 s and the target is a p99 under 50 ms (measured at under 1 ms in the tests).
+`analyst_publish_to_decision_seconds` runs from MFN's publish time and so includes MFN's and `nordic-live`'s delay: use it on
+dashboards, not in alerts. Both are rendered with explicit buckets (`telemetry::serve_with_buckets`). See `analyst/README.md`.
+
 ## Cluster pieces
 
 | Piece | Where |
