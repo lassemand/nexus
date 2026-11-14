@@ -12,6 +12,7 @@
 //! for each upcoming report ([`Scheduler`]) and the consumer of report notes
 //! ([`NoteHandler`]). See the crate README.
 
+pub mod calendar;
 pub mod claims;
 pub mod clock;
 pub mod config;
@@ -27,6 +28,7 @@ pub mod quotes;
 pub mod registry;
 pub mod release;
 pub mod releases;
+pub mod runner;
 mod runtime;
 pub mod schedule;
 pub mod scheduler;
@@ -38,11 +40,15 @@ pub mod trading;
 mod types;
 mod verdict;
 
-pub use clock::{Clock, ManualClock, SystemClock};
+pub use calendar::SessionsCache;
+pub use clock::{Clock, ManualClock, SystemClock, TokioClock};
 pub use config::{parse_horizons, Config, ConfigError, Horizon};
 pub use decision::{DecisionKind, NewDecision, Recorded, StoredDecision};
 pub use error::{KernelError, LoadError};
-pub use handoff::{ChannelHandOff, NoopHandOff, TradeHandOff, TradeSignal};
+pub use handoff::{
+    decision_channel, ChannelHandOff, DecisionHandle, DecisionSlot, NoopHandOff, Persisted,
+    TradeHandOff, TradeSignal,
+};
 pub use matching::{pick_target, MatchKind, Matched, Release};
 pub use notes::{NoteHandler, NoteOutcome};
 pub use pnl::{compute as compute_pnl, Pnl, PnlProblem};
@@ -53,6 +59,7 @@ pub use release::{
     ReleaseInput, ReleaseProcessor, RetryPolicy,
 };
 pub use releases::{consumer_span, prepare, run_release_consumer, Prepared, RELEASES_GROUP};
+pub use runner::{RunnerSettings, TradeRunner, EXIT_RETRY_FOR, LATE_AFTER, RETRY_EVERY};
 pub use runtime::{
     run_blocking, KernelId, KernelRuntime, LoadTimings, LoadedKernel, RunOutcome, RuntimeConfig,
     KERNEL_DEADLINE, MAX_INPUT_BYTES, MAX_MODULE_BYTES, MAX_OUTPUT_BYTES, MEMORY_LIMIT_BYTES,
@@ -63,12 +70,12 @@ pub use scheduler::{
     LaunchError, LaunchInfo, NoopLauncher, PassReport, PrepLauncher, PrepRequest, RunResult,
     Scheduler, SchedulerConfig, SchedulerError,
 };
-pub use sink::{trace_headers, DecisionSink, KafkaDecisionSink};
+pub use sink::{trace_headers, DecisionSink, KafkaDecisionSink, KafkaTradeSink, TradeSink};
 pub use spans::trace_id_of;
 pub use store::{AcceptedKernel, NewNote, Note, PrepRun, Store, Target};
 pub use trades::{
     to_proto as trade_to_proto, Entry, Exit, NewObservation, NewTrade, ObservationStatus,
-    StoredObservation, StoredTrade, TradeStatus,
+    StoredObservation, StoredTrade, TradeStatus, TradeStore,
 };
 pub use trading::{exit_target, observation_slots, plan_entry, session_cutoff, EntryPlan, Slot};
 pub use types::{ReportKind, ScheduledReport, TargetStatus};

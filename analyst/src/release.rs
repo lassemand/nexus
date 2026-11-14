@@ -12,7 +12,7 @@ use verdict_sdk::Lang;
 use crate::claims::Claims;
 use crate::clock::Clock;
 use crate::decision::{DecisionKind, NewDecision, Recorded};
-use crate::handoff::{TradeHandOff, TradeSignal};
+use crate::handoff::{decision_channel, DecisionSlot, Persisted, TradeHandOff, TradeSignal};
 use crate::matching::Release;
 use crate::metrics;
 use crate::registry::{KernelRegistry, KERNEL_RETENTION};
@@ -418,6 +418,7 @@ impl ReleaseProcessor {
             error: error_kind,
             trace_id,
         };
+        let mut decision_slot: Option<DecisionSlot> = None;
         if matches!(
             kind,
             DecisionKind::Buy
@@ -426,6 +427,8 @@ impl ReleaseProcessor {
                 | DecisionKind::SkippedNoKernel
         ) {
             let hand_off_span = info_span!("analyst.hand_off", nexus.decision = kind.as_str());
+            let (slot, handle) = decision_channel();
+            decision_slot = Some(slot);
             hand_off_span.in_scope(|| {
                 self.hand_off.hand_off(TradeSignal {
                     news_id: new.news_id.clone(),
@@ -439,6 +442,7 @@ impl ReleaseProcessor {
                     received_at: new.received_at,
                     decided_at,
                     context: Span::current().context(),
+                    persisted: handle,
                 });
             });
         }
@@ -468,7 +472,12 @@ impl ReleaseProcessor {
                 metrics::release_event("duplicate");
                 return Processed::Duplicate;
             }
-            Recorded::Inserted { kind: stored, .. } => stored,
+            Recorded::Inserted { id, kind: stored } => {
+                if let Some(slot) = &decision_slot {
+                    slot.set(Persisted { id, kind: stored });
+                }
+                stored
+            }
         };
         if stored_kind != kind {
             warn!(news_id = %new.news_id, decided = kind.as_str(), stored = stored_kind.as_str(),
