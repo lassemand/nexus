@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package nexus;
+
+// The full current state of one simulated trade and its observations, produced
+// on `analyst.trades` (keyed "{ticker}:{exchange_mic}") after every state change
+// (entry, each observation, exit). Prices are exact decimal strings, times unix
+// milliseconds (UTC). A consumer keeps the message with the highest `version`
+// per `decision_id`. Per share only: no fees, no position size.
+message AnalystTrade {
+  int64  trade_id      = 1;
+  int64  decision_id   = 2;
+  string ticker        = 3;
+  string exchange_mic  = 4;
+  // "buy", "no_buy", "abstain" or "skipped_no_kernel".
+  string decision      = 5;
+  // True for every decision but "buy".
+  bool   shadow        = 6;
+  // "pending_entry", "open", "closed", "no_entry_quote", "no_exit_quote",
+  // "exit_missed", "calendar_unknown", "currency_mismatch" or "invalid_entry".
+  string status        = 7;
+  // Increases with every state change.
+  int64  version       = 8;
+  // The hold, in trading minutes, as a decimal string.
+  string hold_minutes  = 9;
+  // When MFN published the release.
+  int64  published_at_unix_millis = 10;
+  // 0 means not (yet) set.
+  int64  entry_target_at_unix_millis = 11;
+  int64  entry_at_unix_millis        = 12;
+  string entry_ask     = 13;
+  string entry_bid     = 14;
+  int64  exit_target_at_unix_millis  = 15;
+  int64  exit_at_unix_millis         = 16;
+  string exit_bid      = 17;
+  string exit_ask      = 18;
+  string pnl_per_share = 19;
+  string pnl_pct       = 20;
+  string currency      = 21;
+  // entry_at - published_at; 0 when there is no entry.
+  int64  release_to_entry_ms = 22;
+  // The release trace and the trade's own trace (32 lowercase hex); "" if none.
+  string trace_id        = 23;
+  string trade_trace_id  = 24;
+  repeated TradeObservation observations = 25;
+}
+
+// One observation of the bid after entry.
+message TradeObservation {
+  // "1m", "5m", ... "close" or "hold".
+  string horizon        = 1;
+  int64  scheduled_at_unix_millis = 2;
+  // 0 when nothing was fetched.
+  int64  fetched_at_unix_millis   = 3;
+  string bid            = 4;
+  string ask            = 5;
+  string bid_type       = 6;
+  string ask_type       = 7;
+  // -1 when unknown.
+  int64  delayed_minutes = 8;
+  bool   late           = 9;
+  // "ok", "missed", "beyond_close" or "no_quote".
+  string status         = 10;
+}

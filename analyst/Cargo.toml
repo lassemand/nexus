@@ -23,7 +23,9 @@ async-trait = "0.1"
 chrono = "0.4"
 chrono-tz = "0.10"
 humantime = "2"
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid", "json", "migrate", "macros"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid", "json", "migrate", "macros", "rust_decimal"] }
+rust_decimal = { version = "1.43.0", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 metrics = "0.24"
 model = { path = "../model", features = ["postgres"] }
 prost = "0.13"
@@ -50,6 +52,7 @@ bench = ["dep:verdict-bench-anchored", "dep:verdict-bench-memmem", "dep:verdict-
 telemetry = { path = "../telemetry", features = ["kafka", "testing"] }
 tokio = { version = "1", features = ["test-util"] }
 wat = "1"
+wiremock = "0.6"
 verdict-sdk = { path = "../verdict/sdk", features = ["harness"] }
 verdict-bench-anchored = { path = "../verdict/kernels/bench-anchored" }
 verdict-bench-memmem = { path = "../verdict/kernels/bench-memmem" }
