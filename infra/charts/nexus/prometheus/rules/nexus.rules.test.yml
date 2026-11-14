@@ -1644,7 +1644,7 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: "9.5 kernel preparations failed in 6 hours"
+              summary: "10 kernel preparations failed in 6 hours"
               description: "Preparations fail by reason (launch, failed, timed_out, rejected). Read the Job logs in namespace analyst and the Anthropic key in analyst-prep-secret."
 
   - name: AnalystPrepFailing is silent below 3
@@ -1684,7 +1684,7 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: "analyst release to decision p99 is 495ms"
+              summary: "analyst release to decision p99 is 495.5ms"
               description: "The 99th percentile from a release arriving to its decision has been above 50 ms for 10 minutes. Check CPU throttling of the analyst pod and kernel run times on the Analyst dashboard."
 
   - name: SaxoQuotesDown fires on no_token and is silent otherwise
