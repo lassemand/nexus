@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use analyst::metrics::{
-    LOAD_BUCKETS, LOAD_SECONDS, PUBLISH_BUCKETS, PUBLISH_TO_DECISION_SECONDS, RELEASE_BUCKETS,
+    ENTRY_DELAY_BUCKETS, ENTRY_DELAY_SECONDS, LATENESS_BUCKETS, LOAD_BUCKETS, LOAD_SECONDS,
+    PUBLISH_BUCKETS, PUBLISH_TO_DECISION_SECONDS, QUOTE_LATENESS_SECONDS, RELEASE_BUCKETS,
     RELEASE_TO_DECISION_SECONDS, RUN_BUCKETS, RUN_SECONDS,
 };
 use analyst::notes::run_consumer;
@@ -68,11 +69,14 @@ async fn main() -> Result<()> {
             (LOAD_SECONDS, LOAD_BUCKETS),
             (RELEASE_TO_DECISION_SECONDS, RELEASE_BUCKETS),
             (PUBLISH_TO_DECISION_SECONDS, PUBLISH_BUCKETS),
+            (ENTRY_DELAY_SECONDS, ENTRY_DELAY_BUCKETS),
+            (QUOTE_LATENESS_SECONDS, LATENESS_BUCKETS),
         ],
     )
     .await?;
     analyst::metrics::describe();
     analyst::metrics::describe_releases();
+    analyst::metrics::describe_trades();
 
     let pool = PgPoolOptions::new()
         .max_connections(5)

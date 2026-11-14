@@ -147,3 +147,54 @@ pub(crate) fn release_to_decision(elapsed: Duration) {
 pub(crate) fn publish_to_decision(seconds: f64) {
     metrics::histogram!(PUBLISH_TO_DECISION_SECONDS).record(seconds.max(0.0));
 }
+
+/// Seconds from a decision to its entry quote, for decisions taken in session.
+pub const ENTRY_DELAY_SECONDS: &str = "analyst_entry_delay_seconds";
+/// Seconds a scheduled quote was fetched after its target.
+pub const QUOTE_LATENESS_SECONDS: &str = "analyst_quote_lateness_seconds";
+/// Simulated trades by final status and shadow flag.
+pub const SIM_TRADES_TOTAL: &str = "analyst_sim_trades_total";
+/// Quote requests by outcome.
+pub const QUOTES_TOTAL: &str = "analyst_quotes_total";
+
+/// Bucket bounds (seconds) for [`ENTRY_DELAY_SECONDS`]: 1 ms to 5 min.
+pub const ENTRY_DELAY_BUCKETS: &[f64] = &[
+    1e-3, 5e-3, 1e-2, 5e-2, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0,
+];
+/// Bucket bounds (seconds) for [`QUOTE_LATENESS_SECONDS`]: 1 ms to 30 s.
+pub const LATENESS_BUCKETS: &[f64] = &[1e-3, 5e-3, 1e-2, 5e-2, 0.1, 0.5, 1.0, 2.0, 5.0, 30.0];
+
+/// Describes the simulated trades' metrics.
+pub fn describe_trades() {
+    metrics::describe_histogram!(
+        ENTRY_DELAY_SECONDS,
+        "Seconds from a decision taken in session to its accepted entry quote"
+    );
+    metrics::describe_histogram!(
+        QUOTE_LATENESS_SECONDS,
+        "Seconds a scheduled quote was fetched after its target"
+    );
+    metrics::describe_counter!(SIM_TRADES_TOTAL, "Simulated trades by status and shadow");
+    metrics::describe_counter!(QUOTES_TOTAL, "Quote requests by outcome");
+}
+
+/// Records the delay from a decision taken in session to its entry quote.
+pub fn entry_delay(elapsed: Duration) {
+    metrics::histogram!(ENTRY_DELAY_SECONDS).record(elapsed.as_secs_f64());
+}
+
+/// Records how late a scheduled quote was fetched.
+pub fn quote_lateness(seconds: f64) {
+    metrics::histogram!(QUOTE_LATENESS_SECONDS).record(seconds.max(0.0));
+}
+
+/// Counts a simulated trade that reached `status`.
+pub fn sim_trade(status: &'static str, shadow: bool) {
+    metrics::counter!(SIM_TRADES_TOTAL, "status" => status, "shadow" => shadow.to_string())
+        .increment(1);
+}
+
+/// Counts a quote request and how it went (`ok`, `accepted`, `rejected`, or an error outcome).
+pub fn quote_request(outcome: &'static str) {
+    metrics::counter!(QUOTES_TOTAL, "outcome" => outcome).increment(1);
+}
