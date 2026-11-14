@@ -4,6 +4,7 @@
 //! at each horizon. Every state change bumps `version`, so the consumer of
 //! `analyst.trades` can keep the newest message. Prices are exact decimals.
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use model::generated::{AnalystTrade, TradeObservation};
 use rust_decimal::Decimal;
@@ -497,5 +498,66 @@ pub fn to_proto(trade: &StoredTrade, observations: &[StoredObservation]) -> Anal
                 status: o.status.clone(),
             })
             .collect(),
+    }
+}
+
+/// What the trade runner needs of the database, so its timers can be tested
+/// without one. [`Store`] implements it.
+#[async_trait]
+pub trait TradeStore: Send + Sync {
+    /// See [`Store::create_trade`].
+    async fn create_trade(&self, new: &NewTrade) -> Result<Option<StoredTrade>, sqlx::Error>;
+    /// See [`Store::open_trades`].
+    async fn open_trades(&self) -> Result<Vec<StoredTrade>, sqlx::Error>;
+    /// See [`Store::observations`].
+    async fn observations(&self, trade_id: i64) -> Result<Vec<StoredObservation>, sqlx::Error>;
+    /// See [`Store::record_entry`].
+    async fn record_entry(&self, id: i64, entry: &Entry) -> Result<StoredTrade, sqlx::Error>;
+    /// See [`Store::record_observation`].
+    async fn record_observation(
+        &self,
+        trade_id: i64,
+        observation: &NewObservation,
+    ) -> Result<StoredTrade, sqlx::Error>;
+    /// See [`Store::record_exit`].
+    async fn record_exit(&self, id: i64, exit: &Exit) -> Result<StoredTrade, sqlx::Error>;
+    /// See [`Store::set_trade_status`].
+    async fn set_trade_status(
+        &self,
+        id: i64,
+        status: TradeStatus,
+    ) -> Result<StoredTrade, sqlx::Error>;
+}
+
+#[async_trait]
+impl TradeStore for Store {
+    async fn create_trade(&self, new: &NewTrade) -> Result<Option<StoredTrade>, sqlx::Error> {
+        Store::create_trade(self, new).await
+    }
+    async fn open_trades(&self) -> Result<Vec<StoredTrade>, sqlx::Error> {
+        Store::open_trades(self).await
+    }
+    async fn observations(&self, trade_id: i64) -> Result<Vec<StoredObservation>, sqlx::Error> {
+        Store::observations(self, trade_id).await
+    }
+    async fn record_entry(&self, id: i64, entry: &Entry) -> Result<StoredTrade, sqlx::Error> {
+        Store::record_entry(self, id, entry).await
+    }
+    async fn record_observation(
+        &self,
+        trade_id: i64,
+        observation: &NewObservation,
+    ) -> Result<StoredTrade, sqlx::Error> {
+        Store::record_observation(self, trade_id, observation).await
+    }
+    async fn record_exit(&self, id: i64, exit: &Exit) -> Result<StoredTrade, sqlx::Error> {
+        Store::record_exit(self, id, exit).await
+    }
+    async fn set_trade_status(
+        &self,
+        id: i64,
+        status: TradeStatus,
+    ) -> Result<StoredTrade, sqlx::Error> {
+        Store::set_trade_status(self, id, status).await
     }
 }
