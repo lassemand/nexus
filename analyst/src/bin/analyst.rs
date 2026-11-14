@@ -54,7 +54,7 @@ async fn wait_for_signal() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    let _tracing = telemetry::trace::init("analyst").context("cannot start tracing")?;
     let config = Config::from_env().context("invalid configuration")?;
     let port = std::env::var("METRICS_PORT")
         .ok()
@@ -114,14 +114,17 @@ async fn main() -> Result<()> {
         .context("cannot load the accepted kernels")?;
     let sink = KafkaDecisionSink::new(&config.kafka_brokers, &config.decisions_topic)
         .context("cannot create the decisions producer")?;
-    let releases = Arc::new(ReleaseProcessor::new(
-        store,
-        Arc::clone(&registry),
-        clock,
-        Arc::new(sink),
-        Arc::new(NoopHandOff),
-        config.max_release_age,
-    ));
+    let releases = Arc::new(
+        ReleaseProcessor::new(
+            store,
+            Arc::clone(&registry),
+            clock,
+            Arc::new(sink),
+            Arc::new(NoopHandOff),
+            config.max_release_age,
+        )
+        .with_decisions_topic(config.decisions_topic.clone()),
+    );
     info!(
         prep_lead = ?config.prep_lead,
         tick = ?config.scheduler_tick,

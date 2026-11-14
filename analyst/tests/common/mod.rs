@@ -325,6 +325,8 @@ pub fn note_payload(ticker: &str, mic: &str, period: &str, text: &str, id: &str)
     .encode_to_vec()
 }
 
+pub mod rig;
+
 pub mod wasm {
     use std::path::{Path, PathBuf};
     use std::process::Command;

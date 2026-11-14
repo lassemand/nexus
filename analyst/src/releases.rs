@@ -7,12 +7,14 @@ use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use rdkafka::{ClientConfig, Message as KafkaMessage};
+use telemetry::trace::OpenTelemetrySpanExt;
 use tokio::task::JoinSet;
-use tracing::{debug, info, warn};
+use tracing::field::Empty;
+use tracing::{debug, info, info_span, warn, Instrument, Span};
 
 use crate::metrics;
 use crate::offsets::OffsetTracker;
-use crate::release::{classify, Classified, Receipt, ReleaseProcessor};
+use crate::release::{classify, Classified, Receipt, ReleaseInput, ReleaseProcessor};
 
 /// The Kafka consumer group of the release path.
 pub const RELEASES_GROUP: &str = "analyst-releases";
@@ -64,28 +66,25 @@ pub async fn run_release_consumer(
         let receipt = Receipt::now(processor.clock().as_ref());
         let (partition, offset) = (message.partition(), message.offset());
         lock(&tracker).begin(topic, partition, offset);
-        let classified = match message.payload().map(SpecialEvent::decode) {
-            Some(Ok(event)) => classify(&event),
-            Some(Err(error)) => {
-                debug!(%error, partition, offset, "undecodable event");
-                Classified::Ignore("undecodable")
-            }
-            None => Classified::Ignore("no_payload"),
-        };
-        match classified {
-            Classified::Ignore(reason) => {
+        match prepare(&message) {
+            Prepared::Ignore(reason) => {
                 metrics::release_event(&format!("ignored_{reason}"));
                 finish(&consumer, &tracker, topic, partition, offset);
             }
-            Classified::Process(input) => {
+            Prepared::Process(input, span) => {
                 let processor = Arc::clone(&processor);
                 let consumer = Arc::clone(&consumer);
                 let tracker = Arc::clone(&tracker);
                 let topic = topic.to_owned();
-                tasks.spawn(async move {
-                    processor.process(*input, receipt).await;
-                    finish(&consumer, &tracker, &topic, partition, offset);
-                });
+                let task_span = span.clone();
+                tasks.spawn(
+                    async move {
+                        processor.process(*input, receipt).await;
+                        let commit = info_span!("analyst.commit_offset", otel.kind = "internal");
+                        commit.in_scope(|| finish(&consumer, &tracker, &topic, partition, offset));
+                    }
+                    .instrument(task_span),
+                );
             }
         }
         while tasks.try_join_next().is_some() {}
@@ -96,6 +95,68 @@ pub async fn run_release_consumer(
     })
     .await;
     Ok(())
+}
+
+/// What the consumer does with a message.
+pub enum Prepared {
+    /// Not for the analyst; the reason labels the ignored-event metric.
+    Ignore(&'static str),
+    /// A release to decide on, with its `process special.events` span.
+    Process(Box<ReleaseInput>, Span),
+}
+
+/// Decodes and classifies `message`. Only a release that passes the filter gets a
+/// span, so the thousands of other events on the topic cost no traces.
+pub fn prepare<M: KafkaMessage>(message: &M) -> Prepared {
+    let event = match message.payload().map(SpecialEvent::decode) {
+        Some(Ok(event)) => event,
+        Some(Err(error)) => {
+            debug!(%error, partition = message.partition(), offset = message.offset(), "undecodable event");
+            return Prepared::Ignore("undecodable");
+        }
+        None => return Prepared::Ignore("no_payload"),
+    };
+    match classify(&event) {
+        Classified::Ignore(reason) => Prepared::Ignore(reason),
+        Classified::Process(input) => {
+            let span = consumer_span(message, &input);
+            Prepared::Process(input, span)
+        }
+    }
+}
+
+/// The `process special.events` span of a release: a consumer span whose parent
+/// is the trace context in the message headers, so the release's trace from
+/// `nordic-live` continues here. A message without a valid `traceparent` starts a
+/// root trace and is marked `nexus.trace_parent_missing`.
+pub fn consumer_span<M: KafkaMessage>(message: &M, input: &ReleaseInput) -> Span {
+    let key = message
+        .key()
+        .map(|key| String::from_utf8_lossy(key).into_owned())
+        .unwrap_or_default();
+    let span = info_span!(
+        "process special.events",
+        otel.kind = "consumer",
+        messaging.system = "kafka",
+        messaging.destination.name = message.topic(),
+        messaging.kafka.message.key = key.as_str(),
+        messaging.kafka.message.offset = message.offset(),
+        messaging.destination.partition.id = message.partition(),
+        nexus.ticker = input.ticker.as_str(),
+        nexus.exchange_mic = input.exchange_mic.as_str(),
+        mfn.news_id = input.news_id.as_str(),
+        nexus.lang = input.lang.as_str(),
+        nexus.fiscal_period = input.fiscal_period.as_deref().unwrap_or(""),
+        nexus.decision = Empty,
+        nexus.trace_parent_missing = Empty
+    );
+    let linked = telemetry::kafka::extract(message)
+        .map(|parent| span.set_parent(parent).is_ok())
+        .unwrap_or(false);
+    if !linked {
+        span.record("nexus.trace_parent_missing", true);
+    }
+    span
 }
 
 fn lock(tracker: &Mutex<OffsetTracker>) -> std::sync::MutexGuard<'_, OffsetTracker> {

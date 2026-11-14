@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, TimeZone, Utc};
 use model::generated::SpecialEvent;
-use tracing::{error, info, warn};
+use telemetry::trace::OpenTelemetrySpanExt;
+use tracing::field::Empty;
+use tracing::{error, info, info_span, warn, Instrument, Span};
 use verdict_sdk::Lang;
 
 use crate::claims::Claims;
@@ -16,6 +18,7 @@ use crate::metrics;
 use crate::registry::{KernelRegistry, KERNEL_RETENTION};
 use crate::runtime::{run_blocking, RunOutcome};
 use crate::sink::DecisionSink;
+use crate::spans::{record_failure, trace_id_of};
 use crate::store::{Store, Target};
 use crate::types::{ReportKind, TargetStatus};
 use crate::verdict::KernelMetric;
@@ -180,8 +183,24 @@ pub fn is_transient(error: &sqlx::Error) -> bool {
 pub async fn with_retry<T, F, Fut>(
     step: &'static str,
     policy: RetryPolicy,
-    mut operation: F,
+    operation: F,
 ) -> Result<T, sqlx::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, sqlx::Error>>,
+{
+    with_retry_counted(step, policy, operation)
+        .await
+        .map(|(value, _)| value)
+}
+
+/// [`with_retry`] that also returns how many attempts it took, 1 when the first
+/// one worked.
+pub async fn with_retry_counted<T, F, Fut>(
+    step: &'static str,
+    policy: RetryPolicy,
+    mut operation: F,
+) -> Result<(T, u32), sqlx::Error>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, sqlx::Error>>,
@@ -189,10 +208,10 @@ where
     let mut delay = policy.start;
     let mut attempts = 0u32;
     loop {
+        attempts += 1;
         match operation().await {
-            Ok(value) => return Ok(value),
+            Ok(value) => return Ok((value, attempts)),
             Err(error) => {
-                attempts += 1;
                 if !is_transient(&error) && attempts >= policy.non_transient_attempts {
                     return Err(error);
                 }
@@ -217,6 +236,7 @@ pub struct ReleaseProcessor {
     claims: Claims,
     max_age: Duration,
     retry: RetryPolicy,
+    decisions_topic: String,
 }
 
 impl ReleaseProcessor {
@@ -240,7 +260,15 @@ impl ReleaseProcessor {
             claims: Claims::new(),
             max_age,
             retry: RetryPolicy::default(),
+            decisions_topic: "analyst.decisions".to_owned(),
         }
+    }
+
+    /// Sets the topic decisions are emitted to; it is the
+    /// `messaging.destination.name` of the `send analyst.decisions` span.
+    pub fn with_decisions_topic(mut self, topic: impl Into<String>) -> ReleaseProcessor {
+        self.decisions_topic = topic.into();
+        self
     }
 
     /// Replaces the retry policy (tests use short pauses).
@@ -261,9 +289,16 @@ impl ReleaseProcessor {
     /// the trade scheduler (so the entry quote never waits for the database),
     /// written, emitted. Nothing before the hand-off leaves the process but two
     /// indexed reads of the analyst's own database.
+    ///
+    /// Run it inside the release's `process special.events` span (see
+    /// [`crate::releases::consumer_span`]): every step is a child span of the
+    /// current span, the trace id is stored with the decision, and the decision
+    /// is recorded on it as `nexus.decision`. Without a span nothing is traced.
     pub async fn process(&self, mut input: ReleaseInput, receipt: Receipt) -> Processed {
         let retry = self.retry;
         let store = &self.store;
+        let consumer = Span::current();
+        let trace_id = trace_id_of(&consumer);
         match with_retry("decision_read", retry, || {
             store.decision_by_news_id(&input.news_id)
         })
@@ -283,16 +318,28 @@ impl ReleaseProcessor {
             fiscal_period: input.fiscal_period.clone(),
             published_at: input.published_at,
         };
-        let matched = match with_retry("target_match", retry, || store.match_target(&release)).await
-        {
-            Ok(matched) => matched,
-            Err(error) => return self.failed(&input, "matching the target", &error),
+        let match_span = info_span!(
+            "analyst.match_target",
+            analyst.target_id = Empty,
+            analyst.match = Empty
+        );
+        let located = async {
+            let matched =
+                with_retry("target_match", retry, || store.match_target(&release)).await?;
+            let twin = self.twin_reason(&input, matched.target.as_ref()).await?;
+            Ok::<_, sqlx::Error>((matched, twin))
+        }
+        .instrument(match_span.clone())
+        .await;
+        let (matched, twin) = match located {
+            Ok(located) => located,
+            Err(error) => return self.failed(&input, "matching the release", &error),
         };
+        if let Some(target) = &matched.target {
+            match_span.record("analyst.target_id", target.id);
+        }
+        match_span.record("analyst.match", matched.how.as_str());
         let target = matched.target;
-        let twin = match self.twin_reason(&input, target.as_ref()).await {
-            Ok(twin) => twin,
-            Err(error) => return self.failed(&input, "looking for an earlier version", &error),
-        };
 
         let mut kernel_id = None;
         let mut kernel_micros = None;
@@ -322,14 +369,29 @@ impl ReleaseProcessor {
                     let lang = Lang::from_tag(&input.lang);
                     let text = std::mem::take(&mut input.text).into_bytes();
                     used_kernel = Some(Arc::clone(&kernel));
-                    match run_blocking(kernel, text, lang).await {
+                    let run_span = info_span!(
+                        "analyst.kernel_run",
+                        analyst.kernel_id = kernel_id,
+                        analyst.kernel_micros = Empty,
+                        nexus.decision = Empty,
+                        otel.status_code = Empty,
+                        otel.status_description = Empty
+                    );
+                    let outcome = run_blocking(kernel, text, lang)
+                        .instrument(run_span.clone())
+                        .await;
+                    match outcome {
                         RunOutcome::Ok { verdict, micros } => {
                             kernel_micros = i64::try_from(micros).ok();
+                            let decision: DecisionKind = verdict.decision.into();
+                            run_span.record("analyst.kernel_micros", micros);
+                            run_span.record("nexus.decision", decision.as_str());
                             metrics_found = verdict.metrics;
-                            (verdict.decision.into(), verdict.reason)
+                            (decision, verdict.reason)
                         }
                         RunOutcome::Err(failure) => {
                             error_kind = Some(failure.kind().to_owned());
+                            record_failure(&run_span, failure.kind(), &failure.to_string());
                             (DecisionKind::KernelError, failure.to_string())
                         }
                     }
@@ -354,7 +416,7 @@ impl ReleaseProcessor {
             metrics: metrics_found,
             kernel_micros,
             error: error_kind,
-            trace_id: None,
+            trace_id,
         };
         if matches!(
             kind,
@@ -363,17 +425,21 @@ impl ReleaseProcessor {
                 | DecisionKind::Abstain
                 | DecisionKind::SkippedNoKernel
         ) {
-            self.hand_off.hand_off(TradeSignal {
-                news_id: new.news_id.clone(),
-                ticker: new.ticker.clone(),
-                exchange_mic: new.exchange_mic.clone(),
-                lang: new.lang.clone(),
-                fiscal_period: new.fiscal_period.clone(),
-                decision: kind,
-                baseline: kind == DecisionKind::SkippedNoKernel,
-                published_at: new.published_at,
-                received_at: new.received_at,
-                decided_at,
+            let hand_off_span = info_span!("analyst.hand_off", nexus.decision = kind.as_str());
+            hand_off_span.in_scope(|| {
+                self.hand_off.hand_off(TradeSignal {
+                    news_id: new.news_id.clone(),
+                    ticker: new.ticker.clone(),
+                    exchange_mic: new.exchange_mic.clone(),
+                    lang: new.lang.clone(),
+                    fiscal_period: new.fiscal_period.clone(),
+                    decision: kind,
+                    baseline: kind == DecisionKind::SkippedNoKernel,
+                    published_at: new.published_at,
+                    received_at: new.received_at,
+                    decided_at,
+                    context: Span::current().context(),
+                });
             });
         }
         let to_hand_off = receipt.started.elapsed();
@@ -382,14 +448,21 @@ impl ReleaseProcessor {
             (decided_at - input.published_at).num_milliseconds() as f64 / 1000.0,
         );
 
-        let recorded =
-            match with_retry("decision_write", retry, || store.record_decision(&new)).await {
-                Ok(recorded) => recorded,
-                Err(error) => {
-                    error!(decision = ?new, %error, "the decision could not be written");
-                    return Processed::Failed;
-                }
-            };
+        let write_span = info_span!("analyst.decision_write", analyst.write_attempts = Empty);
+        let written = with_retry_counted("decision_write", retry, || store.record_decision(&new))
+            .instrument(write_span.clone())
+            .await;
+        let recorded = match written {
+            Ok((recorded, attempts)) => {
+                write_span.record("analyst.write_attempts", attempts);
+                recorded
+            }
+            Err(error) => {
+                record_failure(&write_span, "database", &error.to_string());
+                error!(decision = ?new, %error, "the decision could not be written");
+                return Processed::Failed;
+            }
+        };
         let stored_kind = match recorded {
             Recorded::Duplicate => {
                 metrics::release_event("duplicate");
@@ -401,7 +474,16 @@ impl ReleaseProcessor {
             warn!(news_id = %new.news_id, decided = kind.as_str(), stored = stored_kind.as_str(),
                   "another version of the report settled it first");
         }
-        self.emit(&new, stored_kind).await;
+        let key = format!("{}:{}", new.ticker, new.exchange_mic);
+        let send_span = info_span!(
+            "send analyst.decisions",
+            otel.kind = "producer",
+            messaging.system = "kafka",
+            messaging.destination.name = self.decisions_topic.as_str(),
+            messaging.kafka.message.key = key.as_str()
+        );
+        self.emit(&new, stored_kind).instrument(send_span).await;
+        consumer.record("nexus.decision", stored_kind.as_str());
         if let (Some(target), Some(kernel)) = (&target, &used_kernel) {
             self.registry
                 .schedule_drop(target.id, kernel, KERNEL_RETENTION);

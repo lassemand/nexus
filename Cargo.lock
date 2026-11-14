@@ -72,7 +72,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "uuid",
  "verdict-bench-aho",
  "verdict-bench-anchored",
