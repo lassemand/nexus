@@ -178,7 +178,7 @@ impl Config {
                 .unwrap_or_else(|| "analyst.decisions".to_owned()),
             max_release_age: duration("MAX_RELEASE_AGE", "15m")?,
             hold: {
-                let hold = duration("HOLD", "30m")?;
+                let hold = duration("HOLD", "2h")?;
                 if hold.is_zero() || hold > Duration::from_secs(24 * 3600) {
                     return Err(ConfigError::Hold);
                 }
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(config.decisions_topic, "analyst.decisions");
         assert_eq!(config.max_release_age, Duration::from_secs(15 * 60));
         assert!(config.analyst_tickers.is_empty());
-        assert_eq!(config.hold, Duration::from_secs(30 * 60));
+        assert_eq!(config.hold, Duration::from_secs(2 * 3600));
         assert_eq!(config.close_buffer, Duration::from_secs(5 * 60));
         assert_eq!(config.entry_max_wait, Duration::from_secs(5 * 60));
         assert_eq!(config.quote_concurrency, 8);

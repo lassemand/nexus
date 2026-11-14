@@ -16,7 +16,7 @@ analyst:
   prepMaxAttempts: 3
   prepTimeout: 1800
   schedulerTick: "60s"
-  hold: "30m"
+  hold: "2h"
   obsHorizons: "1m,5m,15m,30m,60m,close"
   closeBuffer: "5m"
   entryMaxWait: "5m"

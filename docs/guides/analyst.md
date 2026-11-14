@@ -43,7 +43,7 @@ Environment variables of the Deployment (chart `values.yaml`, `analyst.*`). Dura
 | `PREP_MAX_ATTEMPTS` | `3` | Preparations per report per cycle. |
 | `PREP_TIMEOUT` | `1800` | Seconds a preparation Job may run. |
 | `SCHEDULER_TICK` | `60s` | |
-| `HOLD` | `30m` | Holding period of a simulated trade. |
+| `HOLD` | `2h` | Holding period of a simulated trade. |
 | `OBS_HORIZONS` | `1m,5m,15m,30m,60m,close` | Observation points after entry. |
 | `CLOSE_BUFFER` | `5m` | Margin before the close. |
 | `ENTRY_MAX_WAIT` | `5m` | Longest wait for a tradable quote. |

@@ -41,7 +41,7 @@ crate: `12h`, `1h30m`, `50ms`.
 | `SPECIAL_EVENTS_TOPIC` | `special.events` | Kafka topic report releases arrive on (consumer group `analyst-releases`, starting from the latest offset). |
 | `DECISIONS_TOPIC` | `analyst.decisions` | Kafka topic the decisions (`AnalystDecision`) are produced on, keyed `ticker:mic`. |
 | `MAX_RELEASE_AGE` | `15m` | A release published longer ago than this when it is consumed is recorded as `stale` and never traded. |
-| `HOLD` | `30m` | How long a simulated trade is held, in trading minutes (above zero, at most 24h). |
+| `HOLD` | `2h` | How long a simulated trade is held, in trading minutes (above zero, at most 24h). |
 | `OBS_HORIZONS` | `1m,5m,15m,30m,60m,close` | When after entry the bid is observed; ascending durations, `close` (the session cutoff) only last. |
 | `CLOSE_BUFFER` | `5m` | Continuous trading ends this long before the close (the closing auction). |
 | `ENTRY_MAX_WAIT` | `5m` | How long the entry quote is retried. |
