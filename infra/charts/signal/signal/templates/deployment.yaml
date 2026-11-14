@@ -25,6 +25,12 @@ spec:
             - name: metrics
               containerPort: 9464
 
+          env:
+            - name: ANALYST_DECISIONS_TOPIC
+              value: {{ .Values.analystDecisionsTopic | quote }}
+            - name: ANALYST_TRADES_TOPIC
+              value: {{ .Values.analystTradesTopic | quote }}
+
           # All runtime configuration is injected from the ESO-managed secret.
           # No env vars are hardcoded here; see templates/external-secret.yaml.
           envFrom:

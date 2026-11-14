@@ -1,0 +1,618 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-analyst
+  namespace: nexus
+  annotations:
+    grafana_folder: Nexus
+  labels:
+    grafana_dashboard: "1"
+data:
+  analyst.json: |
+    {
+      "uid": "nexus-analyst",
+      "title": "Analyst",
+      "tags": [
+        "nexus",
+        "analyst"
+      ],
+      "timezone": "browser",
+      "time": {
+        "from": "now-24h",
+        "to": "now"
+      },
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "templating": {
+        "list": []
+      },
+      "panels": [
+        {
+          "type": "table",
+          "title": "Upcoming reports: targets by status and time to the next report without a kernel",
+          "description": "analyst_targets by status; analyst_next_report_seconds is -1 when there is none.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "analyst_targets{job=\"analyst\"}",
+              "format": "table",
+              "instant": true,
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "analyst_next_report_seconds{job=\"analyst\"}",
+              "format": "table",
+              "instant": true,
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            }
+          ],
+          "id": 1,
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Time to next report without a ready kernel",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "-1": {
+                      "text": "none"
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "analyst_next_report_seconds{job=\"analyst\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 2,
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 6,
+            "h": 8
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Kernels loaded",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "analyst_kernels_loaded{job=\"analyst\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 3,
+          "gridPos": {
+            "x": 18,
+            "y": 0,
+            "w": 6,
+            "h": 8
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Preparation runs: started and failed by reason",
+          "description": "Per hour.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(increase(analyst_prep_started_total{job=\"analyst\"}[1h]))",
+              "legendFormat": "started",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "sum by (reason) (increase(analyst_prep_failed_total{job=\"analyst\"}[1h]))",
+              "legendFormat": "failed {{ "{{" }}reason{{ "}}" }}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 4,
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Preparation duration and cost",
+          "description": "Duration in seconds. Cost in USD is the LLM spend reported by the preparation run.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(analyst_prep_duration_seconds_bucket{job=\"analyst\"}[6h])))",
+              "legendFormat": "duration p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(analyst_prep_duration_seconds_bucket{job=\"analyst\"}[6h])))",
+              "legendFormat": "duration p95",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "C",
+              "expr": "sum(increase(analyst_prep_cost_usd_total{job=\"analyst\"}[24h]))",
+              "legendFormat": "cost USD, last 24h",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 5,
+          "gridPos": {
+            "x": 12,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Decisions by type",
+          "description": "Per hour.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (decision) (increase(analyst_decisions_total{job=\"analyst\"}[1h]))",
+              "legendFormat": "{{ "{{" }}decision{{ "}}" }}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 6,
+          "gridPos": {
+            "x": 0,
+            "y": 16,
+            "w": 12,
+            "h": 8
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Release to decision and publish to decision latency (p50 / p99)",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(analyst_release_to_decision_seconds_bucket{job=\"analyst\"}[15m])))",
+              "legendFormat": "release\u2192decision p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(analyst_release_to_decision_seconds_bucket{job=\"analyst\"}[15m])))",
+              "legendFormat": "release\u2192decision p99",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "C",
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(analyst_publish_to_decision_seconds_bucket{job=\"analyst\"}[15m])))",
+              "legendFormat": "publish\u2192decision p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "D",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(analyst_publish_to_decision_seconds_bucket{job=\"analyst\"}[15m])))",
+              "legendFormat": "publish\u2192decision p99",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 7,
+          "gridPos": {
+            "x": 12,
+            "y": 16,
+            "w": 12,
+            "h": 8
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Entry delay and quote lateness (p50 / p99)",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(analyst_entry_delay_seconds_bucket{job=\"analyst\"}[1h])))",
+              "legendFormat": "entry delay p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(analyst_entry_delay_seconds_bucket{job=\"analyst\"}[1h])))",
+              "legendFormat": "entry delay p99",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "C",
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(analyst_quote_lateness_seconds_bucket{job=\"analyst\"}[1h])))",
+              "legendFormat": "quote lateness p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "D",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(analyst_quote_lateness_seconds_bucket{job=\"analyst\"}[1h])))",
+              "legendFormat": "quote lateness p99",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 8,
+          "gridPos": {
+            "x": 0,
+            "y": 24,
+            "w": 12,
+            "h": 8
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Quotes by outcome",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (outcome) (increase(analyst_quotes_total{job=\"analyst\"}[10m]))",
+              "legendFormat": "{{ "{{" }}outcome{{ "}}" }}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 9,
+          "gridPos": {
+            "x": 12,
+            "y": 24,
+            "w": 12,
+            "h": 8
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Kernel errors and run time",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (kind) (increase(analyst_kernel_errors_total{job=\"analyst\"}[1h]))",
+              "legendFormat": "errors {{ "{{" }}kind{{ "}}" }}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(analyst_kernel_run_seconds_bucket{job=\"analyst\"}[15m])))",
+              "legendFormat": "run p99 (s)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 10,
+          "gridPos": {
+            "x": 0,
+            "y": 32,
+            "w": 12,
+            "h": 8
+          }
+        },
+        {
+          "type": "table",
+          "title": "Simulated P&L by decision and horizon (%)",
+          "description": "From signal's simulated_trades (NEX-257).",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT decision, horizon, count(*) AS trades, avg(pnl_pct) AS avg_pnl_pct, sum(pnl_pct) AS sum_pnl_pct FROM simulated_trades GROUP BY decision, horizon ORDER BY decision, horizon"
+            }
+          ],
+          "id": 11,
+          "gridPos": {
+            "x": 12,
+            "y": 32,
+            "w": 12,
+            "h": 8
+          }
+        },
+        {
+          "type": "table",
+          "title": "Release traces",
+          "description": "Recent release traces from Tempo; each row links to the trace.",
+          "datasource": {
+            "type": "tempo",
+            "uid": "nexus-tempo"
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "traceID"
+                },
+                "properties": [
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open trace",
+                        "url": "/explore?left=%7B%22datasource%22:%22nexus-tempo%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22queryType%22:%22traceql%22,%22query%22:%22${__value.raw}%22%7D%5D%7D"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "tempo",
+                "uid": "nexus-tempo"
+              },
+              "queryType": "traceql",
+              "limit": 50,
+              "tableType": "traces",
+              "query": "{resource.service.name=\"analyst\" && name=\"process special.events\"}"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "renameByName": {
+                  "startTime": "Start time",
+                  "traceDuration": "Duration"
+                }
+              }
+            }
+          ],
+          "id": 12,
+          "gridPos": {
+            "x": 0,
+            "y": 40,
+            "w": 24,
+            "h": 9
+          }
+        },
+        {
+          "type": "table",
+          "title": "Recent decisions",
+          "description": "analyst_decisions; trace_id links to the trace in Tempo.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "trace_id"
+                },
+                "properties": [
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open trace in Tempo",
+                        "url": "/explore?left=%7B%22datasource%22:%22nexus-tempo%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22queryType%22:%22traceql%22,%22query%22:%22${__value.raw}%22%7D%5D%7D"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT decided_at AS \"time\", ticker, exchange_mic, decision, trace_id FROM analyst_decisions ORDER BY decided_at DESC LIMIT 50"
+            }
+          ],
+          "id": 13,
+          "gridPos": {
+            "x": 0,
+            "y": 49,
+            "w": 24,
+            "h": 9
+          }
+        }
+      ]
+    }

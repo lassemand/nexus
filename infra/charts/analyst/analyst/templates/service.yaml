@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: analyst
+  labels:
+    app: analyst
+spec:
+  type: ClusterIP
+  selector:
+    app: analyst
+  ports:
+    - name: api
+      port: {{ .Values.ports.api }}
+      targetPort: api
+      protocol: TCP

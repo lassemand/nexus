@@ -1,0 +1,8 @@
+apiVersion: v2
+name: analyst
+description: >
+  Helm chart for the nexus analyst service: per-report WASM kernels prepared by
+  Kubernetes Jobs, run on each release, with simulated trades. Namespace `analyst`.
+type: application
+version: 0.1.0
+appVersion: "latest"

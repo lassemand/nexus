@@ -1,0 +1,63 @@
+image:
+  repository: "lmapwns/nexus"
+  tag: "0.10.0"
+# 0 until the preparation Job launcher, releases and trades (NEX-253 to NEX-255) are merged
+# and the Vault keys in README.md exist; then set to 1. Never more than 1: the trade
+# timers are in-process, so a second replica would double the quotes.
+replicaCount: 0
+analyst:
+  # Preparation Job image (infra/Dockerfile.analyst-prep, release workflow
+  # release-analyst-prep.yml, NEX-253). Pinned tag; set it to the first released tag.
+  prepImage: "lmapwns/nexus-analyst-prep:analyst-prep-v0.1.0"
+  prepNamespace: "analyst"
+  prepLead: "12h"
+  prepMinLead: "1h"
+  prepMaxConcurrent: 2
+  prepMaxAttempts: 3
+  prepTimeout: 1800
+  schedulerTick: "60s"
+  hold: "30m"
+  obsHorizons: "1m,5m,15m,30m,60m,close"
+  closeBuffer: "5m"
+  entryMaxWait: "5m"
+  maxReleaseAge: "15m"
+  kernelDeadline: "50ms"
+  # Optional TICKER:MIC,TICKER:MIC allowlist; empty means every registered company.
+  # To pause: set a ticker that does not exist, or replicaCount 0.
+  tickers: ""
+  kafkaBrokers: "nexus-kafka-bootstrap.nexus.svc.cluster.local:9092"
+  notesTopic: "analyst.notes"
+  decisionsTopic: "analyst.decisions"
+  tradesTopic: "analyst.trades"
+  releasesTopic: "special.events"
+  saxoQuotesUrl: "http://saxo-quotes.chronicle.svc.cluster.local:8080"
+  prepUploadUrl: "http://analyst.analyst.svc.cluster.local:8081/kernels"
+  logLevel: "info"
+  # OTLP/HTTP endpoint for traces (docs/guides/tracing.md). Empty disables export.
+  # Never set on the prep Jobs.
+  otlpEndpoint: "http://alloy.nexus.svc.cluster.local:4318"
+ports:
+  api: 8081
+  metrics: 9464
+probes:
+  # Path on the api port. Ready once the accepted kernels are loaded and warm.
+  livenessPath: "/healthz"
+  readinessPath: "/readyz"
+resources:
+  # Headroom so nothing is throttled at the 09:00 open when many entries fire at once.
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "2"
+    memory: "1536Mi"
+networkPolicy:
+  # Cluster networks the prep Jobs must not reach (k3s defaults, the values k3s on OrbStack
+  # uses unless started with --cluster-cidr / --service-cidr; confirm with
+  # `kubectl --context orbstack cluster-info dump | grep -m1 -E 'cluster-cidr|service-cluster-ip-range'`).
+  podCidr: "10.42.0.0/16"
+  serviceCidr: "10.43.0.0/16"
+  # MetalLB range (orbstack-pinned and orbstack-pool).
+  metallbCidr: "192.168.139.0/24"
+  monitoringNamespace: "nexus"
+  alloyNamespace: "nexus"

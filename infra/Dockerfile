@@ -25,6 +25,12 @@ COPY insight/Cargo.toml  insight/Cargo.toml
 COPY cli/Cargo.toml      cli/Cargo.toml
 COPY conductor/Cargo.toml conductor/Cargo.toml
 COPY telemetry/Cargo.toml telemetry/Cargo.toml
+COPY analyst/Cargo.toml  analyst/Cargo.toml
+COPY verdict/sdk/Cargo.toml verdict/sdk/Cargo.toml
+COPY verdict/kernels/sample/Cargo.toml verdict/kernels/sample/Cargo.toml
+COPY verdict/kernels/bench-anchored/Cargo.toml verdict/kernels/bench-anchored/Cargo.toml
+COPY verdict/kernels/bench-memmem/Cargo.toml verdict/kernels/bench-memmem/Cargo.toml
+COPY verdict/kernels/bench-aho/Cargo.toml verdict/kernels/bench-aho/Cargo.toml
 
 # Create placeholder sources so Cargo can parse the workspace.
 #
@@ -39,7 +45,11 @@ COPY telemetry/Cargo.toml telemetry/Cargo.toml
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src \
       conductor/src conductor/tests/fixtures/fake-claude-tty telemetry/src \
+      analyst/src/bin verdict/sdk/src verdict/kernels/sample/src \
+      verdict/kernels/bench-anchored/src verdict/kernels/bench-memmem/src verdict/kernels/bench-aho/src \
     && touch model/src/lib.rs alpha/src/lib.rs chronicle/src/lib.rs conductor/src/lib.rs telemetry/src/lib.rs \
+       analyst/src/lib.rs verdict/sdk/src/lib.rs verdict/kernels/sample/src/lib.rs \
+       verdict/kernels/bench-anchored/src/lib.rs verdict/kernels/bench-memmem/src/lib.rs verdict/kernels/bench-aho/src/lib.rs \
     && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
         chronicle/src/market.rs \
@@ -55,6 +65,8 @@ RUN mkdir -p \
         insight/src/main.rs \
         cli/src/main.rs \
         conductor/src/main.rs \
+        analyst/src/bin/analyst.rs \
+        analyst/src/bin/analyst-bench.rs \
         conductor/tests/fixtures/fake-claude-tty/main.rs
 
 # Download dependencies as a separate layer — only re-runs when Cargo.lock changes
@@ -75,7 +87,14 @@ RUN sed -i "s/version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml \
         cli/src/*.rs \
         conductor/src/*.rs \
         telemetry/src/*.rs \
-    && cargo build --frozen --release
+        analyst/src/*.rs analyst/src/bin/*.rs \
+        verdict/sdk/src/*.rs \
+        verdict/kernels/sample/src/*.rs \
+        verdict/kernels/bench-anchored/src/*.rs \
+        verdict/kernels/bench-memmem/src/*.rs \
+        verdict/kernels/bench-aho/src/*.rs \
+    && cargo build --frozen --release \
+    && cargo build --frozen --release -p analyst --features bench --bin analyst-bench
 
 # sqlx-cli for initContainer-driven migrations (kept off the runtime image's
 # critical path — only the compiled binary is copied out below). Matches the
@@ -104,6 +123,8 @@ COPY --from=builder /build/target/release/nordic-live /usr/local/bin/nordic-live
 COPY --from=builder /build/target/release/saxo_stream /usr/local/bin/saxo_stream
 COPY --from=builder /build/target/release/signal      /usr/local/bin/signal
 COPY --from=builder /build/target/release/insight     /usr/local/bin/insight
+COPY --from=builder /build/target/release/analyst     /usr/local/bin/analyst
+COPY --from=builder /build/target/release/analyst-bench /usr/local/bin/analyst-bench
 
 # sqlx-cli + chronicle migration files for the saxo-stream initContainer —
 # runs chronicle migrations before the app container starts to ensure schema

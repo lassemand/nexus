@@ -1,0 +1,73 @@
+# analyst-prep: the Jobs that let Claude Code write a kernel. They reach Anthropic, MFN and
+# the web on 443 and nothing in the cluster: no Kafka (no authentication), no Postgres, no
+# Vault, no Alloy. The only in-cluster exception is the analyst Service (kernel upload).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: analyst-prep
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: analyst-prep
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: analyst
+      ports:
+        - port: {{ .Values.ports.api }}
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - {{ .Values.networkPolicy.podCidr }}
+              - {{ .Values.networkPolicy.serviceCidr }}
+              - {{ .Values.networkPolicy.metallbCidr }}
+      ports:
+        - port: 443
+          protocol: TCP
+---
+# analyst: the kernel upload port only from the prep pods, metrics only from the monitoring
+# namespace. Egress is not restricted (Kafka, Postgres, saxo-quotes, Alloy, the Kubernetes API).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: analyst
+spec:
+  podSelector:
+    matchLabels:
+      app: analyst
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: analyst-prep
+      ports:
+        - port: api
+          protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace | quote }}
+      ports:
+        - port: metrics
+          protocol: TCP

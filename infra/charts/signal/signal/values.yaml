@@ -14,3 +14,6 @@ resources:
   limits:
     memory: "256Mi"
     cpu: "200m"
+# Topics of the analyst's decisions and simulated trades (NEX-257, stored in the backtest database).
+analystDecisionsTopic: "analyst.decisions"
+analystTradesTopic: "analyst.trades"

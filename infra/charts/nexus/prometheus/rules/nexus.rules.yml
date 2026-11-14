@@ -710,3 +710,93 @@ groups:
           description: >-
             The 95th percentile latency of {{ $labels.tool }} has been above 5 s
             for the last 15 minutes. See the Insight dashboard and the database.
+
+  - name: nexus.analyst
+    rules:
+      # replicas 0 (feature paused) is not an outage: only a wanted pod without a
+      # healthy scrape alerts.
+      - alert: AnalystDown
+        expr: >
+          (kube_deployment_spec_replicas{namespace="analyst",deployment="analyst"} > 0)
+          unless on ()
+          (max(up{job="analyst"}) == 1)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "analyst has not been up for 5 minutes"
+          description: >-
+            No analyst pod answers its scrape. Releases are not decided and open
+            simulated trades are not closed while it is down. See docs/guides/analyst.md.
+
+      # analyst_next_report_seconds is the time to the soonest report without a ready
+      # kernel (-1: none); the targets gauge confirms such a target exists.
+      - alert: AnalystKernelMissingSoon
+        expr: >
+          (analyst_next_report_seconds{job="analyst"} >= 0 and analyst_next_report_seconds{job="analyst"} < 3600)
+          and on () (sum(analyst_targets{job="analyst",status=~"waiting|preparing|failed"}) > 0)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A report is {{ $value | humanizeDuration }} away and has no ready kernel"
+          description: >-
+            The soonest report without an accepted kernel is less than an hour away, so
+            it will be abstained. Check the preparation runs on the Analyst dashboard and
+            the analyst logs.
+
+      - alert: AnalystPrepFailing
+        expr: sum(increase(analyst_prep_failed_total{job="analyst"}[6h])) >= 3
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanize }} kernel preparations failed in 6 hours"
+          description: >-
+            Preparations fail by reason (launch, failed, timed_out, rejected). Read the
+            Job logs in namespace analyst and the Anthropic key in analyst-prep-secret.
+
+      - alert: AnalystDecisionSlow
+        expr: >
+          histogram_quantile(0.99, sum by (le) (rate(analyst_release_to_decision_seconds_bucket{job="analyst"}[5m]))) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "analyst release to decision p99 is {{ $value | humanizeDuration }}"
+          description: >-
+            The 99th percentile from a release arriving to its decision has been above
+            50 ms for 10 minutes. Check CPU throttling of the analyst pod and kernel run
+            times on the Analyst dashboard.
+
+      # Nordic sessions are 07:00-16:30 UTC at most; Mon-Fri 07:00-16:00 UTC.
+      - alert: AnalystQuoteErrors
+        expr: >
+          (
+            sum(increase(analyst_quotes_total{job="analyst",outcome!="ok"}[10m]))
+            / sum(increase(analyst_quotes_total{job="analyst"}[10m]))
+          ) > 0.2
+          and sum(increase(analyst_quotes_total{job="analyst"}[10m])) >= 5
+          and on () (day_of_week() >= 1 and day_of_week() <= 5)
+          and on () (hour() >= 7 and hour() < 16)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of analyst quotes are not ok"
+          description: >-
+            More than 20 % of the quotes the analyst asked saxo-stream for failed over
+            the last 10 minutes. See the outcome split on the Analyst dashboard and the
+            Saxo dashboard.
+
+      - alert: SaxoQuotesDown
+        expr: sum(increase(saxo_quote_requests_total{outcome="no_token"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "saxo-stream answers quote requests with no_token"
+          description: >-
+            saxo-stream has no valid Saxo access token, so every quote request is 503.
+            Re-authenticate (docs/guides/saxo-oauth-setup.md); simulated entries fail
+            until then.
