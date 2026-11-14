@@ -527,6 +527,8 @@ pub trait TradeStore: Send + Sync {
         id: i64,
         status: TradeStatus,
     ) -> Result<StoredTrade, sqlx::Error>;
+    /// See [`Store::set_trade_trace`].
+    async fn set_trade_trace(&self, id: i64, trade_trace_id: &str) -> Result<(), sqlx::Error>;
 }
 
 #[async_trait]
@@ -559,5 +561,8 @@ impl TradeStore for Store {
         status: TradeStatus,
     ) -> Result<StoredTrade, sqlx::Error> {
         Store::set_trade_status(self, id, status).await
+    }
+    async fn set_trade_trace(&self, id: i64, trade_trace_id: &str) -> Result<(), sqlx::Error> {
+        Store::set_trade_trace(self, id, trade_trace_id).await
     }
 }

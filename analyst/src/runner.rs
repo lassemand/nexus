@@ -18,9 +18,12 @@ use std::time::Duration;
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rust_decimal::Decimal;
+use telemetry::trace::opentelemetry::trace::{SpanContext, TraceContextExt};
+use telemetry::trace::opentelemetry::{Context, KeyValue};
+use telemetry::trace::OpenTelemetrySpanExt;
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
-use tracing::{error, info, warn};
+use tracing::{error, info, info_span, warn, Instrument, Span};
 
 use crate::calendar::SessionsCache;
 use crate::clock::Clock;
@@ -32,6 +35,10 @@ use crate::pnl::{compute, PnlProblem};
 use crate::quotes::{Quote, QuoteError, QuoteSource};
 use crate::release::{with_retry, RetryPolicy};
 use crate::sink::TradeSink;
+use crate::spans::{
+    clock_span, context_from_traceparent, context_trace_id, end_span, fail_span,
+    span_context_from_traceparent, traceparent_of,
+};
 use crate::trades::{
     to_proto, Entry, Exit, NewObservation, NewTrade, ObservationStatus, StoredTrade, TradeStatus,
     TradeStore,
@@ -61,6 +68,8 @@ pub struct RunnerSettings {
     pub entry_max_wait: Duration,
     /// The most quote requests in flight at once.
     pub quote_concurrency: usize,
+    /// The topic simulated trades are produced on, for the producer span.
+    pub trades_topic: String,
 }
 
 impl RunnerSettings {
@@ -72,11 +81,10 @@ impl RunnerSettings {
             close_buffer: config.close_buffer,
             entry_max_wait: config.entry_max_wait,
             quote_concurrency: config.quote_concurrency as usize,
+            trades_topic: config.trades_topic.clone(),
         }
     }
 }
-
-type Fetched = (DateTime<Utc>, Result<Quote, QuoteError>);
 
 enum Event {
     Observe(String),
@@ -179,6 +187,48 @@ impl TradeHandOff for TradeRunner {
     }
 }
 
+/// What a quote request is for, in `analyst.quote_purpose`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Entry,
+    Exit,
+    Observation,
+}
+
+impl Purpose {
+    fn as_str(self) -> &'static str {
+        match self {
+            Purpose::Entry => "entry",
+            Purpose::Exit => "exit",
+            Purpose::Observation => "observation",
+        }
+    }
+}
+
+/// A fetched quote and the `analyst.quote` span still open around it.
+struct Traced {
+    at: DateTime<Utc>,
+    result: Result<Quote, QuoteError>,
+    span: Span,
+}
+
+fn status_code(result: &Result<Quote, QuoteError>) -> i64 {
+    match result {
+        Ok(_) => 200,
+        Err(QuoteError::Unavailable { .. }) => 503,
+        Err(QuoteError::NotFound) => 404,
+        Err(QuoteError::Status(code)) => i64::from(*code),
+        Err(_) => 0,
+    }
+}
+
+/// Where the spans of a trade's entry hang: the entry span, and the release's
+/// span context to link the holding trace to.
+struct Release {
+    entry: Span,
+    link: Option<SpanContext>,
+}
+
 impl Inner {
     async fn db<T, F, Fut>(&self, step: &'static str, operation: F) -> Option<T>
     where
@@ -203,10 +253,52 @@ impl Inner {
         }
     }
 
-    async fn fetch(&self, ticker: &str, mic: &str) -> Fetched {
+    async fn fetch(
+        &self,
+        parent: &Span,
+        purpose: Purpose,
+        attempt: u32,
+        ticker: &str,
+        mic: &str,
+    ) -> Traced {
+        let span = clock_span(
+            "analyst.quote",
+            self.clock.now(),
+            Some(&parent.context()),
+            vec![
+                KeyValue::new("analyst.quote_purpose", purpose.as_str()),
+                KeyValue::new("analyst.attempt", i64::from(attempt)),
+            ],
+        );
         let _permit = self.permits.acquire().await;
         let result = self.quotes.quote(ticker, mic).await;
-        (self.clock.now(), result)
+        Traced {
+            at: self.clock.now(),
+            result,
+            span,
+        }
+    }
+
+    fn close_quote(&self, traced: &Traced, accepted: bool, purpose: Purpose) {
+        let span = &traced.span;
+        span.set_attribute("http.response.status_code", status_code(&traced.result));
+        if let Ok(quote) = &traced.result {
+            let kind = match purpose {
+                Purpose::Entry => quote.ask_type.clone(),
+                _ => quote.bid_type.clone(),
+            };
+            let key = if purpose == Purpose::Entry {
+                "analyst.ask_type"
+            } else {
+                "analyst.bid_type"
+            };
+            span.set_attribute(key, kind.unwrap_or_default());
+        }
+        if let Err(error) = &traced.result {
+            fail_span(span, &error.to_string());
+        }
+        span.set_attribute("analyst.accepted", accepted);
+        end_span(span, traced.at);
     }
 
     fn record_lateness(&self, scheduled: DateTime<Utc>, fetched: DateTime<Utc>) -> bool {
@@ -216,6 +308,7 @@ impl Inner {
     }
 
     async fn run_signal(self: Arc<Self>, signal: TradeSignal) {
+        let started = self.clock.now();
         let sessions = self.sessions.get();
         let plan = plan_entry(
             &sessions,
@@ -223,23 +316,66 @@ impl Inner {
             signal.decided_at,
             self.settings.close_buffer,
         );
+        let release_context = signal.context.clone();
+        let link = {
+            let span_context = release_context.span().span_context().clone();
+            span_context.is_valid().then_some(span_context)
+        };
+        let entry_span = clock_span(
+            "analyst.trade_entry",
+            started,
+            Some(&release_context),
+            vec![
+                KeyValue::new("nexus.ticker", signal.ticker.clone()),
+                KeyValue::new("nexus.exchange_mic", signal.exchange_mic.clone()),
+                KeyValue::new("nexus.decision", signal.decision.as_str()),
+                KeyValue::new("analyst.shadow", signal.decision != DecisionKind::Buy),
+            ],
+        );
+        let release = Release {
+            entry: entry_span,
+            link,
+        };
         let first = match plan {
-            EntryPlan::Now => Some(self.fetch(&signal.ticker, &signal.exchange_mic).await),
+            EntryPlan::Now => Some(
+                self.fetch(
+                    &release.entry,
+                    Purpose::Entry,
+                    1,
+                    &signal.ticker,
+                    &signal.exchange_mic,
+                )
+                .await,
+            ),
             _ => None,
         };
         let target = plan.target(signal.decided_at);
+        if let Some(target) = target {
+            release
+                .entry
+                .set_attribute("analyst.entry_target_at", target.to_rfc3339());
+        }
         let status = match plan {
             EntryPlan::CalendarUnknown => TradeStatus::CalendarUnknown,
             _ => TradeStatus::PendingEntry,
         };
         let Some(trade) = self.create(&signal, target, status).await else {
+            if let Some(first) = &first {
+                self.close_quote(first, false, Purpose::Entry);
+            }
+            fail_span(&release.entry, "no trade");
+            end_span(&release.entry, self.clock.now());
             return;
         };
         if status == TradeStatus::CalendarUnknown {
-            self.finish(&trade).await;
+            release
+                .entry
+                .set_attribute("analyst.trade_status", status.as_str());
+            end_span(&release.entry, self.clock.now());
+            self.finish(&trade, &release.entry).await;
             return;
         }
-        self.enter(trade, first, matches!(plan, EntryPlan::Now), false)
+        self.enter(trade, first, matches!(plan, EntryPlan::Now), false, release)
             .await;
     }
 
@@ -269,8 +405,8 @@ impl Inner {
             hold_minutes: (hold_secs / Decimal::from(60)).round_dp(3),
             entry_target_at,
             status,
-            trace_id: None,
-            release_traceparent: None,
+            trace_id: context_trace_id(&signal.context),
+            release_traceparent: traceparent_of(&signal.context),
         };
         self.db("create_trade", || self.store.create_trade(&new))
             .await
@@ -280,33 +416,70 @@ impl Inner {
     async fn enter(
         &self,
         trade: StoredTrade,
-        first: Option<Fetched>,
+        first: Option<Traced>,
         in_session: bool,
         resumed: bool,
+        release: Release,
     ) {
+        let Release {
+            entry: entry_span,
+            link,
+        } = release;
+        entry_span.set_attribute("analyst.resumed", resumed);
         let Some(target) = trade.entry_target_at else {
-            self.set_status(&trade, TradeStatus::InvalidEntry).await;
+            entry_span.set_attribute("analyst.trade_status", TradeStatus::InvalidEntry.as_str());
+            end_span(&entry_span, self.clock.now());
+            self.set_status(&trade, TradeStatus::InvalidEntry, &entry_span)
+                .await;
             return;
         };
         if resumed && self.clock.now() > target + chrono(LATE_AFTER) {
-            self.set_status(&trade, TradeStatus::NoEntryQuote).await;
+            entry_span.set_attribute("analyst.trade_status", TradeStatus::NoEntryQuote.as_str());
+            end_span(&entry_span, self.clock.now());
+            self.set_status(&trade, TradeStatus::NoEntryQuote, &entry_span)
+                .await;
             return;
         }
         if first.is_none() {
-            self.sleep_until(target).await;
+            let now = self.clock.now();
+            if target > now {
+                let wait = clock_span(
+                    "analyst.wait_for_session",
+                    now,
+                    Some(&entry_span.context()),
+                    vec![KeyValue::new(
+                        "analyst.entry_target_at",
+                        target.to_rfc3339(),
+                    )],
+                );
+                self.sleep_until(target).await;
+                end_span(&wait, self.clock.now());
+            }
         }
         let deadline = target + chrono(self.settings.entry_max_wait);
         let mut next = first;
+        let mut attempt = 0u32;
         let accepted = loop {
-            let (at, result) = match next.take() {
-                Some(fetched) => fetched,
-                None => self.fetch(&trade.ticker, &trade.exchange_mic).await,
+            attempt += 1;
+            let traced = match next.take() {
+                Some(traced) => traced,
+                None => {
+                    self.fetch(
+                        &entry_span,
+                        Purpose::Entry,
+                        attempt,
+                        &trade.ticker,
+                        &trade.exchange_mic,
+                    )
+                    .await
+                }
             };
-            let wait = match result {
+            let wait = match &traced.result {
                 Ok(quote) => match quote.entry_ask() {
                     Some(ask) => {
                         metrics::quote_request("accepted");
-                        break Some((at, quote, ask));
+                        self.close_quote(&traced, true, Purpose::Entry);
+                        break Some((traced.at, quote.clone(), ask));
                     }
                     None => {
                         metrics::quote_request("rejected");
@@ -316,18 +489,23 @@ impl Inner {
                 Err(error) => {
                     metrics::quote_request(error.outcome());
                     match error {
-                        QuoteError::Unavailable { retry_after } => retry_after,
+                        QuoteError::Unavailable { retry_after } => *retry_after,
                         _ => RETRY_EVERY,
                     }
                 }
             };
+            self.close_quote(&traced, false, Purpose::Entry);
             if self.clock.now() + chrono(wait) > deadline {
                 break None;
             }
             tokio::time::sleep(wait).await;
         };
         let Some((at, quote, ask)) = accepted else {
-            self.set_status(&trade, TradeStatus::NoEntryQuote).await;
+            entry_span.set_attribute("analyst.trade_status", TradeStatus::NoEntryQuote.as_str());
+            fail_span(&entry_span, "no_entry_quote");
+            end_span(&entry_span, self.clock.now());
+            self.set_status(&trade, TradeStatus::NoEntryQuote, &entry_span)
+                .await;
             return;
         };
         self.record_lateness(target, at);
@@ -344,31 +522,64 @@ impl Inner {
         let Some((cutoff, exit_at)) =
             cutoff.and_then(|c| exit_target(at, self.settings.hold, c).map(|e| (c, e)))
         else {
-            self.set_status(&trade, TradeStatus::InvalidEntry).await;
+            entry_span.set_attribute("analyst.trade_status", TradeStatus::InvalidEntry.as_str());
+            end_span(&entry_span, at);
+            self.set_status(&trade, TradeStatus::InvalidEntry, &entry_span)
+                .await;
             return;
         };
+        let release_to_entry_ms = (at - trade.published_at).num_milliseconds();
         let entry = Entry {
             at,
             ask,
             bid: quote.bid,
             saxo_at: quote.saxo_last_updated.clone(),
             currency: quote.currency.clone(),
-            release_to_entry_ms: (at - trade.published_at).num_milliseconds(),
+            release_to_entry_ms,
             exit_target_at: Some(exit_at),
         };
+        entry_span.set_attribute("analyst.release_to_entry_ms", release_to_entry_ms);
+        entry_span.set_attribute("analyst.trade_status", TradeStatus::Open.as_str());
+        end_span(&entry_span, at);
         let Some(opened) = self
             .db("record_entry", || self.store.record_entry(trade.id, &entry))
             .await
         else {
             return;
         };
-        self.emit(&opened).await;
-        self.run_open(opened, cutoff, false).await;
+        self.emit(&opened, &entry_span).await;
+        drop(entry_span);
+        self.run_open(opened, cutoff, false, link).await;
     }
 
     async fn resume_trade(self: Arc<Self>, trade: StoredTrade) {
+        let release_context = trade
+            .release_traceparent
+            .as_deref()
+            .and_then(context_from_traceparent);
+        let link = trade
+            .release_traceparent
+            .as_deref()
+            .and_then(span_context_from_traceparent);
         match trade.status() {
-            TradeStatus::PendingEntry => self.enter(trade, None, false, true).await,
+            TradeStatus::PendingEntry => {
+                let entry_span = clock_span(
+                    "analyst.trade_entry",
+                    self.clock.now(),
+                    release_context.as_ref(),
+                    vec![
+                        KeyValue::new("nexus.ticker", trade.ticker.clone()),
+                        KeyValue::new("nexus.exchange_mic", trade.exchange_mic.clone()),
+                        KeyValue::new("nexus.decision", trade.decision.clone()),
+                        KeyValue::new("analyst.shadow", trade.shadow),
+                    ],
+                );
+                let release = Release {
+                    entry: entry_span,
+                    link,
+                };
+                self.enter(trade, None, false, true, release).await;
+            }
             TradeStatus::Open => {
                 let sessions = self.sessions.get();
                 let cutoff = trade.entry_at.and_then(|at| {
@@ -380,9 +591,12 @@ impl Inner {
                     )
                 });
                 match cutoff {
-                    Some(cutoff) => self.run_open(trade, cutoff, true).await,
+                    Some(cutoff) => self.run_open(trade, cutoff, true, link).await,
                     None => {
-                        self.set_status(&trade, TradeStatus::InvalidEntry).await;
+                        let span = clock_span("analyst.trade", self.clock.now(), None, Vec::new());
+                        self.set_status(&trade, TradeStatus::InvalidEntry, &span)
+                            .await;
+                        end_span(&span, self.clock.now());
                     }
                 }
             }
@@ -390,9 +604,45 @@ impl Inner {
         }
     }
 
-    async fn run_open(&self, mut trade: StoredTrade, cutoff: DateTime<Utc>, resumed: bool) {
+    async fn run_open(
+        &self,
+        mut trade: StoredTrade,
+        cutoff: DateTime<Utc>,
+        resumed: bool,
+        release: Option<SpanContext>,
+    ) {
+        let started = if resumed {
+            self.clock.now()
+        } else {
+            trade.entry_at.unwrap_or_else(|| self.clock.now())
+        };
+        let trade_span = clock_span(
+            "analyst.trade",
+            started,
+            None,
+            vec![
+                KeyValue::new("nexus.ticker", trade.ticker.clone()),
+                KeyValue::new("nexus.exchange_mic", trade.exchange_mic.clone()),
+                KeyValue::new("nexus.decision", trade.decision.clone()),
+                KeyValue::new("analyst.shadow", trade.shadow),
+                KeyValue::new("analyst.resumed", resumed),
+            ],
+        );
+        if let Some(link) = release {
+            trade_span.set_attribute("nexus.release_trace_id", link.trace_id().to_string());
+            trade_span.add_link(link);
+        }
+        let trade_context = trade_span.context();
+        if let Some(trace_id) = context_trace_id(&trade_context) {
+            self.db("set_trade_trace", || {
+                self.store.set_trade_trace(trade.id, &trace_id)
+            })
+            .await;
+        }
         let (Some(entry_at), Some(exit_at)) = (trade.entry_at, trade.exit_target_at) else {
-            self.set_status(&trade, TradeStatus::InvalidEntry).await;
+            self.set_status(&trade, TradeStatus::InvalidEntry, &trade_span)
+                .await;
+            end_span(&trade_span, self.clock.now());
             return;
         };
         let have: Vec<String> = self
@@ -419,6 +669,9 @@ impl Inner {
             match event {
                 Event::Beyond(label) => {
                     let scheduled = self.beyond_time(entry_at, &label);
+                    let span = self.observation_span(&trade_context, &label, scheduled);
+                    span.set_attribute("analyst.observation_status", "beyond_close");
+                    end_span(&span, scheduled);
                     let observation = NewObservation {
                         horizon: label,
                         scheduled_at: scheduled,
@@ -427,12 +680,17 @@ impl Inner {
                         late: false,
                         status: ObservationStatus::BeyondClose,
                     };
-                    if let Some(updated) = self.store_observation(&trade, &observation).await {
+                    if let Some(updated) = self.store_observation(&trade, &observation, &span).await
+                    {
                         trade = updated;
                     }
                 }
                 Event::Observe(label) => {
                     if resumed && self.clock.now() > at + chrono(LATE_AFTER) {
+                        let span = self.observation_span(&trade_context, &label, at);
+                        span.set_attribute("analyst.observation_status", "missed");
+                        fail_span(&span, "missed");
+                        end_span(&span, at);
                         let observation = NewObservation {
                             horizon: label,
                             scheduled_at: at,
@@ -441,43 +699,75 @@ impl Inner {
                             late: false,
                             status: ObservationStatus::Missed,
                         };
-                        if let Some(updated) = self.store_observation(&trade, &observation).await {
+                        if let Some(updated) =
+                            self.store_observation(&trade, &observation, &span).await
+                        {
                             trade = updated;
                         }
                         continue;
                     }
                     self.sleep_until(at).await;
-                    let (fetched, result) = self.fetch(&trade.ticker, &trade.exchange_mic).await;
-                    let late = self.record_lateness(at, fetched);
-                    let (quote, status) = match result {
+                    let span = self.observation_span(&trade_context, &label, at);
+                    let traced = self
+                        .fetch(
+                            &span,
+                            Purpose::Observation,
+                            1,
+                            &trade.ticker,
+                            &trade.exchange_mic,
+                        )
+                        .await;
+                    let late = self.record_lateness(at, traced.at);
+                    let (quote, status) = match &traced.result {
                         Ok(quote) => {
                             metrics::quote_request("ok");
-                            (Some(quote), ObservationStatus::Ok)
+                            (Some(quote.clone()), ObservationStatus::Ok)
                         }
                         Err(error) => {
                             metrics::quote_request(error.outcome());
                             (None, ObservationStatus::NoQuote)
                         }
                     };
+                    self.close_quote(
+                        &traced,
+                        status == ObservationStatus::Ok,
+                        Purpose::Observation,
+                    );
+                    span.set_attribute("analyst.late", late);
+                    span.set_attribute("analyst.observation_status", status.as_str());
+                    end_span(&span, traced.at);
                     let observation = NewObservation {
                         horizon: label,
                         scheduled_at: at,
-                        fetched_at: Some(fetched),
+                        fetched_at: Some(traced.at),
                         quote,
                         late,
                         status,
                     };
-                    if let Some(updated) = self.store_observation(&trade, &observation).await {
+                    if let Some(updated) = self.store_observation(&trade, &observation, &span).await
+                    {
                         trade = updated;
                     }
                 }
                 Event::Exit => {
-                    if let Some(updated) = self.exit(&trade, at, cutoff, resumed).await {
+                    if let Some(updated) =
+                        self.exit(&trade, at, cutoff, resumed, &trade_context).await
+                    {
                         trade = updated;
                     }
                 }
             }
         }
+        end_span(&trade_span, self.clock.now());
+    }
+
+    fn observation_span(&self, trade: &Context, horizon: &str, start: DateTime<Utc>) -> Span {
+        clock_span(
+            "analyst.observation",
+            start,
+            Some(trade),
+            vec![KeyValue::new("analyst.horizon", horizon.to_owned())],
+        )
     }
 
     fn beyond_time(&self, entry_at: DateTime<Utc>, label: &str) -> DateTime<Utc> {
@@ -496,13 +786,14 @@ impl Inner {
         &self,
         trade: &StoredTrade,
         observation: &NewObservation,
+        cause: &Span,
     ) -> Option<StoredTrade> {
         let updated = self
             .db("record_observation", || {
                 self.store.record_observation(trade.id, observation)
             })
             .await?;
-        self.emit(&updated).await;
+        self.emit(&updated, cause).await;
         Some(updated)
     }
 
@@ -512,8 +803,18 @@ impl Inner {
         target: DateTime<Utc>,
         cutoff: DateTime<Utc>,
         resumed: bool,
+        trade_context: &Context,
     ) -> Option<StoredTrade> {
+        let span = clock_span(
+            "analyst.exit",
+            target,
+            Some(trade_context),
+            vec![KeyValue::new("analyst.horizon", "hold")],
+        );
         if resumed && self.clock.now() > target + chrono(LATE_AFTER) {
+            span.set_attribute("analyst.observation_status", "missed");
+            fail_span(&span, "missed");
+            end_span(&span, target);
             let observation = NewObservation {
                 horizon: "hold".to_owned(),
                 scheduled_at: target,
@@ -522,19 +823,32 @@ impl Inner {
                 late: false,
                 status: ObservationStatus::Missed,
             };
-            let updated = self.store_observation(trade, &observation).await?;
-            return self.set_status(&updated, TradeStatus::ExitMissed).await;
+            let updated = self.store_observation(trade, &observation, &span).await?;
+            return self
+                .set_status(&updated, TradeStatus::ExitMissed, &span)
+                .await;
         }
         self.sleep_until(target).await;
         let deadline = (target + chrono(EXIT_RETRY_FOR)).min(cutoff);
-        let mut last: Option<Fetched> = None;
+        let mut last: Option<(DateTime<Utc>, Result<Quote, QuoteError>)> = None;
+        let mut attempt = 0u32;
         let accepted = loop {
-            let (at, result) = self.fetch(&trade.ticker, &trade.exchange_mic).await;
-            let wait = match &result {
+            attempt += 1;
+            let traced = self
+                .fetch(
+                    &span,
+                    Purpose::Exit,
+                    attempt,
+                    &trade.ticker,
+                    &trade.exchange_mic,
+                )
+                .await;
+            let wait = match &traced.result {
                 Ok(quote) => match quote.exit_bid() {
                     Some(bid) => {
                         metrics::quote_request("accepted");
-                        break Some((at, quote.clone(), bid));
+                        self.close_quote(&traced, true, Purpose::Exit);
+                        break Some((traced.at, quote.clone(), bid));
                     }
                     None => {
                         metrics::quote_request("rejected");
@@ -549,7 +863,8 @@ impl Inner {
                     }
                 }
             };
-            last = Some((at, result));
+            self.close_quote(&traced, false, Purpose::Exit);
+            last = Some((traced.at, traced.result));
             if self.clock.now() + chrono(wait) > deadline {
                 break None;
             }
@@ -562,6 +877,9 @@ impl Inner {
                     Some((at, Err(_))) => (Some(at), None),
                     None => (None, None),
                 };
+                span.set_attribute("analyst.observation_status", "no_quote");
+                fail_span(&span, "no_exit_quote");
+                end_span(&span, self.clock.now());
                 let observation = NewObservation {
                     horizon: "hold".to_owned(),
                     scheduled_at: target,
@@ -570,11 +888,15 @@ impl Inner {
                     late: false,
                     status: ObservationStatus::NoQuote,
                 };
-                let updated = self.store_observation(trade, &observation).await?;
-                self.set_status(&updated, TradeStatus::NoExitQuote).await
+                let updated = self.store_observation(trade, &observation, &span).await?;
+                self.set_status(&updated, TradeStatus::NoExitQuote, &span)
+                    .await
             }
             Some((at, quote, bid)) => {
                 let late = self.record_lateness(target, at);
+                span.set_attribute("analyst.late", late);
+                span.set_attribute("analyst.observation_status", "ok");
+                end_span(&span, at);
                 let observation = NewObservation {
                     horizon: "hold".to_owned(),
                     scheduled_at: target,
@@ -583,7 +905,7 @@ impl Inner {
                     late,
                     status: ObservationStatus::Ok,
                 };
-                let updated = self.store_observation(trade, &observation).await?;
+                let updated = self.store_observation(trade, &observation, &span).await?;
                 let (pnl, status) = match updated.entry_ask {
                     Some(entry_ask) => match compute(
                         entry_ask,
@@ -607,23 +929,28 @@ impl Inner {
                 let closed = self
                     .db("record_exit", || self.store.record_exit(trade.id, &exit))
                     .await?;
-                self.finish(&closed).await;
+                self.finish(&closed, &span).await;
                 Some(closed)
             }
         }
     }
 
-    async fn set_status(&self, trade: &StoredTrade, status: TradeStatus) -> Option<StoredTrade> {
+    async fn set_status(
+        &self,
+        trade: &StoredTrade,
+        status: TradeStatus,
+        cause: &Span,
+    ) -> Option<StoredTrade> {
         let updated = self
             .db("set_trade_status", || {
                 self.store.set_trade_status(trade.id, status)
             })
             .await?;
-        self.finish(&updated).await;
+        self.finish(&updated, cause).await;
         Some(updated)
     }
 
-    async fn finish(&self, trade: &StoredTrade) {
+    async fn finish(&self, trade: &StoredTrade, cause: &Span) {
         let status = trade.status();
         metrics::sim_trade(status.as_str(), trade.shadow);
         info!(
@@ -638,32 +965,44 @@ impl Inner {
             release_to_entry_ms = trade.release_to_entry_ms.unwrap_or(0),
             "simulated trade"
         );
-        self.emit(trade).await;
+        self.emit(trade, cause).await;
     }
 
-    async fn emit(&self, trade: &StoredTrade) {
+    async fn emit(&self, trade: &StoredTrade, cause: &Span) {
         let observations = self
             .db("observations", || self.store.observations(trade.id))
             .await
             .unwrap_or_default();
         let message = to_proto(trade, &observations);
         let key = format!("{}:{}", trade.ticker, trade.exchange_mic);
+        let send = info_span!(
+            parent: cause,
+            "send analyst.trades",
+            otel.kind = "producer",
+            messaging.system = "kafka",
+            messaging.destination.name = self.settings.trades_topic.as_str(),
+            messaging.kafka.message.key = key.as_str(),
+            analyst.trade_version = message.version
+        );
         let sink = Arc::clone(&self.sink);
-        tokio::spawn(async move {
-            for attempt in 1..=EMIT_ATTEMPTS {
-                match sink.emit(&key, &message).await {
-                    Ok(()) => return,
-                    Err(error) => {
-                        warn!(attempt, %error, "emitting the simulated trade failed");
-                        tokio::time::sleep(EMIT_PAUSE).await;
+        tokio::spawn(
+            async move {
+                for attempt in 1..=EMIT_ATTEMPTS {
+                    match sink.emit(&key, &message).await {
+                        Ok(()) => return,
+                        Err(error) => {
+                            warn!(attempt, %error, "emitting the simulated trade failed");
+                            tokio::time::sleep(EMIT_PAUSE).await;
+                        }
                     }
                 }
+                error!(
+                    key,
+                    version = message.version,
+                    "the simulated trade could not be emitted"
+                );
             }
-            error!(
-                key,
-                version = message.version,
-                "the simulated trade could not be emitted"
-            );
-        });
+            .instrument(send),
+        );
     }
 }
