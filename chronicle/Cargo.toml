@@ -46,7 +46,7 @@ name = "saxo_stream"
 path = "src/saxo_stream.rs"
 
 [dependencies]
-model = { path = "../model" }
+model = { path = "../model", features = ["postgres"] }
 alpha = { path = "../alpha" }
 backon = { version = "1.6", default-features = false, features = ["std", "tokio-sleep"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "net"] }

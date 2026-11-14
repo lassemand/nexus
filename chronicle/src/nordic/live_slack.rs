@@ -10,19 +10,16 @@ use super::slack::{
     Poster, ReportNotice, SlackClient, SlackError, SlackMessage,
 };
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use metrics::counter;
-use model::session::{release_session, Calendar, Exchange, Session};
-use sqlx::{PgPool, Row};
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use model::session::{Calendar, Exchange, Session};
+use sqlx::PgPool;
 use tokio::sync::mpsc;
-use tracing::{error, info, info_span, warn, Instrument};
+use tracing::{error, info, info_span, Instrument};
 
 /// Capacity of the queue between the WebSocket loop and the Slack worker.
 pub const QUEUE_CAPACITY: usize = 256;
-const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The label Slack messages use for a session.
 pub fn session_label(s: Session) -> &'static str {
@@ -35,96 +32,37 @@ pub fn session_label(s: Session) -> &'static str {
 }
 
 /// Exchanges and holiday calendars from signal's database, for session labels.
+/// The loader itself is `model::session::Sessions`, shared with `analyst`.
 #[derive(Debug, Default, Clone)]
-pub struct Sessions {
-    markets: HashMap<String, (Exchange, Calendar)>,
-}
+pub struct Sessions(model::session::Sessions);
 
 impl Sessions {
     /// Builds the lookup from loaded markets.
     pub fn new(markets: Vec<(Exchange, Calendar)>) -> Self {
-        Self {
-            markets: markets
-                .into_iter()
-                .map(|(e, c)| (e.mic.clone(), (e, c)))
-                .collect(),
-        }
+        Self(model::session::Sessions::new(markets))
     }
 
     /// Loads every exchange and its country's holidays (read-only queries).
     /// A country without holiday rows leaves its exchanges out: no calendar,
     /// no session.
     pub async fn load(pool: &PgPool) -> sqlx::Result<Self> {
-        let load = async {
-            let exchanges = sqlx::query(
-                "SELECT mic, country, timezone, open_local, close_local, half_day_close_local \
-                 FROM exchanges",
-            )
-            .fetch_all(pool)
-            .await?;
-            let holidays = sqlx::query("SELECT country, date, status FROM trading_holidays")
-                .fetch_all(pool)
-                .await?;
-            Ok::<_, sqlx::Error>((exchanges, holidays))
-        };
-        let (exchanges, holidays) = match tokio::time::timeout(LOAD_TIMEOUT, load).await {
-            Ok(r) => r?,
-            Err(_) => return Err(sqlx::Error::PoolTimedOut),
-        };
-        let mut by_country: HashMap<String, (HashSet<NaiveDate>, HashSet<NaiveDate>)> =
-            HashMap::new();
-        for r in holidays {
-            let entry = by_country.entry(r.get("country")).or_default();
-            let date: NaiveDate = r.get("date");
-            if r.get::<String, _>("status") == "closed" {
-                entry.0.insert(date);
-            } else {
-                entry.1.insert(date);
-            }
-        }
-        let mut markets = Vec::new();
-        for r in exchanges {
-            let mic: String = r.get("mic");
-            let tz: String = r.get("timezone");
-            let Ok(timezone) = tz.parse::<Tz>() else {
-                warn!(mic = %mic, timezone = %tz, "exchanges.timezone is not an IANA time zone");
-                continue;
-            };
-            let country: String = r.get("country");
-            let Some((closed, half)) = by_country.get(&country).cloned() else {
-                continue;
-            };
-            let Some(calendar) = Calendar::from_holidays(closed, half) else {
-                continue;
-            };
-            let exchange = Exchange {
-                mic,
-                country,
-                timezone,
-                open: r.get::<NaiveTime, _>("open_local"),
-                close: r.get::<NaiveTime, _>("close_local"),
-                half_day_close: r.get("half_day_close_local"),
-            };
-            markets.push((exchange, calendar));
-        }
-        Ok(Self::new(markets))
+        model::session::Sessions::load(pool).await.map(Self)
     }
 
     /// The session label of a release at `at` on `mic`; `None` when the exchange
     /// or the year is unknown (never guessed).
     pub fn label(&self, mic: &str, at: DateTime<Utc>) -> Option<&'static str> {
-        let (exchange, calendar) = self.markets.get(mic)?;
-        release_session(at, calendar, exchange).map(session_label)
+        self.0.session(mic, at).map(session_label)
     }
 
     /// Number of exchanges with a usable calendar.
     pub fn len(&self) -> usize {
-        self.markets.len()
+        self.0.len()
     }
 
     /// True if no exchange has a usable calendar.
     pub fn is_empty(&self) -> bool {
-        self.markets.is_empty()
+        self.0.is_empty()
     }
 }
 
@@ -464,8 +402,9 @@ pub fn enqueue(tx: &mpsc::Sender<SlackJob>, job: SlackJob) -> bool {
 mod tests {
     use super::*;
     use crate::nordic::live::Disposition;
-    use chrono::{NaiveTime, TimeZone};
+    use chrono::{NaiveDate, NaiveTime, TimeZone};
     use std::sync::Mutex;
+    use std::time::Duration;
     use uuid::Uuid;
 
     #[derive(Default)]

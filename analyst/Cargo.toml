@@ -25,7 +25,7 @@ chrono-tz = "0.10"
 humantime = "2"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid", "json", "migrate", "macros"] }
 metrics = "0.24"
-model = { path = "../model" }
+model = { path = "../model", features = ["postgres"] }
 prost = "0.13"
 rdkafka = { version = "0.36", features = ["cmake-build", "tokio"] }
 uuid = "1"
