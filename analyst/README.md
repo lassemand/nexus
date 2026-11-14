@@ -189,3 +189,23 @@ gives `Now` inside it, the next open otherwise (the same day before the open, el
 `CalendarUnknown` for an unknown MIC or a year the holiday table does not cover: never guessed. `exit_target` is
 `HOLD` after entry but never past the cutoff; `observation_slots` gives each horizon's instant, `beyond_close` past
 the cutoff, and `close` is the cutoff.
+
+## Simulated trades: storage, quotes, result
+
+Migration `20261114000000_create_sim_trades.sql`: `sim_trades` (one row per traded decision, `decision_id` unique,
+`shadow = decision <> 'buy'`, statuses `pending_entry | open | closed | no_entry_quote | no_exit_quote |
+exit_missed | calendar_unknown | currency_mismatch | invalid_entry`, `version`, `trace_id`, `release_traceparent`,
+`trade_trace_id`) and `sim_observations` (one row per trade and horizon: `1m`, ..., `close`, `hold`; `ok | missed |
+beyond_close | no_quote`). Prices are `NUMERIC(20,6)`, `pnl_pct` `NUMERIC(20,4)`; **per share only: no fees, no
+position size, no overnight holding**. Every state change bumps `version` (`Store::record_entry`, `record_observation`,
+`record_exit`, `set_trade_status`), so a consumer of `analyst.trades` keeps the newest `AnalystTrade`
+(`model/proto/analyst_trade.proto`: the full state and every observation so far, prices as decimal strings, times as
+unix milliseconds). `create_trade` is idempotent per decision.
+
+`quotes.rs` reads `GET /quote?ticker=&mic=` on `SAXO_QUOTES_URL` and nothing else (a test asserts the path; there is no
+order endpoint). An entry quote is accepted when `ask_type = "Tradable"`, `delayed_minutes = 0` (a missing value is
+not accepted) and `ask > 0`; an exit quote the same with the bid. A 503 gives the `retry_after_ms` it asked for.
+`pnl.rs`: `pnl_per_share = exit_bid - entry_ask`, `pnl_pct = (exit_bid - entry_ask) / entry_ask * 100` rounded to 4
+decimals (away from zero), exact `Decimal` arithmetic, no result for different currencies or a zero entry price.
+Metrics: `analyst_entry_delay_seconds`, `analyst_quote_lateness_seconds`, `analyst_sim_trades_total{status,shadow}`,
+`analyst_quotes_total{outcome}` (described now, recorded by the trade runner).

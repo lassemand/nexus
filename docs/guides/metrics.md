@@ -174,6 +174,14 @@ its bounds go from 100 µs to 5 s and the target is a p99 under 50 ms (measured 
 `analyst_publish_to_decision_seconds` runs from MFN's publish time and so includes MFN's and `nordic-live`'s delay: use it on
 dashboards, not in alerts. Both are rendered with explicit buckets (`telemetry::serve_with_buckets`). See `analyst/README.md`.
 
+## analyst simulated trades
+
+`analyst_entry_delay_seconds` (histogram, 1 ms to 5 min) is the time from a decision taken during trading to its accepted
+entry quote; the task's target is a request sent within 5 ms. `analyst_quote_lateness_seconds` (histogram, 1 ms to 30 s)
+is how late a scheduled quote was fetched after its target (over 2 s is flagged `late`). `analyst_sim_trades_total{status,shadow}`
+counts trades by final status (`closed`, `no_entry_quote`, ...) and `analyst_quotes_total{outcome}` the quote requests
+(`accepted`, `rejected`, `unavailable`, `not_found`, `error`, `transport`, `malformed`). Both histograms use explicit buckets.
+
 ## Cluster pieces
 
 | Piece | Where |

@@ -451,3 +451,39 @@ mod analyst_decision_tests {
         assert_eq!(decoded.metrics[0].current, "459");
     }
 }
+
+#[cfg(test)]
+mod analyst_trade_tests {
+    use super::generated::{AnalystTrade, TradeObservation};
+    use prost::Message;
+
+    #[test]
+    fn a_trade_with_its_observations_round_trips() {
+        let trade = AnalystTrade {
+            trade_id: 7,
+            decision_id: 3,
+            ticker: "AAA".into(),
+            exchange_mic: "XSTO".into(),
+            decision: "no_buy".into(),
+            shadow: true,
+            status: "closed".into(),
+            version: 5,
+            hold_minutes: "30".into(),
+            entry_ask: "100.000000".into(),
+            exit_bid: "101.500000".into(),
+            pnl_pct: "1.5000".into(),
+            trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(),
+            observations: vec![TradeObservation {
+                horizon: "1m".into(),
+                scheduled_at_unix_millis: 1_000,
+                bid: "100.400000".into(),
+                delayed_minutes: 0,
+                status: "ok".into(),
+                ..TradeObservation::default()
+            }],
+            ..AnalystTrade::default()
+        };
+        let decoded = AnalystTrade::decode(trade.encode_to_vec().as_slice()).expect("decodes");
+        assert_eq!(decoded, trade);
+    }
+}
