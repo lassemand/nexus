@@ -27,6 +27,12 @@ pub enum ConfigError {
         /// What it held.
         value: String,
     },
+    /// `HOLD` is zero or longer than a trading day.
+    #[error("HOLD must be above zero and at most 24h")]
+    Hold,
+    /// `OBS_HORIZONS` is not a list of durations and `close`, sorted, with `close` last.
+    #[error("OBS_HORIZONS `{0}` is not a sorted list of durations, optionally ending in close")]
+    Horizons(String),
     /// An `ANALYST_TICKERS` entry is not `TICKER:MIC`.
     #[error("ANALYST_TICKERS entry `{0}` is not TICKER:MIC")]
     Ticker(String),
@@ -63,6 +69,69 @@ pub struct Config {
     pub decisions_topic: String,
     /// A release published longer ago than this is recorded as `stale` and never traded.
     pub max_release_age: Duration,
+    /// How long a simulated trade is held, in trading time.
+    pub hold: Duration,
+    /// When, after entry, the bid is observed.
+    pub obs_horizons: Vec<Horizon>,
+    /// The end of continuous trading is this long before the close.
+    pub close_buffer: Duration,
+    /// How long the entry quote is retried before the trade has no entry.
+    pub entry_max_wait: Duration,
+    /// The most quote requests in flight at once.
+    pub quote_concurrency: u32,
+    /// Base URL of `saxo-stream`'s internal quote endpoint.
+    pub saxo_quotes_url: String,
+    /// The Kafka topic simulated trades are produced on.
+    pub trades_topic: String,
+}
+
+/// When, after entry, the bid is observed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Horizon {
+    /// This long after entry.
+    After(Duration),
+    /// The end of continuous trading (the close minus the buffer).
+    Close,
+}
+
+impl Horizon {
+    /// The horizon as stored in `sim_observations.horizon`, like `5m` or `close`.
+    pub fn label(&self) -> String {
+        match self {
+            Horizon::After(d) if d.as_secs() % 60 == 0 && d.subsec_nanos() == 0 => {
+                format!("{}m", d.as_secs() / 60)
+            }
+            Horizon::After(d) if d.subsec_nanos() == 0 => format!("{}s", d.as_secs()),
+            Horizon::After(d) => format!("{}ms", d.as_millis()),
+            Horizon::Close => "close".to_owned(),
+        }
+    }
+}
+
+/// Parses `1m,5m,close`: durations in ascending order, `close` only last.
+pub fn parse_horizons(text: &str) -> Result<Vec<Horizon>, ConfigError> {
+    let bad = || ConfigError::Horizons(text.to_owned());
+    let mut horizons: Vec<Horizon> = Vec::new();
+    for token in text.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        let horizon = if token == "close" {
+            Horizon::Close
+        } else {
+            let d = humantime::parse_duration(token).map_err(|_| bad())?;
+            if d.is_zero() {
+                return Err(bad());
+            }
+            Horizon::After(d)
+        };
+        match (horizons.last(), &horizon) {
+            (Some(Horizon::Close), _) => return Err(bad()),
+            (Some(Horizon::After(previous)), Horizon::After(d)) if d <= previous => {
+                return Err(bad())
+            }
+            _ => {}
+        }
+        horizons.push(horizon);
+    }
+    Ok(horizons)
 }
 
 impl Config {
@@ -108,6 +177,23 @@ impl Config {
             decisions_topic: text("DECISIONS_TOPIC")
                 .unwrap_or_else(|| "analyst.decisions".to_owned()),
             max_release_age: duration("MAX_RELEASE_AGE", "15m")?,
+            hold: {
+                let hold = duration("HOLD", "30m")?;
+                if hold.is_zero() || hold > Duration::from_secs(24 * 3600) {
+                    return Err(ConfigError::Hold);
+                }
+                hold
+            },
+            obs_horizons: parse_horizons(
+                &text("OBS_HORIZONS").unwrap_or_else(|| "1m,5m,15m,30m,60m,close".to_owned()),
+            )?,
+            close_buffer: duration("CLOSE_BUFFER", "5m")?,
+            entry_max_wait: duration("ENTRY_MAX_WAIT", "5m")?,
+            quote_concurrency: number("QUOTE_CONCURRENCY", 8)?,
+            saxo_quotes_url: text("SAXO_QUOTES_URL").unwrap_or_else(|| {
+                "http://saxo-quotes.chronicle.svc.cluster.local:8080".to_owned()
+            }),
+            trades_topic: text("TRADES_TOPIC").unwrap_or_else(|| "analyst.trades".to_owned()),
         })
     }
 }
@@ -157,6 +243,42 @@ mod tests {
         assert_eq!(config.decisions_topic, "analyst.decisions");
         assert_eq!(config.max_release_age, Duration::from_secs(15 * 60));
         assert!(config.analyst_tickers.is_empty());
+        assert_eq!(config.hold, Duration::from_secs(30 * 60));
+        assert_eq!(config.close_buffer, Duration::from_secs(5 * 60));
+        assert_eq!(config.entry_max_wait, Duration::from_secs(5 * 60));
+        assert_eq!(config.quote_concurrency, 8);
+        assert_eq!(config.trades_topic, "analyst.trades");
+        assert_eq!(
+            config
+                .obs_horizons
+                .iter()
+                .map(Horizon::label)
+                .collect::<Vec<_>>(),
+            ["1m", "5m", "15m", "30m", "60m", "close"]
+        );
+    }
+
+    #[test]
+    fn hold_and_horizons_are_validated() {
+        let with = |extra: &'static [(&'static str, &'static str)]| {
+            let mut pairs = REQUIRED.to_vec();
+            pairs.extend_from_slice(extra);
+            Config::from_lookup(lookup(&pairs))
+        };
+        assert_eq!(with(&[("HOLD", "0s")]), Err(ConfigError::Hold));
+        assert_eq!(with(&[("HOLD", "25h")]), Err(ConfigError::Hold));
+        assert!(with(&[("HOLD", "90s")]).is_ok());
+        for bad in ["5m,1m", "close,5m", "5m,5m", "soon", "0s"] {
+            assert!(parse_horizons(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            parse_horizons("30s, 2m ,close").expect("valid"),
+            [
+                Horizon::After(Duration::from_secs(30)),
+                Horizon::After(Duration::from_secs(120)),
+                Horizon::Close
+            ]
+        );
     }
 
     #[test]

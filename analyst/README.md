@@ -41,6 +41,13 @@ crate: `12h`, `1h30m`, `50ms`.
 | `SPECIAL_EVENTS_TOPIC` | `special.events` | Kafka topic report releases arrive on (consumer group `analyst-releases`, starting from the latest offset). |
 | `DECISIONS_TOPIC` | `analyst.decisions` | Kafka topic the decisions (`AnalystDecision`) are produced on, keyed `ticker:mic`. |
 | `MAX_RELEASE_AGE` | `15m` | A release published longer ago than this when it is consumed is recorded as `stale` and never traded. |
+| `HOLD` | `30m` | How long a simulated trade is held, in trading minutes (above zero, at most 24h). |
+| `OBS_HORIZONS` | `1m,5m,15m,30m,60m,close` | When after entry the bid is observed; ascending durations, `close` (the session cutoff) only last. |
+| `CLOSE_BUFFER` | `5m` | Continuous trading ends this long before the close (the closing auction). |
+| `ENTRY_MAX_WAIT` | `5m` | How long the entry quote is retried. |
+| `QUOTE_CONCURRENCY` | `8` | The most quote requests in flight at once. |
+| `SAXO_QUOTES_URL` | `http://saxo-quotes.chronicle.svc.cluster.local:8080` | `saxo-stream`'s internal quote endpoint; only `GET /quote` is ever called. |
+| `TRADES_TOPIC` | `analyst.trades` | Where simulated trades are produced. |
 | `METRICS_PORT` | `9464` | `/metrics` port. |
 
 ## How the scheduler works
@@ -171,3 +178,14 @@ Metrics: `analyst_release_to_decision_seconds` (consumed to handed on), `analyst
 publish to handed on; includes MFN's and `nordic-live`'s delay, for dashboards), `analyst_release_events_total{outcome}`,
 `analyst_decisions_total{decision}`, `analyst_decision_retries_total{step}`. One `info` line per decision with ticker,
 period, decision, reason and the three times is the operator's audit line.
+
+## Trading sessions (simulated trades)
+
+`trading.rs` plans the instants of a simulated trade from the exchange calendar, `model::session::Sessions` (the
+loader of `exchanges` and `trading_holidays` was moved there from `chronicle`'s Slack code, so `nordic-live` and
+`analyst` share one copy; `chronicle` keeps a thin wrapper that adds the Slack label). Continuous trading is
+`[open, close - CLOSE_BUFFER)` in the exchange's own time zone, with the half-day close on a half day. `plan_entry`
+gives `Now` inside it, the next open otherwise (the same day before the open, else the next trading day), and
+`CalendarUnknown` for an unknown MIC or a year the holiday table does not cover: never guessed. `exit_target` is
+`HOLD` after entry but never past the cutoff; `observation_slots` gives each horizon's instant, `beyond_close` past
+the cutoff, and `close` is the cutoff.

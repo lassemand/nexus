@@ -31,11 +31,12 @@ pub mod scheduler;
 pub mod sink;
 pub mod spans;
 pub mod store;
+pub mod trading;
 mod types;
 mod verdict;
 
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use config::{Config, ConfigError};
+pub use config::{parse_horizons, Config, ConfigError, Horizon};
 pub use decision::{DecisionKind, NewDecision, Recorded, StoredDecision};
 pub use error::{KernelError, LoadError};
 pub use handoff::{ChannelHandOff, NoopHandOff, TradeHandOff, TradeSignal};
@@ -60,5 +61,6 @@ pub use scheduler::{
 pub use sink::{trace_headers, DecisionSink, KafkaDecisionSink};
 pub use spans::trace_id_of;
 pub use store::{AcceptedKernel, NewNote, Note, PrepRun, Store, Target};
+pub use trading::{exit_target, observation_slots, plan_entry, session_cutoff, EntryPlan, Slot};
 pub use types::{ReportKind, ScheduledReport, TargetStatus};
 pub use verdict::{KernelMetric, KernelVerdict};

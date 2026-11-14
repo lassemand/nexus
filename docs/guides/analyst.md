@@ -48,6 +48,7 @@ Environment variables of the Deployment (chart `values.yaml`, `analyst.*`). Dura
 | `CLOSE_BUFFER` | `5m` | Margin before the close. |
 | `ENTRY_MAX_WAIT` | `5m` | Longest wait for a tradable quote. |
 | `MAX_RELEASE_AGE` | `15m` | Older releases are not traded. |
+| `HOLD`, `OBS_HORIZONS`, `CLOSE_BUFFER`, `ENTRY_MAX_WAIT`, `QUOTE_CONCURRENCY`, `SAXO_QUOTES_URL`, `TRADES_TOPIC` | see `analyst/README.md` | Simulated trades. |
 | `KERNEL_DEADLINE` | `50ms` | Kernel run limit. |
 | `ANALYST_TICKERS` | empty | `TICKER:MIC,...` allowlist; empty is every registered company. |
 | `NOTES_TOPIC` / `ANALYST_DECISIONS_TOPIC` / `ANALYST_TRADES_TOPIC` | `analyst.notes` / `analyst.decisions` / `analyst.trades` | |

@@ -8,6 +8,11 @@ prost = "0.13"
 chrono = "0.4"
 chrono-tz = "0.10"
 tracing = "0.1"
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "chrono", "runtime-tokio"], optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
+
+[features]
+postgres = ["dep:sqlx", "dep:tokio"]
 
 [build-dependencies]
 prost-build = "0.13"
