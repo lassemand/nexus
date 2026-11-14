@@ -209,3 +209,39 @@ not accepted) and `ask > 0`; an exit quote the same with the bid. A 503 gives th
 decimals (away from zero), exact `Decimal` arithmetic, no result for different currencies or a zero entry price.
 Metrics: `analyst_entry_delay_seconds`, `analyst_quote_lateness_seconds`, `analyst_sim_trades_total{status,shadow}`,
 `analyst_quotes_total{outcome}` (described now, recorded by the trade runner).
+
+## The trade runner
+
+`runner.rs` (`TradeRunner`, a `TradeHandOff`) simulates the trade of every decision the release path hands over
+(`buy`, and the shadow decisions `no_buy`, `abstain`, `skipped_no_kernel`; never `stale`, `kernel_error`,
+`twin_ignored`). The hand-off spawns one task per trade and returns; the task:
+
+1. plans the entry (`trading.rs`). **Inside continuous trading the first `GET /quote` leaves before anything else:** no
+   database read or write comes first (the task's target is 5 ms; the test asserts the request is sent at the
+   decision's instant). Otherwise the trade row is created first (`pending_entry`), so a restart finds it, and the task
+   sleeps to the session open;
+2. the trade row needs the decision's row id, which is only known after the release path's database write, so the
+   signal carries a `DecisionHandle` that resolves to it (`Persisted`). A decision that was stored as something else
+   (it lost a twin race) or never stored gets no trade;
+3. requests quotes at `entry target`, retrying every second (the `retry_after_ms` of a 503 instead) for
+   `ENTRY_MAX_WAIT`, and accepts the first tradable, undelayed, positive ask: `entry_at` is the instant its answer
+   arrived, `release_to_entry_ms = entry_at - published_at`. No acceptable quote: `no_entry_quote`;
+4. sets `exit_target = min(entry_at + HOLD, cutoff)`, takes one bid per horizon (a horizon past the cutoff is
+   `beyond_close`, `close` is the cutoff) and the exit bid at the exit target (retried every second for up to 30 s,
+   never past the cutoff; stored as the observation `hold`). The result is per share, `closed`, or
+   `currency_mismatch` / `no_exit_quote`;
+5. emits the full `AnalystTrade` on `TRADES_TOPIC` after every state change, without waiting for the broker (up to 10
+   attempts, 500 ms apart; the `version` lets a consumer keep the newest).
+
+Timers: every quote is slept to with `tokio::time::sleep_until`, on a deadline computed from the wall clock when it is
+scheduled; no loop polls whether it is time. Requests of different trades run concurrently, at most
+`QUOTE_CONCURRENCY` in flight; a request that waited for a permit is flagged `late` like any fetch more than 2 s after
+its target.
+
+**Restart:** at startup `resume` loads every `pending_entry` and `open` trade. A quote whose target passed more than 2
+s ago is `missed` (not fetched: a late price is a different price); a missed exit makes the trade `exit_missed`; a
+pending entry whose target passed more than 2 s ago is `no_entry_quote`. Observations after the exit of a `closed`
+trade are not rescheduled (only open trades are loaded), so a restart after the exit loses the remaining horizons.
+
+The calendars (`SessionsCache`) are loaded from signal's database at startup and reloaded hourly; a failed reload
+keeps the last one, and without any every trade is `calendar_unknown`.

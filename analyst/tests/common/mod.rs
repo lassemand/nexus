@@ -326,6 +326,7 @@ pub fn note_payload(ticker: &str, mic: &str, period: &str, text: &str, id: &str)
 }
 
 pub mod rig;
+pub mod trading;
 
 pub mod wasm {
     use std::path::{Path, PathBuf};

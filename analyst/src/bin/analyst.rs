@@ -14,9 +14,10 @@ use analyst::metrics::{
 };
 use analyst::notes::run_consumer;
 use analyst::{
-    preload, run_release_consumer, Config, KafkaDecisionSink, KernelRegistry, KernelRuntime,
-    NoopHandOff, NoopLauncher, NoteHandler, ReleaseProcessor, RuntimeConfig, Scheduler,
-    SchedulerConfig, SignalSchedule, Store, SystemClock,
+    preload, run_release_consumer, Config, HttpQuoteSource, KafkaDecisionSink, KafkaTradeSink,
+    KernelRegistry, KernelRuntime, NoopLauncher, NoteHandler, ReleaseProcessor, RunnerSettings,
+    RuntimeConfig, Scheduler, SchedulerConfig, SessionsCache, SignalSchedule, Store, SystemClock,
+    TradeRunner,
 };
 use anyhow::{Context, Result};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -102,6 +103,7 @@ async fn main() -> Result<()> {
     let clock = Arc::new(SystemClock);
     let wake = Arc::new(Notify::new());
     let store = Store::new(pool);
+    let calendar_pool = signal_pool.clone();
     let signal = SignalSchedule::new(signal_pool, config.analyst_tickers.clone());
     let scheduler = Scheduler::new(
         store.clone(),
@@ -118,13 +120,32 @@ async fn main() -> Result<()> {
         .context("cannot load the accepted kernels")?;
     let sink = KafkaDecisionSink::new(&config.kafka_brokers, &config.decisions_topic)
         .context("cannot create the decisions producer")?;
+    let sessions = SessionsCache::default();
+    sessions.reload(&calendar_pool).await;
+    let trade_sink = KafkaTradeSink::new(&config.kafka_brokers, &config.trades_topic)
+        .context("cannot create the trades producer")?;
+    let quotes = HttpQuoteSource::new(&config.saxo_quotes_url)
+        .map_err(|error| anyhow::anyhow!("cannot create the quote client: {error}"))?;
+    let runner = TradeRunner::new(
+        Arc::new(store.clone()),
+        sessions.clone(),
+        Arc::new(quotes),
+        Arc::new(trade_sink),
+        clock.clone(),
+        RunnerSettings::from_config(&config),
+    );
+    let resumed = runner
+        .resume()
+        .await
+        .context("cannot reschedule the open simulated trades")?;
+    info!(resumed, "open simulated trades rescheduled");
     let releases = Arc::new(
         ReleaseProcessor::new(
             store,
             Arc::clone(&registry),
             clock,
             Arc::new(sink),
-            Arc::new(NoopHandOff),
+            Arc::new(runner),
             config.max_release_age,
         )
         .with_decisions_topic(config.decisions_topic.clone()),
@@ -136,6 +157,8 @@ async fn main() -> Result<()> {
         topic = %config.notes_topic,
         releases_topic = %config.special_events_topic,
         decisions_topic = %config.decisions_topic,
+        trades_topic = %config.trades_topic,
+        hold = ?config.hold,
         max_release_age = ?config.max_release_age,
         "analyst starting"
     );
@@ -169,10 +192,12 @@ async fn main() -> Result<()> {
             error!(%error, "release consumer stopped");
         }
     };
+    let calendars = sessions.run_reload(calendar_pool, stopped(stop_rx.clone()));
     tokio::join!(
         scheduler.run(wake, stopped(stop_rx.clone())),
         consumer,
-        release_consumer
+        release_consumer,
+        calendars
     );
     info!("analyst stopped");
     Ok(())
