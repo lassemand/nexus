@@ -33,8 +33,8 @@
 //!   and each snapshot replaces the stored quote. `seq` is per instrument and
 //!   never restarts.
 //! - A failed subscribe is retried per Uic with exponential backoff, at least
-//!   Saxo's `Retry-After`; a 401/403 is an auth problem (wait for a fresh
-//!   token), never a refusal; a failed replacement deletes the replaced
+//!   Saxo's `Retry-After`; a 401 is an auth problem (the token is not
+//!   used again until it rotates or `backoff_max` passes), never a refusal; a failed replacement deletes the replaced
 //!   subscription; `SubscriptionPermanentlyDisabled` is a refusal until the
 //!   next reconnect.
 //! - `_resetsubscriptions` re-creates the named subscriptions (all when none is
@@ -461,7 +461,7 @@ struct Hub {
     solo: HashSet<u64>,
     sub_failures: HashMap<u64, u32>,
     sub_not_before: HashMap<u64, Instant>,
-    rejected_token: Option<String>,
+    rejected_token: Option<(String, Instant)>,
     orphans: Vec<(String, String)>,
     conn: Conn,
     backoff: Duration,
@@ -679,7 +679,10 @@ impl Hub {
                 Conn::Live(live) => Some(live.token.clone()),
                 _ => None,
             })
-            .filter(|t| self.rejected_token.as_ref() != Some(t))
+            .filter(|t| match &self.rejected_token {
+                Some((rejected, at)) => rejected != t || at.elapsed() >= self.settings.backoff_max,
+                None => true,
+            })
     }
 
     fn on_command(&mut self, cmd: Command) {
@@ -1211,9 +1214,9 @@ impl Hub {
                     }
                 }
                 if e.is_auth() {
-                    warn!(ctx, reference, error = %e, "Saxo rejected the access token, waiting for a fresh one");
+                    warn!(ctx, reference, error = %e, "Saxo rejected the access token, waiting for a fresh one or a retry");
                     if !token.is_empty() {
-                        self.rejected_token = Some(token);
+                        self.rejected_token = Some((token, Instant::now()));
                     }
                     self.back_off_uics(&uics, e.retry_after());
                 } else if e.is_transient() {

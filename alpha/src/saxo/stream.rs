@@ -128,12 +128,12 @@ impl StreamError {
         }
     }
 
-    /// Whether Saxo rejected the access token (401 or 403), which says
-    /// nothing about the request itself.
+    /// Whether Saxo rejected the access token itself (401). A 403 can also
+    /// mean the token may not make that request for one instrument, so it is
+    /// not an auth failure.
     pub fn is_auth(&self) -> bool {
         matches!(self, StreamError::Status { status, .. }
-            if *status == reqwest::StatusCode::UNAUTHORIZED
-                || *status == reqwest::StatusCode::FORBIDDEN)
+            if *status == reqwest::StatusCode::UNAUTHORIZED)
     }
 
     /// Saxo's `Retry-After`, when the failed call carried one.

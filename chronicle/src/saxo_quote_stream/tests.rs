@@ -25,6 +25,7 @@ struct FakeInner {
     authorizes: Vec<(String, String)>,
     snapshots: HashMap<u64, String>,
     refuse: HashSet<u64>,
+    forbid: HashSet<u64>,
     inactivity: u64,
     fail_post: Option<(u16, Option<u64>)>,
     post_times: Vec<Instant>,
@@ -215,6 +216,13 @@ fn fake_subscribe_inner(
                 StatusCode::from_u16(code).unwrap(),
                 retry_after,
                 r#"{"ErrorCode":"Failing"}"#.into(),
+            );
+        }
+        if uics.iter().any(|u| i.forbid.contains(u)) {
+            return (
+                StatusCode::FORBIDDEN,
+                None,
+                r#"{"ErrorCode":"NoEntitlement"}"#.into(),
             );
         }
         if uics.iter().any(|u| i.refuse.contains(u)) {
@@ -1114,7 +1122,14 @@ async fn a_failed_replacement_deletes_the_replaced_subscription() {
 
 #[tokio::test]
 async fn a_rejected_token_is_not_a_refusal_and_is_not_retried() {
-    let h = start(fast_settings(), true).await;
+    let h = start(
+        StreamSettings {
+            backoff_max: Duration::from_secs(5),
+            ..fast_settings()
+        },
+        true,
+    )
+    .await;
     h.fake.with(|i| i.fail_post = Some((401, None)));
     let mut c = TestClient::connect(&h).await;
     c.watch(&["ABC"]).await;
@@ -1220,4 +1235,50 @@ fn errors_bypass_the_coalescing_of_a_full_queue() {
     }
     assert_eq!(got, vec!["q1", "err", "q3"]);
     assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn a_403_for_one_instrument_refuses_only_that_instrument() {
+    let h = start(fast_settings(), true).await;
+    h.fake.with(|i| i.forbid.insert(2));
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["AAA", "BBB", "CCC"]).await;
+    let err = c.next_of("error").await;
+    assert_eq!(
+        err["pair"],
+        serde_json::json!({"ticker":"BBB","mic":"XSTO"})
+    );
+    assert!(err["reason"].as_str().unwrap().contains("refused"));
+    eventually("the others subscribed", || {
+        h.fake.active_uics() == vec![1, 3]
+    })
+    .await;
+    assert!(h
+        .fake
+        .with(|i| i.post_tokens.iter().all(|t| t == "token-1")));
+    h.fake.with(|i| i.forbid.clear());
+    c.watch(&["AAA", "CCC", "DDD"]).await;
+    c.watch(&["AAA", "BBB", "CCC"]).await;
+    eventually("BBB subscribed once allowed", || {
+        h.fake.active_uics() == vec![1, 2, 3]
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_one_off_401_is_retried_with_the_same_token_after_the_backoff() {
+    let h = start(fast_settings(), true).await;
+    h.fake.with(|i| i.fail_post = Some((401, None)));
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["ABC"]).await;
+    eventually("the first attempt", || {
+        h.fake.with(|i| !i.post_times.is_empty())
+    })
+    .await;
+    h.fake.with(|i| i.fail_post = None);
+    let q = c.next_of("quote").await;
+    assert_eq!(q["ticker"], "ABC");
+    assert!(h
+        .fake
+        .with(|i| i.post_tokens.iter().all(|t| t == "token-1")));
 }
