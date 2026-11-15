@@ -185,6 +185,14 @@ Keys: `username`, `password`.
 - Put the same label on tasks that build on the same code, and a different or no label on unrelated work.
 - Metrics (`conductor_*`, port 9464, own `PodMonitor`) and alerts are on the Grafana dashboard "Conductor" (folder Nexus).
 
+### Reviews
+
+- An issue moving **into** `In Review` (`CONDUCTOR_REVIEW_STATE`, a real transition) gets an automatic review: a fresh session, agent `reviewer`, model `CONDUCTOR_REVIEW_MODEL` (`opus`), in its own set `review-<identifier>` with a worktree detached at the PR head, reviews every open PR attached to the issue. Reviews have their own slots (`CONDUCTOR_MAX_REVIEW_SESSIONS`, 1), apart from `CONDUCTOR_MAX_SESSIONS`; a turn longer than `CONDUCTOR_REVIEW_TIMEOUT` (45m) fails.
+- The reviewer writes `.review/verdict.json`; conductor does the side effects: `changes_requested` posts `Review send-back k of N` in Linear and moves the issue to Todo (the author's set picks it up), `approve` comments and leaves it in review; a failed review only comments. The review set is closed after every verdict.
+- The limit: after `CONDUCTOR_REVIEW_MAX_ITERATIONS` (2) send-backs, entering review starts no review; the PR gets `needs-human` and Linear one comment. A `/review` comment on the PR from a `GITHUB_WEBHOOK_USERS` login queues a review at any time and is not sent to the author.
+- Review comments and state changes in Linear are made by the reviewer's OAuth app (Annette, client credentials `REVIEW_LINEAR_CLIENT_ID`/`REVIEW_LINEAR_CLIENT_SECRET`), else `LINEAR_API_KEY`. Comments by `CONDUCTOR_REVIEW_BOT_LOGIN` are never dispatched.
+- `scripts/conductor reviews list` shows send-backs, last verdict and time per issue; `scripts/conductor reviews reset <identifier>` sets send-backs to 0. `CONDUCTOR_REVIEW_ENABLED=false` turns every trigger off. Details in `infra/charts/conductor/conductor/README.md`, "Reviews".
+
 ### Live sessions
 
 Each set is an interactive Claude running in a tmux session inside the pod.

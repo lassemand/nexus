@@ -225,6 +225,55 @@ pub fn dispatchable_review_comment(
     })
 }
 
+/// A `/review` comment on a pull request: a manual request for a review.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewCommand {
+    pub repo: String,
+    pub pr_number: u64,
+    pub comment_id: u64,
+    /// Who asked.
+    pub login: String,
+}
+
+/// Whether a comment body asks for a review: it starts with `/review`
+/// (case-insensitive, after trimming), followed by nothing or whitespace.
+pub fn is_review_command(body: &str) -> bool {
+    let body = body.trim();
+    let Some(head) = body.get(..7) else {
+        return false;
+    };
+    head.eq_ignore_ascii_case("/review") && body[7..].chars().next().is_none_or(char::is_whitespace)
+}
+
+/// Reduces an `issue_comment` payload to a review request, or `None` if it is
+/// not a newly created `/review` comment on a pull request from a watched user.
+pub fn review_command(payload: &IssueCommentPayload, watched: &[String]) -> Option<ReviewCommand> {
+    if payload.action.as_deref() != Some("created") {
+        return None;
+    }
+    let issue = payload.issue.as_ref()?;
+    issue.pull_request.as_ref()?;
+    let comment = payload.comment.as_ref()?;
+    if !is_watched_user(watched, &comment.user.login) || !is_review_command(&comment.body) {
+        return None;
+    }
+    Some(ReviewCommand {
+        repo: payload
+            .repository
+            .as_ref()
+            .map(|r| r.full_name.clone())
+            .unwrap_or_default(),
+        pr_number: issue.number,
+        comment_id: comment.id,
+        login: comment.user.login.clone(),
+    })
+}
+
+/// Whether `login` is the reviewer bot, whose comments never reach a session.
+pub fn is_review_bot(bot_login: Option<&str>, login: &str) -> bool {
+    bot_login.is_some_and(|bot| !bot.is_empty() && bot.eq_ignore_ascii_case(login))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +391,53 @@ mod tests {
         assert!(!verify_github_signature(secret, "", body));
         assert!(!verify_github_signature(secret, &expected, body));
         assert!(!verify_github_signature(secret, "sha256=zzzz", body));
+    }
+
+    fn comment_with_body(login: &str, body: &str) -> IssueCommentPayload {
+        serde_json::from_value(json!({
+            "action": "created",
+            "issue": { "number": 316, "pull_request": { "url": "u" } },
+            "comment": { "id": 5, "body": body, "user": { "login": login } },
+            "repository": { "full_name": "lassemand/nexus" }
+        }))
+        .expect("valid payload")
+    }
+
+    #[test]
+    fn review_commands_are_recognised() {
+        for yes in ["/review", "  /REVIEW  ", "/Review please", "/review\nnow"] {
+            assert!(is_review_command(yes), "{yes:?}");
+        }
+        for no in ["/reviewer", "please /review", "review", "", "/revie"] {
+            assert!(!is_review_command(no), "{no:?}");
+        }
+    }
+
+    #[test]
+    fn review_command_from_a_watched_user_on_a_pr() {
+        let got = review_command(&comment_with_body("lassemand", "/review"), &watched())
+            .expect("a review command");
+        assert_eq!(got.pr_number, 316);
+        assert_eq!(got.comment_id, 5);
+        assert_eq!(got.repo, "lassemand/nexus");
+    }
+
+    #[test]
+    fn review_command_from_an_unwatched_user_is_ignored() {
+        assert!(review_command(&comment_with_body("stranger", "/review"), &watched()).is_none());
+        assert!(
+            review_command(&comment_with_body("lassemand", "looks good"), &watched()).is_none()
+        );
+    }
+
+    #[test]
+    fn the_review_bot_is_recognised_case_insensitively() {
+        assert!(is_review_bot(
+            Some("annette-review[bot]"),
+            "Annette-Review[bot]"
+        ));
+        assert!(!is_review_bot(Some("annette-review[bot]"), "lassemand"));
+        assert!(!is_review_bot(None, "annette-review[bot]"));
+        assert!(!is_review_bot(Some(""), ""));
     }
 }

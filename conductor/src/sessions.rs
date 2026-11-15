@@ -814,6 +814,20 @@ fn summarise(queued: &QueuedEvent) -> String {
             comment.pr_number,
             comment.comment_id
         ),
+        InboundEvent::LinearIssueStateChanged { change, .. } => format!(
+            "{received}  linear {} — now {}",
+            change.identifier, change.state_name
+        ),
+        InboundEvent::ReviewCommand { command, .. } => format!(
+            "{received}  github /review {}#{}",
+            command.repo, command.pr_number
+        ),
+        InboundEvent::ReviewRequested { request } => format!(
+            "{received}  review {} #{} ({})",
+            request.identifier,
+            request.review_number,
+            request.trigger.as_str()
+        ),
     }
 }
 

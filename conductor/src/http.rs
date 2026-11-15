@@ -12,10 +12,11 @@ use axum::{
 
 use crate::{
     github::{
-        dispatchable_issue_comment, dispatchable_review_comment, verify_github_signature,
-        IssueCommentPayload, PrCommentKind, ReviewCommentPayload,
+        dispatchable_issue_comment, dispatchable_review_comment, is_review_bot, is_review_command,
+        review_command, verify_github_signature, IssueCommentPayload, PrCommentKind,
+        ReviewCommentPayload,
     },
-    linear::{closed_issue, dispatchable_issue, LinearWebhook},
+    linear::{closed_issue, dispatchable_issue, state_change, LinearWebhook},
     EventSink, InboundEvent,
 };
 
@@ -44,6 +45,8 @@ pub struct AppState {
     pub watched_github_users: Vec<String>,
     /// Set once shutdown begins, after which webhooks are refused.
     pub shutting_down: Arc<AtomicBool>,
+    /// The reviewer app's login; its comments are never dispatched.
+    pub review_bot_login: Option<String>,
 }
 
 impl AppState {
@@ -140,6 +143,15 @@ async fn handle_linear(
     };
 
     let delivery = delivery_id(&headers, LINEAR_DELIVERY_HEADER);
+    if let Some(change) = state_change(&payload) {
+        submit(
+            &state.sink,
+            InboundEvent::LinearIssueStateChanged {
+                change,
+                delivery_id: delivery.clone(),
+            },
+        );
+    }
     // A payload cannot be both a transition into Todo and into a closed state,
     // so at most one of these produces an event.
     let closed = closed_issue(payload.clone()).map(|issue| InboundEvent::LinearIssueClosed {
@@ -201,6 +213,33 @@ async fn handle_github(
                     return StatusCode::BAD_REQUEST;
                 }
             };
+            let author = payload.comment.as_ref().map(|c| c.user.login.clone());
+            if author
+                .as_deref()
+                .is_some_and(|a| is_review_bot(state.review_bot_login.as_deref(), a))
+            {
+                metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "ignored").increment(1);
+                return StatusCode::OK;
+            }
+            if let Some(command) = review_command(&payload, &state.watched_github_users) {
+                metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "accepted").increment(1);
+                submit(
+                    &state.sink,
+                    InboundEvent::ReviewCommand {
+                        command,
+                        delivery_id: delivery,
+                    },
+                );
+                return StatusCode::OK;
+            }
+            if payload
+                .comment
+                .as_ref()
+                .is_some_and(|c| is_review_command(&c.body))
+            {
+                metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "ignored").increment(1);
+                return StatusCode::OK;
+            }
             let comment = dispatchable_issue_comment(payload, &state.watched_github_users);
             metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => outcome_label(comment.is_some())).increment(1);
             if let Some(comment) = comment {
@@ -223,6 +262,14 @@ async fn handle_github(
                     return StatusCode::BAD_REQUEST;
                 }
             };
+            let from_bot = payload
+                .comment
+                .as_ref()
+                .is_some_and(|c| is_review_bot(state.review_bot_login.as_deref(), &c.user.login));
+            if from_bot {
+                metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "ignored").increment(1);
+                return StatusCode::OK;
+            }
             let comment = dispatchable_review_comment(payload, &state.watched_github_users);
             metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => outcome_label(comment.is_some())).increment(1);
             if let Some(comment) = comment {

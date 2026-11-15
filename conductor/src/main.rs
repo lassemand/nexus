@@ -8,11 +8,13 @@ use clap::{Parser, Subcommand};
 use conductor::{
     dispatcher::{DispatchArgs, Dispatcher},
     github::watched_users_from_env,
+    github_api::{GithubRest, GithubToken},
     hooks,
     http::{serve_with_shutdown, AppState, DEFAULT_BIND},
-    linear_api::{IssueSetSource, LinearGraphql},
+    linear_api::{IssueSetSource, LinearGraphql, LinearIdentity, LinearReviewApi, LinearWriter},
     registry::{Registry, SystemClock},
     resolve::BranchResolver,
+    review::{cli::ReviewsCommand, ReviewConfig, ReviewDeps},
     sessions::{self, SessionsArgs},
     tmux::{SessionRuntime, TmuxRuntime},
 };
@@ -29,6 +31,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Run the HTTP server and dispatcher until stopped.
     Serve {
@@ -45,6 +48,12 @@ enum Command {
     /// Operates on the same registry as a running server, through Postgres, so
     /// it is safe to use while `serve` is working.
     Sessions(SessionsArgs),
+
+    /// Inspect automatic reviews and reset an issue's send-backs.
+    Reviews {
+        #[command(subcommand)]
+        command: ReviewsCommand,
+    },
 
     /// Forward a Claude Code hook payload (read from stdin) to `conductor serve`.
     ///
@@ -95,6 +104,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(code);
         }
 
+        Command::Reviews { command } => {
+            let registry = Registry::from_env(Arc::new(SystemClock)).await?;
+            let mut out = std::io::stdout();
+            let code = conductor::review::cli::run(command, registry.pool(), &mut out).await?;
+            out.flush()?;
+            std::process::exit(code);
+        }
+
         Command::Serve { bind, dispatch } => {
             // Own port: 8788 receives external webhooks, so /metrics must not live there.
             // Metrics must not take conductor down: a port that cannot bind is only logged.
@@ -135,6 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     None => None,
                 };
             let config = dispatch.into_config();
+            let reviews = review_deps(&config.review, &github_api_url, github_token.clone())?;
             match &config.model {
                 Some(model) => tracing::info!("claude model: {model}"),
                 None => {
@@ -158,7 +176,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let resolver_registry = registry.clone();
             let shutting_down = Arc::new(AtomicBool::new(false));
             let runtime: Arc<dyn SessionRuntime> = Arc::new(TmuxRuntime::from_env());
-            let (dispatcher, sink, rx) = Dispatcher::new(
+            let review_bot_login = config.review.bot_login.clone();
+            let (dispatcher, sink, rx) = Dispatcher::new_with_reviews(
                 registry,
                 config,
                 Arc::new(BranchResolver::new(
@@ -169,6 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Arc::clone(&shutting_down),
                 issue_source,
                 Arc::clone(&runtime),
+                reviews,
             );
 
             // Hooks drive the tmux-model states; the listener is loopback only,
@@ -190,6 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 github_webhook_secret,
                 watched_github_users: watched_users_from_env(),
                 shutting_down,
+                review_bot_login,
             };
 
             let stopping = Arc::clone(&dispatcher);
@@ -204,6 +225,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
     }
+}
+
+/// Builds the review orchestration's clients, or `None` when reviews are off
+/// or cannot work (no `LINEAR_API_KEY` to read issues, no GitHub credentials).
+///
+/// Linear writes go through the reviewer's OAuth app when
+/// `REVIEW_LINEAR_CLIENT_ID` and `REVIEW_LINEAR_CLIENT_SECRET` are set, and
+/// through `LINEAR_API_KEY` otherwise, with one warning.
+fn review_deps(
+    config: &ReviewConfig,
+    github_api_url: &str,
+    github_token: Option<String>,
+) -> Result<Option<ReviewDeps>, Box<dyn std::error::Error>> {
+    if !config.enabled {
+        tracing::info!("CONDUCTOR_REVIEW_ENABLED is false; automatic and manual reviews are off");
+        return Ok(None);
+    }
+    let Some(api_key) = std::env::var("LINEAR_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+    else {
+        tracing::warn!("LINEAR_API_KEY not set; reviews are off");
+        return Ok(None);
+    };
+    let Some(token) = GithubToken::from_env(github_token) else {
+        tracing::warn!("no GitHub credentials for conductor itself; reviews are off");
+        return Ok(None);
+    };
+    let api_url = std::env::var("CONDUCTOR_LINEAR_API_URL").ok();
+    let identity = LinearIdentity::for_reviews(
+        std::env::var("REVIEW_LINEAR_CLIENT_ID").ok(),
+        std::env::var("REVIEW_LINEAR_CLIENT_SECRET").ok(),
+        &api_key,
+        std::env::var("CONDUCTOR_LINEAR_OAUTH_URL").ok(),
+    )?;
+    tracing::info!(
+        identity = identity.kind(),
+        state = %config.state,
+        max_iterations = config.max_iterations,
+        max_sessions = config.max_sessions,
+        timeout_secs = config.timeout.as_secs(),
+        model = ?config.model,
+        "reviews configured"
+    );
+    let linear = LinearReviewApi::new(
+        LinearGraphql::new(api_key, api_url.clone())?,
+        LinearWriter::new(identity, api_url)?,
+    );
+    Ok(Some(ReviewDeps {
+        config: config.clone(),
+        linear: Arc::new(linear),
+        github: Arc::new(GithubRest::new(github_api_url, token)?),
+    }))
 }
 
 /// Reads the hook JSON from stdin and POSTs it to the local listener.

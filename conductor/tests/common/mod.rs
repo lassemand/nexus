@@ -619,6 +619,11 @@ impl Harness {
             deliver_timeout: Duration::from_secs(10),
             interrupt_grace: Duration::from_millis(300),
             start_backoff: Duration::from_millis(500),
+            review: conductor::review::ReviewConfig {
+                linear_write_budget: Duration::from_millis(500),
+                linear_retry: Duration::from_millis(20),
+                ..Default::default()
+            },
         };
 
         Harness {
@@ -724,6 +729,31 @@ impl Harness {
             Arc::clone(&self.shutting_down),
             Some(source),
             self.fake.clone(),
+        );
+        self.fake.attach_hooks(dispatcher.hook_state());
+        tokio::spawn(Arc::clone(&dispatcher).run_ingest(rx));
+        tokio::spawn(Arc::clone(&dispatcher).run_scheduler());
+        (dispatcher, sink)
+    }
+
+    /// Like [`Harness::start`], with automatic reviews backed by fakes.
+    pub fn start_with_reviews(
+        &self,
+        linear: Arc<dyn conductor::review::ReviewLinear>,
+        github: Arc<dyn conductor::review::ReviewGithub>,
+    ) -> (Arc<Dispatcher>, DispatchSink) {
+        let (dispatcher, sink, rx) = Dispatcher::new_with_reviews(
+            self.registry.clone(),
+            self.config.clone(),
+            Arc::new(PerPullRequestResolver),
+            Arc::clone(&self.shutting_down),
+            None,
+            self.fake.clone(),
+            Some(conductor::review::ReviewDeps {
+                config: self.config.review.clone(),
+                linear,
+                github,
+            }),
         );
         self.fake.attach_hooks(dispatcher.hook_state());
         tokio::spawn(Arc::clone(&dispatcher).run_ingest(rx));
