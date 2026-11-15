@@ -1687,6 +1687,54 @@ tests:
               summary: "analyst release to decision p99 is 495.5ms"
               description: "The 99th percentile from a release arriving to its decision has been above 50 ms for 10 minutes. Check CPU throttling of the analyst pod and kernel run times on the Analyst dashboard."
 
+  # promtool time 0 is Thursday 1970-01-01 00:00 UTC.
+  - name: SaxoQuoteStreamDown fires on a weekday session and is silent otherwise
+    input_series:
+      - series: 'saxo_quote_stream_watched_instruments'
+        values: '3+0x660'
+      - series: 'saxo_quote_stream_connected'
+        values: '1+0x540 0+0x120'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: SaxoQuoteStreamDown
+        exp_alerts: []
+      - eval_time: 9h1m
+        alertname: SaxoQuoteStreamDown
+        exp_alerts: []
+      - eval_time: 9h3m
+        alertname: SaxoQuoteStreamDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Saxo quote stream is down while 3 instruments are watched"
+              description: "saxo-stream has /quotes/stream clients watching instruments but its Saxo streaming connection is down or reconnecting, so clients see saxo_connected false and use GET /quote. Check the saxo-stream logs (\"Saxo streaming\"), the token (SaxoQuotesDown) and the Quote stream row on the Saxo dashboard."
+
+  - name: SaxoQuoteStreamDown is silent when nobody watches
+    input_series:
+      - series: 'saxo_quote_stream_watched_instruments'
+        values: '0+0x660'
+      - series: 'saxo_quote_stream_connected'
+        values: '0+0x660'
+    alert_rule_test:
+      - eval_time: 10h
+        alertname: SaxoQuoteStreamDown
+        exp_alerts: []
+
+  - name: SaxoQuoteStreamDown is silent at night and at the weekend
+    input_series:
+      - series: 'saxo_quote_stream_watched_instruments'
+        values: '3+0x3500'
+      - series: 'saxo_quote_stream_connected'
+        values: '0+0x3500'
+    alert_rule_test:
+      - eval_time: 18h
+        alertname: SaxoQuoteStreamDown
+        exp_alerts: []
+      - eval_time: 2d10h
+        alertname: SaxoQuoteStreamDown
+        exp_alerts: []
+
   - name: SaxoQuotesDown fires on no_token and is silent otherwise
     input_series:
       - series: 'saxo_quote_requests_total{outcome="no_token"}'
