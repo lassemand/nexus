@@ -82,6 +82,14 @@ async fn a_release_with_a_kernel_gives_one_decision_one_event_and_settles_the_re
         (signals[0].decision, signals[0].baseline),
         (DecisionKind::Buy, false)
     );
+    let persisted = signals[0]
+        .persisted
+        .clone()
+        .wait()
+        .await
+        .expect("the trade learns its decision row");
+    assert_eq!(persisted.id, stored.id);
+    assert_eq!(persisted.kind, DecisionKind::Buy);
 
     assert_eq!(rig.status("report_targets", target).await, "decided");
     assert_eq!(rig.status("kernels", kernel).await, "spent");

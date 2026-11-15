@@ -19,6 +19,31 @@ impl Clock for SystemClock {
     }
 }
 
+/// A clock that follows tokio's time: the wall time it reads at the start plus
+/// what tokio's clock has run since. With tokio's time paused, tests move it by
+/// sleeping; in production it equals the system clock.
+#[derive(Debug, Clone, Copy)]
+pub struct TokioClock {
+    wall: DateTime<Utc>,
+    started: tokio::time::Instant,
+}
+
+impl TokioClock {
+    /// A clock that reads `wall` now and moves with tokio's time.
+    pub fn starting_at(wall: DateTime<Utc>) -> TokioClock {
+        TokioClock {
+            wall,
+            started: tokio::time::Instant::now(),
+        }
+    }
+}
+
+impl Clock for TokioClock {
+    fn now(&self) -> DateTime<Utc> {
+        self.wall + Duration::from_std(self.started.elapsed()).unwrap_or(Duration::MAX)
+    }
+}
+
 /// A clock a test moves by hand.
 #[derive(Debug)]
 pub struct ManualClock(Mutex<DateTime<Utc>>);
@@ -61,6 +86,17 @@ mod tests {
     use chrono::TimeZone;
 
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tokio_clock_moves_with_paused_time() {
+        let start = Utc
+            .with_ymd_and_hms(2026, 11, 11, 7, 30, 0)
+            .single()
+            .expect("valid");
+        let clock = TokioClock::starting_at(start);
+        tokio::time::sleep(std::time::Duration::from_secs(90 * 60)).await;
+        assert_eq!(clock.now(), start + Duration::minutes(90));
+    }
 
     #[test]
     fn a_manual_clock_stands_still_until_moved() {
