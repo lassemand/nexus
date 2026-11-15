@@ -1753,9 +1753,9 @@ tests:
 
   - name: AnalystQuoteErrors fires during market hours and is silent at night
     input_series:
-      - series: 'analyst_quotes_total{job="analyst",outcome="ok"}'
+      - series: 'analyst_quotes_total{job="analyst",source="request",outcome="ok"}'
         values: '0+5x700'
-      - series: 'analyst_quotes_total{job="analyst",outcome="timeout"}'
+      - series: 'analyst_quotes_total{job="analyst",source="request",outcome="timeout"}'
         values: '0+5x700'
     alert_rule_test:
       - eval_time: 3h
@@ -1769,3 +1769,63 @@ tests:
             exp_annotations:
               summary: "50% of analyst quotes are not ok"
               description: "More than 20 % of the quotes the analyst asked saxo-stream for failed over the last 10 minutes. See the outcome split on the Analyst dashboard and the Saxo dashboard."
+
+  - name: AnalystQuoteErrors ignores stream reads
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="request",outcome="ok"}'
+        values: '0+5x700'
+      - series: 'analyst_quotes_total{job="analyst",source="stream",outcome="no_quote"}'
+        values: '0+50x700'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: AnalystQuoteErrors
+        exp_alerts: []
+
+  - name: AnalystQuoteErrors ignores a working fallback with retries
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="rejected"}'
+        values: '0+4x700'
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="accepted"}'
+        values: '0+1x700'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: AnalystQuoteErrors
+        exp_alerts: []
+
+  - name: AnalystQuoteFallbackUsed fires on request quotes during market hours
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="ok"}'
+        values: '0+1x700'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: AnalystQuoteFallbackUsed
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              job: analyst
+              source: request
+              purpose: entry
+              outcome: ok
+            exp_annotations:
+              summary: "The analyst fell back to GET /quote"
+              description: "The analyst asked saxo-stream for a quote with GET /quote in the last 15 minutes during trading hours. The fallback should be rare: the quote stream is normally healthy. See the Analyst dashboard and the Saxo \"Quote stream\" row."
+
+  - name: AnalystQuoteFallbackUsed is silent without request quotes
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="stream",purpose="entry",outcome="ok"}'
+        values: '0+1x700'
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="ok"}'
+        values: '3+0x700'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: AnalystQuoteFallbackUsed
+        exp_alerts: []
+
+  - name: AnalystQuoteFallbackUsed is silent outside trading hours
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="ok"}'
+        values: '0+1x700'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: AnalystQuoteFallbackUsed
+        exp_alerts: []

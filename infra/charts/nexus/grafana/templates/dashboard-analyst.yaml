@@ -410,8 +410,8 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "sum by (outcome) (increase(analyst_quotes_total{job=\"analyst\"}[10m]))",
-              "legendFormat": "{{ "{{" }}outcome{{ "}}" }}",
+              "expr": "sum by (source, outcome) (increase(analyst_quotes_total{job=\"analyst\"}[10m]))",
+              "legendFormat": "{{ "{{" }}source{{ "}}" }} {{ "{{" }}outcome{{ "}}" }}",
               "datasource": {
                 "type": "prometheus",
                 "uid": "nexus-prometheus"
@@ -612,6 +612,163 @@ data:
             "y": 49,
             "w": 24,
             "h": 9
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Quote stream connected",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(analyst_quote_stream_connected{job=\"analyst\"})",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 14,
+          "gridPos": {
+            "x": 0,
+            "y": 58,
+            "w": 6,
+            "h": 6
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Watched instruments",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "analyst_watched_instruments{job=\"analyst\"}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 15,
+          "gridPos": {
+            "x": 6,
+            "y": 58,
+            "w": 6,
+            "h": 6
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Fallback requests per 15 min",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(increase(analyst_quotes_total{job=\"analyst\",source=\"request\"}[15m]))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 16,
+          "gridPos": {
+            "x": 12,
+            "y": 58,
+            "w": 6,
+            "h": 6
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Stream reconnects per 15 min",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "increase(analyst_quote_stream_reconnects_total{job=\"analyst\"}[15m])",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              }
+            }
+          ],
+          "id": 17,
+          "gridPos": {
+            "x": 18,
+            "y": 58,
+            "w": 6,
+            "h": 6
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Quote age p99 by source",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.99, sum by (le, source) (rate(analyst_quote_age_seconds_bucket{job=\"analyst\"}[15m])))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "legendFormat": "{{ "{{" }}source{{ "}}" }}"
+            }
+          ],
+          "id": 18,
+          "gridPos": {
+            "x": 0,
+            "y": 64,
+            "w": 24,
+            "h": 8
           }
         }
       ]

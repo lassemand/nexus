@@ -304,6 +304,12 @@ fn open_trade(entry_at: DateTime<Utc>, traceparent: &str) -> StoredTrade {
         trace_id: Some("4bf92f3577b34da6a3ce929d0e0e4736".into()),
         release_traceparent: Some(traceparent.to_owned()),
         trade_trace_id: Some("0af7651916cd43dd8448eb211c80319c".into()),
+        entry_quote_source: None,
+        entry_quote_saxo_time: None,
+        entry_quote_age_ms: None,
+        exit_quote_source: None,
+        exit_quote_saxo_time: None,
+        exit_quote_age_ms: None,
     }
 }
 

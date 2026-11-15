@@ -773,10 +773,10 @@ groups:
       - alert: AnalystQuoteErrors
         expr: >
           (
-            sum(increase(analyst_quotes_total{job="analyst",outcome!="ok"}[10m]))
-            / sum(increase(analyst_quotes_total{job="analyst"}[10m]))
+            sum(increase(analyst_quotes_total{job="analyst",source="request",outcome!~"ok|accepted|rejected"}[10m]))
+            / sum(increase(analyst_quotes_total{job="analyst",source="request"}[10m]))
           ) > 0.2
-          and sum(increase(analyst_quotes_total{job="analyst"}[10m])) >= 5
+          and sum(increase(analyst_quotes_total{job="analyst",source="request"}[10m])) >= 5
           and on () (day_of_week() >= 1 and day_of_week() <= 5)
           and on () (hour() >= 7 and hour() < 16)
         for: 10m
@@ -788,6 +788,21 @@ groups:
             More than 20 % of the quotes the analyst asked saxo-stream for failed over
             the last 10 minutes. See the outcome split on the Analyst dashboard and the
             Saxo dashboard.
+
+      - alert: AnalystQuoteFallbackUsed
+        expr: >
+          increase(analyst_quotes_total{job="analyst",source="request"}[15m]) > 0
+          and on () (day_of_week() >= 1 and day_of_week() <= 5)
+          and on () (hour() >= 7 and hour() < 16)
+        labels:
+          severity: info
+        annotations:
+          summary: "The analyst fell back to GET /quote"
+          description: >-
+            The analyst asked saxo-stream for a quote with GET /quote in the last 15
+            minutes during trading hours. The fallback should be rare: the quote
+            stream is normally healthy. See the Analyst dashboard and the Saxo
+            "Quote stream" row.
 
       # NEX-270: clients watch instruments but the Saxo info-price stream is not
       # up, so they fall back to GET /quote. Nordic sessions: Mon-Fri 07:00-17:00 UTC.

@@ -6,6 +6,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use reqwest::Url;
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -34,6 +35,13 @@ pub struct Quote {
 }
 
 impl Quote {
+    /// Saxo's timestamp of the quote, when it is a readable RFC 3339 instant.
+    pub fn saxo_time(&self) -> Option<DateTime<Utc>> {
+        DateTime::parse_from_rfc3339(self.saxo_last_updated.as_deref()?)
+            .ok()
+            .map(|t| t.with_timezone(&Utc))
+    }
+
     /// The ask to buy at, when the quote is tradable, real time and positive.
     pub fn entry_ask(&self) -> Option<Decimal> {
         let ask = self.ask?;
