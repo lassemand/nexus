@@ -773,7 +773,7 @@ groups:
       - alert: AnalystQuoteErrors
         expr: >
           (
-            sum(increase(analyst_quotes_total{job="analyst",source="request",outcome!="ok"}[10m]))
+            sum(increase(analyst_quotes_total{job="analyst",source="request",outcome!~"ok|accepted|rejected"}[10m]))
             / sum(increase(analyst_quotes_total{job="analyst",source="request"}[10m]))
           ) > 0.2
           and sum(increase(analyst_quotes_total{job="analyst",source="request"}[10m])) >= 5

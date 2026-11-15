@@ -217,13 +217,13 @@ async fn every_state_change_bumps_the_version_and_a_closed_trade_has_its_result(
         message.entry_quote_saxo_time_unix_millis,
         (at(8, 0, 0) + Duration::milliseconds(100)).timestamp_millis()
     );
-    assert_eq!(message.entry_quote_age_ms, 20);
+    assert_eq!(message.entry_quote_age_ms, Some(20));
     assert_eq!(message.exit_quote_source, "stream");
-    assert_eq!(message.exit_quote_age_ms, 1_000);
+    assert_eq!(message.exit_quote_age_ms, Some(1_000));
     assert_eq!(message.observations[0].quote_source, "request");
-    assert_eq!(message.observations[0].quote_age_ms, 40);
+    assert_eq!(message.observations[0].quote_age_ms, Some(40));
     assert_eq!(message.observations[1].quote_source, "");
-    assert_eq!(message.observations[1].quote_age_ms, -1);
+    assert_eq!(message.observations[1].quote_age_ms, None);
     assert!(!message.shadow);
 }
 
@@ -396,5 +396,5 @@ async fn a_too_old_entry_and_a_too_old_exit_keep_the_quote_for_the_audit(pool: P
     assert_eq!(observations[0].quote_source.as_deref(), Some("request"));
     let message = trade_to_proto(&closed, &observations);
     assert_eq!(message.status, "exit_quote_too_old");
-    assert_eq!(message.exit_quote_age_ms, 3 * 3_600_000);
+    assert_eq!(message.exit_quote_age_ms, Some(3 * 3_600_000));
 }

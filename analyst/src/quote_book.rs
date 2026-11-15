@@ -16,7 +16,7 @@
 //! whole by [`QuoteBook::set_scheduled`]) and the pinned ones (an instrument a
 //! trade needs, held by a [`Pin`] until the trade ends).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -86,6 +86,12 @@ struct Watched {
     pins: HashMap<Pair, usize>,
 }
 
+#[derive(Default)]
+struct Reported {
+    errored: HashSet<Pair>,
+    unresolved: HashSet<Pair>,
+}
+
 impl Watched {
     fn union(&self) -> BTreeSet<Pair> {
         let mut all = self.scheduled.clone();
@@ -104,6 +110,7 @@ pub struct QuoteBook {
     last_heartbeat_ms: AtomicI64,
     session: AtomicU64,
     watched: Mutex<Watched>,
+    reported: Mutex<Reported>,
     desired: watch::Sender<Arc<BTreeSet<Pair>>>,
 }
 
@@ -125,6 +132,7 @@ impl QuoteBook {
                 scheduled: BTreeSet::new(),
                 pins: HashMap::new(),
             }),
+            reported: Mutex::new(Reported::default()),
             desired,
         })
     }
@@ -151,14 +159,17 @@ impl QuoteBook {
     /// until the first heartbeat.
     pub fn on_connected(&self) {
         self.session.fetch_add(1, Ordering::AcqRel);
+        *self.reported.lock().unwrap_or_else(|e| e.into_inner()) = Reported::default();
         self.saxo_connected.store(false, Ordering::Release);
         self.last_heartbeat_ms
             .store(NO_HEARTBEAT, Ordering::Release);
         self.connected.store(true, Ordering::Release);
     }
 
-    /// The WebSocket closed.
+    /// The WebSocket closed. The session ends with it, so every quote held
+    /// stops counting as current at once.
     pub fn on_disconnected(&self) {
+        self.session.fetch_add(1, Ordering::AcqRel);
         self.connected.store(false, Ordering::Release);
         self.saxo_connected.store(false, Ordering::Release);
         self.last_heartbeat_ms
@@ -170,6 +181,26 @@ impl QuoteBook {
         self.saxo_connected.store(saxo_connected, Ordering::Release);
         self.last_heartbeat_ms
             .store(self.clock.now().timestamp_millis(), Ordering::Release);
+    }
+
+    /// `saxo-stream` reported an error for `pair`.
+    pub fn on_pair_error(&self, pair: Pair) {
+        let mut reported = self.reported.lock().unwrap_or_else(|e| e.into_inner());
+        reported.errored.insert(pair);
+    }
+
+    /// The pairs the latest heartbeat listed as unresolved.
+    pub fn on_unresolved(&self, pairs: HashSet<Pair>) {
+        let mut reported = self.reported.lock().unwrap_or_else(|e| e.into_inner());
+        reported.unresolved = pairs;
+    }
+
+    /// Whether `saxo-stream` reported an error or `unresolved` for `pair` and no
+    /// quote has arrived for it since: it will not stream, so a price has to be
+    /// requested.
+    pub fn pair_failing(&self, pair: &Pair) -> bool {
+        let reported = self.reported.lock().unwrap_or_else(|e| e.into_inner());
+        reported.errored.contains(pair) || reported.unresolved.contains(pair)
     }
 
     /// The current session number.
@@ -189,7 +220,7 @@ impl QuoteBook {
             received_at: self.clock.now(),
         };
         let sender = self.sender(pair);
-        sender.send_if_modified(|current| {
+        let stored = sender.send_if_modified(|current| {
             if current
                 .as_ref()
                 .is_some_and(|old| old.session == session && seq < old.seq)
@@ -198,7 +229,13 @@ impl QuoteBook {
             }
             *current = Some(held);
             true
-        })
+        });
+        if stored {
+            let mut reported = self.reported.lock().unwrap_or_else(|e| e.into_inner());
+            reported.errored.remove(pair);
+            reported.unresolved.remove(pair);
+        }
+        stored
     }
 
     fn sender(&self, pair: &Pair) -> watch::Sender<Option<Held>> {
@@ -215,10 +252,26 @@ impl QuoteBook {
             .clone()
     }
 
-    /// The quote held for `pair` now. Never awaits.
+    /// The quote held for `pair` now, if it arrived on the current connection.
+    /// A quote from an earlier connection is absent: it may be from before an
+    /// outage, and `saxo-stream` has not confirmed it since. Never awaits.
     pub fn current(&self, pair: &Pair) -> Option<Held> {
         let quotes = self.quotes.read().unwrap_or_else(|e| e.into_inner());
-        quotes.get(pair).and_then(|sender| sender.borrow().clone())
+        quotes
+            .get(pair)
+            .and_then(|sender| sender.borrow().clone())
+            .filter(|held| self.is_current(held))
+    }
+
+    /// Whether `held` arrived on the current connection.
+    pub fn is_current(&self, held: &Held) -> bool {
+        held.session == self.session()
+    }
+
+    /// `held` if it arrived on the current connection, else nothing. For values
+    /// read from a [`QuoteBook::subscribe`] receiver.
+    pub fn live(&self, held: Option<Held>) -> Option<Held> {
+        held.filter(|held| self.is_current(held))
     }
 
     /// A receiver for `pair`'s updates; `changed().await` returns at the next
@@ -262,6 +315,16 @@ impl QuoteBook {
     fn publish_locked(&self, watched: &Watched) {
         let union = watched.union();
         crate::metrics::watched_instruments(union.len());
+        let dropped: Vec<Pair> = self
+            .desired
+            .borrow()
+            .iter()
+            .filter(|pair| !union.contains(*pair))
+            .cloned()
+            .collect();
+        if !dropped.is_empty() {
+            self.forget(&dropped);
+        }
         self.desired.send_if_modified(|current| {
             if **current == union {
                 return false;
@@ -269,6 +332,22 @@ impl QuoteBook {
             *current = Arc::new(union);
             true
         });
+    }
+
+    fn forget(&self, pairs: &[Pair]) {
+        {
+            let quotes = self.quotes.read().unwrap_or_else(|e| e.into_inner());
+            for pair in pairs {
+                if let Some(sender) = quotes.get(pair) {
+                    sender.send_if_modified(|current| current.take().is_some());
+                }
+            }
+        }
+        let mut reported = self.reported.lock().unwrap_or_else(|e| e.into_inner());
+        for pair in pairs {
+            reported.errored.remove(pair);
+            reported.unresolved.remove(pair);
+        }
     }
 
     /// Whether `pair` is on the watch list.
@@ -374,6 +453,57 @@ mod tests {
         assert_eq!(
             book.current(&pair("AAA")).unwrap().quote.ask,
             "99".parse().ok()
+        );
+    }
+
+    #[test]
+    fn a_quote_from_an_earlier_connection_is_not_current() {
+        let (_, book) = book();
+        book.on_connected();
+        book.on_heartbeat(true);
+        book.apply(&pair("AAA"), quote("100", "2026-11-10T08:00:00Z"), 1);
+        assert!(book.current(&pair("AAA")).is_some());
+        book.on_disconnected();
+        assert_eq!(book.current(&pair("AAA")), None, "the session ended");
+        book.on_connected();
+        book.on_heartbeat(true);
+        assert!(book.is_healthy());
+        assert_eq!(book.current(&pair("AAA")), None, "no snapshot yet");
+        book.apply(&pair("AAA"), quote("98", "2026-11-10T08:05:00Z"), 1);
+        assert_eq!(
+            book.current(&pair("AAA")).unwrap().quote.ask,
+            "98".parse().ok()
+        );
+    }
+
+    #[test]
+    fn a_quote_is_dropped_when_its_pair_leaves_the_watch_list() {
+        let (_, book) = book();
+        book.on_connected();
+        book.set_scheduled([pair("AAA")].into());
+        book.apply(&pair("AAA"), quote("100", "2026-11-10T08:00:00Z"), 1);
+        book.set_scheduled(BTreeSet::new());
+        assert_eq!(book.current(&pair("AAA")), None);
+    }
+
+    #[test]
+    fn a_reported_pair_fails_until_a_quote_arrives() {
+        let (_, book) = book();
+        book.on_connected();
+        assert!(!book.pair_failing(&pair("AAA")));
+        book.on_pair_error(pair("AAA"));
+        book.on_unresolved([pair("BBB")].into());
+        assert!(book.pair_failing(&pair("AAA")));
+        assert!(book.pair_failing(&pair("BBB")));
+        book.apply(&pair("AAA"), quote("100", "2026-11-10T08:00:00Z"), 1);
+        assert!(!book.pair_failing(&pair("AAA")));
+        book.on_unresolved(HashSet::new());
+        assert!(!book.pair_failing(&pair("BBB")));
+        book.on_pair_error(pair("AAA"));
+        book.on_connected();
+        assert!(
+            !book.pair_failing(&pair("AAA")),
+            "a new connection starts clean"
         );
     }
 

@@ -120,7 +120,9 @@ pub struct QuoteInfo {
     pub source: Origin,
     /// Saxo's timestamp of the quote, when readable.
     pub saxo_time: Option<DateTime<Utc>>,
-    /// The time the price was taken at minus `saxo_time`, in milliseconds.
+    /// The time the price was taken at minus `saxo_time`, in milliseconds;
+    /// `None` when Saxo's timestamp is unknown. Never negative: a Saxo clock
+    /// ahead of ours is clamped to 0 and counted.
     pub age_ms: Option<i64>,
 }
 
@@ -128,10 +130,17 @@ impl QuoteInfo {
     /// The info of `quote` taken from `source` at `at`.
     pub fn of(quote: &Quote, source: Origin, at: DateTime<Utc>) -> QuoteInfo {
         let saxo_time = quote.saxo_time();
+        let age_ms = saxo_time.map(|t| {
+            let age = (at - t).num_milliseconds();
+            if age < 0 {
+                crate::metrics::quote_clock_skew(source.as_str());
+            }
+            age.max(0)
+        });
         QuoteInfo {
             source,
             saxo_time,
-            age_ms: saxo_time.map(|t| (at - t).num_milliseconds()),
+            age_ms,
         }
     }
 }
@@ -245,7 +254,9 @@ pub struct StoredTrade {
     pub entry_ask: Option<Decimal>,
     /// The bid at entry.
     pub entry_bid: Option<Decimal>,
-    /// Saxo's timestamp of the entry quote.
+    /// Saxo's timestamp of the entry quote, as the text Saxo sent (NEX-255).
+    /// `entry_quote_saxo_time` is the same instant parsed, and is also set for an
+    /// entry rejected as too old, which has no entry row.
     pub entry_saxo_at: Option<String>,
     /// When the position is closed.
     pub exit_target_at: Option<DateTime<Utc>>,
@@ -578,10 +589,10 @@ pub fn to_proto(trade: &StoredTrade, observations: &[StoredObservation]) -> Anal
         trade_trace_id: trade.trade_trace_id.clone().unwrap_or_default(),
         entry_quote_source: trade.entry_quote_source.clone().unwrap_or_default(),
         entry_quote_saxo_time_unix_millis: millis(trade.entry_quote_saxo_time),
-        entry_quote_age_ms: trade.entry_quote_age_ms.unwrap_or(-1),
+        entry_quote_age_ms: trade.entry_quote_age_ms,
         exit_quote_source: trade.exit_quote_source.clone().unwrap_or_default(),
         exit_quote_saxo_time_unix_millis: millis(trade.exit_quote_saxo_time),
-        exit_quote_age_ms: trade.exit_quote_age_ms.unwrap_or(-1),
+        exit_quote_age_ms: trade.exit_quote_age_ms,
         observations: observations
             .iter()
             .map(|o| TradeObservation {
@@ -596,7 +607,7 @@ pub fn to_proto(trade: &StoredTrade, observations: &[StoredObservation]) -> Anal
                 late: o.late,
                 status: o.status.clone(),
                 quote_source: o.quote_source.clone().unwrap_or_default(),
-                quote_age_ms: o.quote_age_ms.unwrap_or(-1),
+                quote_age_ms: o.quote_age_ms,
             })
             .collect(),
     }

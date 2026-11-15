@@ -60,6 +60,10 @@ impl TargetSource for Store {
     }
 }
 
+/// The timer refresh is this many scheduler ticks apart; the scheduler's
+/// notification is the primary trigger.
+pub const SAFETY_NET_TICKS: u32 = 5;
+
 /// What the updater reads and writes.
 pub struct WatchUpdater {
     /// The targets.
@@ -87,8 +91,9 @@ impl WatchUpdater {
         }
     }
 
-    /// Refreshes every `tick` and whenever `changed` is notified, until
-    /// `shutdown` completes.
+    /// Refreshes whenever `changed` is notified (the scheduler notifies after
+    /// every pass, which is when targets change) and, as a slow safety net,
+    /// every [`SAFETY_NET_TICKS`] times `tick`, until `shutdown` completes.
     pub async fn run(
         &self,
         tick: Duration,
@@ -101,7 +106,7 @@ impl WatchUpdater {
             tokio::select! {
                 () = &mut shutdown => return,
                 () = changed.notified() => {}
-                () = tokio::time::sleep(tick) => {}
+                () = tokio::time::sleep(tick * SAFETY_NET_TICKS) => {}
             }
         }
     }

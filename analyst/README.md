@@ -215,7 +215,12 @@ is not healthy (a test asserts the path; there is no order endpoint); a fallback
 timestamp on it is at most `QUOTE_MAX_AGE` old, otherwise the trade is `quote_too_old` (entry) or `exit_quote_too_old`
 (exit) and an observation `quote_too_old`. A quote with a missing or unparseable Saxo timestamp counts as too old on the
 fallback path. After a (re)connect the per-instrument `seq` floor is reset (`saxo-stream` restarts at low numbers);
-within a connection a quote with a lower `seq` than the stored one is dropped.
+within a connection a quote with a lower `seq` than the stored one is dropped. A quote that arrived on an earlier
+connection is not current (the session ends with the connection, so after a reconnect the book is empty until
+`saxo-stream` re-sends its snapshots), and a quote is dropped when its pair leaves the watch list. If `saxo-stream`
+reported an `error` or `unresolved` for a pair, or no quote arrived for it within 2 s of the price's target, that price
+is requested instead of waited for. `quote_age_ms` is never negative (a Saxo clock ahead of ours is clamped to 0 and
+counted in `analyst_quote_clock_skew_total`) and is NULL (unset in the proto) when Saxo's timestamp is unknown.
 
 The **watch list**, sent to `saxo-stream` as `{"watch":[{"ticker","mic"}]}`, is recomputed every `SCHEDULER_TICK` and
 after each scheduler pass: every active report target whose expected date is today or later in the exchange's time zone
@@ -246,12 +251,14 @@ Metrics: `analyst_entry_delay_seconds`, `analyst_quote_lateness_seconds`, `analy
    (it lost a twin race) or never stored gets no trade;
 3. takes the ask at `entry target`: from memory when the stream is healthy (a held quote that is not tradable waits for the
    next update, up to `ENTRY_MAX_WAIT`); with the market closed it waits from the open for the first tradable quote with
-   `saxo_time >= open` (the fallback if the stream is unhealthy at the open); on the fallback it requests quotes, retrying
+   `saxo_time >= open` (the fallback if the stream is unhealthy at the open; there a quote stamped before the open is no
+   opening price yet and is retried, and only if the wait ends with the newest of them older than `QUOTE_MAX_AGE` is the
+   entry `quote_too_old`); on the fallback it requests quotes, retrying
    every second (the `retry_after_ms` of a 503 instead) for `ENTRY_MAX_WAIT`. It accepts the first tradable, undelayed, positive ask: `entry_at` is the instant its answer
    arrived, `release_to_entry_ms = entry_at - published_at`. No acceptable quote within `ENTRY_MAX_WAIT`: `no_entry_quote`. A fallback quote that is tradable but older than
    `QUOTE_MAX_AGE` ends the entry at once as `quote_too_old` (it is not retried);
 4. sets `exit_target = min(entry_at + HOLD, cutoff)`, takes one bid per horizon (a horizon past the cutoff is
-   `beyond_close`, `close` is the cutoff) and the exit bid at the exit target (read from memory at the target time; a non-tradable bid waits up to 30 s, never past the cutoff, and an unhealthy stream uses the fallback; stored as the observation `hold`). The result is per share, `closed`, or
+   `beyond_close`, `close` is the cutoff) and the exit bid at the exit target (read from memory at the target time; a non-tradable bid waits up to 30 s, never past the cutoff, and an unhealthy stream, or a stream that times out for the exit or the `close` observation, uses the fallback; an observation's wait also ends at the next scheduled event, so it never delays the exit; a requested observation is `ok` only for a tradable, real-time, positive bid; stored as the observation `hold`). The result is per share, `closed`, or
    `currency_mismatch` / `no_exit_quote` / `exit_quote_too_old`;
 5. emits the full `AnalystTrade` on `TRADES_TOPIC` after every state change, without waiting for the broker (up to 10
    attempts, 500 ms apart; the `version` lets a consumer keep the newest).

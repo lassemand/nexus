@@ -204,8 +204,10 @@ are `ok`, `not_tradable` and `no_quote`. Both histograms use explicit buckets.
 
 `analyst_quote_stream_connected` (gauge, 1 while the WebSocket to `saxo-stream` is connected), `analyst_quote_stream_reconnects_total`,
 `analyst_quote_age_seconds{source}` (histogram of now minus Saxo's timestamp at the moment a quote is taken) and
-`analyst_watched_instruments` (gauge, the size of the watch list) describe the quote stream. Alerts: `AnalystQuoteErrors` counts
-only `source="request"` quotes (stream reads must not dilute it), and `AnalystQuoteFallbackUsed` (severity info) fires when any
+`analyst_watched_instruments` (gauge, the size of the watch list) describe the quote stream. `analyst_quote_clock_skew_total{source}`
+counts quotes Saxo stamped ahead of the analyst's clock (their age is stored as 0). Alerts: `AnalystQuoteErrors` counts
+only `source="request"` quotes (stream reads must not dilute it) and only outcomes other than `ok`, `accepted` and `rejected`
+(a retry while a quote is not tradable is not an error), and `AnalystQuoteFallbackUsed` (severity info) fires when any
 request-source quote was taken in the last 15 minutes, Mon-Fri 07:00-16:00 UTC; the fallback should be rare. Panels: the Analyst
 dashboard and its "Quote stream" panels.
 

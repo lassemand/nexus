@@ -1781,6 +1781,17 @@ tests:
         alertname: AnalystQuoteErrors
         exp_alerts: []
 
+  - name: AnalystQuoteErrors ignores a working fallback with retries
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="rejected"}'
+        values: '0+4x700'
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="accepted"}'
+        values: '0+1x700'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: AnalystQuoteErrors
+        exp_alerts: []
+
   - name: AnalystQuoteFallbackUsed fires on request quotes during market hours
     input_series:
       - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="ok"}'

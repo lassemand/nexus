@@ -230,6 +230,15 @@ pub fn quote_age(source: &'static str, seconds: f64) {
     metrics::histogram!(QUOTE_AGE_SECONDS, "source" => source).record(seconds.max(0.0));
 }
 
+/// Counter: quotes whose Saxo timestamp was ahead of the analyst's clock (the
+/// age was clamped to 0).
+pub const QUOTE_CLOCK_SKEW_TOTAL: &str = "analyst_quote_clock_skew_total";
+
+/// Counts a quote stamped in the future by Saxo.
+pub fn quote_clock_skew(source: &'static str) {
+    metrics::counter!(QUOTE_CLOCK_SKEW_TOTAL, "source" => source).increment(1);
+}
+
 /// Gauge: instruments on the watch list.
 pub const WATCHED_INSTRUMENTS: &str = "analyst_watched_instruments";
 

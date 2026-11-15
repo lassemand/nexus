@@ -97,6 +97,8 @@ struct QuoteMessage {
 #[derive(Deserialize)]
 struct HeartbeatMessage {
     saxo_connected: bool,
+    #[serde(default)]
+    unresolved: Vec<ErrorPair>,
 }
 
 #[derive(Deserialize)]
@@ -147,8 +149,20 @@ pub fn handle_message(book: &QuoteBook, text: &str) {
             }
             Err(error) => warn!(%error, "a streamed quote had an unreadable price, dropped"),
         },
-        Ok(ServerMessage::Heartbeat(heartbeat)) => book.on_heartbeat(heartbeat.saxo_connected),
+        Ok(ServerMessage::Heartbeat(heartbeat)) => {
+            book.on_unresolved(
+                heartbeat
+                    .unresolved
+                    .iter()
+                    .map(|p| key(&p.ticker, &p.mic))
+                    .collect(),
+            );
+            book.on_heartbeat(heartbeat.saxo_connected);
+        }
         Ok(ServerMessage::Error(error)) => {
+            if let Some(p) = &error.pair {
+                book.on_pair_error(key(&p.ticker, &p.mic));
+            }
             let pair = error
                 .pair
                 .map(|p| format!("{}:{}", p.ticker, p.mic))

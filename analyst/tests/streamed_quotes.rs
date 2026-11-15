@@ -234,6 +234,15 @@ async fn a_non_tradable_held_quote_waits_for_the_next_update_then_gives_up() {
         released,
         1,
     );
+    held(
+        &rig.book,
+        "BBB",
+        "99.00",
+        "101.00",
+        "Indicative",
+        released,
+        1,
+    );
     let alive = keep_alive(&rig.book);
     hand_off(&rig, signal(1, "AAA", "XSTO", DecisionKind::Buy, released));
     hand_off(&rig, signal(2, "BBB", "XSTO", DecisionKind::Buy, released));
@@ -299,7 +308,7 @@ async fn a_requested_entry_quote_older_than_the_limit_cancels_the_trade_not_the_
     let last = rig.sink.messages().last().expect("emitted").1.clone();
     assert_eq!(last.status, "quote_too_old");
     assert_eq!(last.entry_quote_source, "request");
-    assert_eq!(last.entry_quote_age_ms, 2 * 3600 * 1000);
+    assert_eq!(last.entry_quote_age_ms, Some(2 * 3600 * 1000));
 }
 
 #[tokio::test(start_paused = true)]
@@ -528,4 +537,207 @@ async fn a_resumed_trade_keeps_its_instrument_on_the_watch_list() {
     tokio::time::sleep(Duration::from_secs(8 * 3600)).await;
     alive.abort();
     assert!(!rig.book.is_watched(&key("AAA", "XSTO")));
+}
+
+fn stamped(
+    stamp: impl Fn(DateTime<Utc>) -> DateTime<Utc> + Send + Sync + 'static,
+) -> impl Fn(DateTime<Utc>) -> Result<Quote, analyst::QuoteError> + Send + Sync {
+    move |now| {
+        let mut q = quote("101.50", "100.40");
+        q.saxo_last_updated = Some(stamp(now).to_rfc3339());
+        Ok(q)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn at_the_open_a_fallback_quote_stamped_before_the_open_is_retried_not_too_old() {
+    let released = sto(11, 10, 7, 30, 0);
+    let open = sto(11, 10, 9, 0, 0);
+    let rig = rig(
+        released,
+        Duration::ZERO,
+        8,
+        stamped(move |now| {
+            if now < open + ChronoDuration::seconds(3) {
+                open - ChronoDuration::hours(17)
+            } else {
+                now
+            }
+        }),
+    );
+    hand_off(&rig, signal(1, "AAA", "XSTO", DecisionKind::Buy, released));
+    tokio::time::sleep(Duration::from_secs(95 * 60)).await;
+    let trade = rig.store.trade();
+    assert_eq!(
+        trade.status(),
+        TradeStatus::Open,
+        "yesterday's quote is not terminal"
+    );
+    assert_eq!(trade.entry_quote_source.as_deref(), Some("request"));
+    assert_eq!(trade.entry_ask, Some(dec("100.40")));
+    assert!(trade.entry_at.expect("entered") >= open + ChronoDuration::seconds(3));
+    assert!(
+        rig.quotes.times().len() >= 4,
+        "retried until the open price"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn at_the_open_a_wait_that_only_saw_old_quotes_ends_too_old() {
+    let released = sto(11, 10, 7, 30, 0);
+    let open = sto(11, 10, 9, 0, 0);
+    let rig = rig(
+        released,
+        Duration::ZERO,
+        8,
+        stamped(move |_| open - ChronoDuration::hours(17)),
+    );
+    hand_off(&rig, signal(1, "AAA", "XSTO", DecisionKind::Buy, released));
+    tokio::time::sleep(Duration::from_secs(95 * 60) + Duration::from_secs(6 * 60)).await;
+    let trade = rig.store.trade();
+    assert_eq!(trade.status(), TradeStatus::QuoteTooOld);
+    assert_eq!(trade.entry_quote_age_ms, Some(17 * 3600 * 1000));
+    assert!(rig.quotes.times().len() > 100, "retried every second");
+}
+
+#[tokio::test(start_paused = true)]
+async fn at_the_open_a_wait_that_only_saw_recent_pre_open_quotes_has_no_entry() {
+    let released = sto(11, 10, 7, 30, 0);
+    let open = sto(11, 10, 9, 0, 0);
+    let rig = rig(
+        released,
+        Duration::ZERO,
+        8,
+        stamped(move |_| open - ChronoDuration::minutes(10)),
+    );
+    hand_off(&rig, signal(1, "AAA", "XSTO", DecisionKind::Buy, released));
+    tokio::time::sleep(Duration::from_secs(95 * 60) + Duration::from_secs(6 * 60)).await;
+    assert_eq!(rig.store.trade().status(), TradeStatus::NoEntryQuote);
+}
+
+#[tokio::test(start_paused = true)]
+async fn at_the_cutoff_a_stream_timeout_makes_one_request_for_the_exit_and_the_close() {
+    let released = sto(11, 10, 17, 10, 0);
+    let cutoff = sto(11, 10, 17, 25, 0);
+    let rig = rig(released, Duration::ZERO, 8, flat("101.50", "100.00"));
+    up(&rig.book);
+    scheduled(&rig, &["AAA"]);
+    tradable(&rig.book, "AAA", "99.50", "100.00", released, 1);
+    let alive = keep_alive(&rig.book);
+    hand_off(&rig, signal(1, "AAA", "XSTO", DecisionKind::Buy, released));
+    settle().await;
+    tokio::time::sleep(Duration::from_secs(15 * 60) - Duration::from_millis(500)).await;
+    held(
+        &rig.book,
+        "AAA",
+        "99.00",
+        "101.00",
+        "Indicative",
+        cutoff - ms(100),
+        2,
+    );
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    alive.abort();
+    let trade = rig.store.trade();
+    assert_eq!(trade.status(), TradeStatus::Closed);
+    assert_eq!(trade.exit_target_at, Some(cutoff));
+    assert_eq!(trade.exit_quote_source.as_deref(), Some("request"));
+    assert_eq!(trade.exit_bid, Some(dec("101.50")));
+    let observations = rig.store.observations_of(trade.id);
+    let close = observations
+        .iter()
+        .find(|o| o.horizon == "close")
+        .expect("close observation");
+    assert_eq!(close.status, "ok");
+    assert_eq!(close.quote_source.as_deref(), Some("request"));
+    assert!(
+        rig.quotes.times().iter().all(|t| *t >= cutoff),
+        "requests only at the cutoff"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pair_saxo_stream_reports_as_failing_is_requested_at_once() {
+    let released = sto(11, 10, 11, 0, 0);
+    let rig = rig(released, Duration::ZERO, 8, flat("101.50", "100.00"));
+    up(&rig.book);
+    scheduled(&rig, &["AAA"]);
+    rig.book.on_pair_error(key("AAA", "XSTO"));
+    let alive = keep_alive(&rig.book);
+    hand_off(&rig, signal(1, "AAA", "XSTO", DecisionKind::Buy, released));
+    settle().await;
+    alive.abort();
+    let trade = rig.store.trade();
+    assert_eq!(trade.status(), TradeStatus::Open);
+    assert_eq!(trade.entry_quote_source.as_deref(), Some("request"));
+    assert_eq!(trade.entry_at, Some(released));
+    assert_eq!(rig.quotes.times(), [released]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pair_with_no_quote_two_seconds_after_the_target_is_requested() {
+    let released = sto(11, 10, 11, 0, 0);
+    let rig = rig(released, Duration::ZERO, 8, flat("101.50", "100.00"));
+    up(&rig.book);
+    scheduled(&rig, &["AAA"]);
+    let alive = keep_alive(&rig.book);
+    hand_off(&rig, signal(1, "AAA", "XSTO", DecisionKind::Buy, released));
+    tokio::time::sleep(Duration::from_millis(1900)).await;
+    assert_eq!(rig.store.trade().status(), TradeStatus::PendingEntry);
+    assert!(rig.quotes.times().is_empty());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    alive.abort();
+    let trade = rig.store.trade();
+    assert_eq!(trade.status(), TradeStatus::Open);
+    assert_eq!(trade.entry_quote_source.as_deref(), Some("request"));
+    assert_eq!(rig.quotes.times().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_requested_observation_is_ok_only_for_a_tradable_bid() {
+    let released = sto(11, 10, 11, 0, 0);
+    let rig = rig(released, Duration::ZERO, 8, |_| {
+        let mut q = quote("101.50", "100.00");
+        q.bid_type = Some("Indicative".into());
+        q.saxo_last_updated = Some("2026-11-10T10:59:59Z".into());
+        Ok(q)
+    });
+    hand_off(&rig, signal(1, "AAA", "XSTO", DecisionKind::Buy, released));
+    tokio::time::sleep(Duration::from_secs(90)).await;
+    let observations = rig.store.observations_of(rig.store.trade().id);
+    assert_eq!(observations[0].horizon, "1m");
+    assert_eq!(observations[0].status, "no_quote");
+    assert_eq!(observations[0].quote_source.as_deref(), Some("request"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_observation_never_waits_past_the_next_event() {
+    let released = sto(11, 10, 11, 0, 0);
+    let target = sto(11, 10, 11, 30, 0);
+    let rig = rig(released, Duration::ZERO, 8, flat("101.50", "100.00"));
+    up(&rig.book);
+    scheduled(&rig, &["AAA"]);
+    tradable(&rig.book, "AAA", "99.50", "100.00", released, 1);
+    let alive = keep_alive(&rig.book);
+    hand_off(&rig, signal(1, "AAA", "XSTO", DecisionKind::Buy, released));
+    settle().await;
+    tokio::time::sleep(Duration::from_secs(30 * 60) - Duration::from_millis(100)).await;
+    held(&rig.book, "AAA", "99.00", "101.00", "Indicative", target, 2);
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    tradable(&rig.book, "AAA", "101.50", "101.60", target + ms(10_000), 3);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    alive.abort();
+    let trade = rig.store.trade();
+    let observations = rig.store.observations_of(trade.id);
+    let at30 = observations
+        .iter()
+        .find(|o| o.horizon == "30m")
+        .expect("30m");
+    assert_eq!(at30.status, "no_quote", "its wait ended at the exit target");
+    assert_eq!(trade.status(), TradeStatus::Closed);
+    let exit_at = trade.exit_at.expect("exited");
+    assert!(
+        exit_at >= target + ms(9_900) && exit_at <= target + ms(10_000),
+        "the exit took the first tradable bid, not 30 s later: {exit_at}"
+    );
 }
