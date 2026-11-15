@@ -28,6 +28,13 @@ vault kv put secret/nexus/analyst-prep ANTHROPIC_API_KEY=<YOUR_ANTHROPIC_API_KEY
 
 Never commit a real key.
 
+## Quote stream settings
+
+`analyst.quoteStreamUrl` (`QUOTE_STREAM_URL`, the `saxo-quotes` WebSocket `/quotes/stream`), `analyst.quoteStreamHeartbeatTimeout`
+(`QUOTE_STREAM_HEARTBEAT_TIMEOUT`, `3s`), `analyst.quoteMaxAge` (`QUOTE_MAX_AGE`, `1h`, fallback quotes only) and
+`analyst.watchLead` (`WATCH_LEAD`, `12h`) are in `values.yaml`; meanings in `analyst/README.md`. The analyst pod reaches
+`saxo-quotes` on port 8080 for both `GET /quote` and the WebSocket; the `analyst` NetworkPolicy restricts only ingress.
+
 ## Network isolation
 
 `analyst-prep` selects pods labelled `app.kubernetes.io/name: analyst-prep`: no ingress; egress to
@@ -48,8 +55,9 @@ kubectl --context orbstack -n analyst run np-check --rm -it --restart=Never \
 
 Rules are in `infra/charts/nexus/prometheus/rules/nexus.rules.yml` (group `nexus.analyst`), tested in
 `nexus.rules.test.yml`. Metric names of the release path (`analyst_release_to_decision_seconds`,
-`analyst_quotes_total{outcome}`, and on the dashboard `analyst_publish_to_decision_seconds`,
+`analyst_quotes_total{source,purpose,outcome}`, and on the dashboard `analyst_publish_to_decision_seconds`,
 `analyst_decisions_total{decision}`, `analyst_entry_delay_seconds`, `analyst_quote_lateness_seconds`,
+`analyst_quote_age_seconds{source}`, `analyst_quote_stream_connected`, `analyst_quote_stream_reconnects_total`, `analyst_watched_instruments`,
 `analyst_prep_duration_seconds`, `analyst_prep_cost_usd_total`) belong to NEX-254/255/253 and must match
 what those tasks register.
 
@@ -59,5 +67,6 @@ what those tasks register.
 | `AnalystKernelMissingSoon` | `analyst_next_report_seconds` in `[0, 3600)` and `analyst_targets{status=~"waiting\|preparing\|failed"}` summing above 0, for 5 m | The next report has no accepted kernel and will abstain. Look at `prep_runs` and the Job logs; add a note (`nexus expect`) for a failed target to get one more attempt. |
 | `AnalystPrepFailing` | `sum(increase(analyst_prep_failed_total[6h])) >= 3` | Split by `reason`: `launch` (RBAC, image), `failed`/`timed_out` (Job logs, API key, quota), `rejected` (the upload failed validation). |
 | `AnalystDecisionSlow` | p99 of `analyst_release_to_decision_seconds` above 0.05 for 10 m | CPU throttling of the pod (limits 2 CPU), kernel run times, a slow database write on the release path. |
-| `AnalystQuoteErrors` | non-ok share of `analyst_quotes_total` over 20 % (at least 5 quotes in 10 m), Mon-Fri 07:00-16:00 UTC, for 10 m | Outcome split on the dashboard; then the Saxo dashboard and `saxo_quote_requests_total{outcome}`. |
+| `AnalystQuoteErrors` | non-ok share of `analyst_quotes_total{source="request"}` (the `GET /quote` fallback; stream reads are not counted) over 20 % (at least 5 quotes in 10 m), Mon-Fri 07:00-16:00 UTC, for 10 m | Outcome split on the dashboard; then the Saxo dashboard and `saxo_quote_requests_total{outcome}`. |
+| `AnalystQuoteFallbackUsed` | `increase(analyst_quotes_total{source="request"}[15m]) > 0`, Mon-Fri 07:00-16:00 UTC (severity info) | The analyst fell back to `GET /quote`, which should be rare. Check the Analyst dashboard and the Saxo "Quote stream" row (`SaxoQuoteStreamDown`), or a thin share without a watch. |
 | `SaxoQuotesDown` | `increase(saxo_quote_requests_total{outcome="no_token"}[5m]) > 0` for 5 m | Re-authenticate saxo-stream (`docs/guides/saxo-oauth-setup.md`); entries fail until it has a token. |

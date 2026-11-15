@@ -197,8 +197,17 @@ dashboards, not in alerts. Both are rendered with explicit buckets (`telemetry::
 `analyst_entry_delay_seconds` (histogram, 1 ms to 5 min) is the time from a decision taken during trading to its accepted
 entry quote; the task's target is a request sent within 5 ms. `analyst_quote_lateness_seconds` (histogram, 1 ms to 30 s)
 is how late a scheduled quote was fetched after its target (over 2 s is flagged `late`). `analyst_sim_trades_total{status,shadow}`
-counts trades by final status (`closed`, `no_entry_quote`, ...) and `analyst_quotes_total{outcome}` the quote requests
-(`accepted`, `rejected`, `unavailable`, `not_found`, `error`, `transport`, `malformed`). Both histograms use explicit buckets.
+counts trades by final status (`closed`, `no_entry_quote`, ...) and `analyst_quotes_total{source,purpose,outcome}` the quotes taken: `source` is `stream` (read from the in-memory quote book)
+or `request` (the `GET /quote` fallback), `purpose` is `entry`, `exit` or `observation`. Request outcomes are `ok`, `accepted`,
+`rejected`, `unavailable`, `not_found`, `error`, `transport`, `malformed` and `too_old` (older than `QUOTE_MAX_AGE`); stream outcomes
+are `ok`, `not_tradable` and `no_quote`. Both histograms use explicit buckets.
+
+`analyst_quote_stream_connected` (gauge, 1 while the WebSocket to `saxo-stream` is connected), `analyst_quote_stream_reconnects_total`,
+`analyst_quote_age_seconds{source}` (histogram of now minus Saxo's timestamp at the moment a quote is taken) and
+`analyst_watched_instruments` (gauge, the size of the watch list) describe the quote stream. Alerts: `AnalystQuoteErrors` counts
+only `source="request"` quotes (stream reads must not dilute it), and `AnalystQuoteFallbackUsed` (severity info) fires when any
+request-source quote was taken in the last 15 minutes, Mon-Fri 07:00-16:00 UTC; the fallback should be rare. Panels: the Analyst
+dashboard and its "Quote stream" panels.
 
 ## Cluster pieces
 

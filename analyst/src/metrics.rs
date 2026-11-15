@@ -154,8 +154,15 @@ pub const ENTRY_DELAY_SECONDS: &str = "analyst_entry_delay_seconds";
 pub const QUOTE_LATENESS_SECONDS: &str = "analyst_quote_lateness_seconds";
 /// Simulated trades by final status and shadow flag.
 pub const SIM_TRADES_TOTAL: &str = "analyst_sim_trades_total";
-/// Quote requests by outcome.
+/// Prices taken or sought, by source, purpose and outcome.
 pub const QUOTES_TOTAL: &str = "analyst_quotes_total";
+/// Seconds between Saxo's timestamp of a quote and the moment it was taken.
+pub const QUOTE_AGE_SECONDS: &str = "analyst_quote_age_seconds";
+/// Bucket bounds (seconds) for [`QUOTE_AGE_SECONDS`]: 10 ms to 8 hours (a streamed
+/// quote of a thin share can be hours old and still current).
+pub const QUOTE_AGE_BUCKETS: &[f64] = &[
+    0.01, 0.1, 0.5, 1.0, 5.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0, 14400.0, 28800.0,
+];
 
 /// Bucket bounds (seconds) for [`ENTRY_DELAY_SECONDS`]: 1 ms to 5 min.
 pub const ENTRY_DELAY_BUCKETS: &[f64] = &[
@@ -175,7 +182,23 @@ pub fn describe_trades() {
         "Seconds a scheduled quote was fetched after its target"
     );
     metrics::describe_counter!(SIM_TRADES_TOTAL, "Simulated trades by status and shadow");
-    metrics::describe_counter!(QUOTES_TOTAL, "Quote requests by outcome");
+    metrics::describe_counter!(
+        QUOTES_TOTAL,
+        "Prices taken or sought by source (stream, request), purpose and outcome"
+    );
+    metrics::describe_histogram!(
+        QUOTE_AGE_SECONDS,
+        "Seconds between Saxo's timestamp of a quote and the moment it was taken, by source"
+    );
+    metrics::describe_gauge!(
+        QUOTE_STREAM_CONNECTED,
+        "1 while the quote stream is connected and healthy"
+    );
+    metrics::describe_counter!(
+        QUOTE_STREAM_RECONNECTS_TOTAL,
+        "Attempts to reconnect the quote stream"
+    );
+    metrics::describe_gauge!(WATCHED_INSTRUMENTS, "Instruments on the watch list");
 }
 
 /// Records the delay from a decision taken in session to its entry quote.
@@ -194,7 +217,38 @@ pub fn sim_trade(status: &'static str, shadow: bool) {
         .increment(1);
 }
 
-/// Counts a quote request and how it went (`ok`, `accepted`, `rejected`, or an error outcome).
-pub fn quote_request(outcome: &'static str) {
-    metrics::counter!(QUOTES_TOTAL, "outcome" => outcome).increment(1);
+/// Counts a price taken or sought: `source` is `stream` or `request`, `purpose`
+/// `entry`, `exit` or `observation`, and `outcome` how it went (`ok`, `accepted`,
+/// `rejected`, `too_old`, `not_tradable`, `no_quote`, or a request error).
+pub fn quote(source: &'static str, purpose: &'static str, outcome: &'static str) {
+    metrics::counter!(QUOTES_TOTAL, "source" => source, "purpose" => purpose, "outcome" => outcome)
+        .increment(1);
+}
+
+/// Records the age of a quote (now minus Saxo's timestamp) when it was taken.
+pub fn quote_age(source: &'static str, seconds: f64) {
+    metrics::histogram!(QUOTE_AGE_SECONDS, "source" => source).record(seconds.max(0.0));
+}
+
+/// Gauge: instruments on the watch list.
+pub const WATCHED_INSTRUMENTS: &str = "analyst_watched_instruments";
+
+/// Sets the number of watched instruments.
+pub fn watched_instruments(count: usize) {
+    metrics::gauge!(WATCHED_INSTRUMENTS).set(count as f64);
+}
+
+/// Gauge: 1 while the quote stream is healthy.
+pub const QUOTE_STREAM_CONNECTED: &str = "analyst_quote_stream_connected";
+/// Counter: attempts to reconnect the quote stream.
+pub const QUOTE_STREAM_RECONNECTS_TOTAL: &str = "analyst_quote_stream_reconnects_total";
+
+/// Sets the stream health gauge.
+pub fn quote_stream_connected(healthy: bool) {
+    metrics::gauge!(QUOTE_STREAM_CONNECTED).set(if healthy { 1.0 } else { 0.0 });
+}
+
+/// Counts one reconnect attempt.
+pub fn quote_stream_reconnect() {
+    metrics::counter!(QUOTE_STREAM_RECONNECTS_TOTAL).increment(1);
 }
