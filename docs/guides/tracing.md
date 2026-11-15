@@ -259,4 +259,4 @@ analyst's clock (`spans::clock_span`, `end_span`), not from when they happen to 
 
 `sim_trades.trace_id` is the release trace, `release_traceparent` the decision span, `trade_trace_id` the holding trace (a
 resumed trade gets a new one); `AnalystTrade` carries `trace_id` and `trade_trace_id`. Tracing never delays a quote: the
-entry request leaves within about 70 µs of the hand-off with tracing on and the collector down (5 ms is the target).
+entry request leaves before any of its spans are built (they take the request's start time from the clock), the trade's trace id is stored by a detached write, and `tests/trading_overhead.rs` asserts that tracing adds under 100 µs at p99 to the time from the hand-off to the first `GET /quote` (500 samples each with tracing off and on, collector down).

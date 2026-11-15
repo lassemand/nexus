@@ -205,6 +205,14 @@ impl Purpose {
     }
 }
 
+/// A fetched quote and when its request started and was answered; its span is
+/// made afterwards, so building it never sits in front of the request.
+struct Raw {
+    start: DateTime<Utc>,
+    at: DateTime<Utc>,
+    result: Result<Quote, QuoteError>,
+}
+
 /// A fetched quote and the `analyst.quote` span still open around it.
 struct Traced {
     at: DateTime<Utc>,
@@ -253,6 +261,34 @@ impl Inner {
         }
     }
 
+    async fn fetch_raw(&self, ticker: &str, mic: &str) -> Raw {
+        let start = self.clock.now();
+        let _permit = self.permits.acquire().await;
+        let result = self.quotes.quote(ticker, mic).await;
+        Raw {
+            start,
+            at: self.clock.now(),
+            result,
+        }
+    }
+
+    fn trace_quote(&self, parent: &Span, purpose: Purpose, attempt: u32, raw: Raw) -> Traced {
+        let span = clock_span(
+            "analyst.quote",
+            raw.start,
+            Some(&parent.context()),
+            vec![
+                KeyValue::new("analyst.quote_purpose", purpose.as_str()),
+                KeyValue::new("analyst.attempt", i64::from(attempt)),
+            ],
+        );
+        Traced {
+            at: raw.at,
+            result: raw.result,
+            span,
+        }
+    }
+
     async fn fetch(
         &self,
         parent: &Span,
@@ -261,22 +297,8 @@ impl Inner {
         ticker: &str,
         mic: &str,
     ) -> Traced {
-        let span = clock_span(
-            "analyst.quote",
-            self.clock.now(),
-            Some(&parent.context()),
-            vec![
-                KeyValue::new("analyst.quote_purpose", purpose.as_str()),
-                KeyValue::new("analyst.attempt", i64::from(attempt)),
-            ],
-        );
-        let _permit = self.permits.acquire().await;
-        let result = self.quotes.quote(ticker, mic).await;
-        Traced {
-            at: self.clock.now(),
-            result,
-            span,
-        }
+        let raw = self.fetch_raw(ticker, mic).await;
+        self.trace_quote(parent, purpose, attempt, raw)
     }
 
     fn close_quote(&self, traced: &Traced, accepted: bool, purpose: Purpose) {
@@ -316,6 +338,10 @@ impl Inner {
             signal.decided_at,
             self.settings.close_buffer,
         );
+        let first_raw = match plan {
+            EntryPlan::Now => Some(self.fetch_raw(&signal.ticker, &signal.exchange_mic).await),
+            _ => None,
+        };
         let release_context = signal.context.clone();
         let link = {
             let span_context = release_context.span().span_context().clone();
@@ -336,19 +362,7 @@ impl Inner {
             entry: entry_span,
             link,
         };
-        let first = match plan {
-            EntryPlan::Now => Some(
-                self.fetch(
-                    &release.entry,
-                    Purpose::Entry,
-                    1,
-                    &signal.ticker,
-                    &signal.exchange_mic,
-                )
-                .await,
-            ),
-            _ => None,
-        };
+        let first = first_raw.map(|raw| self.trace_quote(&release.entry, Purpose::Entry, 1, raw));
         let target = plan.target(signal.decided_at);
         if let Some(target) = target {
             release
@@ -634,10 +648,18 @@ impl Inner {
         }
         let trade_context = trade_span.context();
         if let Some(trace_id) = context_trace_id(&trade_context) {
-            self.db("set_trade_trace", || {
-                self.store.set_trade_trace(trade.id, &trace_id)
-            })
-            .await;
+            let store = Arc::clone(&self.store);
+            let retry = self.retry;
+            let id = trade.id;
+            tokio::spawn(async move {
+                if let Err(error) = with_retry("set_trade_trace", retry, || {
+                    store.set_trade_trace(id, &trace_id)
+                })
+                .await
+                {
+                    error!(%error, "the trace id of a simulated trade could not be stored");
+                }
+            });
         }
         let (Some(entry_at), Some(exit_at)) = (trade.entry_at, trade.exit_target_at) else {
             self.set_status(&trade, TradeStatus::InvalidEntry, &trade_span)

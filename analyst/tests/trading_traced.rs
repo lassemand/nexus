@@ -6,7 +6,7 @@
 mod common;
 
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use analyst::{DecisionKind, StoredTrade, TradeStatus};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -19,39 +19,6 @@ fn init() {
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1");
         telemetry::trace::init("analyst-trades-test").expect("tracing starts")
     });
-}
-
-#[tokio::test(start_paused = true)]
-async fn the_entry_request_leaves_within_five_milliseconds_with_tracing_on() {
-    init();
-    let released = sto(11, 10, 11, 0, 0);
-    let mut elapsed = Vec::new();
-    for id in 0..20 {
-        let rig = rig(released, Duration::ZERO, 8, |_| {
-            Ok(quote("101.50", "100.00"))
-        });
-        let decision_span = tracing::info_span!("analyst.hand_off");
-        let mut signal = signal(id + 1, "AAA", "XSTO", DecisionKind::Buy, released);
-        signal.context = telemetry::trace::OpenTelemetrySpanExt::context(&decision_span);
-        let handed = Instant::now();
-        hand_off(&rig, signal);
-        loop {
-            tokio::task::yield_now().await;
-            if let Some(at) = rig.quotes.real_times.lock().expect("lock").first() {
-                elapsed.push(at.duration_since(handed));
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_secs(8 * 3600)).await;
-    }
-    elapsed.sort();
-    let p99 = elapsed[elapsed.len() * 99 / 100];
-    eprintln!(
-        "hand-off to first quote request, tracing on, collector down: p50 {:?} p99 {p99:?} max {:?}",
-        elapsed[elapsed.len() / 2],
-        elapsed[elapsed.len() - 1]
-    );
-    assert!(p99 < Duration::from_millis(5), "p99 was {p99:?}");
 }
 
 #[tokio::test(start_paused = true)]
