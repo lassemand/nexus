@@ -15,10 +15,14 @@
 /// endpoint (NEX-249, [`chronicle_lib::saxo_quotes`]). It is a separate port so
 /// the chart can expose it to the `analyst` namespace only.
 ///
-/// The live WebSocket price stream was removed (NEX-193); nothing consumed it.
+/// `GET /quotes/stream` on the same port is a WebSocket that streams Saxo info
+/// prices for the instruments its clients watch (NEX-270,
+/// [`chronicle_lib::saxo_quote_stream`]). The earlier 1-minute bar stream was
+/// removed (NEX-193).
 mod db;
 mod kafka;
 
+use alpha::saxo::InfoPriceStreamClient;
 use alpha::saxo::{
     error_chain, AuthError, ChartClient, ChartError, InstrumentQuery, QuoteClient, RotatedToken,
     SaxoAuth, SaxoToken, SharedToken, TokenStore, UicResolver,
@@ -26,6 +30,7 @@ use alpha::saxo::{
 use anyhow::Context;
 use backon::{BackoffBuilder, ExponentialBuilder, Retryable};
 use chronicle_lib::daily_bars::{self, BarSink, Instrument};
+use chronicle_lib::saxo_quote_stream::{self, StreamDeps, StreamSettings};
 use chronicle_lib::saxo_quotes::{self, QuoteInstrument, QuoteState, TokenSlot, UicMap};
 use chrono::Utc;
 use clap::Parser;
@@ -104,6 +109,37 @@ struct Args {
     /// Saxo chart API version used for daily bars.
     #[arg(long, env = "SAXO_CHART_VERSION", default_value = "v1")]
     saxo_chart_version: String,
+
+    /// Streaming WebSocket connect URL (`wss://`). SIM:
+    /// `wss://sim-streaming.saxobank.com/sim/oapi/streaming/ws/connect`.
+    #[arg(long, env = "SAXO_STREAMING_WS_URL", default_value = alpha::saxo::stream::LIVE_WS_URL)]
+    saxo_streaming_ws_url: String,
+
+    /// Streaming re-authorization URL (`https://`). SIM:
+    /// `https://sim-streaming.saxobank.com/sim/oapi/streaming/ws/authorize`.
+    #[arg(
+        long,
+        env = "SAXO_STREAMING_AUTHORIZE_URL",
+        default_value = alpha::saxo::stream::LIVE_AUTHORIZE_URL
+    )]
+    saxo_streaming_authorize_url: String,
+
+    /// Seconds without any Saxo streaming message (heartbeats included) after
+    /// which the connection is taken as dead and reopened.
+    #[arg(long, env = "SAXO_STREAM_HEARTBEAT_TIMEOUT", default_value = "15")]
+    saxo_stream_heartbeat_timeout: u64,
+
+    /// Most Uics put in one Saxo info-price subscription.
+    #[arg(
+        long,
+        env = "SAXO_STREAM_MAX_UICS_PER_SUBSCRIPTION",
+        default_value = "100"
+    )]
+    saxo_stream_max_uics_per_subscription: usize,
+
+    /// Capacity of each `/quotes/stream` client's queue, in messages.
+    #[arg(long, env = "QUOTE_STREAM_CLIENT_QUEUE", default_value = "1024")]
+    quote_stream_client_queue: usize,
 }
 
 const SAXO_TOKEN_SOURCE: &str = "saxo";
@@ -216,6 +252,8 @@ const QUOTE_UNKNOWN_COOLDOWN: Duration = Duration::from_secs(60);
 const QUOTE_UNKNOWN_QUEUE: usize = 64;
 /// Upper bound on one Saxo quote request, connection included.
 const QUOTE_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
+/// Upper bound on one streaming subscription, delete or authorize call.
+const STREAM_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// First and longest wait before re-running a daily-bar sweep that failed,
 /// instead of waiting for the next day's 18:30 run.
@@ -982,6 +1020,16 @@ async fn main() -> anyhow::Result<()> {
             saxo_quotes::QUOTE_BUCKETS,
         )
         .context("invalid quote upstream buckets")?
+        .set_buckets_for_metric(
+            Matcher::Full("saxo_quote_stream_fanout_seconds".to_string()),
+            saxo_quote_stream::FANOUT_BUCKETS,
+        )
+        .context("invalid fan-out buckets")?
+        .set_buckets_for_metric(
+            Matcher::Full("saxo_quote_stream_saxo_lag_seconds".to_string()),
+            saxo_quote_stream::SAXO_LAG_BUCKETS,
+        )
+        .context("invalid Saxo lag buckets")?
         .install_recorder()
         .context("failed to install Prometheus recorder")?;
     // Same series `telemetry::serve` sets: this service has its own /metrics route
@@ -990,6 +1038,7 @@ async fn main() -> anyhow::Result<()> {
         .set(1.0);
     alpha::saxo::api_metrics::describe();
     saxo_quotes::describe();
+    saxo_quote_stream::describe();
     describe_gauge!(
         "saxo_quote_instruments",
         "Registered companies with a resolved Uic in the quote path's map."
@@ -1088,12 +1137,38 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind quote endpoint on port {}", args.quote_port))?;
     info!(port = args.quote_port, "quote endpoint listening");
+    let stream_http = reqwest::Client::builder()
+        .user_agent("nexus lasse.alm@gsfleet.io")
+        .timeout(STREAM_HTTP_TIMEOUT)
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()
+        .context("failed to build streaming HTTP client")?;
+    let quote_stream = saxo_quote_stream::spawn(
+        StreamDeps {
+            client: InfoPriceStreamClient::new(
+                stream_http,
+                &args.saxo_api_base,
+                &args.saxo_streaming_ws_url,
+                &args.saxo_streaming_authorize_url,
+            ),
+            token: quote_token.clone(),
+            uics: quote_uics.clone(),
+            unknown: quote_unknown_tx.clone(),
+        },
+        StreamSettings {
+            heartbeat_timeout: Duration::from_secs(args.saxo_stream_heartbeat_timeout),
+            client_queue: args.quote_stream_client_queue,
+            max_uics_per_subscription: args.saxo_stream_max_uics_per_subscription,
+            ..StreamSettings::default()
+        },
+    );
     let quote_router = saxo_quotes::router(Arc::new(QuoteState {
         client: QuoteClient::new(quote_http, &args.saxo_api_base),
         token: quote_token.clone(),
         uics: quote_uics.clone(),
         unknown: quote_unknown_tx,
-    }));
+    }))
+    .merge(saxo_quote_stream::router(quote_stream));
     tokio::spawn(async move {
         if let Err(e) = axum::serve(quote_listener, quote_router).await {
             error!(error = %e, "quote endpoint stopped");

@@ -60,7 +60,8 @@ sets `nexus_build_info{service="saxo-stream"}` by hand. Series: the original fou
 re-published every sweep), `saxo_daily_bars_backfills_total{outcome}`,
 `saxo_daily_bars_latest_date_timestamp_seconds{ticker,exchange_mic}` (midnight UTC of the newest bar),
 `saxo_api_requests_total{endpoint,status_class}`, `saxo_api_request_duration_seconds{endpoint}` and
-`saxo_api_rate_limited_total`. `endpoint` is `token`, `chart`, `instruments` or `infoprices`;
+`saxo_api_rate_limited_total`. `endpoint` is `token`, `chart`, `instruments`, `infoprices`,
+`infoprice_subscriptions` (streaming subscribe/delete) or `streaming_authorize`;
 `status_class` is `2xx`, `4xx`, `5xx` or `error` (no response). The HTTP series are recorded in
 `alpha::saxo`.
 
@@ -70,6 +71,23 @@ The internal quote endpoint (`GET /quote` on `QUOTE_PORT`, NEX-249) adds
 `saxo_quote_upstream_seconds` (Saxo only), buckets 1 ms to 2.5 s, and
 `saxo_quote_instruments` (registered companies with a Uic in the quote map). Our own overhead is
 the difference of the two histograms; the target is p99 under 300 ms in all, under 5 ms of it ours.
+
+The streaming quotes (`GET /quotes/stream` on `QUOTE_PORT`, NEX-270) add:
+
+| Series | Type | Meaning |
+|---|---|---|
+| `saxo_quote_stream_connected` | gauge | 1 while the Saxo streaming connection is up and every subscription made since (re)connecting has its snapshot; 0 while down, reconnecting, idle or without a token |
+| `saxo_quote_stream_reconnects_total` | counter | Saxo connections lost (socket error, close, `_disconnect`, no message within the inactivity timeout plus `SAXO_STREAM_HEARTBEAT_TIMEOUT` while subscribed) and reopened |
+| `saxo_quote_stream_reauthorize_failures_total` | counter | failed PUTs of a rotated token to the streaming authorize URL (retried with exponential backoff) |
+| `saxo_quote_stream_updates_total` | counter | instrument updates merged from Saxo (snapshot entries and deltas) |
+| `saxo_quote_stream_watched_instruments` | gauge | pairs in the union of every client's watch list |
+| `saxo_quote_stream_clients` | gauge | connected `/quotes/stream` clients |
+| `saxo_quote_stream_client_closed_total{reason}` | counter | clients gone: `client` (it left), `slow_consumer` (queue full for 5 s even after coalescing), `send_failed` |
+| `saxo_quote_stream_fanout_seconds` | histogram | Saxo frame received to the quote written to a client's socket, buckets 0.1 ms to 0.5 s; target p99 under 5 ms |
+| `saxo_quote_stream_saxo_lag_seconds` | histogram | `received_at - saxo_time` (Saxo's `LastUpdated`) per update, buckets 10 ms to 60 s; includes Saxo's push delay, and a delayed feed shows here |
+
+Alerts: `SaxoQuoteStreamDown` (watched instruments but not connected for 2 minutes, Mon–Fri
+07:00–17:00 UTC) and `SaxoQuoteStreamReauthFailing` (3 or more failed re-authorizations in 10 minutes).
 
 A deregistered ticker keeps no stale series: on every sweep, instruments that had a freshness gauge
 and are no longer registered are set to 0 (the `metrics` crate cannot delete a series) and

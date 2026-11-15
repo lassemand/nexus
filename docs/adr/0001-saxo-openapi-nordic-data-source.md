@@ -3,6 +3,10 @@
 > **Update 2026-10-27 (NEX-193):** the live WebSocket price stream described below was removed from
 > `saxo-stream`. Nothing consumed its 1-minute bars; Nordic daily prices come from Saxo's chart API
 > (`signal.daily_bars`, NEX-162). The OAuth, Uic and chart parts of this ADR still apply.
+>
+> **Update 2026-11-15 (NEX-270):** `saxo-stream` streams Saxo **info prices** again, for the
+> instruments its `/quotes/stream` clients watch. See [Streaming info prices](#streaming-info-prices-nex-270)
+> below.
 
 **Status:** Accepted  
 **Date:** 2026-07-12  
@@ -214,3 +218,51 @@ implementation.
 - Market Data Subscriptions: https://www.home.saxo/products/market-data-subscriptions
 - OpenAPI Support: https://openapi.help.saxo.com
 - GOMX fixture: `tests/fixtures/saxo/gomx_instrument.json`
+
+---
+
+## Streaming info prices (NEX-270)
+
+`saxo-stream` subscribes to `POST /trade/v1/infoprices/subscriptions` (not `/trade/v1/prices`) with
+`AssetType=Stock`, the comma-separated `Uics` of the watched instruments, the same `FieldGroups` as
+`GET /quote` (`Quote`, `DisplayAndFormat`, `InstrumentPriceDetails`) and `RefreshRate=0`, and pushes
+the merged quotes to its clients over `GET /quotes/stream` (`chronicle_lib::saxo_quote_stream`).
+
+### What the implementation relies on
+
+From Saxo's developer documentation (learn pages "Plain WebSocket streaming", "Environments",
+"Rate limiting", the info-price reference and Saxo support article 4417467162641), checked
+2026-11-15:
+
+| Topic | Documented | How saxo-stream handles it |
+|---|---|---|
+| Connect | `GET <streaming>/connect?contextId=<id>`, token in the `Authorization` header; context id ≤ 50 chars of `a-zA-Z0-9-` | `SAXO_STREAMING_WS_URL` is the full connect URL; a fresh context id `nexus-q-<16 hex>` per connection |
+| Re-authorize | `PUT <streaming>/authorize?contextid=<id>` with the new token, 202 | `SAXO_STREAMING_AUTHORIZE_URL`; sent whenever saxo-stream's refresh task rotates the access token |
+| URLs | Live `live-streaming.saxobank.com/oapi/streaming/ws`, SIM `sim-streaming.saxobank.com/sim/oapi/streaming/ws` (changed by Saxo in 2025; `/connect` and `/authorize` paths unchanged) | defaults are live: `wss://live-streaming.saxobank.com/oapi/streaming/ws/connect`, `https://live-streaming.saxobank.com/oapi/streaming/ws/authorize`. SIM: `wss://sim-streaming.saxobank.com/sim/oapi/streaming/ws/connect`, `https://sim-streaming.saxobank.com/sim/oapi/streaming/ws/authorize` |
+| Deltas | only the properties whose values changed; apply in order onto the snapshot | merged per Uic (`alpha::saxo::StreamQuote::apply`); absent field keeps its value, explicit `null` clears |
+| Snapshot | in the subscription answer (`Snapshot.Data`, one entry per Uic) | replaces the stored quote; deltas that arrive before it are buffered and applied after |
+| Control messages | `_heartbeat` (`Heartbeats[].Reason`: `NoNewData`, `SubscriptionTemporarilyDisabled`, `SubscriptionPermanentlyDisabled`), `_disconnect`, `_resetsubscriptions` (`TargetReferenceIds`, empty = all) | heartbeats prove liveness, a permanently disabled subscription is re-created; `_disconnect` reconnects; reset re-creates the targets under new reference ids with `ReplaceReferenceId` |
+| Liveness | "keep track of when you last received a message or heartbeat" | while a subscription is active, nothing for the subscription's `InactivityTimeout` plus `SAXO_STREAM_HEARTBEAT_TIMEOUT` (15 s) → reconnect; a connection with no subscription is never declared dead |
+| Limits | price subscriptions: 200 instruments per session; 4 streaming connections per session (different context ids); 120 requests/minute per session and service group | one connection; Uics batched up to `SAXO_STREAM_MAX_UICS_PER_SUBSCRIPTION` (100) per subscription; watch-list changes debounced 200 ms |
+
+### Not yet verified on SIM
+
+The NEX-270 session could not log in to SIM: a SIM token needs a person to sign in to the developer
+portal, and saxo-stream's live token may not be used by anything else, because refresh tokens
+rotate on use. These are still **unverified**:
+
+- that `/trade/v1/infoprices/subscriptions` with a `Uics` list answers 201 with a `Snapshot.Data`
+  array and then streams JSON arrays of per-Uic deltas carrying `Uic`;
+- the largest number of Uics Saxo accepts in one info-price subscription;
+- the subscription rate limits (create/delete per minute) and whether info prices count towards
+  the 200-instrument limit;
+- whether `RefreshRate=0` is accepted or raised to a minimum for info prices.
+
+If Saxo refuses a batch with a 4xx, saxo-stream retries each Uic in its own subscription, so a lower
+per-subscription limit degrades rather than breaks. To verify on SIM: run `saxo_stream` locally with
+`SAXO_API_BASE=https://gateway.saxobank.com/sim/openapi`, the two SIM streaming URLs above and a
+24-hour SIM token registered with `POST /tokens`; connect a WebSocket client to
+`ws://localhost:8080/quotes/stream`, send `{"watch":[...]}` with a few registered SIM instruments, and
+check the logs (`subscribing Saxo info prices`, `Saxo subscription active`) and the quotes. Raise the
+batch size until Saxo refuses it to find the limit. Record the results here.
+

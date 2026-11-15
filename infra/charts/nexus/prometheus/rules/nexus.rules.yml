@@ -789,6 +789,38 @@ groups:
             the last 10 minutes. See the outcome split on the Analyst dashboard and the
             Saxo dashboard.
 
+      # NEX-270: clients watch instruments but the Saxo info-price stream is not
+      # up, so they fall back to GET /quote. Nordic sessions: Mon-Fri 07:00-17:00 UTC.
+      - alert: SaxoQuoteStreamDown
+        expr: >
+          max(saxo_quote_stream_watched_instruments) > 0
+          and on () max(saxo_quote_stream_connected) == 0
+          and on () (day_of_week() >= 1 and day_of_week() <= 5)
+          and on () (hour() >= 7 and hour() < 17)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Saxo quote stream is down while {{ $value }} instruments are watched"
+          description: >-
+            saxo-stream has /quotes/stream clients watching instruments but its Saxo
+            streaming connection is down or reconnecting, so clients see
+            saxo_connected false and use GET /quote. Check the saxo-stream logs
+            ("Saxo streaming"), the token (SaxoQuotesDown) and the Quote stream row
+            on the Saxo dashboard.
+
+      - alert: SaxoQuoteStreamReauthFailing
+        expr: increase(saxo_quote_stream_reauthorize_failures_total[10m]) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "saxo-stream cannot re-authorize its Saxo streaming connection"
+          description: >-
+            Rotated access tokens are not being accepted by Saxo's streaming
+            authorize URL (SAXO_STREAMING_AUTHORIZE_URL). The connection will be
+            dropped when the old token expires. Check the URL and the saxo-stream
+            logs ("re-authorization failed").
+
       - alert: SaxoQuotesDown
         expr: sum(increase(saxo_quote_requests_total{outcome="no_token"}[5m])) > 0
         for: 5m

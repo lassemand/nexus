@@ -566,7 +566,7 @@ data:
               "legendFormat": "{{ "{{" }}endpoint{{ "}}" }} {{ "{{" }}status_class{{ "}}" }}"
             }
           ],
-          "description": "endpoint: token, chart, instruments. status_class: 2xx, 4xx, 5xx, error (no response)."
+          "description": "endpoint: token, chart, instruments, infoprices, infoprice_subscriptions, streaming_authorize. status_class: 2xx, 4xx, 5xx, error (no response)."
         },
         {
           "id": 12,
@@ -734,6 +734,347 @@ data:
             }
           ],
           "description": "First sight of a ticker: history back to 2015-01-01."
+        },
+        {
+          "id": 17,
+          "type": "row",
+          "title": "Quote stream",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 44,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 18,
+          "type": "stat",
+          "title": "Connected",
+          "gridPos": {
+            "x": 0,
+            "y": 45,
+            "w": 4,
+            "h": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": {
+                      "text": "Down",
+                      "color": "red"
+                    },
+                    "1": {
+                      "text": "Up",
+                      "color": "green"
+                    }
+                  }
+                }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max(saxo_quote_stream_connected)",
+              "legendFormat": "Connected"
+            }
+          ],
+          "description": "1 while the Saxo info-price stream is up and every subscription has its snapshot. SaxoQuoteStreamDown fires when instruments are watched and this is 0 for 2 minutes on a weekday session."
+        },
+        {
+          "id": 19,
+          "type": "stat",
+          "title": "Watched instruments",
+          "gridPos": {
+            "x": 4,
+            "y": 45,
+            "w": 4,
+            "h": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max(saxo_quote_stream_watched_instruments)",
+              "legendFormat": "Watched instruments"
+            }
+          ],
+          "description": "Pairs in the union of every client's watch list."
+        },
+        {
+          "id": 20,
+          "type": "stat",
+          "title": "Clients",
+          "gridPos": {
+            "x": 8,
+            "y": 45,
+            "w": 4,
+            "h": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "max(saxo_quote_stream_clients)",
+              "legendFormat": "Clients"
+            }
+          ],
+          "description": "Connected /quotes/stream clients."
+        },
+        {
+          "id": 21,
+          "type": "timeseries",
+          "title": "Update rate",
+          "gridPos": {
+            "x": 12,
+            "y": 45,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum(rate(saxo_quote_stream_updates_total[1m]))",
+              "legendFormat": "updates/s"
+            }
+          ],
+          "description": "Instrument updates merged from Saxo per second (snapshots and deltas). Saxo sends only on change, so a quiet instrument sends nothing."
+        },
+        {
+          "id": 22,
+          "type": "timeseries",
+          "title": "Fan-out p99",
+          "gridPos": {
+            "x": 0,
+            "y": 51,
+            "w": 8,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(saxo_quote_stream_fanout_seconds_bucket[5m])))",
+              "legendFormat": "p99"
+            }
+          ],
+          "description": "Saxo frame received to the quote written to a client's socket. Target: under 5 ms."
+        },
+        {
+          "id": 23,
+          "type": "timeseries",
+          "title": "Saxo lag p99",
+          "gridPos": {
+            "x": 8,
+            "y": 51,
+            "w": 8,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(saxo_quote_stream_saxo_lag_seconds_bucket[5m])))",
+              "legendFormat": "p99"
+            }
+          ],
+          "description": "received_at minus Saxo's LastUpdated: Saxo's own push delay. A delayed feed (delayed_minutes > 0) shows up here."
+        },
+        {
+          "id": 24,
+          "type": "timeseries",
+          "title": "Reconnects and closed clients (per 15 min)",
+          "gridPos": {
+            "x": 16,
+            "y": 51,
+            "w": 8,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "increase(saxo_quote_stream_reconnects_total[15m])",
+              "legendFormat": "reconnects"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (reason) (increase(saxo_quote_stream_client_closed_total[15m]))",
+              "legendFormat": "closed: {{ \"{{\" }}reason{{ \"}}\" }}"
+            }
+          ],
+          "description": "Saxo connections lost and reopened, and clients gone by reason (client, slow_consumer, send_failed)."
         }
       ]
     }

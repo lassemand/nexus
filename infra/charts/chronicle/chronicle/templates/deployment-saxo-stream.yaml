@@ -57,6 +57,16 @@ spec:
               value: {{ .Values.saxo.healthPort | quote }}
             - name: QUOTE_PORT
               value: {{ .Values.saxo.quotePort | quote }}
+            - name: SAXO_STREAMING_WS_URL
+              value: {{ .Values.saxo.streaming.wsUrl | quote }}
+            - name: SAXO_STREAMING_AUTHORIZE_URL
+              value: {{ .Values.saxo.streaming.authorizeUrl | quote }}
+            - name: SAXO_STREAM_HEARTBEAT_TIMEOUT
+              value: {{ .Values.saxo.streaming.heartbeatTimeoutSeconds | quote }}
+            - name: SAXO_STREAM_MAX_UICS_PER_SUBSCRIPTION
+              value: {{ .Values.saxo.streaming.maxUicsPerSubscription | quote }}
+            - name: QUOTE_STREAM_CLIENT_QUEUE
+              value: {{ .Values.saxo.streaming.clientQueue | quote }}
           envFrom:
             - secretRef:
                 name: chronicle-secret
