@@ -25,11 +25,18 @@
 //!   is a delta merged into them ([`alpha::saxo::StreamQuote::apply`]). Deltas
 //!   that arrive before their subscription's snapshot are buffered and applied
 //!   after it.
-//! - No message for [`StreamSettings::heartbeat_timeout`], a `_disconnect`, or a
-//!   socket error ends the connection; it is reopened after a backoff (1 s
+//! - While at least one subscription is active, no message for Saxo's
+//!   `InactivityTimeout` plus [`StreamSettings::heartbeat_timeout`] (heartbeats
+//!   are per subscription, so a connection with none is never declared dead), a
+//!   `_disconnect`, or a socket error ends the connection; it is reopened after a backoff (1 s
 //!   doubling to 30 s) under a new context id, everything is subscribed again
 //!   and each snapshot replaces the stored quote. `seq` is per instrument and
 //!   never restarts.
+//! - A failed subscribe is retried per Uic with exponential backoff, at least
+//!   Saxo's `Retry-After`; a 401/403 is an auth problem (wait for a fresh
+//!   token), never a refusal; a failed replacement deletes the replaced
+//!   subscription; `SubscriptionPermanentlyDisabled` is a refusal until the
+//!   next reconnect.
 //! - `_resetsubscriptions` re-creates the named subscriptions (all when none is
 //!   named) under new reference ids.
 //! - When saxo-stream rotates the access token, the hub `PUT`s it to the
@@ -51,7 +58,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{SinkExt, StreamExt};
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -61,6 +68,9 @@ use tokio_tungstenite::tungstenite::Message as SaxoMessage;
 use tracing::{debug, error, info, warn};
 
 use crate::saxo_quotes::{self, TokenSlot, UicMap};
+
+/// Longest wait taken from a Saxo `Retry-After`.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
 
 /// A listing: upper-cased ticker and MIC ([`saxo_quotes::key`]).
 pub type Pair = (String, String);
@@ -239,6 +249,7 @@ pub fn describe() {
     }
     counter!("saxo_quote_stream_reconnects_total").absolute(0);
     counter!("saxo_quote_stream_updates_total").absolute(0);
+    counter!("saxo_quote_stream_reauthorize_failures_total").absolute(0);
     gauge!("saxo_quote_stream_connected").set(0.0);
     gauge!("saxo_quote_stream_watched_instruments").set(0.0);
     gauge!("saxo_quote_stream_clients").set(0.0);
@@ -253,6 +264,10 @@ pub fn describe() {
     describe_counter!(
         "saxo_quote_stream_updates_total",
         "Instrument updates (snapshot entries and deltas) merged from Saxo."
+    );
+    describe_counter!(
+        "saxo_quote_stream_reauthorize_failures_total",
+        "Failed PUTs of a rotated access token to Saxo's streaming authorize URL."
     );
     describe_gauge!(
         "saxo_quote_stream_watched_instruments",
@@ -293,11 +308,14 @@ pub fn spawn(deps: StreamDeps, settings: StreamSettings) -> QuoteStreamHandle {
 enum Event {
     Connected {
         ctx: String,
+        token: String,
         result: Result<Box<SaxoSocket>, StreamError>,
     },
     Subscribed {
         ctx: String,
         reference: String,
+        replace: Option<String>,
+        token: String,
         result: Result<Subscribed, StreamError>,
         at: Instant,
         at_utc: DateTime<Utc>,
@@ -314,14 +332,18 @@ struct Client {
     close: Option<oneshot::Sender<&'static str>>,
     watch: HashSet<Pair>,
     pending: HashMap<Pair, Outgoing>,
+    errors: VecDeque<Outgoing>,
     full_since: Option<Instant>,
 }
+
+/// Most error messages kept for a client whose queue is full.
+const MAX_QUEUED_ERRORS: usize = 32;
 
 impl Client {
     /// Queues `out`; when the queue is full, keeps only the latest message per
     /// pair until there is room. `false` once the client is gone.
     fn deliver(&mut self, pair: Option<&Pair>, out: Outgoing) -> bool {
-        if !self.pending.is_empty() {
+        if !self.pending.is_empty() || !self.errors.is_empty() {
             if let Some(p) = pair {
                 self.pending.insert(p.clone(), out);
             }
@@ -340,8 +362,30 @@ impl Client {
         }
     }
 
-    /// Moves coalesced quotes into the queue while there is room.
+    /// Queues an error message. Errors are never coalesced or dropped for a
+    /// full queue: they wait ahead of the pending quotes.
+    fn deliver_error(&mut self, out: Outgoing) -> bool {
+        if self.errors.len() >= MAX_QUEUED_ERRORS {
+            self.errors.pop_front();
+        }
+        self.errors.push_back(out);
+        self.flush()
+    }
+
+    /// Moves queued errors, then coalesced quotes, into the queue while there
+    /// is room.
     fn flush(&mut self) -> bool {
+        while let Some(out) = self.errors.pop_front() {
+            match self.tx.try_send(out) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(out)) => {
+                    self.errors.push_front(out);
+                    self.full_since.get_or_insert_with(Instant::now);
+                    return true;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => return false,
+            }
+        }
         while let Some(pair) = self.pending.keys().next().cloned() {
             let Some(out) = self.pending.remove(&pair) else {
                 break;
@@ -371,6 +415,7 @@ struct Entry {
 struct Sub {
     uics: Vec<u64>,
     active: bool,
+    inactivity: Option<u64>,
     buffered: Vec<(Vec<u8>, Instant, DateTime<Utc>)>,
 }
 
@@ -382,6 +427,8 @@ struct Live {
     got_message: bool,
     subs: HashMap<String, Sub>,
     reauth_inflight: bool,
+    reauth_failures: u32,
+    reauth_next: Option<Instant>,
     awaiting_snapshot: HashSet<String>,
     resynced: bool,
 }
@@ -396,7 +443,7 @@ enum Conn {
 struct Unresolved {
     since: Instant,
     queued_at: Instant,
-    error_sent: bool,
+    notified: HashSet<u64>,
 }
 
 struct Hub {
@@ -412,6 +459,10 @@ struct Hub {
     seqs: HashMap<u64, u64>,
     refused: HashSet<u64>,
     solo: HashSet<u64>,
+    sub_failures: HashMap<u64, u32>,
+    sub_not_before: HashMap<u64, Instant>,
+    rejected_token: Option<String>,
+    orphans: Vec<(String, String)>,
     conn: Conn,
     backoff: Duration,
     debounce_at: Option<Instant>,
@@ -512,7 +563,7 @@ fn quote_text(pair: &Pair, entry: &Entry, seq: u64) -> Utf8Bytes {
         market_state: q.market_state,
         delayed_minutes: q.delayed_minutes,
         currency: q.currency,
-        saxo_time: q.last_updated,
+        saxo_time: entry.quote.last_updated().map(str::to_string),
         received_at: rfc3339(entry.received_at),
         seq,
     })
@@ -525,10 +576,10 @@ fn current_token(slot: &TokenSlot) -> Option<String> {
 }
 
 fn record_lag(quote: &StreamQuote, received_at: DateTime<Utc>) {
-    let Some(saxo_time) = quote.to_quote().last_updated else {
+    let Some(saxo_time) = quote.last_updated() else {
         return;
     };
-    let Ok(t) = DateTime::parse_from_rfc3339(&saxo_time) else {
+    let Ok(t) = DateTime::parse_from_rfc3339(saxo_time) else {
         return;
     };
     if let Ok(lag) = (received_at - t.with_timezone(&Utc)).to_std() {
@@ -558,6 +609,10 @@ impl Hub {
             seqs: HashMap::new(),
             refused: HashSet::new(),
             solo: HashSet::new(),
+            sub_failures: HashMap::new(),
+            sub_not_before: HashMap::new(),
+            rejected_token: None,
+            orphans: Vec::new(),
             conn: Conn::Idle,
             backoff,
             debounce_at: None,
@@ -619,10 +674,12 @@ impl Hub {
     }
 
     fn rest_token(&self) -> Option<String> {
-        current_token(&self.deps.token).or_else(|| match &self.conn {
-            Conn::Live(live) => Some(live.token.clone()),
-            _ => None,
-        })
+        current_token(&self.deps.token)
+            .or_else(|| match &self.conn {
+                Conn::Live(live) => Some(live.token.clone()),
+                _ => None,
+            })
+            .filter(|t| self.rejected_token.as_ref() != Some(t))
     }
 
     fn on_command(&mut self, cmd: Command) {
@@ -635,6 +692,7 @@ impl Hub {
                         close: Some(close),
                         watch: HashSet::new(),
                         pending: HashMap::new(),
+                        errors: VecDeque::new(),
                         full_since: None,
                     },
                 );
@@ -645,14 +703,7 @@ impl Hub {
             Command::Leave { id, reason } => self.remove_client(id, reason),
             Command::Invalid { id, reason } => {
                 let text = error_text(None, &reason);
-                self.deliver(
-                    id,
-                    None,
-                    Outgoing {
-                        text,
-                        received: None,
-                    },
-                );
+                self.deliver_error(id, text);
             }
         }
     }
@@ -677,14 +728,7 @@ impl Hub {
         }
         for p in &invalid {
             let text = error_text(Some(p), "ticker and mic are required");
-            self.deliver(
-                id,
-                None,
-                Outgoing {
-                    text,
-                    received: None,
-                },
-            );
+            self.deliver_error(id, text);
         }
         self.recompute_union();
         for pair in &added {
@@ -693,14 +737,7 @@ impl Hub {
             };
             if self.refused.contains(&uic) {
                 let text = error_text(Some(pair), "Saxo refused the subscription");
-                self.deliver(
-                    id,
-                    None,
-                    Outgoing {
-                        text,
-                        received: None,
-                    },
-                );
+                self.deliver_error(id, text);
                 continue;
             }
             if let Some(entry) = self.quotes.get(&uic) {
@@ -730,6 +767,19 @@ impl Hub {
         gauge!("saxo_quote_stream_clients").set(self.clients.len() as f64);
         info!(client = id, reason, "quote stream client closed");
         self.recompute_union();
+    }
+
+    fn deliver_error(&mut self, id: u64, text: Utf8Bytes) {
+        let alive = match self.clients.get_mut(&id) {
+            Some(c) => c.deliver_error(Outgoing {
+                text,
+                received: None,
+            }),
+            None => return,
+        };
+        if !alive {
+            self.remove_client(id, REASON_CLIENT);
+        }
     }
 
     fn deliver(&mut self, id: u64, pair: Option<&Pair>, out: Outgoing) {
@@ -798,7 +848,7 @@ impl Hub {
                 Unresolved {
                     since: now,
                     queued_at: now,
-                    error_sent: false,
+                    notified: HashSet::new(),
                 },
             );
         }
@@ -829,11 +879,20 @@ impl Hub {
     }
 
     fn spawn_subscribe(&self, ctx: &str, reference: &str, uics: Vec<u64>, replace: Option<String>) {
+        let (ctx, reference) = (ctx.to_string(), reference.to_string());
         let Some(token) = self.rest_token() else {
+            let _ = self.events.send(Event::Subscribed {
+                ctx,
+                reference,
+                replace,
+                token: String::new(),
+                result: Err(StreamError::no_token()),
+                at: Instant::now(),
+                at_utc: Utc::now(),
+            });
             return;
         };
         let client = self.deps.client.clone();
-        let (ctx, reference) = (ctx.to_string(), reference.to_string());
         self.spawn_task(async move {
             let result = client
                 .subscribe(&token, &ctx, &reference, &uics, replace.as_deref())
@@ -841,6 +900,8 @@ impl Hub {
             Some(Event::Subscribed {
                 ctx,
                 reference,
+                replace,
+                token,
                 result,
                 at: Instant::now(),
                 at_utc: Utc::now(),
@@ -898,7 +959,17 @@ impl Hub {
             }
         }
         self.reconcile_after_pending = defer;
-        let mut fresh: Vec<u64> = desired.difference(&covered).copied().collect();
+        let now = Instant::now();
+        self.sub_not_before
+            .retain(|u, until| desired.contains(u) && *until > now);
+        let mut wake: Option<Instant> = None;
+        let mut fresh: Vec<u64> = Vec::new();
+        for uic in desired.difference(&covered) {
+            match self.sub_not_before.get(uic) {
+                Some(until) => wake = Some(wake.map_or(*until, |w| w.min(*until))),
+                None => fresh.push(*uic),
+            }
+        }
         fresh.sort_unstable();
         let (solo, batched): (Vec<u64>, Vec<u64>) =
             fresh.into_iter().partition(|u| self.solo.contains(u));
@@ -935,6 +1006,7 @@ impl Hub {
                 Sub {
                     uics: c.1.clone(),
                     active: false,
+                    inactivity: None,
                     buffered: Vec::new(),
                 },
             );
@@ -958,26 +1030,70 @@ impl Hub {
             info!(ctx, reference, uics = ?uics, replace, "subscribing Saxo info prices");
             self.spawn_subscribe(&ctx, &reference, uics, replace);
         }
+        if let Some(w) = wake {
+            self.debounce_at = Some(self.debounce_at.map_or(w, |d| d.min(w)));
+        }
         self.update_connected_gauge();
+    }
+
+    /// Holds `uics` back from subscribing for an exponentially growing wait
+    /// (`backoff_min` doubling to `backoff_max`), at least Saxo's
+    /// `Retry-After` when it sent one.
+    fn back_off_uics(&mut self, uics: &[u64], retry_after: Option<Duration>) {
+        let now = Instant::now();
+        let mut wake = now;
+        for uic in uics {
+            let n = self.sub_failures.entry(*uic).or_insert(0);
+            *n = n.saturating_add(1);
+            let doubled = self
+                .settings
+                .backoff_min
+                .saturating_mul(1u32 << (*n - 1).min(16));
+            let mut wait = doubled.min(self.settings.backoff_max);
+            if let Some(r) = retry_after {
+                wait = wait.max(r.min(MAX_RETRY_AFTER));
+            }
+            let until = now + wait;
+            self.sub_not_before.insert(*uic, until);
+            wake = wake.max(until);
+        }
+        let earliest = uics
+            .iter()
+            .filter_map(|u| self.sub_not_before.get(u).copied())
+            .min()
+            .unwrap_or(wake);
+        self.debounce_at = Some(self.debounce_at.map_or(earliest, |d| d.min(earliest)));
     }
 
     fn on_event(&mut self, ev: Event) {
         match ev {
-            Event::Connected { ctx, result } => self.on_connected(ctx, result),
+            Event::Connected { ctx, token, result } => self.on_connected(ctx, token, result),
             Event::Subscribed {
                 ctx,
                 reference,
+                replace,
+                token,
                 result,
                 at,
                 at_utc,
-            } => self.on_subscribed(ctx, reference, result, at, at_utc),
+            } => self.on_subscribed(ctx, reference, replace, token, result, at, at_utc),
             Event::Reauthorized { ctx, token, ok } => {
+                let (min, max) = (self.settings.backoff_min, self.settings.backoff_max);
                 if let Conn::Live(live) = &mut self.conn {
                     if live.ctx == ctx {
                         live.reauth_inflight = false;
                         if ok {
                             live.token = token;
+                            live.reauth_failures = 0;
+                            live.reauth_next = None;
                             info!(ctx, "Saxo streaming connection re-authorized");
+                        } else {
+                            live.reauth_failures = live.reauth_failures.saturating_add(1);
+                            let wait = min
+                                .saturating_mul(1u32 << (live.reauth_failures - 1).min(16))
+                                .min(max);
+                            live.reauth_next = Some(Instant::now() + wait);
+                            counter!("saxo_quote_stream_reauthorize_failures_total").increment(1);
                         }
                     }
                 }
@@ -985,7 +1101,12 @@ impl Hub {
         }
     }
 
-    fn on_connected(&mut self, ctx: String, result: Result<Box<SaxoSocket>, StreamError>) {
+    fn on_connected(
+        &mut self,
+        ctx: String,
+        token: String,
+        result: Result<Box<SaxoSocket>, StreamError>,
+    ) {
         let Conn::Connecting { ctx: want } = &self.conn else {
             return;
         };
@@ -994,10 +1115,6 @@ impl Hub {
         }
         match result {
             Ok(socket) => {
-                let Some(token) = current_token(&self.deps.token) else {
-                    self.lose_connection("token expired while connecting");
-                    return;
-                };
                 info!(ctx, "Saxo streaming connected");
                 self.conn = Conn::Live(Box::new(Live {
                     ctx,
@@ -1007,10 +1124,14 @@ impl Hub {
                     got_message: false,
                     subs: HashMap::new(),
                     reauth_inflight: false,
+                    reauth_failures: 0,
+                    reauth_next: None,
                     awaiting_snapshot: HashSet::new(),
                     resynced: false,
                 }));
                 self.refused.clear();
+                self.sub_failures.clear();
+                self.sub_not_before.clear();
                 self.reconcile();
             }
             Err(e) => {
@@ -1020,10 +1141,13 @@ impl Hub {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn on_subscribed(
         &mut self,
         ctx: String,
         reference: String,
+        replace: Option<String>,
+        token: String,
         result: Result<Subscribed, StreamError>,
         at: Instant,
         at_utc: DateTime<Utc>,
@@ -1043,7 +1167,12 @@ impl Hub {
         match result {
             Ok(subscribed) => {
                 sub.active = true;
+                sub.inactivity = subscribed.inactivity_timeout_secs;
                 let uics = sub.uics.clone();
+                for uic in &uics {
+                    self.sub_failures.remove(uic);
+                    self.sub_not_before.remove(uic);
+                }
                 let buffered = std::mem::take(&mut sub.buffered);
                 live.awaiting_snapshot.remove(&reference);
                 if !live.resynced && live.awaiting_snapshot.is_empty() {
@@ -1074,10 +1203,22 @@ impl Hub {
                 if !live.resynced && live.awaiting_snapshot.is_empty() {
                     live.resynced = true;
                 }
-                if e.is_transient() {
-                    warn!(ctx, reference, error = %e, "Saxo subscription failed, retrying");
-                    self.debounce_at
-                        .get_or_insert(Instant::now() + self.settings.backoff_min);
+                if let Some(old) = replace {
+                    if e.is_auth() {
+                        self.orphans.push((ctx.clone(), old));
+                    } else {
+                        self.spawn_unsubscribe(&ctx, Some(&old));
+                    }
+                }
+                if e.is_auth() {
+                    warn!(ctx, reference, error = %e, "Saxo rejected the access token, waiting for a fresh one");
+                    if !token.is_empty() {
+                        self.rejected_token = Some(token);
+                    }
+                    self.back_off_uics(&uics, e.retry_after());
+                } else if e.is_transient() {
+                    warn!(ctx, reference, error = %e, "Saxo subscription failed, backing off");
+                    self.back_off_uics(&uics, e.retry_after());
                 } else if uics.len() > 1 {
                     warn!(ctx, reference, error = %e, "Saxo refused a batch subscription, subscribing one by one");
                     self.solo.extend(uics);
@@ -1108,14 +1249,7 @@ impl Hub {
                 .map(|(id, _)| *id)
                 .collect();
             for id in ids {
-                self.deliver(
-                    id,
-                    None,
-                    Outgoing {
-                        text: text.clone(),
-                        received: None,
-                    },
-                );
+                self.deliver_error(id, text.clone());
             }
         }
     }
@@ -1277,8 +1411,7 @@ impl Hub {
                     .map(|b| b.originating_reference_id)
                     .collect();
                 if !disabled.is_empty() {
-                    warn!(references = ?disabled, "Saxo disabled subscriptions, re-creating them");
-                    self.resubscribe(disabled);
+                    self.on_disabled(disabled);
                 }
             }
             Control::Disconnect => self.lose_connection("Saxo sent _disconnect"),
@@ -1288,6 +1421,45 @@ impl Hub {
             }
             Control::Other(id) => debug!(id, "unknown Saxo control message"),
         }
+    }
+
+    /// Saxo says these subscriptions will never get data (for example no
+    /// market-data entitlement). A subscription of one instrument is a refusal
+    /// until the next reconnect; a batch is split so the offender is found.
+    fn on_disabled(&mut self, references: Vec<String>) {
+        let Conn::Live(live) = &mut self.conn else {
+            return;
+        };
+        let ctx = live.ctx.clone();
+        let mut removed = Vec::new();
+        for reference in references {
+            if let Some(sub) = live.subs.remove(&reference) {
+                live.awaiting_snapshot.remove(&reference);
+                removed.push((reference, sub.uics));
+            }
+        }
+        if !live.resynced && live.awaiting_snapshot.is_empty() {
+            live.resynced = true;
+        }
+        for (reference, uics) in removed {
+            warn!(ctx, reference, uics = ?uics, "Saxo permanently disabled a subscription");
+            self.spawn_unsubscribe(&ctx, Some(&reference));
+            if uics.len() > 1 {
+                self.solo.extend(uics);
+            } else {
+                for uic in uics {
+                    self.refused.insert(uic);
+                    self.quotes.remove(&uic);
+                    self.notify_pairs(
+                        uic,
+                        "Saxo refused the subscription: SubscriptionPermanentlyDisabled",
+                    );
+                }
+            }
+        }
+        self.debounce_at
+            .get_or_insert(Instant::now() + self.settings.debounce);
+        self.update_connected_gauge();
     }
 
     /// Re-creates `targets` (every subscription when empty) under new
@@ -1319,6 +1491,7 @@ impl Hub {
                 Sub {
                     uics: uics.clone(),
                     active: false,
+                    inactivity: None,
                     buffered: Vec::new(),
                 },
             );
@@ -1396,7 +1569,7 @@ impl Hub {
         info!(ctx, "Saxo streaming connecting");
         self.spawn_task(async move {
             let result = client.connect(&ctx, &token).await.map(Box::new);
-            Some(Event::Connected { ctx, result })
+            Some(Event::Connected { ctx, token, result })
         });
     }
 
@@ -1406,13 +1579,36 @@ impl Hub {
         let mut reauth: Option<(String, String)> = None;
         let token = current_token(&self.deps.token);
         if let Conn::Live(live) = &mut self.conn {
-            if now.duration_since(live.last_msg) > self.settings.heartbeat_timeout {
-                dead = true;
-            } else if let Some(t) = token {
-                if !live.reauth_inflight && t != live.token {
-                    live.reauth_inflight = true;
-                    reauth = Some((live.ctx.clone(), t));
+            let mut inactivity = None;
+            for sub in live.subs.values().filter(|s| s.active) {
+                inactivity = Some(inactivity.unwrap_or(0).max(sub.inactivity.unwrap_or(0)));
+            }
+            match inactivity {
+                None => live.last_msg = now,
+                Some(secs) => {
+                    let allowed = Duration::from_secs(secs) + self.settings.heartbeat_timeout;
+                    dead = now.duration_since(live.last_msg) > allowed;
                 }
+            }
+            if !dead {
+                if let Some(t) = token {
+                    let due = live.reauth_next.is_none_or(|n| now >= n);
+                    if !live.reauth_inflight && due && t != live.token {
+                        live.reauth_inflight = true;
+                        reauth = Some((live.ctx.clone(), t));
+                    }
+                }
+            }
+        }
+        if !self.orphans.is_empty() {
+            let orphans = std::mem::take(&mut self.orphans);
+            if let (Conn::Live(live), Some(_)) = (&self.conn, self.rest_token()) {
+                let ctx = live.ctx.clone();
+                for (c, reference) in orphans.into_iter().filter(|(c, _)| *c == ctx) {
+                    self.spawn_unsubscribe(&c, Some(&reference));
+                }
+            } else if matches!(self.conn, Conn::Live(_)) {
+                self.orphans = orphans;
             }
         }
         if dead {
@@ -1442,38 +1638,32 @@ impl Hub {
         if self.refresh_resolution() {
             self.debounce_at.get_or_insert(now + self.settings.debounce);
         }
-        let mut errors: Vec<Pair> = Vec::new();
+        let mut errors: Vec<(Pair, Vec<u64>)> = Vec::new();
         for (pair, u) in self.unresolved.iter_mut() {
             if now.duration_since(u.queued_at) >= self.settings.resolve_retry {
                 u.queued_at = now;
                 let _ = self.deps.unknown.try_send(pair.clone());
             }
-            if !u.error_sent && now.duration_since(u.since) >= self.settings.unresolved_error_after
-            {
-                u.error_sent = true;
-                errors.push(pair.clone());
+            if now.duration_since(u.since) >= self.settings.unresolved_error_after {
+                let ids: Vec<u64> = self
+                    .clients
+                    .iter()
+                    .filter(|(id, c)| c.watch.contains(pair) && !u.notified.contains(*id))
+                    .map(|(id, _)| *id)
+                    .collect();
+                u.notified.extend(ids.iter().copied());
+                if !ids.is_empty() {
+                    errors.push((pair.clone(), ids));
+                }
             }
         }
-        for pair in errors {
+        for (pair, ids) in errors {
             let text = error_text(
                 Some(&pair),
                 "not a registered company with a resolved Saxo Uic",
             );
-            let ids: Vec<u64> = self
-                .clients
-                .iter()
-                .filter(|(_, c)| c.watch.contains(&pair))
-                .map(|(id, _)| *id)
-                .collect();
             for id in ids {
-                self.deliver(
-                    id,
-                    None,
-                    Outgoing {
-                        text: text.clone(),
-                        received: None,
-                    },
-                );
+                self.deliver_error(id, text.clone());
             }
         }
 
@@ -1508,7 +1698,7 @@ impl Hub {
         let Some(client) = self.clients.get(&id) else {
             return;
         };
-        if !client.pending.is_empty() {
+        if !client.pending.is_empty() || !client.errors.is_empty() {
             return;
         }
         let mut unresolved: Vec<PairBody<'_>> = client

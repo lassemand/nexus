@@ -242,7 +242,7 @@ From Saxo's developer documentation (learn pages "Plain WebSocket streaming", "E
 | Deltas | only the properties whose values changed; apply in order onto the snapshot | merged per Uic (`alpha::saxo::StreamQuote::apply`); absent field keeps its value, explicit `null` clears |
 | Snapshot | in the subscription answer (`Snapshot.Data`, one entry per Uic) | replaces the stored quote; deltas that arrive before it are buffered and applied after |
 | Control messages | `_heartbeat` (`Heartbeats[].Reason`: `NoNewData`, `SubscriptionTemporarilyDisabled`, `SubscriptionPermanentlyDisabled`), `_disconnect`, `_resetsubscriptions` (`TargetReferenceIds`, empty = all) | heartbeats prove liveness, a permanently disabled subscription is re-created; `_disconnect` reconnects; reset re-creates the targets under new reference ids with `ReplaceReferenceId` |
-| Liveness | "keep track of when you last received a message or heartbeat" | nothing for `SAXO_STREAM_HEARTBEAT_TIMEOUT` (15 s) → reconnect |
+| Liveness | "keep track of when you last received a message or heartbeat" | while a subscription is active, nothing for the subscription's `InactivityTimeout` plus `SAXO_STREAM_HEARTBEAT_TIMEOUT` (15 s) → reconnect; a connection with no subscription is never declared dead |
 | Limits | price subscriptions: 200 instruments per session; 4 streaming connections per session (different context ids); 120 requests/minute per session and service group | one connection; Uics batched up to `SAXO_STREAM_MAX_UICS_PER_SUBSCRIPTION` (100) per subscription; watch-list changes debounced 200 ms |
 
 ### Not yet verified on SIM

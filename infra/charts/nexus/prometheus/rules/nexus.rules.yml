@@ -809,6 +809,18 @@ groups:
             ("Saxo streaming"), the token (SaxoQuotesDown) and the Quote stream row
             on the Saxo dashboard.
 
+      - alert: SaxoQuoteStreamReauthFailing
+        expr: increase(saxo_quote_stream_reauthorize_failures_total[10m]) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "saxo-stream cannot re-authorize its Saxo streaming connection"
+          description: >-
+            Rotated access tokens are not being accepted by Saxo's streaming
+            authorize URL (SAXO_STREAMING_AUTHORIZE_URL). The connection will be
+            dropped when the old token expires. Check the URL and the saxo-stream
+            logs ("re-authorization failed").
+
       - alert: SaxoQuotesDown
         expr: sum(increase(saxo_quote_requests_total{outcome="no_token"}[5m])) > 0
         for: 5m

@@ -77,7 +77,8 @@ The streaming quotes (`GET /quotes/stream` on `QUOTE_PORT`, NEX-270) add:
 | Series | Type | Meaning |
 |---|---|---|
 | `saxo_quote_stream_connected` | gauge | 1 while the Saxo streaming connection is up and every subscription made since (re)connecting has its snapshot; 0 while down, reconnecting, idle or without a token |
-| `saxo_quote_stream_reconnects_total` | counter | Saxo connections lost (socket error, close, `_disconnect`, no message for `SAXO_STREAM_HEARTBEAT_TIMEOUT`) and reopened |
+| `saxo_quote_stream_reconnects_total` | counter | Saxo connections lost (socket error, close, `_disconnect`, no message within the inactivity timeout plus `SAXO_STREAM_HEARTBEAT_TIMEOUT` while subscribed) and reopened |
+| `saxo_quote_stream_reauthorize_failures_total` | counter | failed PUTs of a rotated token to the streaming authorize URL (retried with exponential backoff) |
 | `saxo_quote_stream_updates_total` | counter | instrument updates merged from Saxo (snapshot entries and deltas) |
 | `saxo_quote_stream_watched_instruments` | gauge | pairs in the union of every client's watch list |
 | `saxo_quote_stream_clients` | gauge | connected `/quotes/stream` clients |
@@ -85,8 +86,8 @@ The streaming quotes (`GET /quotes/stream` on `QUOTE_PORT`, NEX-270) add:
 | `saxo_quote_stream_fanout_seconds` | histogram | Saxo frame received to the quote written to a client's socket, buckets 0.1 ms to 0.5 s; target p99 under 5 ms |
 | `saxo_quote_stream_saxo_lag_seconds` | histogram | `received_at - saxo_time` (Saxo's `LastUpdated`) per update, buckets 10 ms to 60 s; includes Saxo's push delay, and a delayed feed shows here |
 
-Alert: `SaxoQuoteStreamDown` (watched instruments but not connected for 2 minutes, Mon–Fri
-07:00–17:00 UTC).
+Alerts: `SaxoQuoteStreamDown` (watched instruments but not connected for 2 minutes, Mon–Fri
+07:00–17:00 UTC) and `SaxoQuoteStreamReauthFailing` (3 or more failed re-authorizations in 10 minutes).
 
 A deregistered ticker keeps no stale series: on every sweep, instruments that had a freshness gauge
 and are no longer registered are set to 0 (the `metrics` crate cannot delete a series) and

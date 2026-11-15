@@ -25,6 +25,12 @@ struct FakeInner {
     authorizes: Vec<(String, String)>,
     snapshots: HashMap<u64, String>,
     refuse: HashSet<u64>,
+    inactivity: u64,
+    fail_post: Option<(u16, Option<u64>)>,
+    post_times: Vec<Instant>,
+    post_tokens: Vec<String>,
+    authorize_status: u16,
+    authorize_times: Vec<Instant>,
 }
 
 #[derive(Clone, Default)]
@@ -73,6 +79,30 @@ impl Fake {
                 let _ = tx.send(Some(frame));
             }
         });
+    }
+
+    fn heartbeat_subscribed(&self) {
+        let refs: Vec<String> = {
+            let ctx = self.latest_ctx();
+            self.with(|i| {
+                i.active
+                    .keys()
+                    .filter(|(c, _)| Some(c) == ctx.as_ref())
+                    .map(|(_, r)| r.clone())
+                    .collect()
+            })
+        };
+        if refs.is_empty() {
+            return;
+        }
+        let beats: Vec<String> = refs
+            .iter()
+            .map(|r| format!(r#"{{"OriginatingReferenceId":"{r}","Reason":"NoNewData"}}"#))
+            .collect();
+        self.push(
+            "_heartbeat",
+            &format!(r#"[{{"Heartbeats":[{}]}}]"#, beats.join(",")),
+        );
     }
 
     fn drop_sockets(&self) {
@@ -142,8 +172,25 @@ async fn fake_connect(
 
 async fn fake_subscribe(
     State(fake): State<Fake>,
+    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
-) -> (StatusCode, String) {
+) -> Response {
+    let token = bearer(&headers);
+    let (status, retry_after, text) = fake_subscribe_inner(&fake, token, body);
+    let mut resp = Response::new(axum::body::Body::from(text));
+    *resp.status_mut() = status;
+    if let Some(secs) = retry_after {
+        resp.headers_mut()
+            .insert("retry-after", secs.to_string().parse().unwrap());
+    }
+    resp
+}
+
+fn fake_subscribe_inner(
+    fake: &Fake,
+    token: String,
+    body: serde_json::Value,
+) -> (StatusCode, Option<u64>, String) {
     let ctx = body["ContextId"].as_str().unwrap_or_default().to_string();
     let reference = body["ReferenceId"].as_str().unwrap_or_default().to_string();
     let replace = body["ReplaceReferenceId"].as_str().map(str::to_string);
@@ -161,8 +208,21 @@ async fn fake_subscribe(
     fake.with(|i| {
         i.posts
             .push((ctx.clone(), reference.clone(), uics.clone(), replace.clone()));
+        i.post_times.push(Instant::now());
+        i.post_tokens.push(token);
+        if let Some((code, retry_after)) = i.fail_post {
+            return (
+                StatusCode::from_u16(code).unwrap(),
+                retry_after,
+                r#"{"ErrorCode":"Failing"}"#.into(),
+            );
+        }
         if uics.iter().any(|u| i.refuse.contains(u)) {
-            return (StatusCode::BAD_REQUEST, r#"{"ErrorCode":"InvalidRequest"}"#.into());
+            return (
+                StatusCode::BAD_REQUEST,
+                None,
+                r#"{"ErrorCode":"InvalidRequest"}"#.into(),
+            );
         }
         if let Some(old) = replace {
             i.active.remove(&(ctx.clone(), old));
@@ -174,8 +234,10 @@ async fn fake_subscribe(
             .collect();
         (
             StatusCode::CREATED,
+            None,
             format!(
-                r#"{{"ContextId":"{ctx}","ReferenceId":"{reference}","InactivityTimeout":30,"Snapshot":{{"Data":[{}]}}}}"#,
+                r#"{{"ContextId":"{ctx}","ReferenceId":"{reference}","InactivityTimeout":{},"Snapshot":{{"Data":[{}]}}}}"#,
+                i.inactivity,
                 data.join(",")
             ),
         )
@@ -207,12 +269,19 @@ async fn fake_authorize(
     headers: HeaderMap,
 ) -> StatusCode {
     let token = bearer(&headers);
-    fake.with(|i| i.authorizes.push((p.contextid, token)));
-    StatusCode::ACCEPTED
+    fake.with(|i| {
+        i.authorizes.push((p.contextid, token));
+        i.authorize_times.push(Instant::now());
+        StatusCode::from_u16(i.authorize_status).unwrap()
+    })
 }
 
 async fn start_fake() -> (Fake, SocketAddr) {
     let fake = Fake::default();
+    fake.with(|i| {
+        i.inactivity = 30;
+        i.authorize_status = 202;
+    });
     let app = Router::new()
         .route("/connect", get(fake_connect))
         .route("/authorize", put(fake_authorize))
@@ -604,6 +673,7 @@ async fn a_silent_connection_is_replaced() {
         true,
     )
     .await;
+    h.fake.with(|i| i.inactivity = 0);
     let mut c = TestClient::connect(&h).await;
     c.watch(&["ABC"]).await;
     c.next_of("quote").await;
@@ -769,11 +839,14 @@ async fn a_delta_before_its_snapshot_is_applied_after_it() {
             Sub {
                 uics: vec![4711],
                 active: false,
+                inactivity: None,
                 buffered: Vec::new(),
             },
         )]
         .into(),
         reauth_inflight: false,
+        reauth_failures: 0,
+        reauth_next: None,
         awaiting_snapshot: HashSet::new(),
         resynced: true,
     }));
@@ -783,6 +856,8 @@ async fn a_delta_before_its_snapshot_is_applied_after_it() {
     hub.on_subscribed(
         "ctx".into(),
         "q1".into(),
+        None,
+        "t".into(),
         Ok(Subscribed {
             snapshot: snap,
             inactivity_timeout_secs: None,
@@ -900,4 +975,249 @@ async fn a_client_that_stays_full_is_closed_with_a_reason() {
         .expect("closed in time")
         .unwrap();
     assert_eq!(reason, REASON_SLOW);
+}
+
+fn short_timeout() -> StreamSettings {
+    StreamSettings {
+        heartbeat_timeout: Duration::from_millis(300),
+        ..fast_settings()
+    }
+}
+
+#[tokio::test]
+async fn a_quiet_connection_without_subscriptions_is_not_declared_dead() {
+    let h = start(short_timeout(), true).await;
+    h.fake.with(|i| i.inactivity = 0);
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["NEW"]).await;
+    eventually("a connection", || h.fake.with(|i| !i.connects.is_empty())).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(h.fake.with(|i| i.connects.len()), 1);
+    assert_eq!(h.fake.with(|i| i.closed), 0);
+}
+
+#[tokio::test]
+async fn the_connection_stays_when_the_last_subscription_goes() {
+    let h = start(short_timeout(), true).await;
+    h.fake.with(|i| i.inactivity = 0);
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["ABC"]).await;
+    c.next_of("quote").await;
+    c.watch(&[]).await;
+    eventually("the subscription deleted", || {
+        h.fake.active_uics().is_empty()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(h.fake.with(|i| i.connects.len()), 1);
+    assert_eq!(h.fake.with(|i| i.closed), 0);
+}
+
+#[tokio::test]
+async fn heartbeats_for_subscribed_references_keep_the_connection() {
+    let h = start(short_timeout(), true).await;
+    h.fake.with(|i| i.inactivity = 0);
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["ABC"]).await;
+    c.next_of("quote").await;
+    for _ in 0..12 {
+        h.fake.heartbeat_subscribed();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(h.fake.with(|i| i.connects.len()), 1);
+    eventually("a reconnect once heartbeats stop", || {
+        h.fake.with(|i| i.connects.len() >= 2)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn failed_subscribes_back_off_exponentially() {
+    let h = start(fast_settings(), true).await;
+    h.fake.with(|i| i.fail_post = Some((503, None)));
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["ABC"]).await;
+    eventually("four attempts", || h.fake.with(|i| i.post_times.len() >= 4)).await;
+    let times = h.fake.with(|i| i.post_times.clone());
+    let gaps: Vec<Duration> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(gaps[0] >= Duration::from_millis(45), "{gaps:?}");
+    assert!(gaps[1] >= Duration::from_millis(95), "{gaps:?}");
+    assert!(gaps[2] >= Duration::from_millis(190), "{gaps:?}");
+    h.fake.with(|i| i.fail_post = None);
+    c.next_of("quote").await;
+}
+
+#[tokio::test]
+async fn a_rate_limited_subscribe_waits_for_retry_after() {
+    let h = start(fast_settings(), true).await;
+    h.fake.with(|i| i.fail_post = Some((429, Some(1))));
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["ABC"]).await;
+    eventually("the first attempt", || {
+        h.fake.with(|i| !i.post_times.is_empty())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(h.fake.with(|i| i.post_times.len()), 1);
+    h.fake.with(|i| i.fail_post = None);
+    c.next_of("quote").await;
+    let times = h.fake.with(|i| i.post_times.clone());
+    assert!(times[1] - times[0] >= Duration::from_millis(950));
+}
+
+#[tokio::test]
+async fn a_permanently_disabled_subscription_is_refused_not_re_created() {
+    let h = start(fast_settings(), true).await;
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["ABC"]).await;
+    c.next_of("quote").await;
+    let reference = h.fake.ref_of(4711).unwrap();
+    h.fake.push(
+        "_heartbeat",
+        &format!(
+            r#"[{{"Heartbeats":[{{"OriginatingReferenceId":"{reference}","Reason":"SubscriptionPermanentlyDisabled"}}]}}]"#
+        ),
+    );
+    let err = c.next_of("error").await;
+    assert_eq!(
+        err["pair"],
+        serde_json::json!({"ticker":"ABC","mic":"XSTO"})
+    );
+    let posts = h.fake.with(|i| i.posts.len());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(h.fake.with(|i| i.posts.len()), posts);
+    assert_eq!(h.fake.with(|i| i.connects.len()), 1);
+    assert!(h
+        .fake
+        .with(|i| i.deletes.iter().any(|d| d.1.as_deref() == Some(&reference))));
+}
+
+#[tokio::test]
+async fn a_failed_replacement_deletes_the_replaced_subscription() {
+    let h = start(fast_settings(), true).await;
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["AAA", "BBB"]).await;
+    c.next_of("quote").await;
+    eventually("both subscribed", || h.fake.active_uics() == vec![1, 2]).await;
+    let old = h.fake.ref_of(1).unwrap();
+    h.fake.with(|i| i.fail_post = Some((503, None)));
+    c.watch(&["AAA"]).await;
+    eventually("the replaced reference deleted", || {
+        h.fake
+            .with(|i| i.deletes.iter().any(|d| d.1.as_deref() == Some(&old)))
+    })
+    .await;
+    assert!(h.fake.active_uics().is_empty());
+    h.fake.with(|i| i.fail_post = None);
+    eventually("AAA subscribed again", || h.fake.active_uics() == vec![1]).await;
+}
+
+#[tokio::test]
+async fn a_rejected_token_is_not_a_refusal_and_is_not_retried() {
+    let h = start(fast_settings(), true).await;
+    h.fake.with(|i| i.fail_post = Some((401, None)));
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["ABC"]).await;
+    eventually("the first attempt", || {
+        h.fake.with(|i| !i.post_times.is_empty())
+    })
+    .await;
+    let deadline = Instant::now() + Duration::from_millis(700);
+    while let Ok(msg) = tokio::time::timeout(
+        deadline.saturating_duration_since(Instant::now()),
+        c.next_json(),
+    )
+    .await
+    {
+        assert_ne!(msg["type"], "error", "{msg}");
+    }
+    assert_eq!(h.fake.with(|i| i.post_tokens.clone()), vec!["token-1"]);
+    h.fake.with(|i| i.fail_post = None);
+    h.token.lock().unwrap().access_token = "token-2".into();
+    let q = c.next_of("quote").await;
+    assert_eq!(q["ticker"], "ABC");
+    assert_eq!(
+        h.fake.with(|i| i.post_tokens.last().cloned()),
+        Some("token-2".to_string())
+    );
+}
+
+#[tokio::test]
+async fn a_failing_reauthorize_backs_off() {
+    let h = start(fast_settings(), true).await;
+    let mut c = TestClient::connect(&h).await;
+    c.watch(&["ABC"]).await;
+    c.next_of("quote").await;
+    h.fake.with(|i| i.authorize_status = 404);
+    h.token.lock().unwrap().access_token = "token-2".into();
+    eventually("four attempts", || {
+        h.fake.with(|i| i.authorize_times.len() >= 4)
+    })
+    .await;
+    let times = h.fake.with(|i| i.authorize_times.clone());
+    let gaps: Vec<Duration> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(gaps[0] >= Duration::from_millis(45), "{gaps:?}");
+    assert!(gaps[1] >= Duration::from_millis(95), "{gaps:?}");
+    assert!(gaps[2] >= Duration::from_millis(190), "{gaps:?}");
+    assert_eq!(h.fake.with(|i| i.connects.len()), 1);
+    h.fake.with(|i| i.authorize_status = 202);
+    let n = h.fake.with(|i| i.authorize_times.len());
+    eventually("a successful attempt", || {
+        h.fake.with(|i| i.authorize_times.len() > n)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(h.fake.with(|i| i.authorize_times.len()) <= n + 2);
+}
+
+#[tokio::test]
+async fn every_client_watching_an_unresolved_pair_gets_the_error() {
+    let h = start(
+        StreamSettings {
+            unresolved_error_after: Duration::from_millis(100),
+            ..fast_settings()
+        },
+        true,
+    )
+    .await;
+    let mut a = TestClient::connect(&h).await;
+    a.watch(&["NEW"]).await;
+    a.next_of("error").await;
+    let mut b = TestClient::connect(&h).await;
+    b.watch(&["NEW"]).await;
+    let err = b.next_of("error").await;
+    assert_eq!(
+        err["pair"],
+        serde_json::json!({"ticker":"NEW","mic":"XSTO"})
+    );
+}
+
+#[test]
+fn errors_bypass_the_coalescing_of_a_full_queue() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let (close, _) = oneshot::channel();
+    let mut client = Client {
+        tx,
+        close: Some(close),
+        watch: HashSet::new(),
+        pending: HashMap::new(),
+        errors: VecDeque::new(),
+        full_since: None,
+    };
+    let out = |t: &str| Outgoing {
+        text: Utf8Bytes::from(t.to_string()),
+        received: None,
+    };
+    let pair: Pair = ("ABC".into(), "XSTO".into());
+    assert!(client.deliver(Some(&pair), out("q1")));
+    assert!(client.deliver(Some(&pair), out("q2")));
+    assert!(client.deliver_error(out("err")));
+    assert!(client.deliver(Some(&pair), out("q3")));
+    let mut got = Vec::new();
+    for _ in 0..3 {
+        got.push(rx.try_recv().unwrap().text.as_str().to_string());
+        client.flush();
+    }
+    assert_eq!(got, vec!["q1", "err", "q3"]);
+    assert!(rx.try_recv().is_err());
 }

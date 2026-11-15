@@ -97,6 +97,7 @@ pub enum StreamError {
     Status {
         status: reqwest::StatusCode,
         body: String,
+        retry_after: Option<std::time::Duration>,
     },
     /// A 2xx whose body is not what Saxo documents.
     #[error("undecodable subscription response: {0}")]
@@ -124,6 +125,31 @@ impl StreamError {
             StreamError::Http(e) => super::is_transient_reqwest(e),
             StreamError::Status { status, .. } => super::is_transient_status(*status),
             StreamError::Decode(_) | StreamError::Url(_) | StreamError::Token => false,
+        }
+    }
+
+    /// Whether Saxo rejected the access token (401 or 403), which says
+    /// nothing about the request itself.
+    pub fn is_auth(&self) -> bool {
+        matches!(self, StreamError::Status { status, .. }
+            if *status == reqwest::StatusCode::UNAUTHORIZED
+                || *status == reqwest::StatusCode::FORBIDDEN)
+    }
+
+    /// Saxo's `Retry-After`, when the failed call carried one.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            StreamError::Status { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+
+    /// The error a call reports when there is no usable access token to send.
+    pub fn no_token() -> Self {
+        StreamError::Status {
+            status: reqwest::StatusCode::UNAUTHORIZED,
+            body: "no valid access token".to_string(),
+            retry_after: None,
         }
     }
 }
@@ -371,6 +397,11 @@ impl StreamQuote {
         q
     }
 
+    /// Saxo's `LastUpdated` of the latest update, as sent.
+    pub fn last_updated(&self) -> Option<&str> {
+        self.last_updated.as_deref()
+    }
+
     /// Merges one update: fields it carries replace the stored ones (an
     /// explicit `null` clears), every other field keeps its value.
     pub fn apply(&mut self, delta: InfoPriceDelta) {
@@ -409,6 +440,15 @@ impl StreamQuote {
             last_updated: self.last_updated.clone(),
         }
     }
+}
+
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .map(|s| std::time::Duration::from_secs_f64(s.min(3600.0)))
 }
 
 /// A new context id: `nexus-q-` and 16 random hex digits.
@@ -586,11 +626,13 @@ impl InfoPriceStreamClient {
         );
         let resp = sent?;
         let status = resp.status();
+        let retry_after = parse_retry_after(resp.headers());
         let text = resp.text().await?;
         if !status.is_success() {
             return Err(StreamError::Status {
                 status,
                 body: truncate(&text),
+                retry_after,
             });
         }
         let raw: RawSubscribed = serde_json::from_str(&text)
@@ -648,10 +690,12 @@ impl InfoPriceStreamClient {
         if status.is_success() {
             return Ok(());
         }
+        let retry_after = parse_retry_after(resp.headers());
         let body = resp.text().await.unwrap_or_default();
         Err(StreamError::Status {
             status,
             body: truncate(&body),
+            retry_after,
         })
     }
 }
