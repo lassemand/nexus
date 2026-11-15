@@ -245,3 +245,9 @@ trade are not rescheduled (only open trades are loaded), so a restart after the 
 
 The calendars (`SessionsCache`) are loaded from signal's database at startup and reloaded hourly; a failed reload
 keeps the last one, and without any every trade is `calendar_unknown`.
+
+**Tracing of trades.** The entry is a span in the release trace (`analyst.trade_entry`, with `analyst.wait_for_session`
+and an `analyst.quote` span per request); the holding period is a new root `analyst.trade` linked to the decision span,
+with one `analyst.observation` per horizon and `analyst.exit`; a resumed trade gets a new root with
+`analyst.resumed=true` linked through the stored `release_traceparent`. The three trace columns of `sim_trades` and the
+`AnalystTrade` message carry the ids. Spans: `docs/guides/tracing.md`.
