@@ -1735,6 +1735,23 @@ tests:
         alertname: SaxoQuoteStreamDown
         exp_alerts: []
 
+  - name: SaxoQuoteStreamReauthFailing fires on repeated failures and is silent on a one-off
+    input_series:
+      - series: 'saxo_quote_stream_reauthorize_failures_total{pod="a"}'
+        values: '0+1x30'
+      - series: 'saxo_quote_stream_reauthorize_failures_total{pod="b"}'
+        values: '0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SaxoQuoteStreamReauthFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              pod: a
+            exp_annotations:
+              summary: "saxo-stream cannot re-authorize its Saxo streaming connection"
+              description: "Rotated access tokens are not being accepted by Saxo's streaming authorize URL (SAXO_STREAMING_AUTHORIZE_URL). The connection will be dropped when the old token expires. Check the URL and the saxo-stream logs (\"re-authorization failed\")."
+
   - name: SaxoQuotesDown fires on no_token and is silent otherwise
     input_series:
       - series: 'saxo_quote_requests_total{outcome="no_token"}'
