@@ -47,6 +47,12 @@ COPY insight/Cargo.toml   insight/Cargo.toml
 COPY cli/Cargo.toml       cli/Cargo.toml
 COPY conductor/Cargo.toml conductor/Cargo.toml
 COPY telemetry/Cargo.toml telemetry/Cargo.toml
+COPY analyst/Cargo.toml  analyst/Cargo.toml
+COPY verdict/sdk/Cargo.toml verdict/sdk/Cargo.toml
+COPY verdict/kernels/sample/Cargo.toml verdict/kernels/sample/Cargo.toml
+COPY verdict/kernels/bench-anchored/Cargo.toml verdict/kernels/bench-anchored/Cargo.toml
+COPY verdict/kernels/bench-memmem/Cargo.toml verdict/kernels/bench-memmem/Cargo.toml
+COPY verdict/kernels/bench-aho/Cargo.toml verdict/kernels/bench-aho/Cargo.toml
 
 # Placeholder sources so Cargo can parse the workspace.
 #
@@ -61,7 +67,11 @@ COPY telemetry/Cargo.toml telemetry/Cargo.toml
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src \
       conductor/src conductor/tests/fixtures/fake-claude-tty telemetry/src \
+      analyst/src/bin verdict/sdk/src verdict/kernels/sample/src \
+      verdict/kernels/bench-anchored/src verdict/kernels/bench-memmem/src verdict/kernels/bench-aho/src \
     && touch model/src/lib.rs alpha/src/lib.rs chronicle/src/lib.rs conductor/src/lib.rs telemetry/src/lib.rs \
+       analyst/src/lib.rs verdict/sdk/src/lib.rs verdict/kernels/sample/src/lib.rs \
+       verdict/kernels/bench-anchored/src/lib.rs verdict/kernels/bench-memmem/src/lib.rs verdict/kernels/bench-aho/src/lib.rs \
     && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
         chronicle/src/market.rs \
@@ -77,6 +87,8 @@ RUN mkdir -p \
         insight/src/main.rs \
         cli/src/main.rs \
         conductor/src/main.rs \
+        analyst/src/bin/analyst.rs \
+        analyst/src/bin/analyst-bench.rs \
         conductor/tests/fixtures/fake-claude-tty/main.rs
 
 RUN cargo fetch --locked
