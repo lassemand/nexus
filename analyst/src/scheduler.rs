@@ -188,6 +188,7 @@ pub struct Scheduler {
     clock: Arc<dyn Clock>,
     launcher: Arc<dyn PrepLauncher>,
     pass_lock: tokio::sync::Mutex<()>,
+    after_pass: Option<Arc<Notify>>,
 }
 
 impl Scheduler {
@@ -207,7 +208,14 @@ impl Scheduler {
             clock,
             launcher,
             pass_lock: tokio::sync::Mutex::new(()),
+            after_pass: None,
         }
+    }
+
+    /// Notifies `notify` after every pass, which is when report targets change.
+    pub fn with_pass_notify(mut self, notify: Arc<Notify>) -> Scheduler {
+        self.after_pass = Some(notify);
+        self
     }
 
     /// One pass: follow signal's schedule, prepare again what notes and date
@@ -221,6 +229,9 @@ impl Scheduler {
         self.reprepare_on_notes(now, &mut report).await?;
         self.start_due(now, &mut report).await?;
         self.publish_metrics(now).await?;
+        if let Some(notify) = &self.after_pass {
+            notify.notify_one();
+        }
         Ok(report)
     }
 

@@ -9,15 +9,15 @@ use std::time::Duration;
 
 use analyst::metrics::{
     ENTRY_DELAY_BUCKETS, ENTRY_DELAY_SECONDS, LATENESS_BUCKETS, LOAD_BUCKETS, LOAD_SECONDS,
-    PUBLISH_BUCKETS, PUBLISH_TO_DECISION_SECONDS, QUOTE_LATENESS_SECONDS, RELEASE_BUCKETS,
-    RELEASE_TO_DECISION_SECONDS, RUN_BUCKETS, RUN_SECONDS,
+    PUBLISH_BUCKETS, PUBLISH_TO_DECISION_SECONDS, QUOTE_AGE_BUCKETS, QUOTE_AGE_SECONDS,
+    QUOTE_LATENESS_SECONDS, RELEASE_BUCKETS, RELEASE_TO_DECISION_SECONDS, RUN_BUCKETS, RUN_SECONDS,
 };
 use analyst::notes::run_consumer;
 use analyst::{
-    preload, run_release_consumer, Config, HttpQuoteSource, KafkaDecisionSink, KafkaTradeSink,
-    KernelRegistry, KernelRuntime, NoopLauncher, NoteHandler, ReleaseProcessor, RunnerSettings,
-    RuntimeConfig, Scheduler, SchedulerConfig, SessionsCache, SignalSchedule, Store, SystemClock,
-    TradeRunner,
+    preload, run_quote_stream, run_release_consumer, Config, HttpQuoteSource, KafkaDecisionSink,
+    KafkaTradeSink, KernelRegistry, KernelRuntime, NoopLauncher, NoteHandler, QuoteBook,
+    ReleaseProcessor, RunnerSettings, RuntimeConfig, Scheduler, SchedulerConfig, SessionsCache,
+    SignalSchedule, Store, StreamTimings, SystemClock, TradeRunner, WatchUpdater,
 };
 use anyhow::{Context, Result};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -72,12 +72,15 @@ async fn main() -> Result<()> {
             (PUBLISH_TO_DECISION_SECONDS, PUBLISH_BUCKETS),
             (ENTRY_DELAY_SECONDS, ENTRY_DELAY_BUCKETS),
             (QUOTE_LATENESS_SECONDS, LATENESS_BUCKETS),
+            (QUOTE_AGE_SECONDS, QUOTE_AGE_BUCKETS),
         ],
     )
     .await?;
     analyst::metrics::describe();
     analyst::metrics::describe_releases();
     analyst::metrics::describe_trades();
+    analyst::metrics::quote_stream_connected(false);
+    analyst::metrics::watched_instruments(0);
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -105,13 +108,15 @@ async fn main() -> Result<()> {
     let store = Store::new(pool);
     let calendar_pool = signal_pool.clone();
     let signal = SignalSchedule::new(signal_pool, config.analyst_tickers.clone());
+    let targets_changed = Arc::new(Notify::new());
     let scheduler = Scheduler::new(
         store.clone(),
         signal.clone(),
         SchedulerConfig::from(&config),
         clock.clone(),
         Arc::new(NoopLauncher),
-    );
+    )
+    .with_pass_notify(targets_changed.clone());
     let notes = NoteHandler::new(store.clone(), signal, clock.clone(), wake.clone());
 
     let registry = Arc::new(KernelRegistry::new());
@@ -126,6 +131,7 @@ async fn main() -> Result<()> {
         .context("cannot create the trades producer")?;
     let quotes = HttpQuoteSource::new(&config.saxo_quotes_url)
         .map_err(|error| anyhow::anyhow!("cannot create the quote client: {error}"))?;
+    let book = QuoteBook::new(clock.clone(), config.quote_stream_heartbeat_timeout);
     let runner = TradeRunner::new(
         Arc::new(store.clone()),
         sessions.clone(),
@@ -133,7 +139,15 @@ async fn main() -> Result<()> {
         Arc::new(trade_sink),
         clock.clone(),
         RunnerSettings::from_config(&config),
-    );
+    )
+    .with_quote_book(book.clone());
+    let watch_updater = WatchUpdater {
+        targets: Arc::new(store.clone()),
+        sessions: sessions.clone(),
+        book: book.clone(),
+        clock: clock.clone(),
+        lead: config.watch_lead,
+    };
     let resumed = runner
         .resume()
         .await
@@ -158,6 +172,9 @@ async fn main() -> Result<()> {
         releases_topic = %config.special_events_topic,
         decisions_topic = %config.decisions_topic,
         trades_topic = %config.trades_topic,
+        quote_stream_url = %config.quote_stream_url,
+        quote_max_age = ?config.quote_max_age,
+        watch_lead = ?config.watch_lead,
         hold = ?config.hold,
         max_release_age = ?config.max_release_age,
         "analyst starting"
@@ -193,11 +210,24 @@ async fn main() -> Result<()> {
         }
     };
     let calendars = sessions.run_reload(calendar_pool, stopped(stop_rx.clone()));
+    let quote_stream = run_quote_stream(
+        config.quote_stream_url.clone(),
+        book.clone(),
+        StreamTimings::new(config.quote_stream_heartbeat_timeout),
+        stopped(stop_rx.clone()),
+    );
+    let watch_list = watch_updater.run(
+        config.scheduler_tick,
+        targets_changed,
+        stopped(stop_rx.clone()),
+    );
     tokio::join!(
         scheduler.run(wake, stopped(stop_rx.clone())),
         consumer,
         release_consumer,
-        calendars
+        calendars,
+        quote_stream,
+        watch_list
     );
     info!("analyst stopped");
     Ok(())

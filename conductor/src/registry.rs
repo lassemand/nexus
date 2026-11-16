@@ -63,6 +63,9 @@ impl Clock for SystemClock {
 
 // ── keys ─────────────────────────────────────────────────────────────────────
 
+/// Start of every review set's name; no `session:` label may use it.
+const REVIEW_SLUG_PREFIX: &str = "review-";
+
 /// Identifies the session group an event belongs to.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GroupKey {
@@ -73,6 +76,9 @@ pub enum GroupKey {
     /// A GitHub PR comment, whose group needs a branch lookup to resolve
     /// (NEX-130). Never used as a registry key.
     Unresolved,
+    /// The automatic review of one Linear issue, keyed by its identifier.
+    /// Built only through [`GroupKey::review`], which validates it.
+    Review(String),
 }
 
 impl GroupKey {
@@ -87,7 +93,22 @@ impl GroupKey {
             GroupKey::Named(name) => name.clone(),
             GroupKey::Issue(identifier) => format!("linear-{}", identifier.to_lowercase()),
             GroupKey::Unresolved => "unresolved".to_string(),
+            GroupKey::Review(identifier) => {
+                format!("{REVIEW_SLUG_PREFIX}{}", identifier.to_lowercase())
+            }
         }
+    }
+
+    /// The review set for a Linear issue, `review-<identifier>`, or `None` when
+    /// the identifier would not make a safe directory and branch name.
+    pub fn review(identifier: &str) -> Option<GroupKey> {
+        let key = GroupKey::Review(identifier.to_string());
+        is_valid_named_key(&key.slug()).then_some(key)
+    }
+
+    /// Whether this is a review set.
+    pub fn is_review(&self) -> bool {
+        matches!(self, GroupKey::Review(_))
     }
 }
 
@@ -122,7 +143,10 @@ pub fn group_key_for(event: &InboundEvent) -> GroupKey {
         InboundEvent::LinearIssueClosed { issue, .. } => {
             linear_group_key(&issue.identifier, &issue.session_labels)
         }
-        InboundEvent::GithubPrComment { .. } => GroupKey::Unresolved,
+        InboundEvent::GithubPrComment { .. }
+        | InboundEvent::LinearIssueStateChanged { .. }
+        | InboundEvent::ReviewCommand { .. } => GroupKey::Unresolved,
+        InboundEvent::ReviewRequested { request } => GroupKey::Review(request.identifier.clone()),
     }
 }
 
@@ -134,7 +158,15 @@ fn linear_group_key(identifier: &str, session_labels: &[String]) -> GroupKey {
         [] => fallback(),
         [only] => {
             let lowered = only.to_lowercase();
-            if is_valid_named_key(&lowered) {
+            if lowered.starts_with(REVIEW_SLUG_PREFIX) {
+                tracing::warn!(
+                    issue = %identifier,
+                    label = %only,
+                    "session labels starting with `review-` are reserved for review sets; \
+                     falling back to a per-issue session"
+                );
+                fallback()
+            } else if is_valid_named_key(&lowered) {
                 GroupKey::Named(lowered)
             } else {
                 tracing::warn!(
@@ -563,6 +595,11 @@ impl Registry {
         Ok(Registry::new(pool, clock, idle_days))
     }
 
+    /// The connection pool, for tables that live beside the registry's own.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Applies the embedded migrations.
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
         sqlx::migrate!("./migrations").run(&self.pool).await
@@ -602,8 +639,9 @@ impl Registry {
     }
 
     /// Groups eligible for a completeness check: idle, nothing queued, not
-    /// blocked, and not a GitHub pull request group (`gh-*`), which has no
-    /// Linear set and stays manual.
+    /// blocked, not a GitHub pull request group (`gh-*`), which has no Linear
+    /// set and stays manual, and not a review set, which the review
+    /// orchestration closes itself.
     ///
     /// With `requested_only`, only groups a webhook flagged; otherwise all of
     /// them, which is what the periodic sweep wants.
@@ -616,6 +654,7 @@ impl Registry {
              WHERE g.state->>'state' IN ('idle', 'no_session', 'ready') \
                AND g.close_blocked IS NULL \
                AND g.slug NOT LIKE 'gh-%' \
+               AND NOT (g.key ? 'Review') \
                AND ($1 = FALSE OR g.close_requested_at IS NOT NULL) \
                AND NOT EXISTS (SELECT 1 FROM pending_events p WHERE p.group_slug = g.slug) \
              ORDER BY g.slug",
@@ -953,6 +992,12 @@ impl RegistryTxn<'_> {
             .execute(&mut *self.tx)
             .await?;
         Ok(())
+    }
+
+    /// The transaction's connection, for writes to tables beside the
+    /// registry's own that must commit atomically with it.
+    pub fn conn(&mut self) -> &mut sqlx::PgConnection {
+        &mut self.tx
     }
 
     /// Commits, releasing the advisory lock.
@@ -1379,7 +1424,10 @@ impl RegistryTxn<'_> {
                 let issue = match &event {
                     InboundEvent::LinearIssueTodo { issue, .. } => Some(issue.identifier.clone()),
                     InboundEvent::LinearIssueClosed { issue, .. } => Some(issue.identifier.clone()),
-                    InboundEvent::GithubPrComment { .. } => None,
+                    InboundEvent::ReviewRequested { request } => Some(request.identifier.clone()),
+                    InboundEvent::GithubPrComment { .. }
+                    | InboundEvent::LinearIssueStateChanged { .. }
+                    | InboundEvent::ReviewCommand { .. } => None,
                 };
                 if let Some(issue) = issue {
                     self.append_issue_to(slug, &issue).await?;
@@ -1940,6 +1988,21 @@ mod tests {
         assert_eq!(
             group_key_for(&linear_event("NEX-42", &["conductor-core"])),
             GroupKey::Named("conductor-core".into())
+        );
+    }
+
+    #[test]
+    fn a_review_label_never_names_a_group() {
+        for label in ["review-nex-12", "Review-anything"] {
+            assert_eq!(
+                linear_group_key("NEX-12", &[label.to_string()]),
+                GroupKey::Issue("NEX-12".into()),
+                "{label}"
+            );
+        }
+        assert_eq!(
+            linear_group_key("NEX-12", &["reviews".to_string()]),
+            GroupKey::Named("reviews".into())
         );
     }
 

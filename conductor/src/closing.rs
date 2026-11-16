@@ -25,17 +25,22 @@ pub enum CloseMode {
     /// worktree is removed even if dirty. The caller has already stopped any
     /// running process.
     Manual { force: bool },
+    /// The review orchestration closing a review set once its verdict is
+    /// handled. Always forced: the worktree holds the untracked verdict file,
+    /// and a review that is being cancelled may still be mid-turn.
+    Review,
 }
 
 impl CloseMode {
     fn force(self) -> bool {
-        matches!(self, CloseMode::Manual { force: true })
+        matches!(self, CloseMode::Manual { force: true } | CloseMode::Review)
     }
 
     fn label(self) -> &'static str {
         match self {
             CloseMode::Auto => "auto",
             CloseMode::Manual { .. } => "manual",
+            CloseMode::Review => "review",
         }
     }
 }

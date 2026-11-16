@@ -25,6 +25,23 @@ saxo:
   quotePort: 8080
   # Namespace allowed to reach the quote endpoint (NetworkPolicy `saxo-quotes`).
   quoteClientNamespace: "analyst"
+  # Streaming info prices for GET /quotes/stream (NEX-270). Not secrets.
+  streaming:
+    # Saxo streaming connect URL (SAXO_STREAMING_WS_URL). SIM:
+    # wss://sim-streaming.saxobank.com/sim/oapi/streaming/ws/connect
+    wsUrl: "wss://live-streaming.saxobank.com/oapi/streaming/ws/connect"
+    # Saxo streaming re-authorization URL (SAXO_STREAMING_AUTHORIZE_URL). SIM:
+    # https://sim-streaming.saxobank.com/sim/oapi/streaming/ws/authorize
+    authorizeUrl: "https://live-streaming.saxobank.com/oapi/streaming/ws/authorize"
+    # Seconds without any Saxo message, heartbeats included, before the connection
+    # is reopened (SAXO_STREAM_HEARTBEAT_TIMEOUT).
+    heartbeatTimeoutSeconds: 15
+    # Most Uics in one Saxo subscription (SAXO_STREAM_MAX_UICS_PER_SUBSCRIPTION). A
+    # refused batch is retried one Uic per subscription.
+    maxUicsPerSubscription: 100
+    # Messages queued per /quotes/stream client before quotes are coalesced
+    # (QUOTE_STREAM_CLIENT_QUEUE).
+    clientQueue: 1024
 nordicLive:
   # RUST_LOG for the live listener (info logs every new relevant item).
   logLevel: "info"

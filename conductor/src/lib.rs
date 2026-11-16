@@ -13,19 +13,23 @@
 pub mod closing;
 pub mod dispatcher;
 pub mod github;
+pub mod github_api;
 pub mod hooks;
 pub mod http;
 pub mod linear;
 pub mod linear_api;
+pub mod linear_oauth;
 pub mod registry;
 pub mod resolve;
+pub mod review;
 pub mod sessions;
 pub mod tmux;
 
 use serde::{Deserialize, Serialize};
 
-use github::{GithubPrComment, PrCommentKind};
-use linear::{ClosedIssue, LinearIssue};
+use github::{GithubPrComment, PrCommentKind, ReviewCommand};
+use linear::{ClosedIssue, IssueStateChange, LinearIssue};
+use review::ReviewRequest;
 
 /// A webhook that was accepted and parsed, ready to be acted on.
 ///
@@ -50,6 +54,19 @@ pub enum InboundEvent {
         kind: PrCommentKind,
         delivery_id: Option<String>,
     },
+    /// Any real state transition of a Linear issue. Drives automatic reviews:
+    /// entering the review state starts one, leaving it cancels a running one.
+    LinearIssueStateChanged {
+        change: IssueStateChange,
+        delivery_id: Option<String>,
+    },
+    /// A `/review` comment from a watched user on a pull request.
+    ReviewCommand {
+        command: ReviewCommand,
+        delivery_id: Option<String>,
+    },
+    /// A review to run, queued in a review set. Never comes from a webhook.
+    ReviewRequested { request: ReviewRequest },
 }
 
 /// Destination for accepted events.
@@ -104,6 +121,31 @@ impl EventSink for LogSink {
                     delivery_id = ?delivery_id,
                     "github pull request comment"
                 );
+            }
+            InboundEvent::LinearIssueStateChanged {
+                change,
+                delivery_id,
+            } => {
+                tracing::info!(
+                    identifier = %change.identifier,
+                    state = %change.state_name,
+                    delivery_id = ?delivery_id,
+                    "linear issue changed state"
+                );
+            }
+            InboundEvent::ReviewCommand {
+                command,
+                delivery_id,
+            } => {
+                tracing::info!(
+                    repo = %command.repo,
+                    pr_number = command.pr_number,
+                    delivery_id = ?delivery_id,
+                    "review requested on a pull request"
+                );
+            }
+            InboundEvent::ReviewRequested { request } => {
+                tracing::info!(identifier = %request.identifier, "review queued");
             }
         }
     }

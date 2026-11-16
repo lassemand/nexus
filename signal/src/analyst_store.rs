@@ -59,6 +59,9 @@ pub enum Invalid {
     /// A trace id that is not 32 lowercase hex digits.
     #[error("invalid trace id {0:?}")]
     TraceId(String),
+    /// A quote source that is neither `stream` nor `request`.
+    #[error("invalid quote source {0:?}")]
+    QuoteSource(String),
     /// Two observations of one trade for the same horizon.
     #[error("duplicate observation horizon {0:?}")]
     DuplicateHorizon(String),
@@ -135,8 +138,12 @@ pub struct ParsedObservation {
     pub delayed_minutes: Option<i64>,
     /// Fetched more than 2 s after the target.
     pub late: bool,
-    /// `ok`, `missed`, `beyond_close`, `no_quote`, ...
+    /// `ok`, `missed`, `beyond_close`, `no_quote`, `quote_too_old`, ...
     pub status: String,
+    /// `stream` or `request`, when a quote was taken.
+    pub quote_source: Option<String>,
+    /// The quote's age when taken, in milliseconds.
+    pub quote_age_ms: Option<i64>,
 }
 
 /// A validated [`AnalystTrade`].
@@ -190,6 +197,18 @@ pub struct ParsedTrade {
     pub trace_id: Option<String>,
     /// The trade's own trace id.
     pub trade_trace_id: Option<String>,
+    /// `stream` or `request`: where the entry quote came from.
+    pub entry_quote_source: Option<String>,
+    /// Saxo's timestamp of the entry quote.
+    pub entry_quote_saxo_time: Option<DateTime<Utc>>,
+    /// The entry quote's age in milliseconds.
+    pub entry_quote_age_ms: Option<i64>,
+    /// `stream` or `request`: where the exit quote came from.
+    pub exit_quote_source: Option<String>,
+    /// Saxo's timestamp of the exit quote.
+    pub exit_quote_saxo_time: Option<DateTime<Utc>>,
+    /// The exit quote's age in milliseconds.
+    pub exit_quote_age_ms: Option<i64>,
     /// The observations so far.
     pub observations: Vec<ParsedObservation>,
 }
@@ -230,6 +249,14 @@ fn optional_time(field: &'static str, millis: i64) -> Result<Option<DateTime<Utc
         Ok(None)
     } else {
         time(field, millis).map(Some)
+    }
+}
+
+fn quote_source(value: &str) -> Result<Option<String>, Invalid> {
+    match value {
+        "" => Ok(None),
+        "stream" | "request" => Ok(Some(value.to_owned())),
+        other => Err(Invalid::QuoteSource(other.to_owned())),
     }
 }
 
@@ -304,6 +331,8 @@ pub fn parse_trade(message: &AnalystTrade) -> Result<ParsedTrade, Invalid> {
                 delayed_minutes: (o.delayed_minutes >= 0).then_some(o.delayed_minutes),
                 late: o.late,
                 status: required("observation status", &o.status)?,
+                quote_source: quote_source(&o.quote_source)?,
+                quote_age_ms: o.quote_age_ms,
             })
         })
         .collect::<Result<Vec<_>, Invalid>>()?;
@@ -334,6 +363,18 @@ pub fn parse_trade(message: &AnalystTrade) -> Result<ParsedTrade, Invalid> {
         release_to_entry_ms: entry_at.map(|_| message.release_to_entry_ms),
         trace_id: trace_id(&message.trace_id)?,
         trade_trace_id: trace_id(&message.trade_trace_id)?,
+        entry_quote_source: quote_source(&message.entry_quote_source)?,
+        entry_quote_saxo_time: optional_time(
+            "entry_quote_saxo_time",
+            message.entry_quote_saxo_time_unix_millis,
+        )?,
+        entry_quote_age_ms: message.entry_quote_age_ms,
+        exit_quote_source: quote_source(&message.exit_quote_source)?,
+        exit_quote_saxo_time: optional_time(
+            "exit_quote_saxo_time",
+            message.exit_quote_saxo_time_unix_millis,
+        )?,
+        exit_quote_age_ms: message.exit_quote_age_ms,
         observations,
     })
 }
@@ -432,10 +473,11 @@ pub async fn store_trade(pool: &PgPool, t: &ParsedTrade) -> sqlx::Result<Upsert>
             (trade_id, news_id, ticker, exchange_mic, decision, shadow, published_at, hold_minutes,
              entry_target_at, entry_at, entry_ask, entry_bid, exit_target_at, exit_at, exit_bid,
              exit_ask, pnl_per_share, pnl_pct, currency, release_to_entry_ms, status, version,
-             trace_id, trade_trace_id)
+             trace_id, trade_trace_id, entry_quote_source, exit_quote_source, entry_quote_saxo_time,
+             exit_quote_saxo_time, entry_quote_age_ms, exit_quote_age_ms)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10, $11::numeric, $12::numeric, $13,
                 $14, $15::numeric, $16::numeric, $17::numeric, $18::numeric, $19, $20, $21, $22,
-                $23, $24)
+                $23, $24, $25, $26, $27, $28, $29, $30)
         ON CONFLICT (trade_id) DO UPDATE SET
             news_id             = EXCLUDED.news_id,
             ticker              = EXCLUDED.ticker,
@@ -460,6 +502,12 @@ pub async fn store_trade(pool: &PgPool, t: &ParsedTrade) -> sqlx::Result<Upsert>
             version             = EXCLUDED.version,
             trace_id            = EXCLUDED.trace_id,
             trade_trace_id      = EXCLUDED.trade_trace_id,
+            entry_quote_source    = EXCLUDED.entry_quote_source,
+            exit_quote_source     = EXCLUDED.exit_quote_source,
+            entry_quote_saxo_time = EXCLUDED.entry_quote_saxo_time,
+            exit_quote_saxo_time  = EXCLUDED.exit_quote_saxo_time,
+            entry_quote_age_ms    = EXCLUDED.entry_quote_age_ms,
+            exit_quote_age_ms     = EXCLUDED.exit_quote_age_ms,
             updated_at          = now()
         WHERE simulated_trades.version < EXCLUDED.version
         RETURNING trade_id
@@ -489,6 +537,12 @@ pub async fn store_trade(pool: &PgPool, t: &ParsedTrade) -> sqlx::Result<Upsert>
     .bind(t.version)
     .bind(&t.trace_id)
     .bind(&t.trade_trace_id)
+    .bind(&t.entry_quote_source)
+    .bind(&t.exit_quote_source)
+    .bind(t.entry_quote_saxo_time)
+    .bind(t.exit_quote_saxo_time)
+    .bind(t.entry_quote_age_ms)
+    .bind(t.exit_quote_age_ms)
     .fetch_optional(&mut *tx)
     .await?;
     if applied.is_none() {
@@ -505,13 +559,14 @@ pub async fn store_trade(pool: &PgPool, t: &ParsedTrade) -> sqlx::Result<Upsert>
             r#"
             INSERT INTO simulated_trade_observations
                 (trade_id, horizon, scheduled_at, fetched_at, bid, ask, bid_type, ask_type,
-                 delayed_minutes, late, status)
+                 delayed_minutes, late, status, quote_source, quote_age_ms)
             SELECT $1, horizon, scheduled_at, fetched_at, bid::numeric, ask::numeric, bid_type,
-                   ask_type, delayed_minutes, late, status
+                   ask_type, delayed_minutes, late, status, quote_source, quote_age_ms
             FROM unnest($2::text[], $3::timestamptz[], $4::timestamptz[], $5::text[], $6::text[],
-                        $7::text[], $8::text[], $9::bigint[], $10::bool[], $11::text[])
+                        $7::text[], $8::text[], $9::bigint[], $10::bool[], $11::text[],
+                        $12::text[], $13::bigint[])
                  AS x(horizon, scheduled_at, fetched_at, bid, ask, bid_type, ask_type,
-                      delayed_minutes, late, status)
+                      delayed_minutes, late, status, quote_source, quote_age_ms)
             "#,
         )
         .bind(t.trade_id)
@@ -525,6 +580,8 @@ pub async fn store_trade(pool: &PgPool, t: &ParsedTrade) -> sqlx::Result<Upsert>
         .bind(o.iter().map(|x| x.delayed_minutes).collect::<Vec<_>>())
         .bind(o.iter().map(|x| x.late).collect::<Vec<_>>())
         .bind(o.iter().map(|x| x.status.clone()).collect::<Vec<_>>())
+        .bind(o.iter().map(|x| x.quote_source.clone()).collect::<Vec<_>>())
+        .bind(o.iter().map(|x| x.quote_age_ms).collect::<Vec<_>>())
         .execute(&mut *tx)
         .await?;
     }
@@ -995,6 +1052,48 @@ mod tests {
         assert_eq!(
             row.get::<String, _>("trade_trace_id"),
             "0af7651916cd43dd8448eb211c80319c"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_quote_source_saxo_time_and_age_are_stored(pool: PgPool) {
+        install_default_subscriber();
+        let mut t = trade(3, vec![observation("1m", "100.4")]);
+        t.entry_quote_source = "stream".into();
+        t.entry_quote_saxo_time_unix_millis = 1_000_150;
+        t.entry_quote_age_ms = Some(50);
+        t.exit_quote_source = "request".into();
+        t.observations[0].quote_source = "stream".into();
+        t.observations[0].quote_age_ms = Some(7);
+        assert_eq!(
+            handle_trade(&pool, &trades_message(&t, None)).await,
+            "stored"
+        );
+        let row = sqlx::query(
+            "SELECT entry_quote_source, exit_quote_source, entry_quote_age_ms, exit_quote_age_ms,
+                    entry_quote_saxo_time IS NOT NULL AS has_time, exit_quote_saxo_time IS NULL AS no_exit_time
+             FROM simulated_trades",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("entry_quote_source"), "stream");
+        assert_eq!(row.get::<String, _>("exit_quote_source"), "request");
+        assert_eq!(row.get::<Option<i64>, _>("entry_quote_age_ms"), Some(50));
+        assert_eq!(row.get::<Option<i64>, _>("exit_quote_age_ms"), None);
+        assert!(row.get::<bool, _>("has_time") && row.get::<bool, _>("no_exit_time"));
+        let obs =
+            sqlx::query("SELECT quote_source, quote_age_ms FROM simulated_trade_observations")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(obs.get::<String, _>("quote_source"), "stream");
+        assert_eq!(obs.get::<Option<i64>, _>("quote_age_ms"), Some(7));
+        t.version = 4;
+        t.entry_quote_source = "bogus".into();
+        assert_eq!(
+            handle_trade(&pool, &trades_message(&t, None)).await,
+            "skipped_invalid"
         );
     }
 

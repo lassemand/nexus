@@ -15,6 +15,10 @@ pub enum Endpoint {
     Instruments,
     /// The info-price API (live quotes).
     InfoPrices,
+    /// Streaming info-price subscriptions (create and delete).
+    InfoPriceSubscriptions,
+    /// Re-authorization of the streaming connection.
+    StreamingAuthorize,
 }
 
 impl Endpoint {
@@ -25,6 +29,8 @@ impl Endpoint {
             Endpoint::Chart => "chart",
             Endpoint::Instruments => "instruments",
             Endpoint::InfoPrices => "infoprices",
+            Endpoint::InfoPriceSubscriptions => "infoprice_subscriptions",
+            Endpoint::StreamingAuthorize => "streaming_authorize",
         }
     }
 }
@@ -62,6 +68,8 @@ pub fn describe() {
         Endpoint::Chart,
         Endpoint::Instruments,
         Endpoint::InfoPrices,
+        Endpoint::InfoPriceSubscriptions,
+        Endpoint::StreamingAuthorize,
     ] {
         for class in ["2xx", "4xx", "5xx", "error"] {
             counter!("saxo_api_requests_total", "endpoint" => endpoint.label(), "status_class" => class)

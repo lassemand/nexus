@@ -104,6 +104,8 @@ spec:
               value: "/data/repo"
             - name: CONDUCTOR_WORKTREE_ROOT
               value: "/data/worktrees"
+            - name: CONDUCTOR_CARGO_TARGET_DIR
+              value: {{ .Values.cargoTargetDir | quote }}
             - name: CONDUCTOR_MAX_SESSIONS
               value: {{ .Values.maxSessions | quote }}
             - name: CONDUCTOR_IDLE_DAYS
@@ -132,6 +134,21 @@ spec:
               value: {{ .Values.startTimeoutSecs | quote }}
             - name: CONDUCTOR_DELIVER_TIMEOUT_SECS
               value: {{ .Values.deliverTimeoutSecs | quote }}
+            # Automatic reviews; see values.yaml `review` and the README.
+            - name: CONDUCTOR_REVIEW_ENABLED
+              value: {{ .Values.review.enabled | quote }}
+            - name: CONDUCTOR_REVIEW_STATE
+              value: {{ .Values.review.state | quote }}
+            - name: CONDUCTOR_REVIEW_MAX_ITERATIONS
+              value: {{ .Values.review.maxIterations | quote }}
+            - name: CONDUCTOR_REVIEW_MODEL
+              value: {{ .Values.review.model | quote }}
+            - name: CONDUCTOR_MAX_REVIEW_SESSIONS
+              value: {{ .Values.review.maxSessions | quote }}
+            - name: CONDUCTOR_REVIEW_TIMEOUT
+              value: {{ .Values.review.timeout | quote }}
+            - name: CONDUCTOR_REVIEW_BOT_LOGIN
+              value: {{ .Values.review.botLogin | quote }}
 
           volumeMounts:
             - name: data

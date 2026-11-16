@@ -24,6 +24,8 @@ pub mod metrics;
 pub mod notes;
 pub mod offsets;
 pub mod pnl;
+pub mod quote_book;
+pub mod quote_stream;
 pub mod quotes;
 pub mod registry;
 pub mod release;
@@ -39,6 +41,7 @@ pub mod trades;
 pub mod trading;
 mod types;
 mod verdict;
+pub mod watch;
 
 pub use calendar::SessionsCache;
 pub use clock::{Clock, ManualClock, SystemClock, TokioClock};
@@ -52,6 +55,8 @@ pub use handoff::{
 pub use matching::{pick_target, MatchKind, Matched, Release};
 pub use notes::{NoteHandler, NoteOutcome};
 pub use pnl::{compute as compute_pnl, Pnl, PnlProblem};
+pub use quote_book::{Held, Origin, Pair, Pin, QuoteBook};
+pub use quote_stream::{run_quote_stream, StreamTimings};
 pub use quotes::{HttpQuoteSource, Quote, QuoteError, QuoteSource};
 pub use registry::{preload, KernelRegistry, PreloadReport, KERNEL_RETENTION};
 pub use release::{
@@ -75,8 +80,9 @@ pub use spans::trace_id_of;
 pub use store::{AcceptedKernel, NewNote, Note, PrepRun, Store, Target};
 pub use trades::{
     to_proto as trade_to_proto, Entry, Exit, NewObservation, NewTrade, ObservationStatus,
-    StoredObservation, StoredTrade, TradeStatus, TradeStore,
+    QuoteInfo, StoredObservation, StoredTrade, TradeStatus, TradeStore,
 };
 pub use trading::{exit_target, observation_slots, plan_entry, session_cutoff, EntryPlan, Slot};
 pub use types::{ReportKind, ScheduledReport, TargetStatus};
 pub use verdict::{KernelMetric, KernelVerdict};
+pub use watch::{scheduled_pairs, TargetSource, WatchUpdater};

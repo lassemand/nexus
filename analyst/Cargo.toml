@@ -39,6 +39,8 @@ hex = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "signal", "sync", "time"] }
 tracing = "0.1"
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 verdict-sdk = { path = "../verdict/sdk" }
 verdict-bench-anchored = { path = "../verdict/kernels/bench-anchored", optional = true }
 verdict-bench-memmem = { path = "../verdict/kernels/bench-memmem", optional = true }

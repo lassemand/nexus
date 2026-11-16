@@ -1,17 +1,28 @@
 //! Runs simulated trades: from a decision handed over by the release path to
 //! the entry quote, the exit and every observation, as one task per trade.
 //!
-//! The entry request of a decision taken during trading leaves before anything
-//! else is done (no database read or write comes first); the trade row is created
-//! once the decision's row is known, and a trade waiting for the session is
-//! stored before it sleeps, so a restart finds it. Every quote is requested at a
-//! deadline computed from the wall clock when it is scheduled and slept to with
-//! `tokio::time::sleep_until`: there is no loop that checks whether it is time.
-//! Quote requests of different trades run concurrently, at most
-//! `QUOTE_CONCURRENCY` at once. After every state change the full trade is
-//! emitted on `analyst.trades` without waiting for the broker.
+//! Prices come from the [`QuoteBook`], the latest quote `saxo-stream` streamed
+//! for each watched instrument. The entry price of a decision taken during
+//! trading is read from the book inside [`TradeHandOff::hand_off`], in the
+//! decision's own task and before anything is spawned, awaited, logged or
+//! traced, so it is the quote held at the decision instant. If it is not
+//! tradable the trade waits for the next tradable update; if the stream is not
+//! healthy, or the instrument was not on the watch list (an unscheduled report),
+//! the price is requested with `GET /quote` instead, and that fallback quote is
+//! accepted only if Saxo's timestamp on it is at most `QUOTE_MAX_AGE` old. While
+//! the stream is healthy a held quote is current whatever its age: Saxo pushes
+//! only on change.
 //!
-//! Only the read-only quote endpoint is used. Nothing is ever traded.
+//! The trade row is created once the decision's row is known, and a trade
+//! waiting for the session is stored before it sleeps, so a restart finds it.
+//! Every exit and observation is taken at a deadline computed from the wall clock
+//! when it is scheduled and slept to with `tokio::time::sleep_until`: there is no
+//! loop that checks whether it is time. Fallback requests of different trades run
+//! concurrently, at most `QUOTE_CONCURRENCY` at once. After every state change the
+//! full trade is emitted on `analyst.trades` without waiting for the broker.
+//!
+//! Only streamed quotes and the read-only quote endpoint are used. Nothing is
+//! ever traded.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,6 +43,7 @@ use crate::decision::DecisionKind;
 use crate::handoff::{TradeHandOff, TradeSignal};
 use crate::metrics;
 use crate::pnl::{compute, PnlProblem};
+use crate::quote_book::{key, Held, Origin, Pair, Pin, QuoteBook};
 use crate::quotes::{Quote, QuoteError, QuoteSource};
 use crate::release::{with_retry, RetryPolicy};
 use crate::sink::TradeSink;
@@ -40,8 +52,8 @@ use crate::spans::{
     span_context_from_traceparent, traceparent_of,
 };
 use crate::trades::{
-    to_proto, Entry, Exit, NewObservation, NewTrade, ObservationStatus, StoredTrade, TradeStatus,
-    TradeStore,
+    to_proto, Entry, Exit, NewObservation, NewTrade, ObservationStatus, QuoteInfo, StoredTrade,
+    TradeStatus, TradeStore,
 };
 use crate::trading::{exit_target, observation_slots, plan_entry, session_cutoff, EntryPlan, Slot};
 
@@ -52,6 +64,14 @@ pub const LATE_AFTER: Duration = Duration::from_secs(2);
 pub const RETRY_EVERY: Duration = Duration::from_secs(1);
 /// How long the exit quote is retried, never past the session cutoff.
 pub const EXIT_RETRY_FOR: Duration = Duration::from_secs(30);
+/// How long an exit or observation waits for a tradable bid update from the
+/// stream, never past the session cutoff.
+pub const BID_WAIT: Duration = Duration::from_secs(30);
+/// How often a wait for a streamed update looks at the stream's health.
+const HEALTH_RECHECK: Duration = Duration::from_millis(250);
+/// A price whose pair has no quote in the book this long after its target is
+/// requested instead of waited for.
+pub const NO_QUOTE_FALLBACK: Duration = Duration::from_secs(2);
 const EMIT_ATTEMPTS: u32 = 10;
 const EMIT_PAUSE: Duration = Duration::from_millis(500);
 
@@ -68,6 +88,9 @@ pub struct RunnerSettings {
     pub entry_max_wait: Duration,
     /// The most quote requests in flight at once.
     pub quote_concurrency: usize,
+    /// A quote fetched by request is used only if Saxo's timestamp on it is at
+    /// most this old.
+    pub quote_max_age: Duration,
     /// The topic simulated trades are produced on, for the producer span.
     pub trades_topic: String,
 }
@@ -81,6 +104,7 @@ impl RunnerSettings {
             close_buffer: config.close_buffer,
             entry_max_wait: config.entry_max_wait,
             quote_concurrency: config.quote_concurrency as usize,
+            quote_max_age: config.quote_max_age,
             trades_topic: config.trades_topic.clone(),
         }
     }
@@ -96,6 +120,7 @@ struct Inner {
     store: Arc<dyn TradeStore>,
     sessions: SessionsCache,
     quotes: Arc<dyn QuoteSource>,
+    book: Arc<QuoteBook>,
     sink: Arc<dyn TradeSink>,
     clock: Arc<dyn Clock>,
     settings: RunnerSettings,
@@ -135,17 +160,29 @@ impl TradeRunner {
         settings: RunnerSettings,
     ) -> TradeRunner {
         let permits = Semaphore::new(settings.quote_concurrency.max(1));
+        let book = QuoteBook::disabled(clock.clone());
         TradeRunner {
             inner: Arc::new(Inner {
                 store,
                 sessions,
                 quotes,
+                book,
                 sink,
                 clock,
                 settings,
                 permits,
                 retry: RetryPolicy::default(),
             }),
+        }
+    }
+
+    /// Reads prices from `book` instead of the default book, which nothing feeds
+    /// and which is therefore never healthy (every price is requested).
+    pub fn with_quote_book(self, book: Arc<QuoteBook>) -> TradeRunner {
+        let inner = Arc::try_unwrap(self.inner)
+            .unwrap_or_else(|_| panic!("the quote book is set before the runner is shared"));
+        TradeRunner {
+            inner: Arc::new(Inner { book, ..inner }),
         }
     }
 
@@ -178,13 +215,37 @@ impl TradeHandOff for TradeRunner {
             return;
         }
         let inner = Arc::clone(&self.inner);
+        let pre = inner.pre_read(&signal);
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
-                handle.spawn(async move { inner.run_signal(signal).await });
+                handle.spawn(async move { inner.run_signal(signal, pre).await });
             }
             Err(_) => error!("no runtime to simulate the trade on"),
         }
     }
+}
+
+/// Where a trade's entry price comes from.
+enum Feed {
+    /// The stream was healthy and the instrument watched when the decision was
+    /// taken: this is the quote the book held at that instant, read before
+    /// anything else was done.
+    Stream(Option<Held>),
+    /// The price is requested from the first moment (stream not healthy, or an
+    /// unscheduled instrument).
+    Request,
+    /// The market is closed (or the trade was resumed): the source is chosen at
+    /// the session open.
+    Deferred,
+}
+
+/// Everything read at the decision instant, before a task is spawned.
+struct PreRead {
+    started: DateTime<Utc>,
+    plan: EntryPlan,
+    feed: Feed,
+    pin: Pin,
+    read_elapsed: Duration,
 }
 
 /// What a quote request is for, in `analyst.quote_purpose`.
@@ -203,6 +264,89 @@ impl Purpose {
             Purpose::Observation => "observation",
         }
     }
+}
+
+/// Which side of the quote a price is taken from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    /// The ask, paid to buy.
+    Ask,
+    /// The bid, received to sell.
+    Bid,
+}
+
+fn price_of(quote: &Quote, side: Side) -> Option<Decimal> {
+    match side {
+        Side::Ask => quote.entry_ask(),
+        Side::Bid => quote.exit_bid(),
+    }
+}
+
+/// The tradable price of a held quote on `side`, if it may be used: Saxo's
+/// timestamp must not be before `min_time`, and a quote without a readable one
+/// never qualifies when a minimum is set.
+fn acceptable(held: &Held, side: Side, min_time: Option<DateTime<Utc>>) -> Option<Decimal> {
+    let price = price_of(&held.quote, side)?;
+    if let Some(min) = min_time {
+        if held.saxo_time.is_none_or(|time| time < min) {
+            return None;
+        }
+    }
+    Some(price)
+}
+
+/// What a price is looked for: where, which side, and until when.
+struct Wanted {
+    pair: Pair,
+    side: Side,
+    purpose: Purpose,
+    min_time: Option<DateTime<Utc>>,
+    target: DateTime<Utc>,
+    deadline: DateTime<Utc>,
+}
+
+/// How waiting for a streamed price ended.
+enum StreamResult {
+    Taken {
+        held: Held,
+        price: Decimal,
+        at: DateTime<Utc>,
+        waited: bool,
+        immediate: bool,
+    },
+    TimedOut {
+        last: Option<Held>,
+    },
+    /// The book cannot answer: the stream is unhealthy, `saxo-stream` reported
+    /// the pair as failing, or no quote arrived for it. The price is requested.
+    Unavailable,
+}
+
+/// How a price was found, from the stream or by request.
+enum Priced {
+    Taken {
+        at: DateTime<Utc>,
+        quote: Quote,
+        price: Decimal,
+        info: QuoteInfo,
+    },
+    TooOld {
+        at: DateTime<Utc>,
+        quote: Quote,
+        info: QuoteInfo,
+    },
+    Failed {
+        last: Option<(DateTime<Utc>, Result<Quote, QuoteError>)>,
+        info: Option<QuoteInfo>,
+    },
+}
+
+/// How an observation went.
+struct Observed {
+    fetched_at: Option<DateTime<Utc>>,
+    quote: Option<Quote>,
+    status: ObservationStatus,
+    info: Option<QuoteInfo>,
 }
 
 /// A fetched quote and when its request started and was answered; its span is
@@ -329,8 +473,14 @@ impl Inner {
         late > chrono(LATE_AFTER)
     }
 
-    async fn run_signal(self: Arc<Self>, signal: TradeSignal) {
+    /// Everything that must be read at the decision instant, in the decision's
+    /// own task: the clock, the entry plan and, when the stream is healthy and the
+    /// instrument watched, the quote the book holds now. Nothing is awaited,
+    /// logged or traced before the read.
+    fn pre_read(&self, signal: &TradeSignal) -> PreRead {
         let started = self.clock.now();
+        let real = std::time::Instant::now();
+        let pair = key(&signal.ticker, &signal.exchange_mic);
         let sessions = self.sessions.get();
         let plan = plan_entry(
             &sessions,
@@ -338,8 +488,36 @@ impl Inner {
             signal.decided_at,
             self.settings.close_buffer,
         );
-        let first_raw = match plan {
-            EntryPlan::Now => Some(self.fetch_raw(&signal.ticker, &signal.exchange_mic).await),
+        let watched = self.book.is_watched(&pair);
+        let healthy = self.book.is_healthy();
+        let feed = match plan {
+            EntryPlan::Now if watched && healthy => Feed::Stream(self.book.current(&pair)),
+            EntryPlan::Now => Feed::Request,
+            _ => Feed::Deferred,
+        };
+        let read_elapsed = real.elapsed();
+        let pin = self.book.pin(pair);
+        PreRead {
+            started,
+            plan,
+            feed,
+            pin,
+            read_elapsed,
+        }
+    }
+
+    async fn run_signal(self: Arc<Self>, signal: TradeSignal, pre: PreRead) {
+        let PreRead {
+            started,
+            plan,
+            feed,
+            pin,
+            read_elapsed,
+        } = pre;
+        let first_raw = match (&feed, plan) {
+            (Feed::Request, EntryPlan::Now) => {
+                Some(self.fetch_raw(&signal.ticker, &signal.exchange_mic).await)
+            }
             _ => None,
         };
         let release_context = signal.context.clone();
@@ -389,8 +567,17 @@ impl Inner {
             self.finish(&trade, &release.entry).await;
             return;
         }
-        self.enter(trade, first, matches!(plan, EntryPlan::Now), false, release)
-            .await;
+        self.enter(
+            trade,
+            first,
+            feed,
+            matches!(plan, EntryPlan::Now),
+            false,
+            release,
+            pin,
+            read_elapsed,
+        )
+        .await;
     }
 
     async fn create(
@@ -427,13 +614,337 @@ impl Inner {
             .flatten()
     }
 
+    fn annotate(span: &Span, info: &QuoteInfo) {
+        span.set_attribute("analyst.quote_source", info.source.as_str());
+        if let Some(age) = info.age_ms {
+            span.set_attribute("analyst.quote_age_ms", age);
+        }
+        if let Some(time) = info.saxo_time {
+            span.set_attribute("analyst.quote_saxo_time", time.to_rfc3339());
+        }
+    }
+
+    fn fresh(&self, info: &QuoteInfo) -> bool {
+        let limit = i64::try_from(self.settings.quote_max_age.as_millis()).unwrap_or(i64::MAX);
+        info.age_ms.is_some_and(|age| age <= limit)
+    }
+
+    fn quote_taken(info: &QuoteInfo, purpose: Purpose) {
+        if let Some(age) = info.age_ms {
+            metrics::quote_age(info.source.as_str(), age as f64 / 1000.0);
+        }
+        metrics::quote(info.source.as_str(), purpose.as_str(), "ok");
+    }
+
+    /// Waits for a tradable quote on `want.side` from the stream. Reads the held
+    /// quote first (`held` when the caller read it already, at the decision
+    /// instant); if that is not acceptable, waits for updates until
+    /// `want.deadline`. `want.min_time` is the earliest acceptable Saxo
+    /// timestamp. Gives up on an unhealthy stream, on a pair `saxo-stream`
+    /// reported as failing, and on a pair with no quote [`NO_QUOTE_FALLBACK`]
+    /// after the target, so the caller can request instead.
+    async fn stream_price(
+        &self,
+        parent: &Span,
+        want: &Wanted,
+        held: Option<Option<Held>>,
+    ) -> StreamResult {
+        let side = want.side;
+        let min_time = want.min_time;
+        let immediate = held.is_some();
+        let mut last = self
+            .book
+            .live(held.unwrap_or_else(|| self.book.current(&want.pair)));
+        if let Some(h) = &last {
+            if let Some(price) = acceptable(h, side, min_time) {
+                return StreamResult::Taken {
+                    held: h.clone(),
+                    price,
+                    at: self.clock.now(),
+                    waited: false,
+                    immediate,
+                };
+            }
+        }
+        if !self.book.is_healthy() {
+            return StreamResult::Unavailable;
+        }
+        let mut rx = self.book.subscribe(&want.pair);
+        let current = self.book.live(rx.borrow_and_update().clone());
+        if let Some(h) = &current {
+            if let Some(price) = acceptable(h, side, min_time) {
+                return StreamResult::Taken {
+                    held: h.clone(),
+                    price,
+                    at: self.clock.now(),
+                    waited: false,
+                    immediate: false,
+                };
+            }
+            last = current;
+        }
+        let started = self.clock.now();
+        let wait = clock_span(
+            "analyst.wait_for_quote",
+            started,
+            Some(&parent.context()),
+            vec![KeyValue::new(
+                "analyst.quote_purpose",
+                want.purpose.as_str(),
+            )],
+        );
+        let result = loop {
+            let now = self.clock.now();
+            if !self.book.is_healthy() {
+                break StreamResult::Unavailable;
+            }
+            if self.book.pair_failing(&want.pair)
+                || (last.is_none() && now >= want.target + chrono(NO_QUOTE_FALLBACK))
+            {
+                break StreamResult::Unavailable;
+            }
+            if now >= want.deadline {
+                break StreamResult::TimedOut { last };
+            }
+            let remaining = (want.deadline - now).to_std().unwrap_or(Duration::ZERO);
+            match tokio::time::timeout(remaining.min(HEALTH_RECHECK), rx.changed()).await {
+                Ok(Ok(())) => {
+                    let update = self.book.live(rx.borrow_and_update().clone());
+                    if let Some(h) = update {
+                        if let Some(price) = acceptable(&h, side, min_time) {
+                            if self.book.is_healthy() {
+                                break StreamResult::Taken {
+                                    held: h,
+                                    price,
+                                    at: self.clock.now(),
+                                    waited: true,
+                                    immediate: false,
+                                };
+                            }
+                            break StreamResult::Unavailable;
+                        }
+                        last = Some(h);
+                    }
+                }
+                Ok(Err(_)) => break StreamResult::TimedOut { last },
+                Err(_) => {}
+            }
+        };
+        match &result {
+            StreamResult::TimedOut { last } => {
+                metrics::quote(
+                    "stream",
+                    want.purpose.as_str(),
+                    if last.is_some() {
+                        "not_tradable"
+                    } else {
+                        "no_quote"
+                    },
+                );
+                fail_span(&wait, "no tradable update");
+            }
+            StreamResult::Unavailable => fail_span(&wait, "stream cannot answer"),
+            StreamResult::Taken { .. } => {}
+        }
+        end_span(&wait, self.clock.now());
+        result
+    }
+
+    /// The entry price: from the stream when it is the source, requested
+    /// otherwise or when the stream cannot answer. At a session open
+    /// (`Feed::Deferred`) a quote stamped before the open is no opening price yet.
+    #[allow(clippy::too_many_arguments)]
+    async fn entry_price(
+        &self,
+        trade: &StoredTrade,
+        entry_span: &Span,
+        feed: Feed,
+        first: Option<Traced>,
+        target: DateTime<Utc>,
+        deadline: DateTime<Utc>,
+        read_elapsed: Duration,
+        in_session: bool,
+    ) -> Priced {
+        let at_open = matches!(feed, Feed::Deferred).then_some(target);
+        let (held, min_time) = match feed {
+            Feed::Stream(held) => (Some(held), None),
+            Feed::Deferred if self.book.is_healthy() => (None, Some(target)),
+            Feed::Deferred | Feed::Request => {
+                return self
+                    .request_price(
+                        entry_span,
+                        Purpose::Entry,
+                        &trade.ticker,
+                        &trade.exchange_mic,
+                        first,
+                        at_open,
+                        deadline,
+                    )
+                    .await
+            }
+        };
+        let want = Wanted {
+            pair: key(&trade.ticker, &trade.exchange_mic),
+            side: Side::Ask,
+            purpose: Purpose::Entry,
+            min_time,
+            target,
+            deadline,
+        };
+        match self.stream_price(entry_span, &want, held).await {
+            StreamResult::Taken {
+                held,
+                price,
+                at,
+                waited,
+                immediate,
+            } => {
+                let at = if immediate && !waited { target } else { at };
+                let info = QuoteInfo::of(&held.quote, Origin::Stream, at);
+                Self::quote_taken(&info, Purpose::Entry);
+                if in_session {
+                    metrics::entry_delay(if immediate && !waited {
+                        read_elapsed
+                    } else {
+                        (at - target).to_std().unwrap_or(Duration::ZERO)
+                    });
+                }
+                Priced::Taken {
+                    at,
+                    quote: held.quote,
+                    price,
+                    info,
+                }
+            }
+            StreamResult::TimedOut { .. } => Priced::Failed {
+                last: None,
+                info: None,
+            },
+            StreamResult::Unavailable => {
+                self.request_price(
+                    entry_span,
+                    Purpose::Entry,
+                    &trade.ticker,
+                    &trade.exchange_mic,
+                    None,
+                    at_open,
+                    deadline,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Requests a price with `GET /quote` for `purpose`, retrying a quote that is
+    /// not tradable (or, with `min_time`, not stamped at or after it) every
+    /// [`RETRY_EVERY`] until `deadline`, and a failed request after its own pause.
+    /// The first tradable quote is used if Saxo's timestamp on it is at most
+    /// `QUOTE_MAX_AGE` old, else the price is `TooOld` and the search ends. With
+    /// `min_time` the quotes stamped too early are only kept: if the wait ends
+    /// and the newest of them is older than `QUOTE_MAX_AGE` the price is `TooOld`,
+    /// else it `Failed`. One attempt is made when `deadline` has passed.
+    #[allow(clippy::too_many_arguments)]
+    async fn request_price(
+        &self,
+        span: &Span,
+        purpose: Purpose,
+        ticker: &str,
+        mic: &str,
+        first: Option<Traced>,
+        min_time: Option<DateTime<Utc>>,
+        deadline: DateTime<Utc>,
+    ) -> Priced {
+        let side = match purpose {
+            Purpose::Entry => Side::Ask,
+            _ => Side::Bid,
+        };
+        let label = purpose.as_str();
+        let mut next = first;
+        let mut attempt = 0u32;
+        let mut early: Option<(DateTime<Utc>, Quote, QuoteInfo)> = None;
+        let mut last: Option<(DateTime<Utc>, Result<Quote, QuoteError>)>;
+        loop {
+            attempt += 1;
+            let traced = match next.take() {
+                Some(traced) => traced,
+                None => self.fetch(span, purpose, attempt, ticker, mic).await,
+            };
+            let wait = match &traced.result {
+                Ok(quote) => match price_of(quote, side) {
+                    Some(price) => {
+                        let info = QuoteInfo::of(quote, Origin::Request, traced.at);
+                        if min_time.is_some_and(|min| info.saxo_time.is_none_or(|t| t < min)) {
+                            metrics::quote("request", label, "rejected");
+                            let newer = early
+                                .as_ref()
+                                .is_none_or(|(_, _, old)| info.saxo_time > old.saxo_time);
+                            if newer {
+                                early = Some((traced.at, quote.clone(), info));
+                            }
+                            RETRY_EVERY
+                        } else if !self.fresh(&info) {
+                            metrics::quote("request", label, "too_old");
+                            self.close_quote(&traced, false, purpose);
+                            return Priced::TooOld {
+                                at: traced.at,
+                                quote: quote.clone(),
+                                info,
+                            };
+                        } else {
+                            metrics::quote("request", label, "accepted");
+                            metrics::quote_age("request", info.age_ms.unwrap_or(0) as f64 / 1000.0);
+                            self.close_quote(&traced, true, purpose);
+                            return Priced::Taken {
+                                at: traced.at,
+                                quote: quote.clone(),
+                                price,
+                                info,
+                            };
+                        }
+                    }
+                    None => {
+                        metrics::quote("request", label, "rejected");
+                        RETRY_EVERY
+                    }
+                },
+                Err(error) => {
+                    metrics::quote("request", label, error.outcome());
+                    match error {
+                        QuoteError::Unavailable { retry_after } => *retry_after,
+                        _ => RETRY_EVERY,
+                    }
+                }
+            };
+            self.close_quote(&traced, false, purpose);
+            last = Some((traced.at, traced.result));
+            if self.clock.now() + chrono(wait) > deadline {
+                if let Some((at, quote, info)) = early {
+                    if !self.fresh(&info) {
+                        metrics::quote("request", label, "too_old");
+                        return Priced::TooOld { at, quote, info };
+                    }
+                }
+                let info = match &last {
+                    Some((at, Ok(quote))) => Some(QuoteInfo::of(quote, Origin::Request, *at)),
+                    _ => None,
+                };
+                return Priced::Failed { last, info };
+            }
+            tokio::time::sleep(wait).await;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn enter(
         &self,
         trade: StoredTrade,
         first: Option<Traced>,
+        feed: Feed,
         in_session: bool,
         resumed: bool,
         release: Release,
+        pin: Pin,
+        read_elapsed: Duration,
     ) {
         let Release {
             entry: entry_span,
@@ -454,7 +965,7 @@ impl Inner {
                 .await;
             return;
         }
-        if first.is_none() {
+        if matches!(feed, Feed::Deferred) {
             let now = self.clock.now();
             if target > now {
                 let wait = clock_span(
@@ -471,59 +982,53 @@ impl Inner {
             }
         }
         let deadline = target + chrono(self.settings.entry_max_wait);
-        let mut next = first;
-        let mut attempt = 0u32;
-        let accepted = loop {
-            attempt += 1;
-            let traced = match next.take() {
-                Some(traced) => traced,
-                None => {
-                    self.fetch(
-                        &entry_span,
-                        Purpose::Entry,
-                        attempt,
-                        &trade.ticker,
-                        &trade.exchange_mic,
-                    )
+        let outcome = self
+            .entry_price(
+                &trade,
+                &entry_span,
+                feed,
+                first,
+                target,
+                deadline,
+                read_elapsed,
+                in_session,
+            )
+            .await;
+        let (at, quote, ask, info) = match outcome {
+            Priced::Taken {
+                at,
+                quote,
+                price,
+                info,
+            } => (at, quote, price, info),
+            Priced::TooOld { info, .. } => {
+                Self::annotate(&entry_span, &info);
+                entry_span.set_attribute("analyst.trade_status", TradeStatus::QuoteTooOld.as_str());
+                fail_span(&entry_span, "quote_too_old");
+                end_span(&entry_span, self.clock.now());
+                if let Some(rejected) = self
+                    .db("reject_entry", || {
+                        self.store
+                            .reject_entry(trade.id, TradeStatus::QuoteTooOld, &info)
+                    })
                     .await
+                {
+                    self.finish(&rejected, &entry_span).await;
                 }
-            };
-            let wait = match &traced.result {
-                Ok(quote) => match quote.entry_ask() {
-                    Some(ask) => {
-                        metrics::quote_request("accepted");
-                        self.close_quote(&traced, true, Purpose::Entry);
-                        break Some((traced.at, quote.clone(), ask));
-                    }
-                    None => {
-                        metrics::quote_request("rejected");
-                        RETRY_EVERY
-                    }
-                },
-                Err(error) => {
-                    metrics::quote_request(error.outcome());
-                    match error {
-                        QuoteError::Unavailable { retry_after } => *retry_after,
-                        _ => RETRY_EVERY,
-                    }
-                }
-            };
-            self.close_quote(&traced, false, Purpose::Entry);
-            if self.clock.now() + chrono(wait) > deadline {
-                break None;
+                return;
             }
-            tokio::time::sleep(wait).await;
-        };
-        let Some((at, quote, ask)) = accepted else {
-            entry_span.set_attribute("analyst.trade_status", TradeStatus::NoEntryQuote.as_str());
-            fail_span(&entry_span, "no_entry_quote");
-            end_span(&entry_span, self.clock.now());
-            self.set_status(&trade, TradeStatus::NoEntryQuote, &entry_span)
-                .await;
-            return;
+            Priced::Failed { .. } => {
+                entry_span
+                    .set_attribute("analyst.trade_status", TradeStatus::NoEntryQuote.as_str());
+                fail_span(&entry_span, "no_entry_quote");
+                end_span(&entry_span, self.clock.now());
+                self.set_status(&trade, TradeStatus::NoEntryQuote, &entry_span)
+                    .await;
+                return;
+            }
         };
         self.record_lateness(target, at);
-        if in_session {
+        if in_session && info.source == Origin::Request {
             metrics::entry_delay((at - target).to_std().unwrap_or(Duration::ZERO));
         }
         let sessions = self.sessions.get();
@@ -551,7 +1056,9 @@ impl Inner {
             currency: quote.currency.clone(),
             release_to_entry_ms,
             exit_target_at: Some(exit_at),
+            info,
         };
+        Self::annotate(&entry_span, &info);
         entry_span.set_attribute("analyst.release_to_entry_ms", release_to_entry_ms);
         entry_span.set_attribute("analyst.trade_status", TradeStatus::Open.as_str());
         end_span(&entry_span, at);
@@ -563,7 +1070,7 @@ impl Inner {
         };
         self.emit(&opened, &entry_span).await;
         drop(entry_span);
-        self.run_open(opened, cutoff, false, link).await;
+        self.run_open(opened, cutoff, false, link, pin).await;
     }
 
     async fn resume_trade(self: Arc<Self>, trade: StoredTrade) {
@@ -575,6 +1082,7 @@ impl Inner {
             .release_traceparent
             .as_deref()
             .and_then(span_context_from_traceparent);
+        let pin = self.book.pin(key(&trade.ticker, &trade.exchange_mic));
         match trade.status() {
             TradeStatus::PendingEntry => {
                 let entry_span = clock_span(
@@ -592,7 +1100,17 @@ impl Inner {
                     entry: entry_span,
                     link,
                 };
-                self.enter(trade, None, false, true, release).await;
+                self.enter(
+                    trade,
+                    None,
+                    Feed::Deferred,
+                    false,
+                    true,
+                    release,
+                    pin,
+                    Duration::ZERO,
+                )
+                .await;
             }
             TradeStatus::Open => {
                 let sessions = self.sessions.get();
@@ -605,7 +1123,7 @@ impl Inner {
                     )
                 });
                 match cutoff {
-                    Some(cutoff) => self.run_open(trade, cutoff, true, link).await,
+                    Some(cutoff) => self.run_open(trade, cutoff, true, link, pin).await,
                     None => {
                         let span = clock_span("analyst.trade", self.clock.now(), None, Vec::new());
                         self.set_status(&trade, TradeStatus::InvalidEntry, &span)
@@ -624,6 +1142,7 @@ impl Inner {
         cutoff: DateTime<Utc>,
         resumed: bool,
         release: Option<SpanContext>,
+        _pin: Pin,
     ) {
         let started = if resumed {
             self.clock.now()
@@ -687,7 +1206,9 @@ impl Inner {
             events.push((exit_at, Event::Exit));
         }
         events.sort_by_key(|(at, event)| (*at, matches!(event, Event::Exit)));
-        for (at, event) in events {
+        let targets: Vec<DateTime<Utc>> = events.iter().map(|(at, _)| *at).collect();
+        for (index, (at, event)) in events.into_iter().enumerate() {
+            let next = targets.get(index + 1).copied();
             match event {
                 Event::Beyond(label) => {
                     let scheduled = self.beyond_time(entry_at, &label);
@@ -701,6 +1222,7 @@ impl Inner {
                         quote: None,
                         late: false,
                         status: ObservationStatus::BeyondClose,
+                        info: None,
                     };
                     if let Some(updated) = self.store_observation(&trade, &observation, &span).await
                     {
@@ -720,6 +1242,7 @@ impl Inner {
                             quote: None,
                             late: false,
                             status: ObservationStatus::Missed,
+                            info: None,
                         };
                         if let Some(updated) =
                             self.store_observation(&trade, &observation, &span).await
@@ -730,41 +1253,25 @@ impl Inner {
                     }
                     self.sleep_until(at).await;
                     let span = self.observation_span(&trade_context, &label, at);
-                    let traced = self
-                        .fetch(
-                            &span,
-                            Purpose::Observation,
-                            1,
-                            &trade.ticker,
-                            &trade.exchange_mic,
-                        )
+                    let observed = self
+                        .observe(&span, &trade, at, cutoff, next, label == "close")
                         .await;
-                    let late = self.record_lateness(at, traced.at);
-                    let (quote, status) = match &traced.result {
-                        Ok(quote) => {
-                            metrics::quote_request("ok");
-                            (Some(quote.clone()), ObservationStatus::Ok)
-                        }
-                        Err(error) => {
-                            metrics::quote_request(error.outcome());
-                            (None, ObservationStatus::NoQuote)
-                        }
-                    };
-                    self.close_quote(
-                        &traced,
-                        status == ObservationStatus::Ok,
-                        Purpose::Observation,
-                    );
+                    let taken_at = observed.fetched_at.unwrap_or_else(|| self.clock.now());
+                    let late = self.record_lateness(at, taken_at);
+                    if let Some(info) = &observed.info {
+                        Self::annotate(&span, info);
+                    }
                     span.set_attribute("analyst.late", late);
-                    span.set_attribute("analyst.observation_status", status.as_str());
-                    end_span(&span, traced.at);
+                    span.set_attribute("analyst.observation_status", observed.status.as_str());
+                    end_span(&span, taken_at);
                     let observation = NewObservation {
                         horizon: label,
                         scheduled_at: at,
-                        fetched_at: Some(traced.at),
-                        quote,
+                        fetched_at: observed.fetched_at,
+                        quote: observed.quote,
                         late,
-                        status,
+                        status: observed.status,
+                        info: observed.info,
                     };
                     if let Some(updated) = self.store_observation(&trade, &observation, &span).await
                     {
@@ -844,6 +1351,7 @@ impl Inner {
                 quote: None,
                 late: false,
                 status: ObservationStatus::Missed,
+                info: None,
             };
             let updated = self.store_observation(trade, &observation, &span).await?;
             return self
@@ -851,54 +1359,17 @@ impl Inner {
                 .await;
         }
         self.sleep_until(target).await;
-        let deadline = (target + chrono(EXIT_RETRY_FOR)).min(cutoff);
-        let mut last: Option<(DateTime<Utc>, Result<Quote, QuoteError>)> = None;
-        let mut attempt = 0u32;
-        let accepted = loop {
-            attempt += 1;
-            let traced = self
-                .fetch(
-                    &span,
-                    Purpose::Exit,
-                    attempt,
-                    &trade.ticker,
-                    &trade.exchange_mic,
-                )
-                .await;
-            let wait = match &traced.result {
-                Ok(quote) => match quote.exit_bid() {
-                    Some(bid) => {
-                        metrics::quote_request("accepted");
-                        self.close_quote(&traced, true, Purpose::Exit);
-                        break Some((traced.at, quote.clone(), bid));
-                    }
-                    None => {
-                        metrics::quote_request("rejected");
-                        RETRY_EVERY
-                    }
-                },
-                Err(error) => {
-                    metrics::quote_request(error.outcome());
-                    match error {
-                        QuoteError::Unavailable { retry_after } => *retry_after,
-                        _ => RETRY_EVERY,
-                    }
-                }
-            };
-            self.close_quote(&traced, false, Purpose::Exit);
-            last = Some((traced.at, traced.result));
-            if self.clock.now() + chrono(wait) > deadline {
-                break None;
-            }
-            tokio::time::sleep(wait).await;
-        };
-        match accepted {
-            None => {
+        let outcome = self.exit_price(&span, trade, target, cutoff).await;
+        match outcome {
+            Priced::Failed { last, info } => {
                 let (fetched_at, quote) = match last {
                     Some((at, Ok(quote))) => (Some(at), Some(quote)),
                     Some((at, Err(_))) => (Some(at), None),
                     None => (None, None),
                 };
+                if let Some(info) = &info {
+                    Self::annotate(&span, info);
+                }
                 span.set_attribute("analyst.observation_status", "no_quote");
                 fail_span(&span, "no_exit_quote");
                 end_span(&span, self.clock.now());
@@ -909,13 +1380,49 @@ impl Inner {
                     quote,
                     late: false,
                     status: ObservationStatus::NoQuote,
+                    info,
                 };
                 let updated = self.store_observation(trade, &observation, &span).await?;
                 self.set_status(&updated, TradeStatus::NoExitQuote, &span)
                     .await
             }
-            Some((at, quote, bid)) => {
+            Priced::TooOld { at, quote, info } => {
+                Self::annotate(&span, &info);
+                span.set_attribute("analyst.observation_status", "quote_too_old");
+                fail_span(&span, "exit_quote_too_old");
+                end_span(&span, at);
+                let observation = NewObservation {
+                    horizon: "hold".to_owned(),
+                    scheduled_at: target,
+                    fetched_at: Some(at),
+                    quote: Some(quote),
+                    late: false,
+                    status: ObservationStatus::QuoteTooOld,
+                    info: Some(info),
+                };
+                let updated = self.store_observation(trade, &observation, &span).await?;
+                let exit = Exit {
+                    at: None,
+                    bid: None,
+                    ask: None,
+                    pnl: None,
+                    status: TradeStatus::ExitQuoteTooOld,
+                    info: Some(info),
+                };
+                let closed = self
+                    .db("record_exit", || self.store.record_exit(updated.id, &exit))
+                    .await?;
+                self.finish(&closed, &span).await;
+                Some(closed)
+            }
+            Priced::Taken {
+                at,
+                quote,
+                price: bid,
+                info,
+            } => {
                 let late = self.record_lateness(target, at);
+                Self::annotate(&span, &info);
                 span.set_attribute("analyst.late", late);
                 span.set_attribute("analyst.observation_status", "ok");
                 end_span(&span, at);
@@ -926,6 +1433,7 @@ impl Inner {
                     quote: Some(quote.clone()),
                     late,
                     status: ObservationStatus::Ok,
+                    info: Some(info),
                 };
                 let updated = self.store_observation(trade, &observation, &span).await?;
                 let (pnl, status) = match updated.entry_ask {
@@ -947,6 +1455,7 @@ impl Inner {
                     ask: quote.ask,
                     pnl,
                     status,
+                    info: Some(info),
                 };
                 let closed = self
                     .db("record_exit", || self.store.record_exit(trade.id, &exit))
@@ -954,6 +1463,140 @@ impl Inner {
                 self.finish(&closed, &span).await;
                 Some(closed)
             }
+        }
+    }
+
+    /// The bid at the exit target: from the stream while it can answer, else
+    /// requested (retried for [`EXIT_RETRY_FOR`], never past the cutoff) with the
+    /// age limit. A stream that times out gets one request: the exit never ends
+    /// on a stream timeout alone.
+    async fn exit_price(
+        &self,
+        span: &Span,
+        trade: &StoredTrade,
+        target: DateTime<Utc>,
+        cutoff: DateTime<Utc>,
+    ) -> Priced {
+        if self.book.is_healthy() {
+            let want = Wanted {
+                pair: key(&trade.ticker, &trade.exchange_mic),
+                side: Side::Bid,
+                purpose: Purpose::Exit,
+                min_time: None,
+                target,
+                deadline: (target + chrono(BID_WAIT)).min(cutoff),
+            };
+            if let StreamResult::Taken {
+                held, price, at, ..
+            } = self.stream_price(span, &want, None).await
+            {
+                let info = QuoteInfo::of(&held.quote, Origin::Stream, at);
+                Self::quote_taken(&info, Purpose::Exit);
+                return Priced::Taken {
+                    at,
+                    quote: held.quote,
+                    price,
+                    info,
+                };
+            }
+        }
+        self.request_price(
+            span,
+            Purpose::Exit,
+            &trade.ticker,
+            &trade.exchange_mic,
+            None,
+            None,
+            (target + chrono(EXIT_RETRY_FOR)).min(cutoff),
+        )
+        .await
+    }
+
+    /// The bid of one observation: from the stream while it can answer, else one
+    /// request, with the age limit. The wait never passes `next`, the target of
+    /// the next scheduled event, so an observation cannot delay the exit. The
+    /// `close` observation (`last_chance`) gets one request when the stream times
+    /// out. `Ok` means a tradable, real-time, positive bid, whatever the source.
+    async fn observe(
+        &self,
+        span: &Span,
+        trade: &StoredTrade,
+        target: DateTime<Utc>,
+        cutoff: DateTime<Utc>,
+        next: Option<DateTime<Utc>>,
+        last_chance: bool,
+    ) -> Observed {
+        if self.book.is_healthy() {
+            let mut deadline = (target + chrono(BID_WAIT)).min(cutoff);
+            if let Some(next) = next {
+                deadline = deadline.min(next);
+            }
+            let want = Wanted {
+                pair: key(&trade.ticker, &trade.exchange_mic),
+                side: Side::Bid,
+                purpose: Purpose::Observation,
+                min_time: None,
+                target,
+                deadline,
+            };
+            match self.stream_price(span, &want, None).await {
+                StreamResult::Taken { held, at, .. } => {
+                    let info = QuoteInfo::of(&held.quote, Origin::Stream, at);
+                    Self::quote_taken(&info, Purpose::Observation);
+                    return Observed {
+                        fetched_at: Some(at),
+                        quote: Some(held.quote),
+                        status: ObservationStatus::Ok,
+                        info: Some(info),
+                    };
+                }
+                StreamResult::TimedOut { last } if !last_chance => {
+                    let now = self.clock.now();
+                    let info = last
+                        .as_ref()
+                        .map(|h| QuoteInfo::of(&h.quote, Origin::Stream, now));
+                    return Observed {
+                        fetched_at: Some(now),
+                        quote: last.map(|h| h.quote),
+                        status: ObservationStatus::NoQuote,
+                        info,
+                    };
+                }
+                StreamResult::TimedOut { .. } | StreamResult::Unavailable => {}
+            }
+        }
+        let priced = self
+            .request_price(
+                span,
+                Purpose::Observation,
+                &trade.ticker,
+                &trade.exchange_mic,
+                None,
+                None,
+                self.clock.now(),
+            )
+            .await;
+        match priced {
+            Priced::Taken {
+                at, quote, info, ..
+            } => Observed {
+                fetched_at: Some(at),
+                quote: Some(quote),
+                status: ObservationStatus::Ok,
+                info: Some(info),
+            },
+            Priced::TooOld { at, quote, info } => Observed {
+                fetched_at: Some(at),
+                quote: Some(quote),
+                status: ObservationStatus::QuoteTooOld,
+                info: Some(info),
+            },
+            Priced::Failed { last, info } => Observed {
+                fetched_at: last.as_ref().map(|(at, _)| *at),
+                quote: last.and_then(|(_, result)| result.ok()),
+                status: ObservationStatus::NoQuote,
+                info,
+            },
         }
     }
 

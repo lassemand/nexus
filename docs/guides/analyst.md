@@ -13,7 +13,7 @@ signal special_events (scheduled) ─► scheduler ─► preparation Job (Claud
                                          ▲                         │ uploads kernel (POST :8081/kernels)
 nexus expect ─► analyst.notes ───────────┘                         ▼
                                                             accepted kernel (analyst DB)
-special.events (release) ─► run kernel ─► decision ─► quotes from saxo-stream ─► simulated trade
+special.events (release) ─► run kernel ─► decision ─► streamed quotes from saxo-stream ─► simulated trade
                                               │                                      │
                                        analyst.decisions                       analyst.trades ─► signal ─► backtest DB
 ```
@@ -26,7 +26,10 @@ special.events (release) ─► run kernel ─► decision ─► quotes from sa
 3. **Decide.** The release path runs entirely inside the analyst pod and never waits on a database
    write or an external call it does not need.
 4. **Simulate.** Entry at the ask of the first tradable quote, exit at the bid after `HOLD`, plus
-   observations at `OBS_HORIZONS`. Decisions and trades go to `analyst.decisions` / `analyst.trades`;
+   observations at `OBS_HORIZONS`. Prices are read from memory: the analyst keeps the latest quote of every watched
+   instrument from `saxo-stream`'s `/quotes/stream` WebSocket. `GET /quote` is only the fallback while the stream is not
+   healthy, and a fallback quote older than `QUOTE_MAX_AGE` is refused (`quote_too_old`). Each trade and observation
+   records its `quote_source` (`stream` or `request`), Saxo's timestamp on the quote and its age. Decisions and trades go to `analyst.decisions` / `analyst.trades`;
    signal stores them for the backtest.
 
 ## Settings
@@ -47,13 +50,17 @@ Environment variables of the Deployment (chart `values.yaml`, `analyst.*`). Dura
 | `OBS_HORIZONS` | `1m,5m,15m,30m,60m,close` | Observation points after entry. |
 | `CLOSE_BUFFER` | `5m` | Margin before the close. |
 | `ENTRY_MAX_WAIT` | `5m` | Longest wait for a tradable quote. |
+| `QUOTE_MAX_AGE` | `1h` | Oldest Saxo timestamp a fallback quote may have; applies to `GET /quote` only. |
+| `WATCH_LEAD` | `12h` | Targets are watched on the stream from this long before their expected time; trades in progress stay watched. |
+| `QUOTE_STREAM_URL` | `ws://saxo-quotes.chronicle.svc.cluster.local:8080/quotes/stream` | `saxo-stream`'s quote WebSocket (same Service and port as `GET /quote`). |
+| `QUOTE_STREAM_HEARTBEAT_TIMEOUT` | `3s` | The stream is unhealthy without a heartbeat for this long, or when the heartbeat says Saxo is not connected. |
 | `MAX_RELEASE_AGE` | `15m` | Older releases are not traded. |
-| `HOLD`, `OBS_HORIZONS`, `CLOSE_BUFFER`, `ENTRY_MAX_WAIT`, `QUOTE_CONCURRENCY`, `SAXO_QUOTES_URL`, `TRADES_TOPIC` | see `analyst/README.md` | Simulated trades. |
+| `HOLD`, `OBS_HORIZONS`, `CLOSE_BUFFER`, `QUOTE_CONCURRENCY`, `SAXO_QUOTES_URL`, `TRADES_TOPIC` | see `analyst/README.md` | Simulated trades. |
 | `KERNEL_DEADLINE` | `50ms` | Kernel run limit. |
 | `ANALYST_TICKERS` | empty | `TICKER:MIC,...` allowlist; empty is every registered company. |
 | `NOTES_TOPIC` / `ANALYST_DECISIONS_TOPIC` / `ANALYST_TRADES_TOPIC` | `analyst.notes` / `analyst.decisions` / `analyst.trades` | |
 | `SPECIAL_EVENTS_TOPIC` | `special.events` | Releases. |
-| `SAXO_QUOTES_URL` | `http://saxo-quotes.chronicle.svc.cluster.local:8080` | Only namespace `analyst` may reach it. |
+| `SAXO_QUOTES_URL` | `http://saxo-quotes.chronicle.svc.cluster.local:8080` | Only namespace `analyst` may reach it; the fallback `GET /quote`. |
 | `PREP_UPLOAD_URL`, `PREP_IMAGE`, `PREP_NAMESPACE` | see values | Where Jobs upload; their image; their namespace. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | Alloy `:4318`, `analyst` | Empty endpoint disables export. |
 
@@ -83,9 +90,9 @@ into `analyst_decisions` (by `news_id`), `simulated_trades` (by `trade_id`) and 
 trade is written only when its `version` is higher than the stored one, and its observations are replaced in the
 same transaction, so reordered or redelivered messages never overwrite newer state. A trade and its decision come from
 different topics and may arrive in either order, so they are joined on `news_id` (indexed, no foreign key) when read.
-`AnalystTrade.news_id` carries the key. The quote-source columns (`entry_quote_source`, `*_quote_saxo_time`,
-`*_quote_age_ms`, observation `quote_source`/`quote_age_ms`) are nullable and stay empty until the analyst sends them (NEX-271).
-Prices are `NUMERIC(20,6)`, `pnl_pct` `NUMERIC(12,4)`. A decimal that does not parse rejects the whole message.
+`AnalystTrade.news_id` (field 32) carries the key. The quote-source columns (`entry_quote_source`, `*_quote_saxo_time`,
+`*_quote_age_ms`, observation `quote_source`/`quote_age_ms`) are stored from NEX-271's fields; a source other than
+`stream` or `request` rejects the message. Prices are `NUMERIC(20,6)`, `pnl_pct` `NUMERIC(12,4)`. A decimal that does not parse rejects the whole message.
 
 `insight` reads them with `fetch_analyst_trades(ticker?, decision?, since?, include_shadow = true, limit = 200)` and
 `summarise_analyst_trades(since?, ticker?)`. The results are forward-only and simulated (no look-ahead, no backfill),

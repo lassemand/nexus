@@ -1687,6 +1687,54 @@ tests:
               summary: "analyst release to decision p99 is 495.5ms"
               description: "The 99th percentile from a release arriving to its decision has been above 50 ms for 10 minutes. Check CPU throttling of the analyst pod and kernel run times on the Analyst dashboard."
 
+  # promtool time 0 is Thursday 1970-01-01 00:00 UTC.
+  - name: SaxoQuoteStreamDown fires on a weekday session and is silent otherwise
+    input_series:
+      - series: 'saxo_quote_stream_watched_instruments'
+        values: '3+0x660'
+      - series: 'saxo_quote_stream_connected'
+        values: '1+0x540 0+0x120'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: SaxoQuoteStreamDown
+        exp_alerts: []
+      - eval_time: 9h1m
+        alertname: SaxoQuoteStreamDown
+        exp_alerts: []
+      - eval_time: 9h3m
+        alertname: SaxoQuoteStreamDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Saxo quote stream is down while 3 instruments are watched"
+              description: "saxo-stream has /quotes/stream clients watching instruments but its Saxo streaming connection is down or reconnecting, so clients see saxo_connected false and use GET /quote. Check the saxo-stream logs (\"Saxo streaming\"), the token (SaxoQuotesDown) and the Quote stream row on the Saxo dashboard."
+
+  - name: SaxoQuoteStreamDown is silent when nobody watches
+    input_series:
+      - series: 'saxo_quote_stream_watched_instruments'
+        values: '0+0x660'
+      - series: 'saxo_quote_stream_connected'
+        values: '0+0x660'
+    alert_rule_test:
+      - eval_time: 10h
+        alertname: SaxoQuoteStreamDown
+        exp_alerts: []
+
+  - name: SaxoQuoteStreamDown is silent at night and at the weekend
+    input_series:
+      - series: 'saxo_quote_stream_watched_instruments'
+        values: '3+0x3500'
+      - series: 'saxo_quote_stream_connected'
+        values: '0+0x3500'
+    alert_rule_test:
+      - eval_time: 18h
+        alertname: SaxoQuoteStreamDown
+        exp_alerts: []
+      - eval_time: 2d10h
+        alertname: SaxoQuoteStreamDown
+        exp_alerts: []
+
   - name: SaxoQuotesDown fires on no_token and is silent otherwise
     input_series:
       - series: 'saxo_quote_requests_total{outcome="no_token"}'
@@ -1705,9 +1753,9 @@ tests:
 
   - name: AnalystQuoteErrors fires during market hours and is silent at night
     input_series:
-      - series: 'analyst_quotes_total{job="analyst",outcome="ok"}'
+      - series: 'analyst_quotes_total{job="analyst",source="request",outcome="ok"}'
         values: '0+5x700'
-      - series: 'analyst_quotes_total{job="analyst",outcome="timeout"}'
+      - series: 'analyst_quotes_total{job="analyst",source="request",outcome="timeout"}'
         values: '0+5x700'
     alert_rule_test:
       - eval_time: 3h
@@ -1721,3 +1769,84 @@ tests:
             exp_annotations:
               summary: "50% of analyst quotes are not ok"
               description: "More than 20 % of the quotes the analyst asked saxo-stream for failed over the last 10 minutes. See the outcome split on the Analyst dashboard and the Saxo dashboard."
+
+  - name: ConductorReviewsFailing fires at 3 failed reviews in 6h and not before
+    input_series:
+      - series: 'conductor_reviews_total{job="conductor",trigger="automatic",verdict="failed"}'
+        values: '0 0 1 1 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2'
+      - series: 'conductor_reviews_total{job="conductor",trigger="manual",verdict="failed"}'
+        values: '0x20 1x20'
+      - series: 'conductor_reviews_total{job="conductor",trigger="automatic",verdict="approve"}'
+        values: '0+5x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ConductorReviewsFailing
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: ConductorReviewsFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Automatic reviews are failing"
+              description: "At least 3 automatic reviews failed in the last 6 hours (no verdict file, an invalid verdict, a timeout or a Linear write that kept failing). Each failure left a Linear comment with its reason; see `scripts/conductor reviews list`, the \"Reviews\" row on the Conductor dashboard and the pod logs."
+
+  - name: AnalystQuoteErrors ignores stream reads
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="request",outcome="ok"}'
+        values: '0+5x700'
+      - series: 'analyst_quotes_total{job="analyst",source="stream",outcome="no_quote"}'
+        values: '0+50x700'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: AnalystQuoteErrors
+        exp_alerts: []
+
+  - name: AnalystQuoteErrors ignores a working fallback with retries
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="rejected"}'
+        values: '0+4x700'
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="accepted"}'
+        values: '0+1x700'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: AnalystQuoteErrors
+        exp_alerts: []
+
+  - name: AnalystQuoteFallbackUsed fires on request quotes during market hours
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="ok"}'
+        values: '0+1x700'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: AnalystQuoteFallbackUsed
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              job: analyst
+              source: request
+              purpose: entry
+              outcome: ok
+            exp_annotations:
+              summary: "The analyst fell back to GET /quote"
+              description: "The analyst asked saxo-stream for a quote with GET /quote in the last 15 minutes during trading hours. The fallback should be rare: the quote stream is normally healthy. See the Analyst dashboard and the Saxo \"Quote stream\" row."
+
+  - name: AnalystQuoteFallbackUsed is silent without request quotes
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="stream",purpose="entry",outcome="ok"}'
+        values: '0+1x700'
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="ok"}'
+        values: '3+0x700'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: AnalystQuoteFallbackUsed
+        exp_alerts: []
+
+  - name: AnalystQuoteFallbackUsed is silent outside trading hours
+    input_series:
+      - series: 'analyst_quotes_total{job="analyst",source="request",purpose="entry",outcome="ok"}'
+        values: '0+1x700'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: AnalystQuoteFallbackUsed
+        exp_alerts: []

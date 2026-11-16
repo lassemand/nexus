@@ -4,8 +4,8 @@
 use std::str::FromStr;
 
 use analyst::{
-    compute_pnl, trade_to_proto, Entry, Exit, NewObservation, NewTrade, ObservationStatus, Quote,
-    Store, TradeStatus,
+    compute_pnl, trade_to_proto, Entry, Exit, NewObservation, NewTrade, ObservationStatus, Origin,
+    Quote, QuoteInfo, Store, TradeStatus,
 };
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use rust_decimal::Decimal;
@@ -59,6 +59,11 @@ fn entry() -> Entry {
         currency: Some("SEK".into()),
         release_to_entry_ms: 3_600_120,
         exit_target_at: Some(at(8, 30, 0)),
+        info: QuoteInfo {
+            source: Origin::Stream,
+            saxo_time: Some(at(8, 0, 0) + Duration::milliseconds(100)),
+            age_ms: Some(20),
+        },
     }
 }
 
@@ -136,6 +141,11 @@ async fn every_state_change_bumps_the_version_and_a_closed_trade_has_its_result(
                 quote: Some(quote("100.40")),
                 late: false,
                 status: ObservationStatus::Ok,
+                info: Some(QuoteInfo {
+                    source: Origin::Request,
+                    saxo_time: Some(at(8, 1, 0)),
+                    age_ms: Some(40),
+                }),
             },
         )
         .await
@@ -151,6 +161,7 @@ async fn every_state_change_bumps_the_version_and_a_closed_trade_has_its_result(
                 quote: None,
                 late: false,
                 status: ObservationStatus::BeyondClose,
+                info: None,
             },
         )
         .await
@@ -166,6 +177,11 @@ async fn every_state_change_bumps_the_version_and_a_closed_trade_has_its_result(
                 ask: Some(dec("101.80")),
                 pnl: Some(pnl),
                 status: TradeStatus::Closed,
+                info: Some(QuoteInfo {
+                    source: Origin::Stream,
+                    saxo_time: Some(at(8, 29, 59)),
+                    age_ms: Some(1_000),
+                }),
             },
         )
         .await
@@ -197,6 +213,18 @@ async fn every_state_change_bumps_the_version_and_a_closed_trade_has_its_result(
     assert_eq!(message.observations.len(), 2);
     assert_eq!(message.observations[1].fetched_at_unix_millis, 0);
     assert_eq!(message.observations[1].delayed_minutes, -1);
+    assert_eq!(message.entry_quote_source, "stream");
+    assert_eq!(
+        message.entry_quote_saxo_time_unix_millis,
+        (at(8, 0, 0) + Duration::milliseconds(100)).timestamp_millis()
+    );
+    assert_eq!(message.entry_quote_age_ms, Some(20));
+    assert_eq!(message.exit_quote_source, "stream");
+    assert_eq!(message.exit_quote_age_ms, Some(1_000));
+    assert_eq!(message.observations[0].quote_source, "request");
+    assert_eq!(message.observations[0].quote_age_ms, Some(40));
+    assert_eq!(message.observations[1].quote_source, "");
+    assert_eq!(message.observations[1].quote_age_ms, None);
     assert!(!message.shadow);
 }
 
@@ -238,6 +266,7 @@ async fn only_trades_with_quotes_left_are_open_and_an_observation_is_replaced(po
         quote: None,
         late: false,
         status: ObservationStatus::Missed,
+        info: None,
     };
     store
         .record_observation(b.id, &missed)
@@ -286,4 +315,87 @@ async fn the_database_rejects_a_bad_status_trace_id_or_hold(pool: PgPool) {
             .await
             .is_err()
     );
+}
+
+#[sqlx::test]
+async fn a_too_old_entry_and_a_too_old_exit_keep_the_quote_for_the_audit(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    let a = decision(&pool, "old-entry", "buy").await;
+    let trade = store
+        .create_trade(&new_trade(a, "buy"))
+        .await
+        .expect("create")
+        .expect("created");
+    let stale = QuoteInfo {
+        source: Origin::Request,
+        saxo_time: Some(at(5, 0, 0)),
+        age_ms: Some(3 * 3_600_000),
+    };
+    let rejected = store
+        .reject_entry(trade.id, TradeStatus::QuoteTooOld, &stale)
+        .await
+        .expect("rejected");
+    assert_eq!(rejected.status(), TradeStatus::QuoteTooOld);
+    assert!(!rejected.status().is_open());
+    assert_eq!(rejected.entry_ask, None);
+    assert_eq!(rejected.entry_quote_source.as_deref(), Some("request"));
+    assert_eq!(rejected.entry_quote_saxo_time, Some(at(5, 0, 0)));
+    assert_eq!(rejected.entry_quote_age_ms, Some(3 * 3_600_000));
+    assert_eq!(rejected.version, 2);
+    assert_eq!(
+        store
+            .trade_count(TradeStatus::QuoteTooOld)
+            .await
+            .expect("count"),
+        1
+    );
+    assert!(store.open_trades().await.expect("open").is_empty());
+
+    let b = decision(&pool, "old-exit", "buy").await;
+    let trade = store
+        .create_trade(&new_trade(b, "buy"))
+        .await
+        .expect("create")
+        .expect("created");
+    store.record_entry(trade.id, &entry()).await.expect("entry");
+    store
+        .record_observation(
+            trade.id,
+            &NewObservation {
+                horizon: "hold".into(),
+                scheduled_at: at(8, 30, 0),
+                fetched_at: Some(at(8, 30, 0)),
+                quote: Some(quote("101.50")),
+                late: false,
+                status: ObservationStatus::QuoteTooOld,
+                info: Some(stale),
+            },
+        )
+        .await
+        .expect("observation");
+    let closed = store
+        .record_exit(
+            trade.id,
+            &Exit {
+                at: None,
+                bid: None,
+                ask: None,
+                pnl: None,
+                status: TradeStatus::ExitQuoteTooOld,
+                info: Some(stale),
+            },
+        )
+        .await
+        .expect("exit");
+    assert_eq!(closed.status(), TradeStatus::ExitQuoteTooOld);
+    assert_eq!(closed.pnl_pct, None);
+    assert_eq!(closed.exit_at, None);
+    assert_eq!(closed.exit_quote_source.as_deref(), Some("request"));
+    assert_eq!(closed.exit_quote_saxo_time, Some(at(5, 0, 0)));
+    let observations = store.observations(trade.id).await.expect("observations");
+    assert_eq!(observations[0].status, "quote_too_old");
+    assert_eq!(observations[0].quote_source.as_deref(), Some("request"));
+    let message = trade_to_proto(&closed, &observations);
+    assert_eq!(message.status, "exit_quote_too_old");
+    assert_eq!(message.exit_quote_age_ms, Some(3 * 3_600_000));
 }

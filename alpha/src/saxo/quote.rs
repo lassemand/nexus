@@ -168,7 +168,7 @@ struct RawDisplay {
     decimals: Option<u32>,
 }
 
-fn raw_decimal(raw: &Option<Box<RawValue>>) -> Option<Decimal> {
+pub(crate) fn raw_decimal(raw: &Option<Box<RawValue>>) -> Option<Decimal> {
     let text = raw.as_ref()?.get().trim();
     Decimal::from_str(text)
         .or_else(|_| Decimal::from_scientific(text))
@@ -176,7 +176,7 @@ fn raw_decimal(raw: &Option<Box<RawValue>>) -> Option<Decimal> {
 }
 
 /// `value` with at least `decimals` digits after the point; never rounded.
-fn pad_to(value: Decimal, decimals: Option<u32>) -> Decimal {
+pub(crate) fn pad_to(value: Decimal, decimals: Option<u32>) -> Decimal {
     match decimals {
         Some(d) if value.scale() < d && d <= 28 => {
             let mut v = value;
@@ -402,6 +402,26 @@ mod tests {
                     ]
                 );
             }
+            let s = super::super::stream::InfoPriceStreamClient::new(
+                reqwest::Client::new(),
+                base,
+                super::super::stream::LIVE_WS_URL,
+                super::super::stream::LIVE_AUTHORIZE_URL,
+            );
+            for url in [
+                s.subscriptions_url().unwrap(),
+                s.subscription_url("ctx", Some("q1")).unwrap(),
+                s.subscription_url("ctx", None).unwrap(),
+            ] {
+                assert!(
+                    url.path()
+                        .contains(super::super::stream::SUBSCRIPTIONS_PATH),
+                    "{url}"
+                );
+                assert!(url.path().contains(INFOPRICES_PATH), "{url}");
+            }
+            let auth = s.authorize_url("ctx").unwrap();
+            assert!(auth.path().ends_with("/streaming/ws/authorize"), "{auth}");
         }
     }
 

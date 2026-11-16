@@ -451,6 +451,12 @@ fn open_trade(entry_at: DateTime<Utc>) -> StoredTrade {
         trace_id: None,
         release_traceparent: None,
         trade_trace_id: None,
+        entry_quote_source: None,
+        entry_quote_saxo_time: None,
+        entry_quote_age_ms: None,
+        exit_quote_source: None,
+        exit_quote_saxo_time: None,
+        exit_quote_age_ms: None,
     }
 }
 

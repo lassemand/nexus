@@ -59,6 +59,10 @@ spec:
               value: {{ .Values.analyst.closeBuffer | quote }}
             - name: ENTRY_MAX_WAIT
               value: {{ .Values.analyst.entryMaxWait | quote }}
+            - name: QUOTE_MAX_AGE
+              value: {{ .Values.analyst.quoteMaxAge | quote }}
+            - name: WATCH_LEAD
+              value: {{ .Values.analyst.watchLead | quote }}
             - name: MAX_RELEASE_AGE
               value: {{ .Values.analyst.maxReleaseAge | quote }}
             - name: KERNEL_DEADLINE
@@ -75,6 +79,10 @@ spec:
               value: {{ .Values.analyst.releasesTopic | quote }}
             - name: SAXO_QUOTES_URL
               value: {{ .Values.analyst.saxoQuotesUrl | quote }}
+            - name: QUOTE_STREAM_URL
+              value: {{ .Values.analyst.quoteStreamUrl | quote }}
+            - name: QUOTE_STREAM_HEARTBEAT_TIMEOUT
+              value: {{ .Values.analyst.quoteStreamHeartbeatTimeout | quote }}
             - name: PREP_UPLOAD_URL
               value: {{ .Values.analyst.prepUploadUrl | quote }}
             - name: PREP_IMAGE

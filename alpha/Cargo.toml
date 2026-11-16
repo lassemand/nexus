@@ -20,6 +20,7 @@ metrics = "0.24"
 rand = { version = "0.9", features = ["os_rng"] }
 url = "2"
 rust_decimal = { version = "1.43.0", default-features = false, features = ["std"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 
 [dev-dependencies]
 metrics-exporter-prometheus = { version = "0.16", default-features = false }

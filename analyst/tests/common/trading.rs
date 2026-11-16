@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use analyst::{
     parse_horizons, Clock, DecisionHandle, DecisionKind, Entry, Exit, NewObservation, NewTrade,
-    Persisted, Quote, QuoteError, QuoteSource, RunnerSettings, StoredObservation, StoredTrade,
-    TokioClock, TradeHandOff, TradeRunner, TradeSignal, TradeSink, TradeStatus, TradeStore,
+    Persisted, Quote, QuoteError, QuoteInfo, QuoteSource, RunnerSettings, StoredObservation,
+    StoredTrade, TokioClock, TradeHandOff, TradeRunner, TradeSignal, TradeSink, TradeStatus,
+    TradeStore,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
@@ -68,6 +69,10 @@ pub fn sto(m: u32, day: u32, h: u32, mi: u32, s: u32) -> DateTime<Utc> {
         .with_timezone(&Utc)
 }
 
+/// The timestamp every [`quote`] carries; [`FakeQuotes`] replaces it with the
+/// instant it answers at, minus its current age.
+pub const DEFAULT_STAMP: &str = "2026-11-10T08:00:00Z";
+
 pub fn quote(bid: &str, ask: &str) -> Quote {
     Quote {
         bid: Some(dec(bid)),
@@ -76,7 +81,7 @@ pub fn quote(bid: &str, ask: &str) -> Quote {
         ask_type: Some("Tradable".into()),
         delayed_minutes: Some(0),
         currency: Some("SEK".into()),
-        saxo_last_updated: Some("2026-11-10T08:00:00Z".into()),
+        saxo_last_updated: Some(DEFAULT_STAMP.into()),
     }
 }
 
@@ -88,6 +93,7 @@ pub struct FakeQuotes {
     pub requests: Mutex<Vec<(String, DateTime<Utc>)>>,
     pub real_times: Mutex<Vec<std::time::Instant>>,
     latency: Duration,
+    age: Mutex<Duration>,
     in_flight: AtomicUsize,
     pub max_in_flight: AtomicUsize,
 }
@@ -104,9 +110,15 @@ impl FakeQuotes {
             requests: Mutex::new(Vec::new()),
             real_times: Mutex::new(Vec::new()),
             latency,
+            age: Mutex::new(Duration::ZERO),
             in_flight: AtomicUsize::new(0),
             max_in_flight: AtomicUsize::new(0),
         })
+    }
+
+    /// How old Saxo's timestamp on the quotes it answers is from now on.
+    pub fn set_age(&self, age: Duration) {
+        *self.age.lock().expect("lock") = age;
     }
 
     pub fn times(&self) -> Vec<DateTime<Utc>> {
@@ -137,7 +149,14 @@ impl QuoteSource for FakeQuotes {
             tokio::time::sleep(self.latency).await;
         }
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
-        (self.script)(now)
+        let age = *self.age.lock().expect("lock");
+        (self.script)(now).map(|mut quote| {
+            if quote.saxo_last_updated.as_deref() == Some(DEFAULT_STAMP) {
+                let stamp = self.clock.now() - chrono::Duration::from_std(age).expect("age");
+                quote.saxo_last_updated = Some(stamp.to_rfc3339());
+            }
+            quote
+        })
     }
 }
 
@@ -281,6 +300,12 @@ impl TradeStore for MemStore {
             trace_id: new.trace_id.clone(),
             release_traceparent: new.release_traceparent.clone(),
             trade_trace_id: None,
+            entry_quote_source: None,
+            entry_quote_saxo_time: None,
+            entry_quote_age_ms: None,
+            exit_quote_source: None,
+            exit_quote_saxo_time: None,
+            exit_quote_age_ms: None,
         };
         state.trades.push(trade.clone());
         Ok(Some(trade))
@@ -308,6 +333,23 @@ impl TradeStore for MemStore {
             t.currency = entry.currency.clone();
             t.release_to_entry_ms = Some(entry.release_to_entry_ms);
             t.exit_target_at = entry.exit_target_at;
+            t.entry_quote_source = Some(entry.info.source.as_str().to_owned());
+            t.entry_quote_saxo_time = entry.info.saxo_time;
+            t.entry_quote_age_ms = entry.info.age_ms;
+        })
+    }
+
+    async fn reject_entry(
+        &self,
+        id: i64,
+        status: TradeStatus,
+        info: &QuoteInfo,
+    ) -> Result<StoredTrade, sqlx::Error> {
+        self.update(id, |t| {
+            t.status = status.as_str().to_owned();
+            t.entry_quote_source = Some(info.source.as_str().to_owned());
+            t.entry_quote_saxo_time = info.saxo_time;
+            t.entry_quote_age_ms = info.age_ms;
         })
     }
 
@@ -334,6 +376,8 @@ impl TradeStore for MemStore {
                 delayed_minutes: quote.and_then(|q| q.delayed_minutes),
                 late: observation.late,
                 status: observation.status.as_str().to_owned(),
+                quote_source: observation.info.map(|i| i.source.as_str().to_owned()),
+                quote_age_ms: observation.info.and_then(|i| i.age_ms),
             });
         }
         self.update(trade_id, |_| {})
@@ -347,6 +391,9 @@ impl TradeStore for MemStore {
             t.exit_ask = exit.ask;
             t.pnl_per_share = exit.pnl.map(|p| p.per_share);
             t.pnl_pct = exit.pnl.map(|p| p.pct);
+            t.exit_quote_source = exit.info.map(|i| i.source.as_str().to_owned());
+            t.exit_quote_saxo_time = exit.info.and_then(|i| i.saxo_time);
+            t.exit_quote_age_ms = exit.info.and_then(|i| i.age_ms);
         })
     }
 
@@ -368,6 +415,7 @@ impl TradeStore for MemStore {
 }
 
 pub struct Rig {
+    pub book: Arc<analyst::QuoteBook>,
     pub clock: Arc<TokioClock>,
     pub store: Arc<MemStore>,
     pub quotes: Arc<FakeQuotes>,
@@ -382,6 +430,7 @@ pub fn settings(concurrency: usize) -> RunnerSettings {
         close_buffer: Duration::from_secs(5 * 60),
         entry_max_wait: Duration::from_secs(5 * 60),
         quote_concurrency: concurrency,
+        quote_max_age: Duration::from_secs(3600),
         trades_topic: "analyst.trades".to_owned(),
     }
 }
@@ -398,6 +447,7 @@ pub fn rig(
     let store = Arc::new(MemStore::default());
     let quotes = FakeQuotes::new(clock.clone(), latency, script);
     let sink = Arc::new(MemSink::default());
+    let book = analyst::QuoteBook::new(clock.clone(), Duration::from_secs(3));
     let runner = TradeRunner::new(
         store.clone(),
         analyst::SessionsCache::new(sessions()),
@@ -405,8 +455,10 @@ pub fn rig(
         sink.clone(),
         clock.clone(),
         settings(concurrency),
-    );
+    )
+    .with_quote_book(book.clone());
     Rig {
+        book,
         clock,
         store,
         quotes,
