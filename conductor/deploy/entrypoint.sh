@@ -553,6 +553,109 @@ configure_mcp() {
   log "MCP servers connected: linear, github"
 }
 
+# ── reviewer identity ────────────────────────────────────────────────────────
+#
+# Review sessions run as a second GitHub App, the reviewer (Annette), so they
+# can approve the author app's pull requests and can never push to them. This
+# prepares everything conductor-review-session needs, in one directory that
+# only this user can read. `ready` is written last and removed first, so
+# conductor never launches a review session from a half-written identity.
+# Failures are warnings: without the reviewer app, review sessions run as the
+# author app, and the rest of conductor is unaffected.
+
+configure_review_identity() {
+  local dir="${CONDUCTOR_REVIEW_IDENTITY_DIR:-${STATE_DIR}/review-identity}"
+  local helper="${GITHUB_APP_CREDENTIAL_HELPER:-/usr/local/bin/github-app-credential-helper}"
+  local settings_src="${CONDUCTOR_REVIEW_SETTINGS_SRC:-/usr/local/share/conductor/reviewer-settings.json}"
+  mkdir -p "$dir"
+  chmod 0700 "$dir"
+  rm -f "${dir}/ready" "${dir}/bot-login"
+
+  if [[ -z "${REVIEW_GITHUB_APP_ID:-}" || -z "${REVIEW_GITHUB_APP_INSTALLATION_ID:-}" \
+        || -z "${REVIEW_GITHUB_APP_PRIVATE_KEY:-}" ]]; then
+    log "WARNING: REVIEW_GITHUB_APP_ID, REVIEW_GITHUB_APP_INSTALLATION_ID and REVIEW_GITHUB_APP_PRIVATE_KEY are not all set; review sessions run as the author app"
+    return 0
+  fi
+  if [[ ! "$REVIEW_GITHUB_APP_ID" =~ ^[0-9]+$ || ! "$REVIEW_GITHUB_APP_INSTALLATION_ID" =~ ^[0-9]+$ ]]; then
+    log "WARNING: REVIEW_GITHUB_APP_ID and REVIEW_GITHUB_APP_INSTALLATION_ID must be numbers; review sessions run as the author app"
+    return 0
+  fi
+
+  local key="${dir}/private-key.pem" tmp
+  tmp="$(mktemp)"
+  chmod 0600 "$tmp"
+  printf '%s' "$REVIEW_GITHUB_APP_PRIVATE_KEY" > "$tmp"
+  if ! openssl pkey -in "$tmp" -noout >/dev/null 2>&1; then
+    rm -f "$tmp"
+    log "WARNING: REVIEW_GITHUB_APP_PRIVATE_KEY is not a usable private key; review sessions run as the author app"
+    return 0
+  fi
+  mv "$tmp" "$key"
+
+  printf 'REVIEW_APP_ID=%s\nREVIEW_INSTALLATION_ID=%s\n' \
+    "$REVIEW_GITHUB_APP_ID" "$REVIEW_GITHUB_APP_INSTALLATION_ID" > "${dir}/app.env"
+
+  local cache_dir="$HOME/.cache/git-review"
+  mkdir -p "$cache_dir"
+  chmod 0700 "$cache_dir"
+  rm -f "${dir}/gitconfig"
+  git config --file "${dir}/gitconfig" user.name "Annette (automated reviewer)"
+  git config --file "${dir}/gitconfig" user.email "annette-review@nexus.local"
+  git config --file "${dir}/gitconfig" safe.directory "$REPO_DIR"
+  git config --file "${dir}/gitconfig" --add safe.directory "${WORKTREE_DIR}/*"
+  git config --file "${dir}/gitconfig" \
+    "credential.https://github.com.helper" \
+    "cache --timeout=${CONDUCTOR_GIT_CREDENTIAL_TTL:-3300} --socket ${cache_dir}/credential-socket"
+  git config --file "${dir}/gitconfig" --add "credential.https://github.com.helper" "$helper"
+  git config --file "${dir}/gitconfig" credential.https://github.com.useHttpPath false
+
+  tmp="$(mktemp)"
+  chmod 0600 "$tmp"
+  jq -n \
+    --arg app "$REVIEW_GITHUB_APP_ID" \
+    --arg installation "$REVIEW_GITHUB_APP_INSTALLATION_ID" \
+    --arg key "$key" \
+    --arg linear "${LINEAR_API_KEY:-}" \
+    '{mcpServers: {
+        github: {type: "stdio", command: "github-mcp-server",
+                 args: ["stdio", "--app-id", $app, "--app-installation-id", $installation,
+                        "--app-private-key-path", $key,
+                        "--toolsets", "context,repos,pull_requests,issues"]},
+        linear: {type: "http", url: "https://mcp.linear.app/mcp",
+                 headers: {Authorization: ("Bearer " + $linear)}}}}' > "$tmp"
+  mv "$tmp" "${dir}/mcp.json"
+
+  if [[ ! -r "$settings_src" ]]; then
+    log "WARNING: ${settings_src} is missing; review sessions run as the author app"
+    return 0
+  fi
+  cp "$settings_src" "${dir}/settings.json"
+
+  if ! printf 'protocol=https\nhost=github.com\n\n' \
+       | GITHUB_APP_ID="$REVIEW_GITHUB_APP_ID" \
+         GITHUB_APP_INSTALLATION_ID="$REVIEW_GITHUB_APP_INSTALLATION_ID" \
+         GITHUB_APP_PRIVATE_KEY_PATH="$key" \
+         "$helper" get >/dev/null 2>&1; then
+    log "WARNING: could not mint a token for the reviewer app; check REVIEW_GITHUB_APP_* (review sessions run as the author app)"
+    return 0
+  fi
+
+  local slug
+  slug="$(GITHUB_APP_ID="$REVIEW_GITHUB_APP_ID" \
+          GITHUB_APP_INSTALLATION_ID="$REVIEW_GITHUB_APP_INSTALLATION_ID" \
+          GITHUB_APP_PRIVATE_KEY_PATH="$key" \
+          "$helper" app-slug 2>/dev/null)" || slug=""
+  if [[ -n "$slug" ]]; then
+    printf '%s[bot]\n' "$slug" > "${dir}/bot-login"
+    log "reviewer app: ${slug}[bot]"
+  else
+    log "WARNING: could not read the reviewer app's slug; set CONDUCTOR_REVIEW_BOT_LOGIN"
+  fi
+
+  touch "${dir}/ready"
+  log "reviewer identity ready in ${dir}"
+}
+
 # ── smoke check ──────────────────────────────────────────────────────────────
 
 smoke_check() {
@@ -593,6 +696,7 @@ main() {
     seed_claude_credentials
   fi
   configure_mcp
+  configure_review_identity
   smoke_check
   log "starting conductor serve"
   exec conductor serve

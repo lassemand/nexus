@@ -96,7 +96,8 @@ review:
   timeout: "45m"
   # GitHub login of the reviewer app, e.g. `annette-review[bot]`. Its comments
   # and reviews are never dispatched to a session; the send-back reaches the
-  # author through the move to Todo. Empty until the app exists (NEX-273).
+  # author through the move to Todo. Leave empty: the entrypoint reads it from
+  # the reviewer app (`GET /app`) at startup. Set it only to override that.
   botLogin: ""
 # CARGO_TARGET_DIR shared by every session (CONDUCTOR_CARGO_TARGET_DIR). One
 # workspace build instead of one per worktree (each was 4-40 GB). Parallel

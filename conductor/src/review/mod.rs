@@ -736,12 +736,8 @@ impl Reviews {
             )
             .await;
         tracing::info!(issue = %identifier, by = %command.login, ?outcome, "manual review trigger handled");
-        if outcome == TriggerOutcome::Queued {
-            if let Err(e) = self
-                .github
-                .react(&command.repo, command.comment_id, "eyes")
-                .await
-            {
+        if let (TriggerOutcome::Queued, Some(comment_id)) = (outcome, command.comment_id) {
+            if let Err(e) = self.github.react(&command.repo, comment_id, "eyes").await {
                 tracing::warn!(error = %e, "cannot react to the /review comment");
             }
         }

@@ -210,9 +210,19 @@ off every trading path.
   whatever the limit. Conductor reacts with 👀 when it is queued; the comment is
   not sent to the author's set. At most one review per issue is queued or
   running at a time; further triggers are dropped and logged.
-- **The reviewer bot.** Comments by `review.botLogin`
-  (`CONDUCTOR_REVIEW_BOT_LOGIN`) are never dispatched to a session; a
-  send-back reaches the author only through the move to Todo.
+- **Re-request review.** The same manual review starts when a
+  `githubWebhookUsers` login requests a review from the reviewer app in the
+  pull request's **Reviewers** box, as with Copilot (a `pull_request`
+  `review_requested` event naming the reviewer bot). GitHub only lists a
+  third-party app there once it has reviewed the pull request, so this is the
+  **Re-request review** button next to Annette after her first, automatic
+  review; before that, or for a pull request she never reviewed, use
+  `/review`. Needs the GitHub webhook to send `pull_request` events (below).
+- **The reviewer bot.** Comments by the reviewer app's bot login are never
+  dispatched to a session; a send-back reaches the author only through the
+  move to Todo. The login is read from the app at startup (see "The reviewer's
+  GitHub identity"); `review.botLogin` (`CONDUCTOR_REVIEW_BOT_LOGIN`) overrides
+  it.
 
 ```bash
 scripts/conductor reviews list              # send-backs, last verdict and time per issue
@@ -234,6 +244,65 @@ Settings (`values.yaml` `review`, environment in brackets): `enabled`
 `conductor_review_sessions{kind}`, `conductor_review_linear_identity{kind}`,
 `conductor_review_linear_auth_failures_total`; alert
 `ConductorReviewsFailing`; row "Reviews" on the Conductor dashboard.
+
+### The reviewer's GitHub identity (Annette)
+
+The pull requests are authored by the author app (`nexus-mcp[bot]`), and GitHub
+never lets an author approve its own pull request, so the reviewer is a second
+GitHub App. Review sessions run with **only** its credentials, and its Contents
+permission is read-only, so a push from a review session fails at GitHub even
+if one were attempted. One-time setup:
+
+1. **Create the app** (GitHub → Settings → Developer settings → GitHub Apps →
+   New): name it `annette-review` (plain `annette` is taken; any free name
+   works, its bot login becomes `<slug>[bot]`), upload Annette's avatar.
+   - Permissions: **Pull requests** read and write, **Contents** read-only,
+     **Issues** read and write (labels and comments), **Metadata** read-only.
+   - **Webhook: off.** Conductor gets every event through the existing
+     repository webhook.
+2. **Generate a private key** (downloads a `.pem`), and note the App ID.
+3. **Install it** on `lassemand/nexus` only; the installation id is the
+   number at the end of the installation's settings URL.
+4. **Store the credentials**, with `patch` so the other properties stay:
+
+   ```bash
+   vault kv patch secret/nexus/conductor REVIEW_GITHUB_APP_ID=<id> REVIEW_GITHUB_APP_INSTALLATION_ID=<installation id> REVIEW_GITHUB_APP_PRIVATE_KEY=@<file.pem>
+   ```
+
+   Then delete the `.pem`. Never paste the key into a pull request, issue or
+   chat. The ExternalSecret picks the properties up within an hour; restart
+   the pod (`kubectl -n conductor rollout restart deploy/conductor`).
+5. **Subscribe the repository webhook to `pull_request` events** (repository
+   → Settings → Webhooks → the Hookdeck one → "Let me select individual
+   events" → add **Pull requests**). Only needed for **Re-request review**.
+
+At every start the entrypoint (`configure_review_identity`) prepares
+`/data/state/review-identity` (`CONDUCTOR_REVIEW_IDENTITY_DIR`, mode 0700): the
+reviewer's key, its ids, a git config with its own credential cache, an MCP
+config (GitHub as the reviewer app, Linear) and the Claude settings
+(`conductor/deploy/reviewer-settings.json`). It mints a token to prove the
+credentials work and reads the app's slug (`GET /app`) for the bot login,
+which it logs (`reviewer app: annette-review[bot]`). A review session then
+starts as `conductor-review-session claude ... --permission-mode dontAsk
+--settings ... --mcp-config ... --strict-mcp-config`: the launcher drops every
+other credential from the environment (the author app's key, `GITHUB_TOKEN`,
+`LINEAR_API_KEY`, `DATABASE_URL`, ...), points git, `gh` and the credential
+helper at the reviewer app, and mints a one-hour token for `gh`. In `dontAsk`
+mode every tool outside the settings' allow list is refused: reading, `git
+log/diff/show/fetch/checkout`, `gh pr view/diff/checks`, `gh api`, `cargo
+check/clippy/test`, the GitHub review tools, the Linear read tools, and writes
+under `.review/` only; `git push`, `git commit`, `gh pr merge` and every Linear
+write are denied outright.
+
+Without the three `REVIEW_GITHUB_APP_*` properties (or if the key does not
+work) the entrypoint logs a warning and review sessions run as the author app,
+with `--dangerously-skip-permissions` like any other session; such a review
+can request changes but cannot approve.
+
+Known limits: the author app's key file is on the same volume, readable by the
+same user, so the separation inside the pod rests on the environment and the
+`Read` deny rules rather than on file permissions. GitHub does not let an app be
+picked as a reviewer before it has reviewed (see **Re-request review**).
 
 ### The reviewer's own name in Linear (Annette)
 

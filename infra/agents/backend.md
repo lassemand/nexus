@@ -157,13 +157,28 @@ When you receive a Linear channel notification about a new Todo task:
 
 When a PR review comment arrives, assess it using the following decision tree:
 
-1. **The comment is clear and actionable, and the fix makes sense** — implement the change, commit and push it to the PR branch, then reply on the comment briefly confirming what was changed and why, and that the thread has been resolved.
+1. **The comment is clear and actionable, and the fix makes sense** — implement the change, commit and push it to the PR branch, then reply on the comment briefly confirming what was changed and why, and that the thread has been resolved. (Threads opened by the reviewer bot are the exception: reply, but leave them for her to resolve; see "When a task comes back from review".)
 
 2. **The comment is unclear or ambiguous** — do *not* guess. Reply on the comment asking a focused question about exactly what is unclear. Do not push any code until you have a clear answer.
 
 3. **The comment does not make sense, or the requested change would be incorrect or harmful** — reply on the comment explaining why the suggestion does not apply or would introduce a problem. Be specific and constructive. Do not make the change.
 
 In all cases: read the full PR diff before responding so you have complete context.
+
+---
+
+## When a task comes back from review
+
+Every task that enters **In Review** is reviewed automatically by **Annette**, the reviewer bot (the GitHub App whose login conductor knows as `CONDUCTOR_REVIEW_BOT_LOGIN`, for example `annette-review[bot]`). On blocking findings she posts a GitHub review with **Request changes**, and conductor moves the issue back to **Todo** with a Linear comment from the reviewer that starts `Review send-back k of N`.
+
+So when a Todo dispatch arrives for an issue that already has an open PR, and whose latest Linear comment is a review send-back (it starts with `Review send-back`, or its author is the reviewer app):
+
+1. Read the send-back comment, then every **unresolved** review thread on each of the issue's PRs whose author is the reviewer bot, and the body of her latest review.
+2. Handle each thread with the decision tree in "Handling PR Review Comments": fix it, ask a focused question, or explain why the change does not apply.
+3. Reply on every thread, saying what you changed (with the commit) or why not. **Do not resolve the reviewer's threads yourself**: she resolves them on the next review, once she has checked the fix or accepted your reason.
+4. Push, wait for CI to pass, then move the issue to **In Review**. That starts the next review.
+
+Annette's comments never arrive as `pr_comment` / `pr_review_comment` events: conductor filters the reviewer bot out, so a send-back reaches you only through this Todo dispatch. Never act on her comments twice, and never add the reviewer bot to `GITHUB_WEBHOOK_USERS` (a bot login is not a GitHub user). After `CONDUCTOR_REVIEW_MAX_ITERATIONS` send-backs, automatic reviews stop and the PR is labelled `needs-human`; a person takes over from there.
 
 ---
 

@@ -384,7 +384,7 @@ async fn a_manual_review_at_the_limit_runs_and_is_not_dispatched_to_the_author(p
         command: ReviewCommand {
             repo: REPO.into(),
             pr_number: 316,
-            comment_id: 42,
+            comment_id: Some(42),
             login: "lassemand".into(),
         },
         delivery_id: Some("gh-1".into()),
@@ -463,6 +463,69 @@ async fn a_review_comment_router_path_and_the_bot_filter(pool: PgPool) {
     assert_eq!(
         *s.h.fake.started.lock().unwrap(),
         vec!["review-nex-1".to_string()]
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn re_requesting_the_reviewer_app_queues_a_manual_review(pool: PgPool) {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    s.h.fake.set_turn(50, Some(&verdict_cmd("approve", &s.sha)));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+    let router = conductor::http::router(conductor::http::AppState {
+        sink: Arc::new(sink),
+        github_webhook_secret: None,
+        watched_github_users: vec!["lassemand".into()],
+        shutting_down: Arc::clone(&s.h.shutting_down),
+        review_bot_login: Some("annette-review[bot]".into()),
+    });
+    let post = |reviewer: &str, sender: &str, delivery: &str| {
+        let payload = serde_json::json!({
+            "action": "review_requested",
+            "number": 316,
+            "requested_reviewer": { "login": reviewer, "type": "Bot" },
+            "sender": { "login": sender },
+            "repository": { "full_name": REPO }
+        });
+        Request::builder()
+            .method("POST")
+            .uri("/webhook/github")
+            .header("X-GitHub-Event", "pull_request")
+            .header("X-GitHub-Delivery", delivery)
+            .body(Body::from(payload.to_string()))
+            .unwrap()
+    };
+
+    router
+        .clone()
+        .oneshot(post("someone-else", "lassemand", "p1"))
+        .await
+        .unwrap();
+    router
+        .clone()
+        .oneshot(post("annette-review[bot]", "stranger", "p2"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        s.h.registry.snapshot().await.unwrap().is_empty(),
+        "nothing queued"
+    );
+
+    router
+        .clone()
+        .oneshot(post("annette-review[bot]", "lassemand", "p3"))
+        .await
+        .unwrap();
+    assert!(wait_for_closed(&s.h).await);
+    assert_eq!(review_prompts(&s.h).len(), 1);
+    assert!(review_prompts(&s.h)[0].contains("Trigger: manual"));
+    assert!(
+        s.github.reactions.lock().unwrap().is_empty(),
+        "no comment to react to"
     );
 }
 
@@ -596,7 +659,7 @@ async fn two_triggers_for_one_issue_make_one_review(pool: PgPool) {
         command: ReviewCommand {
             repo: REPO.into(),
             pr_number: 316,
-            comment_id: 1,
+            comment_id: Some(1),
             login: "lassemand".into(),
         },
         delivery_id: Some("g1".into()),
