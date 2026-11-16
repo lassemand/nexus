@@ -11,6 +11,7 @@ use rust_decimal::Decimal;
 use sqlx::{FromRow, Row};
 
 use crate::pnl::Pnl;
+use crate::quote_book::Origin;
 use crate::quotes::Quote;
 use crate::store::Store;
 
@@ -35,6 +36,11 @@ pub enum TradeStatus {
     CurrencyMismatch,
     /// The entry is not before the session cutoff, or its price is not usable.
     InvalidEntry,
+    /// The only entry quote was a fallback request older than `QUOTE_MAX_AGE`:
+    /// no trade.
+    QuoteTooOld,
+    /// The same at exit: no result.
+    ExitQuoteTooOld,
 }
 
 impl TradeStatus {
@@ -50,6 +56,8 @@ impl TradeStatus {
             TradeStatus::CalendarUnknown => "calendar_unknown",
             TradeStatus::CurrencyMismatch => "currency_mismatch",
             TradeStatus::InvalidEntry => "invalid_entry",
+            TradeStatus::QuoteTooOld => "quote_too_old",
+            TradeStatus::ExitQuoteTooOld => "exit_quote_too_old",
         }
     }
 
@@ -65,6 +73,8 @@ impl TradeStatus {
             "calendar_unknown" => TradeStatus::CalendarUnknown,
             "currency_mismatch" => TradeStatus::CurrencyMismatch,
             "invalid_entry" => TradeStatus::InvalidEntry,
+            "quote_too_old" => TradeStatus::QuoteTooOld,
+            "exit_quote_too_old" => TradeStatus::ExitQuoteTooOld,
             _ => return None,
         })
     }
@@ -86,6 +96,8 @@ pub enum ObservationStatus {
     BeyondClose,
     /// No usable quote was had.
     NoQuote,
+    /// The only quote was a fallback request older than `QUOTE_MAX_AGE`.
+    QuoteTooOld,
 }
 
 impl ObservationStatus {
@@ -96,6 +108,39 @@ impl ObservationStatus {
             ObservationStatus::Missed => "missed",
             ObservationStatus::BeyondClose => "beyond_close",
             ObservationStatus::NoQuote => "no_quote",
+            ObservationStatus::QuoteTooOld => "quote_too_old",
+        }
+    }
+}
+
+/// Where a price came from and how old it was when taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuoteInfo {
+    /// The quote book or a request.
+    pub source: Origin,
+    /// Saxo's timestamp of the quote, when readable.
+    pub saxo_time: Option<DateTime<Utc>>,
+    /// The time the price was taken at minus `saxo_time`, in milliseconds;
+    /// `None` when Saxo's timestamp is unknown. Never negative: a Saxo clock
+    /// ahead of ours is clamped to 0 and counted.
+    pub age_ms: Option<i64>,
+}
+
+impl QuoteInfo {
+    /// The info of `quote` taken from `source` at `at`.
+    pub fn of(quote: &Quote, source: Origin, at: DateTime<Utc>) -> QuoteInfo {
+        let saxo_time = quote.saxo_time();
+        let age_ms = saxo_time.map(|t| {
+            let age = (at - t).num_milliseconds();
+            if age < 0 {
+                crate::metrics::quote_clock_skew(source.as_str());
+            }
+            age.max(0)
+        });
+        QuoteInfo {
+            source,
+            saxo_time,
+            age_ms,
         }
     }
 }
@@ -142,6 +187,8 @@ pub struct Entry {
     pub release_to_entry_ms: i64,
     /// When the position is closed.
     pub exit_target_at: Option<DateTime<Utc>>,
+    /// Where the quote came from and its age.
+    pub info: QuoteInfo,
 }
 
 /// The exit of a trade.
@@ -157,6 +204,8 @@ pub struct Exit {
     pub pnl: Option<Pnl>,
     /// `Closed`, or why not.
     pub status: TradeStatus,
+    /// Where the exit quote came from and its age, when one was had.
+    pub info: Option<QuoteInfo>,
 }
 
 /// One observation to store.
@@ -174,6 +223,8 @@ pub struct NewObservation {
     pub late: bool,
     /// How it went.
     pub status: ObservationStatus,
+    /// Where the quote came from and its age, when one was had.
+    pub info: Option<QuoteInfo>,
 }
 
 /// A trade as stored.
@@ -203,7 +254,9 @@ pub struct StoredTrade {
     pub entry_ask: Option<Decimal>,
     /// The bid at entry.
     pub entry_bid: Option<Decimal>,
-    /// Saxo's timestamp of the entry quote.
+    /// Saxo's timestamp of the entry quote, as the text Saxo sent (NEX-255).
+    /// `entry_quote_saxo_time` is the same instant parsed, and is also set for an
+    /// entry rejected as too old, which has no entry row.
     pub entry_saxo_at: Option<String>,
     /// When the position is closed.
     pub exit_target_at: Option<DateTime<Utc>>,
@@ -231,6 +284,18 @@ pub struct StoredTrade {
     pub release_traceparent: Option<String>,
     /// The trade's own trace.
     pub trade_trace_id: Option<String>,
+    /// `stream` or `request`.
+    pub entry_quote_source: Option<String>,
+    /// Saxo's timestamp of the entry quote.
+    pub entry_quote_saxo_time: Option<DateTime<Utc>>,
+    /// The entry quote's age when taken, in milliseconds.
+    pub entry_quote_age_ms: Option<i64>,
+    /// `stream` or `request`.
+    pub exit_quote_source: Option<String>,
+    /// Saxo's timestamp of the exit quote.
+    pub exit_quote_saxo_time: Option<DateTime<Utc>>,
+    /// The exit quote's age when taken, in milliseconds.
+    pub exit_quote_age_ms: Option<i64>,
 }
 
 impl StoredTrade {
@@ -264,17 +329,23 @@ pub struct StoredObservation {
     pub delayed_minutes: Option<i64>,
     /// More than 2 s after the target.
     pub late: bool,
-    /// `ok`, `missed`, `beyond_close` or `no_quote`.
+    /// `ok`, `missed`, `beyond_close`, `no_quote` or `quote_too_old`.
     pub status: String,
+    /// `stream` or `request`.
+    pub quote_source: Option<String>,
+    /// The quote's age when taken, in milliseconds.
+    pub quote_age_ms: Option<i64>,
 }
 
 const TRADE_COLUMNS: &str = "id, decision_id, ticker, exchange_mic, decision, shadow, published_at, hold_minutes, \
      entry_target_at, entry_at, entry_ask, entry_bid, entry_saxo_at, exit_target_at, exit_at, exit_bid, exit_ask, \
      pnl_per_share, pnl_pct, currency, release_to_entry_ms, status, version, trace_id, release_traceparent, \
-     trade_trace_id";
+     trade_trace_id, entry_quote_source, entry_quote_saxo_time, entry_quote_age_ms, exit_quote_source, \
+     exit_quote_saxo_time, exit_quote_age_ms";
 
 const OBSERVATION_COLUMNS: &str =
-    "trade_id, horizon, scheduled_at, fetched_at, bid, ask, bid_type, ask_type, delayed_minutes, late, status";
+    "trade_id, horizon, scheduled_at, fetched_at, bid, ask, bid_type, ask_type, delayed_minutes, late, status, \
+     quote_source, quote_age_ms";
 
 impl Store {
     /// Creates the trade of a decision. `None` when the decision already has one
@@ -336,6 +407,7 @@ impl Store {
         sqlx::query_as(&format!(
             "UPDATE sim_trades SET status = 'open', entry_at = $2, entry_ask = $3, entry_bid = $4, \
                  entry_saxo_at = $5, currency = $6, release_to_entry_ms = $7, exit_target_at = $8, \
+                 entry_quote_source = $9, entry_quote_saxo_time = $10, entry_quote_age_ms = $11, \
                  version = version + 1, updated_at = now() \
              WHERE id = $1 RETURNING {TRADE_COLUMNS}"
         ))
@@ -347,6 +419,31 @@ impl Store {
         .bind(&entry.currency)
         .bind(entry.release_to_entry_ms)
         .bind(entry.exit_target_at)
+        .bind(entry.info.source.as_str())
+        .bind(entry.info.saxo_time)
+        .bind(entry.info.age_ms)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// Ends a trade at entry because the only quote was too old, keeping the
+    /// quote's source, timestamp and age for the audit.
+    pub async fn reject_entry(
+        &self,
+        id: i64,
+        status: TradeStatus,
+        info: &QuoteInfo,
+    ) -> Result<StoredTrade, sqlx::Error> {
+        sqlx::query_as(&format!(
+            "UPDATE sim_trades SET status = $2, entry_quote_source = $3, entry_quote_saxo_time = $4, \
+                 entry_quote_age_ms = $5, version = version + 1, updated_at = now() \
+             WHERE id = $1 RETURNING {TRADE_COLUMNS}"
+        ))
+        .bind(id)
+        .bind(status.as_str())
+        .bind(info.source.as_str())
+        .bind(info.saxo_time)
+        .bind(info.age_ms)
         .fetch_one(&self.pool)
         .await
     }
@@ -371,7 +468,8 @@ impl Store {
     pub async fn record_exit(&self, id: i64, exit: &Exit) -> Result<StoredTrade, sqlx::Error> {
         sqlx::query_as(&format!(
             "UPDATE sim_trades SET status = $2, exit_at = $3, exit_bid = $4, exit_ask = $5, \
-                 pnl_per_share = $6, pnl_pct = $7, version = version + 1, updated_at = now() \
+                 pnl_per_share = $6, pnl_pct = $7, exit_quote_source = $8, exit_quote_saxo_time = $9, \
+                 exit_quote_age_ms = $10, version = version + 1, updated_at = now() \
              WHERE id = $1 RETURNING {TRADE_COLUMNS}"
         ))
         .bind(id)
@@ -381,6 +479,9 @@ impl Store {
         .bind(exit.ask)
         .bind(exit.pnl.map(|p| p.per_share))
         .bind(exit.pnl.map(|p| p.pct))
+        .bind(exit.info.map(|i| i.source.as_str()))
+        .bind(exit.info.and_then(|i| i.saxo_time))
+        .bind(exit.info.and_then(|i| i.age_ms))
         .fetch_one(&self.pool)
         .await
     }
@@ -406,12 +507,13 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO sim_observations (trade_id, horizon, scheduled_at, fetched_at, bid, ask, \
-                 bid_type, ask_type, delayed_minutes, late, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                 bid_type, ask_type, delayed_minutes, late, status, quote_source, quote_age_ms) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
              ON CONFLICT (trade_id, horizon) DO UPDATE SET scheduled_at = EXCLUDED.scheduled_at, \
                  fetched_at = EXCLUDED.fetched_at, bid = EXCLUDED.bid, ask = EXCLUDED.ask, \
                  bid_type = EXCLUDED.bid_type, ask_type = EXCLUDED.ask_type, \
-                 delayed_minutes = EXCLUDED.delayed_minutes, late = EXCLUDED.late, status = EXCLUDED.status",
+                 delayed_minutes = EXCLUDED.delayed_minutes, late = EXCLUDED.late, status = EXCLUDED.status, \
+                 quote_source = EXCLUDED.quote_source, quote_age_ms = EXCLUDED.quote_age_ms",
         )
         .bind(trade_id)
         .bind(&observation.horizon)
@@ -424,6 +526,8 @@ impl Store {
         .bind(quote.and_then(|q| q.delayed_minutes))
         .bind(observation.late)
         .bind(observation.status.as_str())
+        .bind(observation.info.map(|i| i.source.as_str()))
+        .bind(observation.info.and_then(|i| i.age_ms))
         .execute(&mut *tx)
         .await?;
         let trade = sqlx::query_as(&format!(
@@ -483,6 +587,12 @@ pub fn to_proto(trade: &StoredTrade, observations: &[StoredObservation]) -> Anal
         release_to_entry_ms: trade.release_to_entry_ms.unwrap_or(0),
         trace_id: trade.trace_id.clone().unwrap_or_default(),
         trade_trace_id: trade.trade_trace_id.clone().unwrap_or_default(),
+        entry_quote_source: trade.entry_quote_source.clone().unwrap_or_default(),
+        entry_quote_saxo_time_unix_millis: millis(trade.entry_quote_saxo_time),
+        entry_quote_age_ms: trade.entry_quote_age_ms,
+        exit_quote_source: trade.exit_quote_source.clone().unwrap_or_default(),
+        exit_quote_saxo_time_unix_millis: millis(trade.exit_quote_saxo_time),
+        exit_quote_age_ms: trade.exit_quote_age_ms,
         observations: observations
             .iter()
             .map(|o| TradeObservation {
@@ -496,6 +606,8 @@ pub fn to_proto(trade: &StoredTrade, observations: &[StoredObservation]) -> Anal
                 delayed_minutes: o.delayed_minutes.unwrap_or(-1),
                 late: o.late,
                 status: o.status.clone(),
+                quote_source: o.quote_source.clone().unwrap_or_default(),
+                quote_age_ms: o.quote_age_ms,
             })
             .collect(),
     }
@@ -526,6 +638,13 @@ pub trait TradeStore: Send + Sync {
         &self,
         id: i64,
         status: TradeStatus,
+    ) -> Result<StoredTrade, sqlx::Error>;
+    /// See [`Store::reject_entry`].
+    async fn reject_entry(
+        &self,
+        id: i64,
+        status: TradeStatus,
+        info: &QuoteInfo,
     ) -> Result<StoredTrade, sqlx::Error>;
     /// See [`Store::set_trade_trace`].
     async fn set_trade_trace(&self, id: i64, trade_trace_id: &str) -> Result<(), sqlx::Error>;
@@ -561,6 +680,14 @@ impl TradeStore for Store {
         status: TradeStatus,
     ) -> Result<StoredTrade, sqlx::Error> {
         Store::set_trade_status(self, id, status).await
+    }
+    async fn reject_entry(
+        &self,
+        id: i64,
+        status: TradeStatus,
+        info: &QuoteInfo,
+    ) -> Result<StoredTrade, sqlx::Error> {
+        Store::reject_entry(self, id, status, info).await
     }
     async fn set_trade_trace(&self, id: i64, trade_trace_id: &str) -> Result<(), sqlx::Error> {
         Store::set_trade_trace(self, id, trade_trace_id).await

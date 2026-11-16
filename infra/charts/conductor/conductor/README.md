@@ -273,6 +273,19 @@ If both do not hold, lower `maxSessions`. Raising the limit past what the VM
 actually has just moves the failure from a cargo OOM to the pod being
 OOMKilled — which takes every running agent session with it.
 
+## One shared cargo build directory
+
+Every session gets `CARGO_TARGET_DIR=/data/target` (`cargoTargetDir`), so the
+worktrees share one workspace build instead of each keeping its own `target/`,
+which reached 4–40 GB per worktree and filled the disk. The cost: cargo locks
+the build directory, so two sessions building at the same moment run one
+after the other ("Blocking waiting for file lock on build directory"). Branches
+that differ only in workspace crates reuse every dependency artifact.
+
+Set `cargoTargetDir: ""` to go back to one `target/` per worktree. To reclaim
+space, delete `/data/target` while no session is building. Old `target/`
+folders in existing worktrees are not used any more and can be deleted.
+
 ## Single replica is a correctness requirement
 
 `replicas: 1` with `strategy: Recreate`, and both matter.

@@ -36,6 +36,12 @@ pub enum ConfigError {
     /// An `ANALYST_TICKERS` entry is not `TICKER:MIC`.
     #[error("ANALYST_TICKERS entry `{0}` is not TICKER:MIC")]
     Ticker(String),
+    /// A duration that must be above zero is zero.
+    #[error("{0} must be above zero")]
+    Positive(&'static str),
+    /// `QUOTE_STREAM_URL` is not a `ws://` URL.
+    #[error("QUOTE_STREAM_URL `{0}` is not a ws:// URL")]
+    QuoteStreamUrl(String),
 }
 
 /// The analyst's settings, read from the environment (see the crate README).
@@ -83,6 +89,16 @@ pub struct Config {
     pub saxo_quotes_url: String,
     /// The Kafka topic simulated trades are produced on.
     pub trades_topic: String,
+    /// The WebSocket `saxo-stream` streams quotes on (`QUOTE_STREAM_URL`).
+    pub quote_stream_url: String,
+    /// The stream counts as unhealthy when no `saxo-stream` heartbeat arrived
+    /// for this long (`QUOTE_STREAM_HEARTBEAT_TIMEOUT`).
+    pub quote_stream_heartbeat_timeout: Duration,
+    /// A quote fetched by request is used only if Saxo's timestamp on it is at
+    /// most this old (`QUOTE_MAX_AGE`).
+    pub quote_max_age: Duration,
+    /// Instruments with a report due within this long are watched (`WATCH_LEAD`).
+    pub watch_lead: Duration,
 }
 
 /// When, after entry, the bid is observed.
@@ -152,6 +168,13 @@ impl Config {
             humantime::parse_duration(&text(name).unwrap_or_else(|| default.to_owned()))
                 .map_err(|source| ConfigError::Duration { name, source })
         };
+        let positive = |name: &'static str, value: Duration| {
+            if value.is_zero() {
+                Err(ConfigError::Positive(name))
+            } else {
+                Ok(value)
+            }
+        };
         let number = |name: &'static str, default: u32| match text(name) {
             None => Ok(default),
             Some(value) => value
@@ -194,6 +217,21 @@ impl Config {
                 "http://saxo-quotes.chronicle.svc.cluster.local:8080".to_owned()
             }),
             trades_topic: text("TRADES_TOPIC").unwrap_or_else(|| "analyst.trades".to_owned()),
+            quote_stream_url: {
+                let url = text("QUOTE_STREAM_URL").unwrap_or_else(|| {
+                    "ws://saxo-quotes.chronicle.svc.cluster.local:8080/quotes/stream".to_owned()
+                });
+                if !url.starts_with("ws://") {
+                    return Err(ConfigError::QuoteStreamUrl(url));
+                }
+                url
+            },
+            quote_stream_heartbeat_timeout: positive(
+                "QUOTE_STREAM_HEARTBEAT_TIMEOUT",
+                duration("QUOTE_STREAM_HEARTBEAT_TIMEOUT", "3s")?,
+            )?,
+            quote_max_age: positive("QUOTE_MAX_AGE", duration("QUOTE_MAX_AGE", "1h")?)?,
+            watch_lead: positive("WATCH_LEAD", duration("WATCH_LEAD", "12h")?)?,
         })
     }
 }
@@ -248,6 +286,16 @@ mod tests {
         assert_eq!(config.entry_max_wait, Duration::from_secs(5 * 60));
         assert_eq!(config.quote_concurrency, 8);
         assert_eq!(config.trades_topic, "analyst.trades");
+        assert_eq!(
+            config.quote_stream_url,
+            "ws://saxo-quotes.chronicle.svc.cluster.local:8080/quotes/stream"
+        );
+        assert_eq!(
+            config.quote_stream_heartbeat_timeout,
+            Duration::from_secs(3)
+        );
+        assert_eq!(config.quote_max_age, Duration::from_secs(3600));
+        assert_eq!(config.watch_lead, Duration::from_secs(12 * 3600));
         assert_eq!(
             config
                 .obs_horizons
@@ -342,5 +390,44 @@ mod tests {
             Config::from_lookup(lookup(&pairs)),
             Err(ConfigError::Ticker("AAA".into()))
         );
+    }
+
+    #[test]
+    fn the_quote_stream_settings_are_validated() {
+        let with = |extra: &'static [(&'static str, &'static str)]| {
+            let mut pairs = REQUIRED.to_vec();
+            pairs.extend_from_slice(extra);
+            Config::from_lookup(lookup(&pairs))
+        };
+        assert_eq!(
+            with(&[("QUOTE_MAX_AGE", "0s")]),
+            Err(ConfigError::Positive("QUOTE_MAX_AGE"))
+        );
+        assert_eq!(
+            with(&[("QUOTE_STREAM_HEARTBEAT_TIMEOUT", "0s")]),
+            Err(ConfigError::Positive("QUOTE_STREAM_HEARTBEAT_TIMEOUT"))
+        );
+        assert_eq!(
+            with(&[("WATCH_LEAD", "0s")]),
+            Err(ConfigError::Positive("WATCH_LEAD"))
+        );
+        assert_eq!(
+            with(&[("QUOTE_STREAM_URL", "http://x/quotes/stream")]),
+            Err(ConfigError::QuoteStreamUrl("http://x/quotes/stream".into()))
+        );
+        let config = with(&[
+            ("QUOTE_STREAM_URL", "ws://127.0.0.1:9/quotes/stream"),
+            ("QUOTE_STREAM_HEARTBEAT_TIMEOUT", "500ms"),
+            ("QUOTE_MAX_AGE", "10m"),
+            ("WATCH_LEAD", "6h"),
+        ])
+        .expect("valid");
+        assert_eq!(config.quote_stream_url, "ws://127.0.0.1:9/quotes/stream");
+        assert_eq!(
+            config.quote_stream_heartbeat_timeout,
+            Duration::from_millis(500)
+        );
+        assert_eq!(config.quote_max_age, Duration::from_secs(600));
+        assert_eq!(config.watch_lead, Duration::from_secs(6 * 3600));
     }
 }

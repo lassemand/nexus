@@ -104,6 +104,8 @@ spec:
               value: "/data/repo"
             - name: CONDUCTOR_WORKTREE_ROOT
               value: "/data/worktrees"
+            - name: CONDUCTOR_CARGO_TARGET_DIR
+              value: {{ .Values.cargoTargetDir | quote }}
             - name: CONDUCTOR_MAX_SESSIONS
               value: {{ .Values.maxSessions | quote }}
             - name: CONDUCTOR_IDLE_DAYS

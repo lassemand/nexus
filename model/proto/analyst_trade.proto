@@ -17,7 +17,8 @@ message AnalystTrade {
   // True for every decision but "buy".
   bool   shadow        = 6;
   // "pending_entry", "open", "closed", "no_entry_quote", "no_exit_quote",
-  // "exit_missed", "calendar_unknown", "currency_mismatch" or "invalid_entry".
+  // "exit_missed", "calendar_unknown", "currency_mismatch", "invalid_entry",
+  // "quote_too_old" or "exit_quote_too_old".
   string status        = 7;
   // Increases with every state change.
   int64  version       = 8;
@@ -43,6 +44,17 @@ message AnalystTrade {
   string trace_id        = 23;
   string trade_trace_id  = 24;
   repeated TradeObservation observations = 25;
+  // Where the entry and exit quotes came from: "stream" (the quote book) or
+  // "request" (GET /quote); "" when there was none.
+  string entry_quote_source = 26;
+  // Saxo's LastUpdated of the entry quote; 0 when unknown.
+  int64  entry_quote_saxo_time_unix_millis = 27;
+  // The quote's age when it was taken, in milliseconds (never negative: clock
+  // skew is clamped to 0); unset when Saxo's timestamp was unknown.
+  optional int64 entry_quote_age_ms = 28;
+  string exit_quote_source = 29;
+  int64  exit_quote_saxo_time_unix_millis = 30;
+  optional int64 exit_quote_age_ms = 31;
 }
 
 // One observation of the bid after entry.
@@ -59,6 +71,11 @@ message TradeObservation {
   // -1 when unknown.
   int64  delayed_minutes = 8;
   bool   late           = 9;
-  // "ok", "missed", "beyond_close" or "no_quote".
+  // "ok", "missed", "beyond_close", "no_quote" or "quote_too_old".
   string status         = 10;
+  // "stream" or "request"; "" when no quote was taken.
+  string quote_source   = 11;
+  // The quote's age when taken, in milliseconds (never negative); unset when
+  // Saxo's timestamp was unknown.
+  optional int64 quote_age_ms = 12;
 }

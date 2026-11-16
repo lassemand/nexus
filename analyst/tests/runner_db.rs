@@ -120,6 +120,7 @@ async fn open_trades_are_rescheduled_and_everything_that_passed_is_missed(pool: 
         .fetch_one(&pool)
         .await
         .expect("trade");
+    wait_for(|| async { store.observations(all.0).await.expect("observations").len() == 7 }).await;
     let observations = store.observations(all.0).await.expect("observations");
     assert_eq!(observations.len(), 7, "six horizons and the hold");
     assert!(observations.iter().all(|o| o.status == "missed"));

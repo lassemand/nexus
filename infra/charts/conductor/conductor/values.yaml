@@ -68,8 +68,9 @@ githubWebhookUsers: "lassemand"
 # `/review` comment from a githubWebhookUsers login asks for one by hand. See
 # this chart's README, "Reviews".
 review:
-  # false turns every automatic and manual trigger off.
-  enabled: true
+  # false turns every automatic and manual trigger off. Off until NEX-273
+  # brings infra/agents/reviewer.md; switch it on there.
+  enabled: false
   # Linear state whose entry starts an automatic review.
   state: "In Review"
   # Send-backs per issue before automatic reviews stop (then `needs-human` and
@@ -96,10 +97,15 @@ review:
   # and reviews are never dispatched to a session; the send-back reaches the
   # author through the move to Todo. Empty until the app exists (NEX-273).
   botLogin: ""
+# CARGO_TARGET_DIR shared by every session (CONDUCTOR_CARGO_TARGET_DIR). One
+# workspace build instead of one per worktree (each was 4-40 GB). Parallel
+# builds then wait on cargo's lock. Empty gives each worktree its own target/.
+cargoTargetDir: "/data/target"
 persistence:
   # Holds /data/home (Claude transcripts — `claude --resume` depends on them
-  # surviving a restart), /data/repo, /data/worktrees (each with its own cargo
-  # target/) and /data/state.
+  # surviving a restart), /data/repo, /data/worktrees, /data/target (the
+  # shared cargo build directory, see cargoTargetDir) and /data/state.
+  # local-path does not enforce this size.
   size: 100Gi
 resources:
   requests:
