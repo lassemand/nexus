@@ -447,7 +447,8 @@ seed_claude_credentials() {
     # so it is moved aside rather than left to compete. Renamed, not deleted:
     # it is the only copy of whatever session it belonged to.
     if [[ -f "$creds" ]]; then
-      local superseded="${creds}.superseded-$(date +%s)"
+      local superseded
+      superseded="${creds}.superseded-$(date +%s)"
       mv "$creds" "$superseded"
       log "moved an existing credentials file to ${superseded}; CLAUDE_CODE_OAUTH_TOKEN takes precedence"
     fi
