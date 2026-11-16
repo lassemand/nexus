@@ -170,9 +170,14 @@ off every trading path.
   conductor reads it when the turn ends (the `Stop` hook) and checks that every
   pull request is covered with the head SHA it was given. Conductor, not the
   agent, does the side effects:
-  - `changes_requested`: one more send-back, a Linear comment starting
-    `Review send-back k of N` with the summary and review links, and the issue
-    moves to **Todo**, which dispatches the author's set as usual;
+  - `changes_requested`: a Linear comment starting `Review send-back k of N`
+    with the summary and review links, then the issue moves to **Todo**, which
+    dispatches the author's set as usual. The send-back is counted when the
+    comment is posted, so a failed move never makes the next comment repeat
+    `k of N`; the failed move is reported in a second comment;
+  - an automatic review acts on its verdict only if the issue is still in the
+    review state; an issue that went to Done or back to In Progress meanwhile is
+    left alone, and an automatic trigger for such an issue starts nothing;
   - `approve`: a Linear comment, `needs-human` removed, the issue stays in
     review for you to merge;
   - **failed** (no verdict file, invalid JSON, wrong SHAs, a turn longer than
@@ -185,8 +190,20 @@ off every trading path.
 - **The limit.** After `review.maxIterations` send-backs (default 2, so at
   most 3 automatic reviews; 0 means manual only), entering review starts no
   review. The pull requests get the label `needs-human`, and the issue gets
-  one comment saying the limit is reached. Only reviewer verdicts count; moving
+  one comment saying the limit is reached, once per send-back count (a
+  redelivered webhook or a second entry into review adds nothing until the
+  count changes or `reviews reset` runs). Only reviewer verdicts count; moving
   an issue back to Todo by hand does not.
+- **Which pull requests.** Only those in the repository the worktrees come from
+  (`review.repo`, `CONDUCTOR_REVIEW_REPO`, default the `origin` remote of
+  `CONDUCTOR_REPO_ROOT`); others the issue lists are commented on and skipped.
+  A pull request a `/review` names stays part of the review if it is queued
+  again after a new head.
+- **Waiting.** A review waits for a free review slot without a deadline. The
+  "did not start" failure counts from the moment its set got a slot.
+- **Reserved names.** The set `review-<identifier>` belongs to reviews: a
+  `session:review-*` Linear label is ignored (the issue gets its own set), and
+  a review never closes a set of another kind that has the same name.
 - **`/review`.** A comment starting with `/review` on a pull request, from a
   `githubWebhookUsers` login, queues a review for the issue that owns it (the
   `NEX-<n>` in the branch name, else the Linear link in the description),
@@ -208,7 +225,9 @@ Settings (`values.yaml` `review`, environment in brackets): `enabled`
 (`CONDUCTOR_REVIEW_STATE`), `maxIterations` (`CONDUCTOR_REVIEW_MAX_ITERATIONS`),
 `model` (`CONDUCTOR_REVIEW_MODEL`), `maxSessions`
 (`CONDUCTOR_MAX_REVIEW_SESSIONS`), `timeout` (`CONDUCTOR_REVIEW_TIMEOUT`,
-`45m`, `2700s` or `1h`), `botLogin` (`CONDUCTOR_REVIEW_BOT_LOGIN`). Metrics
+`45m`, `2700s` or `1h`), `botLogin` (`CONDUCTOR_REVIEW_BOT_LOGIN`), `repo` (`CONDUCTOR_REVIEW_REPO`).
+`enabled` is `false` in the chart until `infra/agents/reviewer.md` exists
+(NEX-273); set it to `true` there. Metrics
 `conductor_reviews_total{trigger,verdict}`,
 `conductor_review_duration_seconds`, `conductor_review_limit_reached_total`,
 `conductor_review_sessions{kind}`, `conductor_review_linear_identity{kind}`,

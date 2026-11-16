@@ -6,18 +6,15 @@
 //! a lookup from the pull request's head branch back to the owning group.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use tokio::sync::Mutex;
 
 use crate::github::GithubPrComment;
 use crate::registry::{group_key_for, GroupKey, Registry};
+use crate::review::ReviewGithub;
 use crate::InboundEvent;
-
-/// How long to wait for the pull request lookup.
-const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Longest a group key may be; shared with the registry's validation.
 const MAX_KEY_LEN: usize = 63;
@@ -48,25 +45,6 @@ pub struct PrRefs {
     pub head_repo: Option<String>,
     /// Repository the pull request targets, when known.
     pub base_repo: Option<String>,
-}
-
-/// Subset of GitHub's pull request representation that routing reads.
-#[derive(Debug, Deserialize)]
-struct PullRequestBody {
-    head: Option<ApiBranch>,
-    base: Option<ApiBranch>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiBranch {
-    #[serde(rename = "ref")]
-    ref_name: Option<String>,
-    repo: Option<ApiRepo>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiRepo {
-    full_name: Option<String>,
 }
 
 /// Whether a set name is a [`fallback_key`] name, which has no `session:` label.
@@ -110,10 +88,9 @@ pub fn fallback_key(repo: &str, pr_number: u64) -> GroupKey {
 /// Resolves pull request comments to the group that produced the branch.
 pub struct BranchResolver {
     registry: Registry,
-    http: reqwest::Client,
-    api_url: String,
-    /// Absent in local development, where the lookup is skipped.
-    token: Option<String>,
+    /// The GitHub client reviews use too, so both work with the same
+    /// credentials. Absent in local development, where the lookup is skipped.
+    github: Option<Arc<dyn ReviewGithub>>,
     /// A pull request's head ref does not change, so results are kept for the
     /// life of the process. Only successes are cached: caching a transient
     /// failure would misroute every later comment on that pull request.
@@ -121,27 +98,12 @@ pub struct BranchResolver {
 }
 
 impl BranchResolver {
-    /// Builds a resolver. `api_url` is overridable so tests can point at a mock.
-    pub fn new(registry: Registry, api_url: String, token: Option<String>) -> Self {
-        Self::with_timeout(registry, api_url, token, LOOKUP_TIMEOUT)
-    }
-
-    /// As [`BranchResolver::new`], with an explicit lookup timeout so a test need
-    /// not wait the production ten seconds to exercise it.
-    pub fn with_timeout(
-        registry: Registry,
-        api_url: String,
-        token: Option<String>,
-        timeout: Duration,
-    ) -> Self {
+    /// Builds a resolver on `github`, which `None` leaves unable to look up a
+    /// pull request.
+    pub fn new(registry: Registry, github: Option<Arc<dyn ReviewGithub>>) -> Self {
         BranchResolver {
             registry,
-            http: reqwest::Client::builder()
-                .timeout(timeout)
-                .build()
-                .unwrap_or_default(),
-            api_url: api_url.trim_end_matches('/').to_string(),
-            token,
+            github,
             cache: Mutex::new(HashMap::new()),
         }
     }
@@ -162,42 +124,18 @@ impl BranchResolver {
             return Some(hit.clone());
         }
 
-        let Some(token) = &self.token else {
+        let Some(github) = &self.github else {
             tracing::warn!(
                 repo = %comment.repo,
                 pr = comment.pr_number,
-                "GITHUB_TOKEN is not set; cannot find the pull request's branch"
+                "no GitHub credentials; cannot find the pull request's branch"
             );
             return None;
         };
 
-        let url = format!(
-            "{}/repos/{}/pulls/{}",
-            self.api_url, comment.repo, comment.pr_number
-        );
-        let response = self
-            .http
-            .get(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "nexus-conductor")
-            .send()
-            .await;
-
-        let body = match response {
-            Ok(r) if r.status().is_success() => r.json::<PullRequestBody>().await.ok()?,
-            Ok(r) => {
-                metrics::counter!("conductor_github_api_errors_total").increment(1);
-                tracing::warn!(
-                    repo = %comment.repo,
-                    pr = comment.pr_number,
-                    status = %r.status(),
-                    "pull request lookup failed"
-                );
-                return None;
-            }
+        let pr = match github.pull_request(&comment.repo, comment.pr_number).await {
+            Ok(pr) => pr,
             Err(e) => {
-                metrics::counter!("conductor_github_api_errors_total").increment(1);
                 tracing::warn!(
                     repo = %comment.repo,
                     pr = comment.pr_number,
@@ -207,12 +145,10 @@ impl BranchResolver {
                 return None;
             }
         };
-
-        let head = body.head?;
         let refs = PrRefs {
-            head_ref: head.ref_name?,
-            head_repo: head.repo.and_then(|r| r.full_name),
-            base_repo: body.base.and_then(|b| b.repo).and_then(|r| r.full_name),
+            head_ref: pr.head_ref,
+            head_repo: pr.head_repo,
+            base_repo: pr.base_repo,
         };
         self.cache.lock().await.insert(cache_key, refs.clone());
         Some(refs)
@@ -325,10 +261,12 @@ impl GroupResolver for BranchResolver {
 mod tests {
     use super::*;
     use crate::github::PrCommentKind;
+    use crate::github_api::{GithubRest, GithubToken};
     use crate::registry::tests_support::{epoch, FakeClock};
     use crate::registry::{GroupKey, DEFAULT_IDLE_DAYS};
     use serde_json::json;
     use sqlx::PgPool;
+    use std::time::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -376,6 +314,10 @@ mod tests {
         txn.record_branch(&key, branch).await.expect("branch");
         txn.commit().await.expect("commit");
         key
+    }
+
+    fn github(server: &MockServer) -> Arc<dyn ReviewGithub> {
+        Arc::new(GithubRest::new(&server.uri(), GithubToken::Static("t".into())).unwrap())
     }
 
     fn pr_body(head: &str, head_repo: &str, base_repo: &str) -> serde_json::Value {
@@ -431,7 +373,7 @@ mod tests {
         let registry = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
         let owner = own_branch(&registry, "group-a", "feature/x").await;
 
-        let resolver = BranchResolver::new(registry, server.uri(), Some("t".into()));
+        let resolver = BranchResolver::new(registry, Some(github(&server)));
         let key = resolver
             .resolve(&review_comment("o/r", 5, "feature/x", "o/r"))
             .await;
@@ -462,7 +404,7 @@ mod tests {
 
         let registry = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
         let owner = own_branch(&registry, "group-a", "feature/y").await;
-        let resolver = BranchResolver::new(registry, server.uri(), Some("t".into()));
+        let resolver = BranchResolver::new(registry, Some(github(&server)));
 
         assert_eq!(
             resolver.resolve(&issue_comment("o/r", 9)).await,
@@ -496,7 +438,7 @@ mod tests {
         clock.advance(chrono::Duration::hours(1));
         let newer = own_branch(&registry, "group-b", "feature/shared").await;
 
-        let resolver = BranchResolver::new(registry, server.uri(), Some("t".into()));
+        let resolver = BranchResolver::new(registry, Some(github(&server)));
         let key = resolver
             .resolve(&review_comment("o/r", 5, "feature/shared", "o/r"))
             .await;
@@ -508,7 +450,7 @@ mod tests {
     async fn an_unowned_branch_gets_its_own_group(pool: PgPool) {
         let server = MockServer::start().await;
         let registry = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
-        let resolver = BranchResolver::new(registry, server.uri(), Some("t".into()));
+        let resolver = BranchResolver::new(registry, Some(github(&server)));
 
         let key = resolver
             .resolve(&review_comment("o/r", 11, "somebodys-branch", "o/r"))
@@ -528,7 +470,7 @@ mod tests {
         let registry = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
         // Even if a group has seen a branch of that name, a fork is not ours to push to.
         own_branch(&registry, "group-a", "feature/x").await;
-        let resolver = BranchResolver::new(registry, server.uri(), Some("t".into()));
+        let resolver = BranchResolver::new(registry, Some(github(&server)));
 
         let key = resolver
             .resolve(&review_comment("o/r", 5, "feature/x", "someone-else/r"))
@@ -547,7 +489,7 @@ mod tests {
                 .await;
 
             let registry = Registry::new(pool.clone(), FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
-            let resolver = BranchResolver::new(registry, server.uri(), Some("t".into()));
+            let resolver = BranchResolver::new(registry, Some(github(&server)));
 
             assert_eq!(
                 resolver.resolve(&issue_comment("o/r", 3)).await,
@@ -571,11 +513,16 @@ mod tests {
 
         let registry = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
         // Far below the response delay, so the request cannot complete.
-        let resolver = BranchResolver::with_timeout(
+        let resolver = BranchResolver::new(
             registry,
-            server.uri(),
-            Some("t".into()),
-            Duration::from_millis(50),
+            Some(Arc::new(
+                GithubRest::with_timeout(
+                    &server.uri(),
+                    GithubToken::Static("t".into()),
+                    Duration::from_millis(50),
+                )
+                .unwrap(),
+            )),
         );
 
         assert_eq!(
@@ -588,7 +535,7 @@ mod tests {
     async fn without_a_token_the_lookup_is_skipped(pool: PgPool) {
         let server = MockServer::start().await;
         let registry = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
-        let resolver = BranchResolver::new(registry, server.uri(), None);
+        let resolver = BranchResolver::new(registry, None);
 
         assert_eq!(
             resolver.resolve(&issue_comment("o/r", 7)).await,
@@ -608,7 +555,7 @@ mod tests {
     async fn linear_events_are_routed_by_label_not_by_branch(pool: PgPool) {
         let server = MockServer::start().await;
         let registry = Registry::new(pool, FakeClock::new(epoch()), DEFAULT_IDLE_DAYS);
-        let resolver = BranchResolver::new(registry, server.uri(), Some("t".into()));
+        let resolver = BranchResolver::new(registry, Some(github(&server)));
 
         let event = crate::registry::tests_support::linear_event("NEX-42", &["conductor-core"]);
         assert_eq!(

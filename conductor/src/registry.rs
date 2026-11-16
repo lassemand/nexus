@@ -63,6 +63,9 @@ impl Clock for SystemClock {
 
 // ── keys ─────────────────────────────────────────────────────────────────────
 
+/// Start of every review set's name; no `session:` label may use it.
+const REVIEW_SLUG_PREFIX: &str = "review-";
+
 /// Identifies the session group an event belongs to.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GroupKey {
@@ -90,7 +93,9 @@ impl GroupKey {
             GroupKey::Named(name) => name.clone(),
             GroupKey::Issue(identifier) => format!("linear-{}", identifier.to_lowercase()),
             GroupKey::Unresolved => "unresolved".to_string(),
-            GroupKey::Review(identifier) => format!("review-{}", identifier.to_lowercase()),
+            GroupKey::Review(identifier) => {
+                format!("{REVIEW_SLUG_PREFIX}{}", identifier.to_lowercase())
+            }
         }
     }
 
@@ -153,7 +158,15 @@ fn linear_group_key(identifier: &str, session_labels: &[String]) -> GroupKey {
         [] => fallback(),
         [only] => {
             let lowered = only.to_lowercase();
-            if is_valid_named_key(&lowered) {
+            if lowered.starts_with(REVIEW_SLUG_PREFIX) {
+                tracing::warn!(
+                    issue = %identifier,
+                    label = %only,
+                    "session labels starting with `review-` are reserved for review sets; \
+                     falling back to a per-issue session"
+                );
+                fallback()
+            } else if is_valid_named_key(&lowered) {
                 GroupKey::Named(lowered)
             } else {
                 tracing::warn!(
@@ -1975,6 +1988,21 @@ mod tests {
         assert_eq!(
             group_key_for(&linear_event("NEX-42", &["conductor-core"])),
             GroupKey::Named("conductor-core".into())
+        );
+    }
+
+    #[test]
+    fn a_review_label_never_names_a_group() {
+        for label in ["review-nex-12", "Review-anything"] {
+            assert_eq!(
+                linear_group_key("NEX-12", &[label.to_string()]),
+                GroupKey::Issue("NEX-12".into()),
+                "{label}"
+            );
+        }
+        assert_eq!(
+            linear_group_key("NEX-12", &["reviews".to_string()]),
+            GroupKey::Named("reviews".into())
         );
     }
 

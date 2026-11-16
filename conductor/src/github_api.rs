@@ -131,6 +131,7 @@ struct PrBody {
     merged: bool,
     body: Option<String>,
     head: PrHead,
+    base: Option<PrBase>,
 }
 
 #[derive(Deserialize)]
@@ -138,6 +139,17 @@ struct PrHead {
     sha: String,
     #[serde(rename = "ref")]
     ref_name: String,
+    repo: Option<PrRepo>,
+}
+
+#[derive(Deserialize)]
+struct PrBase {
+    repo: Option<PrRepo>,
+}
+
+#[derive(Deserialize)]
+struct PrRepo {
+    full_name: Option<String>,
 }
 
 /// [`ReviewGithub`] over GitHub's REST API.
@@ -150,8 +162,17 @@ pub struct GithubRest {
 impl GithubRest {
     /// Builds a client against `api_url` (`https://api.github.com` in production).
     pub fn new(api_url: &str, token: GithubToken) -> Result<Self, GithubApiError> {
+        Self::with_timeout(api_url, token, REQUEST_TIMEOUT)
+    }
+
+    /// As [`GithubRest::new`], with an explicit request timeout.
+    pub fn with_timeout(
+        api_url: &str,
+        token: GithubToken,
+        timeout: Duration,
+    ) -> Result<Self, GithubApiError> {
         let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .user_agent("nexus-conductor")
             .build()
             .map_err(|e| GithubApiError::Network(e.to_string()))?;
@@ -215,6 +236,8 @@ impl ReviewGithub for GithubRest {
             open: pr.state == "open" && !pr.merged,
             head_sha: pr.head.sha,
             head_ref: pr.head.ref_name,
+            head_repo: pr.head.repo.and_then(|r| r.full_name),
+            base_repo: pr.base.and_then(|b| b.repo).and_then(|r| r.full_name),
             body: pr.body.unwrap_or_default(),
         })
     }

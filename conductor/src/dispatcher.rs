@@ -82,6 +82,14 @@ pub struct SessionEnvArgs {
     #[arg(long, env = "CONDUCTOR_CLAUDE_MODEL", value_parser = parse_model)]
     pub model: Option<String>,
 
+    /// Agent review sessions run.
+    #[arg(long, env = "CONDUCTOR_REVIEW_AGENT", default_value = "reviewer")]
+    pub review_agent: String,
+
+    /// Model for review sessions, validated like `CONDUCTOR_CLAUDE_MODEL`.
+    #[arg(long, env = "CONDUCTOR_REVIEW_MODEL", default_value = "opus", value_parser = parse_model)]
+    pub review_model: String,
+
     /// How long a new session may take to report `SessionStart`, in seconds.
     #[arg(long, env = "CONDUCTOR_START_TIMEOUT_SECS", default_value_t = 60)]
     pub start_timeout_secs: u64,
@@ -119,6 +127,8 @@ impl SessionEnvArgs {
             claude_bin: self.claude_bin,
             agent: self.agent,
             model: self.model.filter(|m| !m.is_empty()),
+            review_agent: self.review_agent,
+            review_model: Some(self.review_model).filter(|m| !m.is_empty()),
             cargo_target_dir: self.cargo_target_dir.filter(|p| !p.as_os_str().is_empty()),
             skip_permissions: self.skip_permissions,
             start_timeout: Duration::from_secs(self.start_timeout_secs),
@@ -141,6 +151,10 @@ pub struct SessionEnv {
     pub agent: String,
     /// Model passed as `--model`; `None` leaves it to Claude Code.
     pub model: Option<String>,
+    /// Agent review sets run.
+    pub review_agent: String,
+    /// Model of review sets; `None` leaves it to Claude Code.
+    pub review_model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
     /// Whether to pass `--dangerously-skip-permissions`.
@@ -235,7 +249,7 @@ impl DispatchArgs {
             rescan_interval: DEFAULT_RESCAN_INTERVAL,
             close_sweep: (self.close_sweep_mins > 0)
                 .then(|| Duration::from_secs(self.close_sweep_mins.saturating_mul(60))),
-            review: self.review.into_config(),
+            review: self.review.into_config(env.review_agent, env.review_model),
         }
     }
 }
@@ -1119,11 +1133,7 @@ impl Dispatcher {
 
     async fn start_session(&self, key: &GroupKey) -> Result<(), String> {
         let mut spec = self.config.start_spec();
-        if key.is_review() {
-            spec.agent = self.config.review.agent.clone();
-            spec.model = self.config.review.model.clone();
-            spec.model_from_set = false;
-        } else {
+        if !key.is_review() {
             let (model, from_set) = resolve_set_model(
                 self.issue_source.as_deref(),
                 key,
@@ -1448,12 +1458,31 @@ pub struct StartSpec {
     pub model: Option<String>,
     /// Whether `model` came from the set's label rather than the global default.
     pub model_from_set: bool,
+    /// Agent of review sets, in place of `agent`.
+    pub review_agent: String,
+    /// Model of review sets, in place of `model`.
+    pub review_model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// How long to wait for `SessionStart`.
     pub start_timeout: Duration,
+}
+
+impl StartSpec {
+    /// The spec for one set: a review set runs the review agent and model, any
+    /// other set the spec as it stands. [`launch_session`] applies this to
+    /// every start, so the dispatcher and `sessions attach` agree.
+    pub fn for_key(&self, key: &GroupKey) -> StartSpec {
+        let mut spec = self.clone();
+        if key.is_review() {
+            spec.agent = self.review_agent.clone();
+            spec.model = self.review_model.clone();
+            spec.model_from_set = false;
+        }
+        spec
+    }
 }
 
 impl SessionEnv {
@@ -1466,6 +1495,8 @@ impl SessionEnv {
             agent: self.agent.clone(),
             model: self.model.clone(),
             model_from_set: false,
+            review_agent: self.review_agent.clone(),
+            review_model: self.review_model.clone(),
             cargo_target_dir: self.cargo_target_dir.clone(),
             skip_permissions: self.skip_permissions,
             start_timeout: self.start_timeout,
@@ -1483,6 +1514,8 @@ impl DispatchConfig {
             agent: self.agent.clone(),
             model: self.model.clone(),
             model_from_set: false,
+            review_agent: self.review.agent.clone(),
+            review_model: self.review.model.clone(),
             cargo_target_dir: self.cargo_target_dir.clone(),
             skip_permissions: self.skip_permissions,
             start_timeout: self.start_timeout,
@@ -1543,6 +1576,7 @@ pub async fn launch_session(
     repo_lock: Option<&Mutex<()>>,
     events: Option<&Notify>,
 ) -> Result<(), String> {
+    let spec = &spec.for_key(key);
     let slug = key.slug();
     let base_ref = registry
         .worktree_ref(key)
@@ -1745,7 +1779,9 @@ pub async fn ensure_worktree(
 ///
 /// Detached rather than on the pull request's branch: that branch is usually
 /// checked out in the author's worktree, where git refuses a second checkout,
-/// and a review never commits. A path that already holds a worktree is reused.
+/// and a review never commits. A path that already holds a worktree is reused
+/// after checking `commit` out in it, so a worktree a failed close left behind
+/// never reviews an older commit than the prompt names.
 pub async fn ensure_detached_worktree(
     repo_root: &Path,
     worktree_root: &Path,
@@ -1755,6 +1791,19 @@ pub async fn ensure_detached_worktree(
     let path = worktree_root.join(slug);
     if path.exists() {
         if path.join(".git").exists() {
+            fetch_commit(repo_root, commit).await?;
+            run_git(&path, &["checkout", "--detach", commit]).await?;
+            let head = run_git(&path, &["rev-parse", "HEAD"]).await?;
+            let wanted = run_git(&path, &["rev-parse", &format!("{commit}^{{commit}}")]).await?;
+            if head.trim() != wanted.trim() {
+                return Err(format!(
+                    "{} is at {} after checking out {commit}",
+                    path.display(),
+                    head.trim()
+                )
+                .into());
+            }
+            tracing::info!(worktree = %path.display(), %commit, "review worktree reused at the commit");
             return Ok(path);
         }
         return Err(format!(
@@ -1764,12 +1813,7 @@ pub async fn ensure_detached_worktree(
         .into());
     }
     std::fs::create_dir_all(worktree_root)?;
-    if run_git(repo_root, &["fetch", "origin", commit])
-        .await
-        .is_err()
-    {
-        run_git(repo_root, &["fetch", "origin"]).await?;
-    }
+    fetch_commit(repo_root, commit).await?;
     let path_str = path.to_string_lossy().to_string();
     run_git(
         repo_root,
@@ -1778,6 +1822,21 @@ pub async fn ensure_detached_worktree(
     .await?;
     tracing::info!(worktree = %path.display(), %commit, "review worktree ready");
     Ok(path)
+}
+
+/// Fetches `commit` from `origin`, or everything when the server will not give
+/// out a bare commit.
+async fn fetch_commit(
+    repo_root: &Path,
+    commit: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if run_git(repo_root, &["fetch", "origin", commit])
+        .await
+        .is_err()
+    {
+        run_git(repo_root, &["fetch", "origin"]).await?;
+    }
+    Ok(())
 }
 
 /// Runs git, returning stdout or the captured error.
@@ -1945,6 +2004,39 @@ mod tests {
     }
 
     #[test]
+    fn a_review_key_starts_the_review_agent_and_model_whoever_launches_it() {
+        let spec = StartSpec {
+            repo_root: "/r".into(),
+            worktree_root: "/w".into(),
+            claude_bin: "claude".into(),
+            agent: "backend".into(),
+            model: Some("sonnet".into()),
+            model_from_set: true,
+            review_agent: "reviewer".into(),
+            review_model: Some("opus".into()),
+            cargo_target_dir: None,
+            skip_permissions: false,
+            start_timeout: Duration::from_secs(1),
+        };
+        let review = spec.for_key(&GroupKey::review("NEX-1").unwrap());
+        assert_eq!(review.agent, "reviewer");
+        assert_eq!(review.model.as_deref(), Some("opus"));
+        assert!(!review.model_from_set);
+        let argv = session_argv(&review, uuid::Uuid::nil(), false);
+        assert!(argv.contains(&"--agent=reviewer".to_string()));
+        assert!(argv.windows(2).any(|w| w == ["--model", "opus"]));
+        for key in [
+            GroupKey::Named("grp".into()),
+            GroupKey::Issue("NEX-1".into()),
+        ] {
+            let other = spec.for_key(&key);
+            assert_eq!(other.agent, "backend");
+            assert_eq!(other.model.as_deref(), Some("sonnet"));
+            assert!(other.model_from_set);
+        }
+    }
+
+    #[test]
     fn argv_carries_set_global_or_no_model() {
         let spec = |model: Option<&str>| StartSpec {
             repo_root: "/r".into(),
@@ -1953,6 +2045,8 @@ mod tests {
             agent: "backend".into(),
             model: model.map(str::to_string),
             model_from_set: false,
+            review_agent: "reviewer".into(),
+            review_model: Some("opus".into()),
             cargo_target_dir: None,
             skip_permissions: false,
             start_timeout: Duration::from_secs(1),
@@ -2162,6 +2256,8 @@ mod config_tests {
                 claude_bin: "claude".into(),
                 agent: "backend".into(),
                 model: None,
+                review_agent: "reviewer".into(),
+                review_model: "opus".into(),
                 start_timeout_secs: 60,
                 cargo_target_dir: None,
                 skip_permissions: true,
@@ -2176,11 +2272,10 @@ mod config_tests {
                 review_enabled: true,
                 review_state: "In Review".into(),
                 review_max_iterations: 2,
-                review_model: "opus".into(),
-                review_agent: "reviewer".into(),
                 max_review_sessions: 1,
                 review_timeout: Duration::from_secs(45 * 60),
                 review_bot_login: None,
+                review_repo: None,
             },
         }
     }

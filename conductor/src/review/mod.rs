@@ -51,8 +51,8 @@ pub const VERDICT_FILE: &str = ".review/verdict.json";
 /// Prefix of a Linear issue key in branch names and links.
 const ISSUE_KEY_PREFIX: &str = "nex-";
 
-/// How long a stuck review (queued but never delivered) may take beyond the
-/// review timeout before it is failed.
+/// How long a review set may sit in `Starting` or `Delivering`, which it
+/// enters only with a review slot, before the review is failed.
 const STUCK_GRACE: Duration = Duration::from_secs(10 * 60);
 
 /// Longest pause between retries of a Linear write.
@@ -80,14 +80,6 @@ pub struct ReviewArgs {
     #[arg(long, env = "CONDUCTOR_REVIEW_MAX_ITERATIONS", default_value_t = 2)]
     pub review_max_iterations: u32,
 
-    /// Model for review sessions, validated like `CONDUCTOR_CLAUDE_MODEL`.
-    #[arg(long, env = "CONDUCTOR_REVIEW_MODEL", default_value = "opus", value_parser = crate::dispatcher::parse_model)]
-    pub review_model: String,
-
-    /// Agent review sessions run.
-    #[arg(long, env = "CONDUCTOR_REVIEW_AGENT", default_value = "reviewer")]
-    pub review_agent: String,
-
     /// Concurrent review sessions, counted apart from `CONDUCTOR_MAX_SESSIONS`.
     #[arg(long, env = "CONDUCTOR_MAX_REVIEW_SESSIONS", default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..))]
     pub max_review_sessions: u16,
@@ -99,20 +91,27 @@ pub struct ReviewArgs {
     /// GitHub login of the reviewer app, whose comments never reach a session.
     #[arg(long, env = "CONDUCTOR_REVIEW_BOT_LOGIN")]
     pub review_bot_login: Option<String>,
+
+    /// `owner/name` of the repository reviews cover; defaults to the `origin`
+    /// remote of the repository the worktrees come from.
+    #[arg(long, env = "CONDUCTOR_REVIEW_REPO")]
+    pub review_repo: Option<String>,
 }
 
 impl ReviewArgs {
-    /// Resolves the arguments.
-    pub fn into_config(self) -> ReviewConfig {
+    /// Resolves the arguments; the agent and model come from the session
+    /// settings, which `conductor sessions` shares.
+    pub fn into_config(self, agent: String, model: Option<String>) -> ReviewConfig {
         ReviewConfig {
             enabled: self.review_enabled,
             state: self.review_state,
             max_iterations: self.review_max_iterations,
-            model: Some(self.review_model).filter(|m| !m.is_empty()),
-            agent: self.review_agent,
+            model,
+            agent,
             max_sessions: usize::from(self.max_review_sessions),
             timeout: self.review_timeout,
             bot_login: self.review_bot_login.filter(|l| !l.is_empty()),
+            repo: self.review_repo.filter(|r| !r.is_empty()),
             linear_write_budget: Duration::from_secs(10 * 60),
             linear_retry: Duration::from_secs(2),
         }
@@ -164,6 +163,9 @@ pub struct ReviewConfig {
     pub timeout: Duration,
     /// The reviewer app's GitHub login.
     pub bot_login: Option<String>,
+    /// `owner/name` of the repository the worktrees come from. Only its pull
+    /// requests are reviewed; `None` reviews whatever the issue lists.
+    pub repo: Option<String>,
     /// How long a Linear write is retried before the review counts as failed.
     pub linear_write_budget: Duration,
     /// First pause between Linear write retries; doubles up to a minute.
@@ -181,6 +183,7 @@ impl Default for ReviewConfig {
             max_sessions: 1,
             timeout: Duration::from_secs(45 * 60),
             bot_login: None,
+            repo: None,
             linear_write_budget: Duration::from_secs(10 * 60),
             linear_retry: Duration::from_secs(2),
         }
@@ -288,6 +291,10 @@ pub struct PullRequest {
     pub open: bool,
     pub head_sha: String,
     pub head_ref: String,
+    /// Repository the head branch lives in, when GitHub says.
+    pub head_repo: Option<String>,
+    /// Repository the pull request targets, when GitHub says.
+    pub base_repo: Option<String>,
     pub body: String,
 }
 
@@ -329,6 +336,21 @@ pub struct ReviewDeps {
     pub config: ReviewConfig,
     pub linear: Arc<dyn ReviewLinear>,
     pub github: Arc<dyn ReviewGithub>,
+}
+
+/// `owner/name` of a GitHub remote URL (`https://…`, with or without
+/// credentials or `.git`, or `git@github.com:owner/name.git`).
+pub fn github_repo_from_remote(url: &str) -> Option<String> {
+    let url = url.trim();
+    let rest = url
+        .split_once("github.com/")
+        .or_else(|| url.split_once("github.com:"))?
+        .1;
+    let rest = rest.trim_end_matches('/');
+    let rest = rest.strip_suffix(".git").unwrap_or(rest);
+    let (owner, name) = rest.split_once('/')?;
+    (!owner.is_empty() && !name.is_empty() && !name.contains('/'))
+        .then(|| format!("{owner}/{name}"))
 }
 
 /// `owner/name` and number of a GitHub pull request URL.
@@ -523,6 +545,8 @@ pub enum TriggerOutcome {
     NoPr,
     /// The issue could not be found or read.
     Unavailable,
+    /// An automatic trigger for an issue that is no longer in the review state.
+    NotInReview,
 }
 
 /// How a finished review is handled.
@@ -744,6 +768,10 @@ impl Reviews {
                 return TriggerOutcome::Unavailable;
             }
         };
+        if trigger == Trigger::Automatic && !self.in_review_state(&issue) {
+            tracing::info!(issue = %issue.identifier, state = %issue.state_name, "issue is no longer in review; no automatic review");
+            return TriggerOutcome::NotInReview;
+        }
         let Some(key) = GroupKey::review(&issue.identifier) else {
             tracing::error!(issue = %issue.identifier, "identifier does not make a valid set name; no review");
             return TriggerOutcome::Unavailable;
@@ -777,11 +805,11 @@ impl Reviews {
             && !bypass_limit
             && i64::from(state.send_backs) >= i64::from(limit)
         {
-            self.limit_reached(&issue, state.send_backs).await;
+            self.limit_reached(&issue, &state).await;
             return TriggerOutcome::LimitReached;
         }
 
-        let prs = match self.open_prs(&issue, extra).await {
+        let prs = match self.open_prs(&issue, extra.clone()).await {
             Ok(prs) => prs,
             Err(reason) => {
                 self.post_or_log(&issue.id, &failure_comment(&reason)).await;
@@ -796,7 +824,18 @@ impl Reviews {
         }
 
         let slug = key.slug();
-        if let Ok(Some(_)) = self.registry.group_by_slug(&slug).await {
+        if let Ok(Some(existing)) = self.registry.group_by_slug(&slug).await {
+            if existing.key != key {
+                tracing::error!(group = %slug, found = ?existing.key, "a set that is not a review set holds the review set's name; no review");
+                self.post_or_log(
+                    &issue.id,
+                    &failure_comment(&format!(
+                        "the set `{slug}` already exists and is not a review set"
+                    )),
+                )
+                .await;
+                return TriggerOutcome::Unavailable;
+            }
             tracing::warn!(group = %slug, "a stale review set exists; closing it first");
             self.close_set(&key).await;
         }
@@ -823,6 +862,7 @@ impl Reviews {
             prs,
             created_at: Utc::now(),
             cancelled_at: None,
+            extra: extra.clone(),
         };
         match self.queue(&key, &run, request).await {
             Ok(true) => {
@@ -879,7 +919,17 @@ impl Reviews {
             }
         }
         let mut out = Vec::new();
+        let mut foreign: Vec<(String, u64)> = Vec::new();
         for (repo, number) in refs {
+            if self
+                .config
+                .repo
+                .as_deref()
+                .is_some_and(|ours| !ours.eq_ignore_ascii_case(&repo))
+            {
+                foreign.push((repo, number));
+                continue;
+            }
             let pr = self
                 .github
                 .pull_request(&repo, number)
@@ -895,11 +945,36 @@ impl Reviews {
                 });
             }
         }
+        if !foreign.is_empty() {
+            let list = foreign
+                .iter()
+                .map(|(repo, n)| format!("{repo}#{n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ours = self.config.repo.as_deref().unwrap_or_default();
+            tracing::warn!(issue = %issue.identifier, %list, "pull requests in another repository are not reviewed");
+            self.post_or_log(
+                &issue.id,
+                &format!(
+                    "Automatic review skipped {list}: only pull requests in {ours} are reviewed."
+                ),
+            )
+            .await;
+        }
         Ok(out)
     }
 
+    fn in_review_state(&self, issue: &ReviewIssue) -> bool {
+        issue.state_name.eq_ignore_ascii_case(&self.config.state)
+    }
+
     /// No review: labels the pull requests and says so in Linear.
-    async fn limit_reached(&self, issue: &ReviewIssue, send_backs: i32) {
+    async fn limit_reached(&self, issue: &ReviewIssue, state: &store::ReviewState) {
+        let send_backs = state.send_backs;
+        if state.limit_notice_sent_at.is_some() {
+            tracing::info!(issue = %issue.identifier, send_backs, "limit notice already sent since the last send-back; nothing more posted");
+            return;
+        }
         metrics::counter!("conductor_review_limit_reached_total").increment(1);
         tracing::info!(issue = %issue.identifier, send_backs, "automatic review limit reached");
         match self.open_prs(issue, None).await {
@@ -1022,20 +1097,10 @@ impl Reviews {
 
     /// Whether the review's turn is still to come or still running.
     fn in_progress(&self, run: &ReviewRun, group: &Group) -> bool {
-        let waiting = !group.pending.is_empty()
-            || matches!(
-                group.state,
-                GroupState::Starting { .. } | GroupState::Delivering { .. }
-            );
-        let busy = matches!(group.state, GroupState::Busy { .. });
-        if busy {
-            return true;
-        }
-        if waiting {
-            let age = (Utc::now() - run.created_at).to_std().unwrap_or_default();
-            return age <= self.config.timeout + STUCK_GRACE;
-        }
-        false
+        matches!(
+            turn_status(run, group, Utc::now(), self.config.timeout),
+            TurnStatus::Running | TurnStatus::Queued
+        )
     }
 
     /// Handles one review that is over: reads the verdict, does the side
@@ -1053,7 +1118,7 @@ impl Reviews {
                 reason: "the review set was closed by hand".into(),
                 requeue: false,
             },
-            (Some(group), None) => self.judge(&run, group).await,
+            (Some(group), None) => self.guard_state(&run, self.judge(&run, group).await).await,
         };
         let key = GroupKey::Review(run.identifier.clone());
         let verdict_label = match &outcome {
@@ -1094,7 +1159,6 @@ impl Reviews {
             &run.identifier,
             run.trigger,
             recorded,
-            recorded == "changes_requested",
             counted,
             Utc::now(),
         )
@@ -1117,24 +1181,39 @@ impl Reviews {
         drop(_claim);
 
         if let Outcome::Discarded { requeue: true, .. } = outcome {
-            let again = self.trigger(&run.issue_id, run.trigger, true, None).await;
+            let again = self
+                .trigger(&run.issue_id, run.trigger, true, run.extra.clone())
+                .await;
             tracing::info!(issue = %run.identifier, outcome = ?again, "review queued again after a head change");
         }
         self.wake.notify_one();
     }
 
+    /// An automatic review's verdict is acted on only while the issue is still
+    /// in the review state: an issue moved on to Done or back to In Progress
+    /// while the review ran must not be moved again.
+    async fn guard_state(&self, run: &ReviewRun, outcome: Outcome) -> Outcome {
+        if run.trigger != Trigger::Automatic || !matches!(outcome, Outcome::Verdict(_)) {
+            return outcome;
+        }
+        match self.linear.issue(&run.issue_id).await {
+            Ok(Some(issue)) if self.in_review_state(&issue) => outcome,
+            Ok(Some(issue)) => Outcome::Discarded {
+                reason: format!("the issue is now {}", issue.state_name),
+                requeue: false,
+            },
+            Ok(None) => Outcome::Discarded {
+                reason: "the issue no longer exists".into(),
+                requeue: false,
+            },
+            Err(e) => Outcome::Failed(format!("the issue's state could not be read ({e})")),
+        }
+    }
+
     /// Decides what a finished turn amounts to.
     async fn judge(&self, run: &ReviewRun, group: &Group) -> Outcome {
-        if !group.pending.is_empty()
-            || matches!(
-                group.state,
-                GroupState::Starting { .. } | GroupState::Delivering { .. }
-            )
-        {
-            return Outcome::Failed(format!(
-                "the review did not start within {} minutes",
-                (self.config.timeout + STUCK_GRACE).as_secs() / 60
-            ));
+        if turn_status(run, group, Utc::now(), self.config.timeout) != TurnStatus::Over {
+            return Outcome::Failed("the review session did not start in time".into());
         }
         let timed_out = group
             .last_run
@@ -1209,30 +1288,39 @@ impl Reviews {
                     verdict,
                     &run.prs,
                 );
-                let sent = async {
-                    self.write_linear("send-back comment", || {
+                if self
+                    .write_linear("send-back comment", || {
                         self.linear.comment(&run.issue_id, &body)
                     })
-                    .await?;
-                    self.write_linear("move to Todo", || async {
+                    .await
+                    .is_err()
+                {
+                    tracing::error!(issue = %run.identifier, "send-back comment could not be written to Linear");
+                    return "failed";
+                }
+                if let Err(e) =
+                    store::add_send_back(self.registry.pool(), &run.issue_id, &run.identifier).await
+                {
+                    tracing::error!(error = %e, "cannot count the send-back");
+                }
+                let moved = self
+                    .write_linear("move to Todo", || async {
                         let issue =
                             self.linear.issue(&run.issue_id).await?.ok_or_else(|| {
                                 LinearApiError::Malformed("issue not found".into())
                             })?;
                         self.linear.move_to_todo(&issue).await
                     })
-                    .await
-                }
-                .await;
-                match sent {
+                    .await;
+                match moved {
                     Ok(()) => "changes_requested",
                     Err(e) => {
-                        tracing::error!(issue = %run.identifier, error = %e, "send-back could not be written to Linear");
+                        tracing::error!(issue = %run.identifier, error = %e, "the issue could not be moved to Todo");
                         let _ = self
                             .linear
                             .comment(
                                 &run.issue_id,
-                                &failure_comment("the send-back could not be written to Linear"),
+                                &failure_comment("the issue could not be moved to Todo"),
                             )
                             .await;
                         "failed"
@@ -1291,6 +1379,56 @@ impl Reviews {
                 }
             }
         }
+    }
+}
+
+/// Where a review's turn stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnStatus {
+    /// The turn is running.
+    Running,
+    /// The set is waiting for a review slot, or for its next start attempt.
+    Queued,
+    /// The set got a slot but the session never came up, or its starts keep
+    /// failing.
+    Stuck,
+    /// Nothing is left to wait for; the verdict can be read.
+    Over,
+}
+
+/// Classifies a review's set. The time a review waits behind other reviews for
+/// a slot never counts: the stuck clock starts when the set is `Starting` or
+/// `Delivering`, which it enters only with a slot. A set whose starts keep
+/// failing is stuck once the review is older than `timeout` plus the grace.
+pub fn turn_status(
+    run: &ReviewRun,
+    group: &Group,
+    now: chrono::DateTime<Utc>,
+    timeout: Duration,
+) -> TurnStatus {
+    let elapsed = |since: chrono::DateTime<Utc>| (now - since).to_std().unwrap_or_default();
+    match group.state {
+        GroupState::Busy { .. } => return TurnStatus::Running,
+        GroupState::Starting { since } | GroupState::Delivering { since, .. } => {
+            return if elapsed(since) > STUCK_GRACE {
+                TurnStatus::Stuck
+            } else {
+                TurnStatus::Queued
+            };
+        }
+        _ => {}
+    }
+    if group.pending.is_empty() {
+        return TurnStatus::Over;
+    }
+    let start_failed = group
+        .last_run
+        .as_ref()
+        .is_some_and(|r| r.result == RunResult::StartFailed && r.finished_at >= run.created_at);
+    if start_failed && elapsed(run.created_at) > timeout + STUCK_GRACE {
+        TurnStatus::Stuck
+    } else {
+        TurnStatus::Queued
     }
 }
 
@@ -1449,5 +1587,174 @@ mod tests {
             failure_comment("the reviewer wrote no verdict file"),
             "Automatic review failed: the reviewer wrote no verdict file. Comment `/review` on the PR to retry."
         );
+    }
+
+    fn group(
+        state: GroupState,
+        pending: bool,
+        last_run: Option<crate::registry::RunOutcome>,
+    ) -> Group {
+        let now = Utc::now();
+        Group {
+            key: GroupKey::review("NEX-1").unwrap(),
+            session_id: uuid::Uuid::nil(),
+            session_started: false,
+            state,
+            worktree: PathBuf::new(),
+            worktree_ref: None,
+            branches: Default::default(),
+            issues: vec![],
+            pending: if pending {
+                std::collections::VecDeque::from([crate::registry::QueuedEvent {
+                    id: 1,
+                    event: InboundEvent::ReviewRequested {
+                        request: ReviewRequest {
+                            identifier: "NEX-1".into(),
+                            issue_url: String::new(),
+                            prs: vec![],
+                            review_number: 1,
+                            send_backs: 0,
+                            limit: 2,
+                            trigger: Trigger::Automatic,
+                            verdict_path: String::new(),
+                        },
+                    },
+                    received_at: now,
+                }])
+            } else {
+                Default::default()
+            },
+            model: None,
+            model_from_set: false,
+            last_active: now,
+            last_run,
+            created_at: now,
+            close_requested_at: None,
+            close_blocked: None,
+            delivery_blocked: None,
+        }
+    }
+
+    fn run_created(at: chrono::DateTime<Utc>) -> ReviewRun {
+        ReviewRun {
+            issue_id: "i".into(),
+            identifier: "NEX-1".into(),
+            issue_url: String::new(),
+            group_slug: "review-nex-1".into(),
+            trigger: Trigger::Automatic,
+            review_number: 1,
+            prs: vec![],
+            created_at: at,
+            cancelled_at: None,
+            extra: None,
+        }
+    }
+
+    #[test]
+    fn waiting_for_a_slot_never_counts_towards_the_stuck_deadline() {
+        let timeout = Duration::from_secs(45 * 60);
+        let now = Utc::now();
+        let queued_for_hours = run_created(now - chrono::Duration::hours(3));
+        let waiting = group(GroupState::NoSession, true, None);
+        assert_eq!(
+            turn_status(&queued_for_hours, &waiting, now, timeout),
+            TurnStatus::Queued
+        );
+
+        let just_started = group(
+            GroupState::Starting {
+                since: now - chrono::Duration::seconds(30),
+            },
+            true,
+            None,
+        );
+        assert_eq!(
+            turn_status(&queued_for_hours, &just_started, now, timeout),
+            TurnStatus::Queued,
+            "the clock starts when the set got its slot"
+        );
+
+        let stuck = group(
+            GroupState::Delivering {
+                since: now - chrono::Duration::minutes(11),
+                event_id: 1,
+            },
+            true,
+            None,
+        );
+        assert_eq!(
+            turn_status(&queued_for_hours, &stuck, now, timeout),
+            TurnStatus::Stuck
+        );
+    }
+
+    #[test]
+    fn a_set_whose_starts_keep_failing_is_stuck_once_the_review_is_old_enough() {
+        let timeout = Duration::from_secs(45 * 60);
+        let now = Utc::now();
+        let failed = |at: chrono::DateTime<Utc>| crate::registry::RunOutcome {
+            result: RunResult::StartFailed,
+            finished_at: at,
+            duration: Duration::from_secs(1),
+            model: None,
+        };
+        let young = run_created(now - chrono::Duration::minutes(10));
+        let old = run_created(now - chrono::Duration::minutes(60));
+        let g = group(GroupState::NoSession, true, Some(failed(now)));
+        assert_eq!(turn_status(&young, &g, now, timeout), TurnStatus::Queued);
+        assert_eq!(turn_status(&old, &g, now, timeout), TurnStatus::Stuck);
+        let earlier = group(
+            GroupState::NoSession,
+            true,
+            Some(failed(now - chrono::Duration::hours(5))),
+        );
+        assert_eq!(
+            turn_status(&old, &earlier, now, timeout),
+            TurnStatus::Queued,
+            "a failure from before this review says nothing about it"
+        );
+    }
+
+    #[test]
+    fn a_finished_turn_is_over_and_a_busy_one_is_running() {
+        let timeout = Duration::from_secs(60);
+        let now = Utc::now();
+        let run = run_created(now);
+        let ready = group(
+            GroupState::Ready {
+                pane_pid: 1,
+                since: now,
+            },
+            false,
+            None,
+        );
+        assert_eq!(turn_status(&run, &ready, now, timeout), TurnStatus::Over);
+        let busy = group(
+            GroupState::Busy {
+                since: now,
+                delivered_event: Some(1),
+            },
+            false,
+            None,
+        );
+        assert_eq!(turn_status(&run, &busy, now, timeout), TurnStatus::Running);
+    }
+
+    #[test]
+    fn remotes_name_their_repository() {
+        for url in [
+            "https://github.com/lassemand/nexus.git",
+            "https://github.com/lassemand/nexus",
+            "https://x-access-token:abc@github.com/lassemand/nexus.git\n",
+            "git@github.com:lassemand/nexus.git",
+        ] {
+            assert_eq!(
+                github_repo_from_remote(url),
+                Some("lassemand/nexus".into()),
+                "{url}"
+            );
+        }
+        assert_eq!(github_repo_from_remote("/srv/git/origin.git"), None);
+        assert_eq!(github_repo_from_remote("https://gitlab.com/a/b.git"), None);
     }
 }

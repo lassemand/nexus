@@ -36,6 +36,9 @@ pub struct ReviewRun {
     pub created_at: DateTime<Utc>,
     /// Set when the issue left the review state while this review ran.
     pub cancelled_at: Option<DateTime<Utc>>,
+    /// The pull request a `/review` named, `(owner/name, number)`, which the
+    /// issue may not list.
+    pub extra: Option<(String, u64)>,
 }
 
 fn state_from_row(r: &sqlx::postgres::PgRow) -> Result<ReviewState, sqlx::Error> {
@@ -53,6 +56,8 @@ fn state_from_row(r: &sqlx::postgres::PgRow) -> Result<ReviewState, sqlx::Error>
 
 fn run_from_row(r: &sqlx::postgres::PgRow) -> Result<ReviewRun, sqlx::Error> {
     let trigger: String = r.try_get("trigger")?;
+    let extra_repo: Option<String> = r.try_get("extra_repo")?;
+    let extra_pr: Option<i64> = r.try_get("extra_pr")?;
     Ok(ReviewRun {
         issue_id: r.try_get("issue_id")?,
         identifier: r.try_get("identifier")?,
@@ -63,6 +68,7 @@ fn run_from_row(r: &sqlx::postgres::PgRow) -> Result<ReviewRun, sqlx::Error> {
         prs: r.try_get::<Json<Vec<PrUnderReview>>, _>("prs")?.0,
         created_at: r.try_get("created_at")?,
         cancelled_at: r.try_get("cancelled_at")?,
+        extra: extra_repo.zip(extra_pr.and_then(|n| u64::try_from(n).ok())),
     })
 }
 
@@ -90,26 +96,24 @@ pub async fn states(pool: &PgPool) -> Result<Vec<ReviewState>, sqlx::Error> {
     .collect()
 }
 
-/// Records a review's result. `sent_back` adds one send-back; `counted` adds
-/// one to `reviews_total` (a discarded review is not counted).
-#[allow(clippy::too_many_arguments)]
+/// Records a review's result. `counted` adds one to `reviews_total` (a
+/// discarded review is not counted). Send-backs are counted by
+/// [`add_send_back`], when the send-back comment is posted.
 pub async fn record_review(
     pool: &PgPool,
     issue_id: &str,
     identifier: &str,
     trigger: Trigger,
     verdict: &str,
-    sent_back: bool,
     counted: bool,
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO review_state \
-           (issue_id, identifier, send_backs, reviews_total, last_trigger, last_verdict, last_review_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+           (issue_id, identifier, reviews_total, last_trigger, last_verdict, last_review_at) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
          ON CONFLICT (issue_id) DO UPDATE SET \
            identifier = EXCLUDED.identifier, \
-           send_backs = review_state.send_backs + EXCLUDED.send_backs, \
            reviews_total = review_state.reviews_total + EXCLUDED.reviews_total, \
            last_trigger = EXCLUDED.last_trigger, \
            last_verdict = EXCLUDED.last_verdict, \
@@ -117,11 +121,31 @@ pub async fn record_review(
     )
     .bind(issue_id)
     .bind(identifier)
-    .bind(i32::from(sent_back))
     .bind(i32::from(counted))
     .bind(trigger.as_str())
     .bind(verdict)
     .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Counts one send-back and forgets the limit notice, so the notice is posted
+/// again if the issue reaches the limit again.
+pub async fn add_send_back(
+    pool: &PgPool,
+    issue_id: &str,
+    identifier: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO review_state (issue_id, identifier, send_backs) VALUES ($1, $2, 1) \
+         ON CONFLICT (issue_id) DO UPDATE SET \
+           identifier = EXCLUDED.identifier, \
+           send_backs = review_state.send_backs + 1, \
+           limit_notice_sent_at = NULL",
+    )
+    .bind(issue_id)
+    .bind(identifier)
     .execute(pool)
     .await?;
     Ok(())
@@ -151,7 +175,7 @@ pub async fn mark_limit_notice(
 /// Returns how many rows matched.
 pub async fn reset(pool: &PgPool, identifier: &str) -> Result<u64, sqlx::Error> {
     Ok(
-        sqlx::query("UPDATE review_state SET send_backs = 0 WHERE lower(identifier) = lower($1)")
+        sqlx::query("UPDATE review_state SET send_backs = 0, limit_notice_sent_at = NULL WHERE lower(identifier) = lower($1)")
             .bind(identifier)
             .execute(pool)
             .await?
@@ -164,8 +188,9 @@ pub async fn reset(pool: &PgPool, identifier: &str) -> Result<u64, sqlx::Error> 
 pub async fn insert_run(conn: &mut PgConnection, run: &ReviewRun) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query(
         "INSERT INTO review_runs \
-           (issue_id, identifier, issue_url, group_slug, trigger, review_number, prs, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+           (issue_id, identifier, issue_url, group_slug, trigger, review_number, prs, created_at, \
+            extra_repo, extra_pr) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
          ON CONFLICT (issue_id) DO NOTHING RETURNING issue_id",
     )
     .bind(&run.issue_id)
@@ -176,6 +201,8 @@ pub async fn insert_run(conn: &mut PgConnection, run: &ReviewRun) -> Result<bool
     .bind(run.review_number)
     .bind(Json(&run.prs))
     .bind(run.created_at)
+    .bind(run.extra.as_ref().map(|(repo, _)| repo))
+    .bind(run.extra.as_ref().and_then(|(_, n)| i64::try_from(*n).ok()))
     .fetch_optional(conn)
     .await?
     .is_some())

@@ -10,12 +10,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::{git, linear_event, Harness};
+use conductor::dispatcher::ensure_detached_worktree;
 use conductor::github::ReviewCommand;
 use conductor::github_api::GithubApiError;
 use conductor::linear::IssueStateChange;
 use conductor::linear_api::LinearApiError;
 use conductor::registry::{GroupKey, GroupState};
 use conductor::review::{store, PullRequest, ReviewGithub, ReviewIssue, ReviewLinear, Trigger};
+use conductor::sessions::SessionsCommand;
 use conductor::{EventSink, InboundEvent};
 use sqlx::PgPool;
 
@@ -29,6 +31,7 @@ struct FakeLinear {
     comments: Mutex<Vec<(String, String)>>,
     moved: Mutex<Vec<String>>,
     fail_writes: AtomicBool,
+    fail_move: AtomicBool,
 }
 
 impl FakeLinear {
@@ -66,7 +69,7 @@ impl ReviewLinear for FakeLinear {
     }
 
     async fn move_to_todo(&self, issue: &ReviewIssue) -> Result<(), LinearApiError> {
-        if self.fail_writes.load(Ordering::SeqCst) {
+        if self.fail_writes.load(Ordering::SeqCst) || self.fail_move.load(Ordering::SeqCst) {
             return Err(LinearApiError::Unauthorized);
         }
         self.moved.lock().unwrap().push(issue.id.clone());
@@ -165,6 +168,8 @@ fn setup(h: Harness) -> Setup {
                 open,
                 head_sha: sha.clone(),
                 head_ref: "feature/NEX-1-thing".into(),
+                head_repo: Some(REPO.into()),
+                base_repo: Some(REPO.into()),
                 body: String::new(),
             },
         );
@@ -205,6 +210,18 @@ async fn send_backs(h: &Harness) -> i32 {
         .unwrap()
         .map(|s| s.send_backs)
         .unwrap_or(0)
+}
+
+async fn seed_send_backs(h: &Harness, n: usize) {
+    for _ in 0..n {
+        store::add_send_back(&h.pool, ISSUE_ID, "NEX-1")
+            .await
+            .unwrap();
+    }
+}
+
+fn set_issue_state(linear: &FakeLinear, state: &str) {
+    linear.issues.lock().unwrap()[0].state_name = state.into();
 }
 
 async fn wait_until(mut done: impl FnMut() -> bool) -> bool {
@@ -333,20 +350,7 @@ async fn approve_comments_and_leaves_the_issue_in_review(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn at_the_limit_no_review_runs_and_one_notice_is_posted(pool: PgPool) {
     let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
-    for _ in 0..2 {
-        store::record_review(
-            &s.h.pool,
-            ISSUE_ID,
-            "NEX-1",
-            Trigger::Automatic,
-            "changes_requested",
-            true,
-            true,
-            chrono::Utc::now(),
-        )
-        .await
-        .unwrap();
-    }
+    seed_send_backs(&s.h, 2).await;
     let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
 
     sink.submit(entered("In Review", "d1"));
@@ -373,20 +377,7 @@ async fn at_the_limit_no_review_runs_and_one_notice_is_posted(pool: PgPool) {
 async fn a_manual_review_at_the_limit_runs_and_is_not_dispatched_to_the_author(pool: PgPool) {
     let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
     s.h.fake.set_turn(50, Some(&verdict_cmd("approve", &s.sha)));
-    for _ in 0..2 {
-        store::record_review(
-            &s.h.pool,
-            ISSUE_ID,
-            "NEX-1",
-            Trigger::Automatic,
-            "changes_requested",
-            true,
-            true,
-            chrono::Utc::now(),
-        )
-        .await
-        .unwrap();
-    }
+    seed_send_backs(&s.h, 2).await;
     let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
 
     sink.submit(InboundEvent::ReviewCommand {
@@ -677,4 +668,264 @@ async fn a_send_back_whose_linear_writes_keep_failing_counts_as_failed(pool: PgP
     assert_eq!(send_backs(&s.h).await, 0, "no send-back counted");
     let state = store::state(&s.h.pool, ISSUE_ID).await.unwrap().unwrap();
     assert_eq!(state.last_verdict.as_deref(), Some("failed"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn an_automatic_trigger_for_an_issue_no_longer_in_review_starts_nothing(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    set_issue_state(&s.linear, "Done");
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert!(s.h.group(&review_key()).await.is_none(), "no review set");
+    assert!(store::run(&s.h.pool, ISSUE_ID).await.unwrap().is_none());
+    assert!(s.linear.comments().is_empty());
+    assert!(s.linear.moved.lock().unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_verdict_for_an_issue_that_left_review_unseen_moves_nothing(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(800, 0, None, false));
+    s.h.fake
+        .set_turn(800, Some(&verdict_cmd("changes_requested", &s.sha)));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+    assert!(
+        s.h.wait_for_state(&review_key(), PATIENCE, |st| matches!(
+            st,
+            GroupState::Busy { .. }
+        ))
+        .await
+    );
+    set_issue_state(&s.linear, "Done");
+
+    assert!(wait_for_closed(&s.h).await);
+    assert!(
+        s.linear.moved.lock().unwrap().is_empty(),
+        "a Done issue must stay Done"
+    );
+    assert!(s.linear.comments().is_empty());
+    assert_eq!(send_backs(&s.h).await, 0);
+    let state = store::state(&s.h.pool, ISSUE_ID).await.unwrap().unwrap();
+    assert_eq!(state.last_verdict.as_deref(), Some("discarded"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_reused_review_worktree_is_moved_to_the_commit_under_review(pool: PgPool) {
+    let h = Harness::new(pool);
+    let first = git(&h.repo, &["rev-parse", "HEAD"]).trim().to_string();
+    let path = ensure_detached_worktree(&h.repo, &h.worktrees, "review-nex-9", &first)
+        .await
+        .unwrap();
+    std::fs::write(h.repo.join("NEXT.md"), "next\n").unwrap();
+    git(&h.repo, &["add", "NEXT.md"]);
+    git(&h.repo, &["commit", "-m", "next"]);
+    git(&h.repo, &["push", "origin", "HEAD:refs/heads/feature/next"]);
+    let second = git(&h.repo, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_ne!(first, second);
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]).trim(), first);
+
+    let again = ensure_detached_worktree(&h.repo, &h.worktrees, "review-nex-9", &second)
+        .await
+        .unwrap();
+
+    assert_eq!(again, path);
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]).trim(), second);
+    assert!(path.join("NEXT.md").exists());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_review_waiting_for_a_slot_is_not_failed_as_stuck(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+    let issue = ReviewIssue {
+        id: "uuid-nex-2".into(),
+        identifier: "NEX-2".into(),
+        url: "https://linear.app/nexusboard/issue/NEX-2".into(),
+        state_name: "In Review".into(),
+        team_id: "team-1".into(),
+        attachment_urls: vec![format!("https://github.com/{REPO}/pull/316")],
+    };
+    s.linear.issues.lock().unwrap().push(issue);
+
+    sink.submit(entered("In Review", "d1"));
+    sink.submit(InboundEvent::LinearIssueStateChanged {
+        change: IssueStateChange {
+            issue_id: "uuid-nex-2".into(),
+            identifier: "NEX-2".into(),
+            state_name: "In Review".into(),
+            state_type: "started".into(),
+        },
+        delivery_id: Some("d2".into()),
+    });
+
+    assert!(wait_until(|| s.linear.comments().len() >= 2).await);
+    let comments = s.linear.comments();
+    assert!(
+        comments.iter().all(|c| !c.contains("did not start")),
+        "{comments:?}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn attaching_to_a_queued_review_set_starts_the_review_agent_and_model(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    let (_d, _sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+    {
+        let mut txn = s.h.registry.begin().await.unwrap();
+        txn.session_for_dispatch(&review_key()).await.unwrap();
+        store::set_worktree_ref(txn.conn(), "review-nex-1", &s.sha)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+    }
+
+    let terminal = common::FakeTerminal::interactive();
+    let (code, text) =
+        s.h.sessions_on(
+            SessionsCommand::Attach {
+                group: "review-nex-1".into(),
+                read_only: false,
+                force: false,
+            },
+            &terminal,
+        )
+        .await;
+
+    assert_eq!(code, 0, "{text}");
+    let starts = s.h.starts();
+    let argv = &starts.last().expect("a start").argv;
+    assert!(argv.contains(&"--agent=reviewer".to_string()), "{argv:?}");
+    assert!(
+        argv.windows(2).any(|w| w == ["--model", "opus"]),
+        "{argv:?}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_failed_move_leaves_the_send_back_counted_with_its_comment(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    s.h.fake
+        .set_turn(50, Some(&verdict_cmd("changes_requested", &s.sha)));
+    s.linear.fail_move.store(true, Ordering::SeqCst);
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+    assert!(wait_for_closed(&s.h).await);
+    assert!(wait_until(|| s.linear.comments().len() >= 2).await);
+
+    assert!(s.linear.moved.lock().unwrap().is_empty());
+    assert_eq!(send_backs(&s.h).await, 1, "the posted comment is counted");
+    let state = store::state(&s.h.pool, ISSUE_ID).await.unwrap().unwrap();
+    assert_eq!(state.last_verdict.as_deref(), Some("failed"));
+
+    s.linear.fail_move.store(false, Ordering::SeqCst);
+    sink.submit(entered("In Review", "d2"));
+    assert!(wait_until(|| !s.linear.moved.lock().unwrap().is_empty()).await);
+    assert!(wait_for_closed(&s.h).await);
+    let comments = s.linear.comments();
+    assert!(comments[0].starts_with("Review send-back 1 of 2"));
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.starts_with("Review send-back 2 of 2")),
+        "the second send-back must not repeat 1 of 2: {comments:?}"
+    );
+    assert_eq!(send_backs(&s.h).await, 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_review_never_closes_a_session_label_set_that_shares_its_name(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    let named = GroupKey::Named("review-nex-1".into());
+    {
+        let mut txn = s.h.registry.begin().await.unwrap();
+        txn.session_for_dispatch(&named).await.unwrap();
+        txn.commit().await.unwrap();
+    }
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+    assert!(wait_until(|| !s.linear.comments().is_empty()).await);
+
+    let group = s.h.group(&named).await.expect("the named set survives");
+    assert_eq!(group.key, named);
+    assert!(store::run(&s.h.pool, ISSUE_ID).await.unwrap().is_none());
+    assert!(s.linear.comments()[0].contains("is not a review set"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn pull_requests_in_another_repository_are_commented_on_and_skipped(pool: PgPool) {
+    let mut h = Harness::new(pool).with_fake(50, 0, None, false);
+    h.config.review.repo = Some(REPO.into());
+    let s = setup(h);
+    s.linear.issues.lock().unwrap()[0]
+        .attachment_urls
+        .insert(0, "https://github.com/other/repo/pull/5".into());
+    s.h.fake.set_turn(50, Some(&verdict_cmd("approve", &s.sha)));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+
+    assert!(wait_for_closed(&s.h).await);
+    assert!(wait_until(|| s.linear.comments().len() >= 2).await);
+    let comments = s.linear.comments();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.contains("other/repo#5") && c.contains(REPO)),
+        "{comments:?}"
+    );
+    assert_eq!(review_prompts(&s.h).len(), 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_limit_notice_is_not_repeated_until_a_send_back_changes_the_count(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    seed_send_backs(&s.h, 2).await;
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+    assert!(wait_until(|| !s.linear.comments().is_empty()).await);
+    sink.submit(entered("In Review", "d2"));
+    sink.submit(entered("In Review", "d3"));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert_eq!(
+        s.linear.comments().len(),
+        1,
+        "one notice per send-back count"
+    );
+    assert_eq!(s.github.added.lock().unwrap().len(), 1);
+
+    store::reset(&s.h.pool, "NEX-1").await.unwrap();
+    seed_send_backs(&s.h, 2).await;
+    sink.submit(entered("In Review", "d4"));
+    assert!(wait_until(|| s.linear.comments().len() == 2).await);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_run_keeps_the_pull_request_a_review_command_named(pool: PgPool) {
+    let h = Harness::new(pool);
+    let run = store::ReviewRun {
+        issue_id: ISSUE_ID.into(),
+        identifier: "NEX-1".into(),
+        issue_url: "u".into(),
+        group_slug: "review-nex-1".into(),
+        trigger: Trigger::Manual,
+        review_number: 1,
+        prs: vec![],
+        created_at: chrono::Utc::now(),
+        cancelled_at: None,
+        extra: Some((REPO.into(), 316)),
+    };
+    let mut conn = h.pool.acquire().await.unwrap();
+    assert!(store::insert_run(&mut conn, &run).await.unwrap());
+    drop(conn);
+
+    let read = store::run(&h.pool, ISSUE_ID).await.unwrap().unwrap();
+    assert_eq!(read.extra, Some((REPO.to_string(), 316)));
 }

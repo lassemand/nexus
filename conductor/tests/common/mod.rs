@@ -863,6 +863,8 @@ impl Harness {
             claude_bin: self.config.claude_bin.clone(),
             agent: self.config.agent.clone(),
             model: self.config.model.clone(),
+            review_agent: self.config.review.agent.clone(),
+            review_model: self.config.review.model.clone(),
             cargo_target_dir: self.config.cargo_target_dir.clone(),
             skip_permissions: self.config.skip_permissions,
             start_timeout: self.config.start_timeout,

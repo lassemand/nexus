@@ -298,12 +298,7 @@ impl LinearGraphql {
         let env: Envelope<IssueData> = self.post(ISSUE_QUERY, json!({ "id": identifier })).await?;
         if let Some(errors) = env.errors.filter(|e| !e.is_empty()) {
             // Linear reports a missing issue as an error; that means deleted.
-            let not_found = errors.iter().all(|e| {
-                e.get("message")
-                    .and_then(Value::as_str)
-                    .is_some_and(|m| m.contains("Entity not found"))
-            });
-            if not_found {
+            if all_not_found(&errors) {
                 return Ok(Vec::new());
             }
             return Err(LinearApiError::GraphQl(Value::Array(errors).to_string()));
@@ -317,6 +312,16 @@ impl LinearGraphql {
             .into_iter()
             .collect())
     }
+}
+
+/// Whether every GraphQL error says the entity does not exist, which Linear
+/// reports for a deleted issue.
+fn all_not_found(errors: &[Value]) -> bool {
+    errors.iter().all(|e| {
+        e.get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.contains("Entity not found"))
+    })
 }
 
 #[derive(Deserialize)]
@@ -372,12 +377,7 @@ impl LinearGraphql {
         let env: Envelope<ReviewIssueData> =
             self.post(REVIEW_ISSUE_QUERY, json!({ "id": id })).await?;
         if let Some(errors) = env.errors.filter(|e| !e.is_empty()) {
-            let not_found = errors.iter().all(|e| {
-                e.get("message")
-                    .and_then(Value::as_str)
-                    .is_some_and(|m| m.contains("Entity not found"))
-            });
-            if not_found {
+            if all_not_found(&errors) {
                 return Ok(None);
             }
             return Err(LinearApiError::GraphQl(Value::Array(errors).to_string()));
