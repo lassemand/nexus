@@ -796,8 +796,10 @@ async fn attaching_to_a_queued_review_set_starts_the_review_agent_and_model(pool
         .await;
 
     assert_eq!(code, 0, "{text}");
-    let starts = s.h.starts();
-    let argv = &starts.last().expect("a start").argv;
+    let argv =
+        s.h.fake
+            .session_argv("review-nex-1")
+            .expect("the review session was started");
     assert!(argv.contains(&"--agent=reviewer".to_string()), "{argv:?}");
     assert!(
         argv.windows(2).any(|w| w == ["--model", "opus"]),

@@ -226,6 +226,15 @@ impl FakeTmux {
         self.sessions.lock().unwrap().contains_key(slug)
     }
 
+    /// The command line the session was started with, if it still exists.
+    pub fn session_argv(&self, slug: &str) -> Option<Vec<String>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(slug)
+            .map(|s| s.argv.clone())
+    }
+
     /// Drops the session without telling anyone, as a crash would.
     pub fn crash(&self, slug: &str) {
         if let Some(s) = self.sessions.lock().unwrap().remove(slug) {
