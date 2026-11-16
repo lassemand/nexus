@@ -322,7 +322,12 @@ mod tests {
 
     fn pr_body(head: &str, head_repo: &str, base_repo: &str) -> serde_json::Value {
         json!({
-            "head": { "ref": head, "repo": { "full_name": head_repo } },
+            "number": 1,
+            "html_url": "https://github.com/o/r/pull/1",
+            "state": "open",
+            "merged": false,
+            "body": null,
+            "head": { "sha": "abc", "ref": head, "repo": { "full_name": head_repo } },
             "base": { "ref": "main", "repo": { "full_name": base_repo } }
         })
     }
