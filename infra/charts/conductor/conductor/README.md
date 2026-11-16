@@ -227,7 +227,8 @@ Settings (`values.yaml` `review`, environment in brackets): `enabled`
 (`CONDUCTOR_MAX_REVIEW_SESSIONS`), `timeout` (`CONDUCTOR_REVIEW_TIMEOUT`,
 `45m`, `2700s` or `1h`), `botLogin` (`CONDUCTOR_REVIEW_BOT_LOGIN`), `repo` (`CONDUCTOR_REVIEW_REPO`).
 `enabled` is `false` in the chart until `infra/agents/reviewer.md` exists
-(NEX-273); set it to `true` there. Metrics
+(NEX-273) and the CI gate (NEX-275) have both merged; NEX-275's PR sets it to
+`true`. Metrics
 `conductor_reviews_total{trigger,verdict}`,
 `conductor_review_duration_seconds`, `conductor_review_limit_reached_total`,
 `conductor_review_sessions{kind}`, `conductor_review_linear_identity{kind}`,

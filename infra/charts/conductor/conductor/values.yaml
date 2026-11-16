@@ -69,7 +69,8 @@ githubWebhookUsers: "lassemand"
 # this chart's README, "Reviews".
 review:
   # false turns every automatic and manual trigger off. Off until NEX-273
-  # brings infra/agents/reviewer.md; switch it on there.
+  # (infra/agents/reviewer.md) and NEX-275 (CI gate) have both merged;
+  # NEX-275's PR switches it on.
   enabled: false
   # Linear state whose entry starts an automatic review.
   state: "In Review"
