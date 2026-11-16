@@ -608,6 +608,7 @@ impl Harness {
             claude_bin: fake_claude_path().to_string_lossy().to_string(),
             agent: "backend".into(),
             model: Some("sonnet".into()),
+            cargo_target_dir: None,
             skip_permissions: true,
             run_timeout: Duration::from_secs(30),
             shutdown_grace: Duration::from_secs(30),
@@ -832,6 +833,7 @@ impl Harness {
             claude_bin: self.config.claude_bin.clone(),
             agent: self.config.agent.clone(),
             model: self.config.model.clone(),
+            cargo_target_dir: self.config.cargo_target_dir.clone(),
             skip_permissions: self.config.skip_permissions,
             start_timeout: self.config.start_timeout,
         }

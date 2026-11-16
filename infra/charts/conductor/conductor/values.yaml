@@ -63,10 +63,15 @@ tmux:
 closeSweepMins: 30
 # Users whose pull request comments are routed to a session.
 githubWebhookUsers: "lassemand"
+# CARGO_TARGET_DIR shared by every session (CONDUCTOR_CARGO_TARGET_DIR). One
+# workspace build instead of one per worktree (each was 4-40 GB). Parallel
+# builds then wait on cargo's lock. Empty gives each worktree its own target/.
+cargoTargetDir: "/data/target"
 persistence:
   # Holds /data/home (Claude transcripts — `claude --resume` depends on them
-  # surviving a restart), /data/repo, /data/worktrees (each with its own cargo
-  # target/) and /data/state.
+  # surviving a restart), /data/repo, /data/worktrees, /data/target (the
+  # shared cargo build directory, see cargoTargetDir) and /data/state.
+  # local-path does not enforce this size.
   size: 100Gi
 resources:
   requests:

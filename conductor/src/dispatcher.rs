@@ -85,6 +85,14 @@ pub struct SessionEnvArgs {
     #[arg(long, env = "CONDUCTOR_START_TIMEOUT_SECS", default_value_t = 60)]
     pub start_timeout_secs: u64,
 
+    /// `CARGO_TARGET_DIR` shared by every session. Unset gives each worktree
+    /// its own `<worktree>/target`.
+    ///
+    /// Shared saves one full workspace build per worktree, at the cost of
+    /// parallel sessions waiting on cargo's build-directory lock.
+    #[arg(long, env = "CONDUCTOR_CARGO_TARGET_DIR")]
+    pub cargo_target_dir: Option<PathBuf>,
+
     /// Pass `--dangerously-skip-permissions` to Claude.
     ///
     /// Governs dispatched runs and `sessions attach` alike. The interactive
@@ -110,6 +118,7 @@ impl SessionEnvArgs {
             claude_bin: self.claude_bin,
             agent: self.agent,
             model: self.model.filter(|m| !m.is_empty()),
+            cargo_target_dir: self.cargo_target_dir.filter(|p| !p.as_os_str().is_empty()),
             skip_permissions: self.skip_permissions,
             start_timeout: Duration::from_secs(self.start_timeout_secs),
         }
@@ -131,6 +140,8 @@ pub struct SessionEnv {
     pub agent: String,
     /// Model passed as `--model`; `None` leaves it to Claude Code.
     pub model: Option<String>,
+    /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
+    pub cargo_target_dir: Option<PathBuf>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// How long a new session may take to report `SessionStart`.
@@ -204,6 +215,7 @@ impl DispatchArgs {
             claude_bin: env.claude_bin,
             agent: env.agent,
             model: env.model,
+            cargo_target_dir: env.cargo_target_dir,
             skip_permissions: env.skip_permissions,
             // Seconds win when given, so a test can use a timeout far under a minute.
             run_timeout: Duration::from_secs(
@@ -363,6 +375,8 @@ pub struct DispatchConfig {
     pub agent: String,
     /// Model passed as `--model`; `None` leaves it to Claude Code.
     pub model: Option<String>,
+    /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
+    pub cargo_target_dir: Option<PathBuf>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// How long a run may take before it is stopped.
@@ -1319,6 +1333,8 @@ pub struct StartSpec {
     pub model: Option<String>,
     /// Whether `model` came from the set's label rather than the global default.
     pub model_from_set: bool,
+    /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
+    pub cargo_target_dir: Option<PathBuf>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// How long to wait for `SessionStart`.
@@ -1335,6 +1351,7 @@ impl SessionEnv {
             agent: self.agent.clone(),
             model: self.model.clone(),
             model_from_set: false,
+            cargo_target_dir: self.cargo_target_dir.clone(),
             skip_permissions: self.skip_permissions,
             start_timeout: self.start_timeout,
         }
@@ -1351,6 +1368,7 @@ impl DispatchConfig {
             agent: self.agent.clone(),
             model: self.model.clone(),
             model_from_set: false,
+            cargo_target_dir: self.cargo_target_dir.clone(),
             skip_permissions: self.skip_permissions,
             start_timeout: self.start_timeout,
         }
@@ -1457,11 +1475,11 @@ pub async fn launch_session(
     };
 
     let argv = session_argv(spec, session_id, resume);
-    // Each worktree needs its own build cache; a shared target directory
-    // would serialise parallel sessions on cargo's lock.
     let env = vec![(
         "CARGO_TARGET_DIR".to_string(),
-        worktree.join("target").to_string_lossy().into_owned(),
+        cargo_target_dir(spec, &worktree)
+            .to_string_lossy()
+            .into_owned(),
     )];
 
     tracing::info!(group = %slug, resume, "starting session");
@@ -1475,6 +1493,14 @@ pub async fn launch_session(
     })
     .await;
     start_outcome(reached, spec.start_timeout)
+}
+
+/// The session's `CARGO_TARGET_DIR`: the shared directory when one is
+/// configured, else the worktree's own `target`.
+pub fn cargo_target_dir(spec: &StartSpec, worktree: &Path) -> PathBuf {
+    spec.cargo_target_dir
+        .clone()
+        .unwrap_or_else(|| worktree.join("target"))
 }
 
 /// The command line that starts or resumes a set's Claude session.
@@ -1753,6 +1779,7 @@ mod tests {
             agent: "backend".into(),
             model: model.map(str::to_string),
             model_from_set: false,
+            cargo_target_dir: None,
             skip_permissions: false,
             start_timeout: Duration::from_secs(1),
         };
@@ -1962,6 +1989,7 @@ mod config_tests {
                 agent: "backend".into(),
                 model: None,
                 start_timeout_secs: 60,
+                cargo_target_dir: None,
                 skip_permissions: true,
             },
             run_timeout_min: 120,
@@ -2004,6 +2032,19 @@ mod config_tests {
         assert_eq!(c.max_live_sessions, 10);
         assert_eq!(c.start_timeout, Duration::from_secs(60));
         assert_eq!(c.deliver_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn cargo_target_dir_is_shared_only_when_configured() {
+        let mut spec = args().into_config().start_spec();
+        let wt = Path::new("/data/worktrees/set");
+        assert_eq!(cargo_target_dir(&spec, wt), wt.join("target"));
+        spec.cargo_target_dir = Some("/data/target".into());
+        assert_eq!(cargo_target_dir(&spec, wt), PathBuf::from("/data/target"));
+
+        let mut a = args();
+        a.env.cargo_target_dir = Some(PathBuf::new());
+        assert_eq!(a.into_config().cargo_target_dir, None);
     }
 
     #[test]

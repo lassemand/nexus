@@ -182,6 +182,7 @@ Keys: `username`, `password`.
 - When every issue in a set is Done or Canceled, conductor closes the set automatically: the worktree is removed and the registry row deleted; branches and transcripts are kept. It never closes on a failed or empty Linear answer, and never forces a dirty worktree (shown as `close blocked`).
 - A task added to a set after it closed starts a fresh session.
 - The model is per set. `CONDUCTOR_CLAUDE_MODEL` (chart `claude.model`) is the default; a set overrides it with a `model: <alias-or-id>` line in its `session:<name>` label's description in Linear. It is read each time the set's session is started or resumed (a live session is never switched), validated like the global value, and any problem (no label, invalid value, Linear error) falls back to the default with a warning. Sets of one and PR sets always use the default. `sessions list` shows the effective model and whether it came from the set or the default.
+- All sessions share one cargo build directory, `/data/target` (`CARGO_TARGET_DIR`, chart `cargoTargetDir`; empty gives each worktree its own `target/`). Parallel builds wait on cargo's lock.
 - Put the same label on tasks that build on the same code, and a different or no label on unrelated work.
 - Metrics (`conductor_*`, port 9464, own `PodMonitor`) and alerts are on the Grafana dashboard "Conductor" (folder Nexus).
 
