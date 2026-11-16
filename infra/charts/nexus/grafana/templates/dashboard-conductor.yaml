@@ -633,6 +633,245 @@ data:
               "legendFormat": "{{ "{{" }}pod{{ "}}" }}"
             }
           ]
+        },
+        {
+          "id": 15,
+          "type": "row",
+          "title": "Reviews",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 42,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 16,
+          "type": "timeseries",
+          "title": "Reviews by verdict (per hour)",
+          "gridPos": {
+            "x": 0,
+            "y": 43,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (trigger, verdict) (increase(conductor_reviews_total{job=\"conductor\"}[1h]))",
+              "legendFormat": "{{ "{{" }}trigger{{ "}}" }} {{ "{{" }}verdict{{ "}}" }}"
+            }
+          ],
+          "description": "Finished automatic and manual reviews: approve, changes_requested (a send-back), failed, discarded."
+        },
+        {
+          "id": 17,
+          "type": "timeseries",
+          "title": "Review duration p50 / p95",
+          "gridPos": {
+            "x": 12,
+            "y": 43,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(conductor_review_duration_seconds_bucket{job=\"conductor\"}[6h])))",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(conductor_review_duration_seconds_bucket{job=\"conductor\"}[6h])))",
+              "legendFormat": "p95"
+            }
+          ],
+          "description": "From queued to verdict handled."
+        },
+        {
+          "id": 18,
+          "type": "timeseries",
+          "title": "Review sessions used vs max",
+          "gridPos": {
+            "x": 0,
+            "y": 50,
+            "w": 8,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "conductor_review_sessions{job=\"conductor\",kind=\"used\"}",
+              "legendFormat": "used"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "conductor_review_sessions{job=\"conductor\",kind=\"max\"}",
+              "legendFormat": "max"
+            }
+          ],
+          "description": "Counted apart from the implementation session slots."
+        },
+        {
+          "id": 19,
+          "type": "timeseries",
+          "title": "Limit reached (per hour)",
+          "gridPos": {
+            "x": 8,
+            "y": 50,
+            "w": 8,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "increase(conductor_review_limit_reached_total{job=\"conductor\"}[1h])",
+              "legendFormat": "limit reached"
+            }
+          ],
+          "description": "In Review transitions that started no review because the issue reached CONDUCTOR_REVIEW_MAX_ITERATIONS send-backs."
+        },
+        {
+          "id": 20,
+          "type": "timeseries",
+          "title": "Reviewer Linear identity and auth failures",
+          "gridPos": {
+            "x": 16,
+            "y": 50,
+            "w": 8,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "conductor_review_linear_identity{job=\"conductor\"}",
+              "legendFormat": "identity {{ "{{" }}kind{{ "}}" }}"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "increase(conductor_review_linear_auth_failures_total{job=\"conductor\"}[1h])",
+              "legendFormat": "auth failures / h"
+            }
+          ],
+          "description": "identity app = writes as the reviewer's Linear app; fallback = LINEAR_API_KEY."
         }
       ]
     }

@@ -63,6 +63,41 @@ tmux:
 closeSweepMins: 30
 # Users whose pull request comments are routed to a session.
 githubWebhookUsers: "lassemand"
+# Automatic reviews (NEX-272): every issue entering `state` gets a fresh
+# review session running the `reviewer` agent on its open pull requests; a
+# `/review` comment from a githubWebhookUsers login asks for one by hand. See
+# this chart's README, "Reviews".
+review:
+  # false turns every automatic and manual trigger off. Off until NEX-273
+  # (infra/agents/reviewer.md) and NEX-275 (CI gate) have both merged;
+  # NEX-275's PR switches it on.
+  enabled: false
+  # Linear state whose entry starts an automatic review.
+  state: "In Review"
+  # Send-backs per issue before automatic reviews stop (then `needs-human` and
+  # `/review` only). 0 means manual reviews only.
+  maxIterations: 2
+  # Model of review sessions; same rules as claude.model.
+  model: "opus"
+  # Concurrent review sessions, counted apart from maxSessions so a review
+  # never takes a slot from implementation work.
+  #
+  # 1, and memory.limit stays 6Gi. A review session is one more resident
+  # Claude (~440 MiB, the NEX-144 measurement below), so beside two
+  # implementation runs it fits as long as the reviewer does not build the
+  # whole workspace: maxSessions 2 x 3 GiB = 6 GiB already fills the limit, and
+  # the limit cannot go higher, because the node has 7.8 GiB allocatable and
+  # other workloads request 4.0 GiB of it. The reviewer's instructions
+  # (infra/agents/reviewer.md) keep its builds to the crates a pull request
+  # touches for that reason.
+  maxSessions: 1
+  # A review turn longer than this is interrupted and counted as failed:
+  # 45m, 2700s or 1h.
+  timeout: "45m"
+  # GitHub login of the reviewer app, e.g. `annette-review[bot]`. Its comments
+  # and reviews are never dispatched to a session; the send-back reaches the
+  # author through the move to Todo. Empty until the app exists (NEX-273).
+  botLogin: ""
 # CARGO_TARGET_DIR shared by every session (CONDUCTOR_CARGO_TARGET_DIR). One
 # workspace build instead of one per worktree (each was 4-40 GB). Parallel
 # builds then wait on cargo's lock. Empty gives each worktree its own target/.

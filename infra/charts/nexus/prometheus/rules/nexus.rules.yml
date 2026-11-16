@@ -600,6 +600,20 @@ groups:
             Webhooks failed signature verification in the last 15 minutes: a
             misconfigured webhook secret, or someone probing the endpoint.
 
+      # Summed over `trigger`, so automatic and manual failures count together.
+      - alert: ConductorReviewsFailing
+        expr: sum(increase(conductor_reviews_total{job="conductor",verdict="failed"}[6h])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "Automatic reviews are failing"
+          description: >-
+            At least 3 automatic reviews failed in the last 6 hours (no verdict
+            file, an invalid verdict, a timeout or a Linear write that kept
+            failing). Each failure left a Linear comment with its reason; see
+            `scripts/conductor reviews list`, the "Reviews" row on the
+            Conductor dashboard and the pod logs.
+
   - name: nexus.nordic-live
     rules:
       - alert: NordicLiveDisconnected

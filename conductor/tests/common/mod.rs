@@ -226,6 +226,15 @@ impl FakeTmux {
         self.sessions.lock().unwrap().contains_key(slug)
     }
 
+    /// The command line the session was started with, if it still exists.
+    pub fn session_argv(&self, slug: &str) -> Option<Vec<String>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(slug)
+            .map(|s| s.argv.clone())
+    }
+
     /// Drops the session without telling anyone, as a crash would.
     pub fn crash(&self, slug: &str) {
         if let Some(s) = self.sessions.lock().unwrap().remove(slug) {
@@ -620,6 +629,11 @@ impl Harness {
             deliver_timeout: Duration::from_secs(10),
             interrupt_grace: Duration::from_millis(300),
             start_backoff: Duration::from_millis(500),
+            review: conductor::review::ReviewConfig {
+                linear_write_budget: Duration::from_millis(500),
+                linear_retry: Duration::from_millis(20),
+                ..Default::default()
+            },
         };
 
         Harness {
@@ -732,6 +746,31 @@ impl Harness {
         (dispatcher, sink)
     }
 
+    /// Like [`Harness::start`], with automatic reviews backed by fakes.
+    pub fn start_with_reviews(
+        &self,
+        linear: Arc<dyn conductor::review::ReviewLinear>,
+        github: Arc<dyn conductor::review::ReviewGithub>,
+    ) -> (Arc<Dispatcher>, DispatchSink) {
+        let (dispatcher, sink, rx) = Dispatcher::new_with_reviews(
+            self.registry.clone(),
+            self.config.clone(),
+            Arc::new(PerPullRequestResolver),
+            Arc::clone(&self.shutting_down),
+            None,
+            self.fake.clone(),
+            Some(conductor::review::ReviewDeps {
+                config: self.config.review.clone(),
+                linear,
+                github,
+            }),
+        );
+        self.fake.attach_hooks(dispatcher.hook_state());
+        tokio::spawn(Arc::clone(&dispatcher).run_ingest(rx));
+        tokio::spawn(Arc::clone(&dispatcher).run_scheduler());
+        (dispatcher, sink)
+    }
+
     /// Every run the fake has logged.
     pub fn runs(&self) -> Vec<FakeRun> {
         let Ok(body) = std::fs::read_to_string(&self.log) else {
@@ -833,6 +872,8 @@ impl Harness {
             claude_bin: self.config.claude_bin.clone(),
             agent: self.config.agent.clone(),
             model: self.config.model.clone(),
+            review_agent: self.config.review.agent.clone(),
+            review_model: self.config.review.model.clone(),
             cargo_target_dir: self.config.cargo_target_dir.clone(),
             skip_permissions: self.config.skip_permissions,
             start_timeout: self.config.start_timeout,

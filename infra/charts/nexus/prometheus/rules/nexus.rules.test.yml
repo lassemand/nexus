@@ -1770,6 +1770,27 @@ tests:
               summary: "50% of analyst quotes are not ok"
               description: "More than 20 % of the quotes the analyst asked saxo-stream for failed over the last 10 minutes. See the outcome split on the Analyst dashboard and the Saxo dashboard."
 
+  - name: ConductorReviewsFailing fires at 3 failed reviews in 6h and not before
+    input_series:
+      - series: 'conductor_reviews_total{job="conductor",trigger="automatic",verdict="failed"}'
+        values: '0 0 1 1 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2'
+      - series: 'conductor_reviews_total{job="conductor",trigger="manual",verdict="failed"}'
+        values: '0x20 1x20'
+      - series: 'conductor_reviews_total{job="conductor",trigger="automatic",verdict="approve"}'
+        values: '0+5x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ConductorReviewsFailing
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: ConductorReviewsFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Automatic reviews are failing"
+              description: "At least 3 automatic reviews failed in the last 6 hours (no verdict file, an invalid verdict, a timeout or a Linear write that kept failing). Each failure left a Linear comment with its reason; see `scripts/conductor reviews list`, the \"Reviews\" row on the Conductor dashboard and the pod logs."
+
   - name: AnalystQuoteErrors ignores stream reads
     input_series:
       - series: 'analyst_quotes_total{job="analyst",source="request",outcome="ok"}'

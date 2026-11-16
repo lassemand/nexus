@@ -206,6 +206,53 @@ pub fn closed_issue(payload: LinearWebhook) -> Option<ClosedIssue> {
     })
 }
 
+/// A real workflow state transition of an issue, whatever the new state.
+///
+/// What the review orchestration needs: entering the review state starts a
+/// review, leaving it cancels one that is running.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueStateChange {
+    /// Linear's UUID for the issue.
+    pub issue_id: String,
+    pub identifier: String,
+    /// Name of the state the issue moved into.
+    pub state_name: String,
+    /// Workflow state type of the new state, e.g. `started`.
+    pub state_type: String,
+}
+
+/// Returns the transition if this webhook is an `update` that changed the
+/// issue's state (`updatedFrom.stateId` present), or a `remove`.
+///
+/// An edit to an issue that stays in its state yields `None`, so redelivering
+/// or editing never looks like a fresh entry into In Review. A removed issue is
+/// reported with an empty state name, which is never the review state.
+pub fn state_change(payload: &LinearWebhook) -> Option<IssueStateChange> {
+    if payload.event_type.as_deref() != Some("Issue") {
+        return None;
+    }
+    let data = payload.data.as_ref()?;
+    let issue_id = data.id.clone()?;
+    let (state_name, state_type) = match payload.action.as_deref() {
+        Some("update") => {
+            payload.updated_from.as_ref()?.get("stateId")?;
+            let state = data.state.as_ref()?;
+            (
+                state.name.clone().unwrap_or_default(),
+                state.state_type.clone().unwrap_or_default(),
+            )
+        }
+        Some("remove") => (String::new(), String::new()),
+        _ => return None,
+    };
+    Some(IssueStateChange {
+        identifier: data.identifier.clone().unwrap_or_else(|| issue_id.clone()),
+        issue_id,
+        state_name,
+        state_type,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +444,42 @@ mod tests {
         };
         assert!(dispatchable_issue(mk()).is_some());
         assert!(closed_issue(mk()).is_none());
+    }
+
+    fn transition(action: &str, state: &str, state_changed: bool) -> LinearWebhook {
+        let mut v = json!({
+            "action": action,
+            "type": "Issue",
+            "data": {
+                "id": "uuid-9",
+                "identifier": "NEX-9",
+                "state": { "name": state, "type": "started" }
+            }
+        });
+        if state_changed {
+            v["updatedFrom"] = json!({ "stateId": "prev" });
+        }
+        serde_json::from_value(v).expect("valid payload")
+    }
+
+    #[test]
+    fn a_real_transition_into_in_review_is_a_state_change() {
+        let c = state_change(&transition("update", "In Review", true)).expect("transition");
+        assert_eq!(c.issue_id, "uuid-9");
+        assert_eq!(c.identifier, "NEX-9");
+        assert_eq!(c.state_name, "In Review");
+        assert_eq!(c.state_type, "started");
+    }
+
+    #[test]
+    fn an_edit_of_an_issue_already_in_review_is_not_a_state_change() {
+        assert!(state_change(&transition("update", "In Review", false)).is_none());
+        assert!(state_change(&transition("create", "In Review", false)).is_none());
+    }
+
+    #[test]
+    fn a_removed_issue_leaves_every_state() {
+        let c = state_change(&transition("remove", "In Review", false)).expect("removal");
+        assert_eq!(c.state_name, "");
     }
 }

@@ -24,6 +24,7 @@ use crate::hooks::HookState;
 use crate::linear_api::{IssueSetSource, LinearApiError};
 use crate::registry::{Group, GroupKey, GroupState, QueuedEvent, Registry, RunResult};
 use crate::resolve::{fallback_key, GroupResolver};
+use crate::review::{ReviewArgs, ReviewConfig, ReviewDeps, Reviews};
 use crate::tmux::SessionRuntime;
 use crate::{EventSink, InboundEvent};
 
@@ -81,6 +82,14 @@ pub struct SessionEnvArgs {
     #[arg(long, env = "CONDUCTOR_CLAUDE_MODEL", value_parser = parse_model)]
     pub model: Option<String>,
 
+    /// Agent review sessions run.
+    #[arg(long, env = "CONDUCTOR_REVIEW_AGENT", default_value = "reviewer")]
+    pub review_agent: String,
+
+    /// Model for review sessions, validated like `CONDUCTOR_CLAUDE_MODEL`.
+    #[arg(long, env = "CONDUCTOR_REVIEW_MODEL", default_value = "opus", value_parser = parse_model)]
+    pub review_model: String,
+
     /// How long a new session may take to report `SessionStart`, in seconds.
     #[arg(long, env = "CONDUCTOR_START_TIMEOUT_SECS", default_value_t = 60)]
     pub start_timeout_secs: u64,
@@ -118,6 +127,8 @@ impl SessionEnvArgs {
             claude_bin: self.claude_bin,
             agent: self.agent,
             model: self.model.filter(|m| !m.is_empty()),
+            review_agent: self.review_agent,
+            review_model: Some(self.review_model).filter(|m| !m.is_empty()),
             cargo_target_dir: self.cargo_target_dir.filter(|p| !p.as_os_str().is_empty()),
             skip_permissions: self.skip_permissions,
             start_timeout: Duration::from_secs(self.start_timeout_secs),
@@ -140,6 +151,10 @@ pub struct SessionEnv {
     pub agent: String,
     /// Model passed as `--model`; `None` leaves it to Claude Code.
     pub model: Option<String>,
+    /// Agent review sets run.
+    pub review_agent: String,
+    /// Model of review sets; `None` leaves it to Claude Code.
+    pub review_model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
     /// Whether to pass `--dangerously-skip-permissions`.
@@ -201,6 +216,9 @@ pub struct DispatchArgs {
     /// to a per-pull-request group instead.
     #[arg(long, env = "GITHUB_TOKEN")]
     pub github_token: Option<String>,
+
+    #[command(flatten)]
+    pub review: ReviewArgs,
 }
 
 impl DispatchArgs {
@@ -231,6 +249,7 @@ impl DispatchArgs {
             rescan_interval: DEFAULT_RESCAN_INTERVAL,
             close_sweep: (self.close_sweep_mins > 0)
                 .then(|| Duration::from_secs(self.close_sweep_mins.saturating_mul(60))),
+            review: self.review.into_config(env.review_agent, env.review_model),
         }
     }
 }
@@ -253,7 +272,7 @@ pub fn parse_model(value: &str) -> Result<String, String> {
         Ok(value.to_string())
     } else {
         Err(format!(
-            "invalid CONDUCTOR_CLAUDE_MODEL {value:?}: must match ^[a-z0-9][a-z0-9.-]*(\\[1m\\])?$"
+            "invalid model {value:?}: must match ^[a-z0-9][a-z0-9.-]*(\\[1m\\])?$"
         ))
     }
 }
@@ -405,6 +424,8 @@ pub struct DispatchConfig {
     /// How often every idle group is checked for a completed set; `None`
     /// disables the sweep.
     pub close_sweep: Option<Duration>,
+    /// Automatic review settings.
+    pub review: ReviewConfig,
 }
 
 /// Stub resolver giving every pull request its own group.
@@ -470,6 +491,8 @@ pub struct Dispatcher {
     /// the default cap of five groups that is the normal case, not an edge one.
     /// Only setup is serialised — the runs themselves stay parallel.
     repo_lock: Mutex<()>,
+    /// Automatic reviews; `None` when they are off or cannot work.
+    reviews: Option<Arc<Reviews>>,
 }
 
 impl Dispatcher {
@@ -486,13 +509,49 @@ impl Dispatcher {
         DispatchSink,
         mpsc::UnboundedReceiver<InboundEvent>,
     ) {
+        Self::new_with_reviews(
+            registry,
+            config,
+            resolver,
+            shutting_down,
+            issue_source,
+            runtime,
+            None,
+        )
+    }
+
+    /// As [`Dispatcher::new`], with automatic reviews when `reviews` is given.
+    pub fn new_with_reviews(
+        registry: Registry,
+        config: DispatchConfig,
+        resolver: Arc<dyn GroupResolver>,
+        shutting_down: Arc<AtomicBool>,
+        issue_source: Option<Arc<dyn IssueSetSource>>,
+        runtime: Arc<dyn SessionRuntime>,
+        reviews: Option<ReviewDeps>,
+    ) -> (
+        Arc<Self>,
+        DispatchSink,
+        mpsc::UnboundedReceiver<InboundEvent>,
+    ) {
         let (tx, rx) = mpsc::unbounded_channel();
+        let wake = Arc::new(Notify::new());
+        let reviews = reviews.map(|deps| {
+            Arc::new(Reviews::new(
+                deps,
+                registry.clone(),
+                Arc::clone(&runtime),
+                config.repo_root.clone(),
+                config.worktree_root.clone(),
+                Arc::clone(&wake),
+            ))
+        });
         let dispatcher = Arc::new(Dispatcher {
             registry,
             config,
             resolver,
             runtime,
-            wake: Arc::new(Notify::new()),
+            wake,
             events: Arc::new(Notify::new()),
             backoff: StdMutex::new(HashMap::new()),
             timing_out: StdMutex::new(HashSet::new()),
@@ -500,6 +559,7 @@ impl Dispatcher {
             shutting_down,
             issue_source,
             closing: AtomicBool::new(false),
+            reviews,
         });
         (dispatcher, DispatchSink { tx }, rx)
     }
@@ -532,6 +592,28 @@ impl Dispatcher {
     async fn ingest(&self, event: InboundEvent) {
         if let InboundEvent::LinearIssueClosed { .. } = &event {
             self.ingest_closed(&event).await;
+            return;
+        }
+        if matches!(
+            event,
+            InboundEvent::LinearIssueStateChanged { .. }
+                | InboundEvent::ReviewCommand { .. }
+                | InboundEvent::ReviewRequested { .. }
+        ) {
+            match (&self.reviews, &event) {
+                (_, InboundEvent::ReviewRequested { .. }) => {
+                    tracing::warn!("a review request arrived from outside; ignored")
+                }
+                (Some(reviews), _) => {
+                    tokio::spawn(Arc::clone(reviews).handle(event));
+                }
+                (None, InboundEvent::ReviewCommand { command, .. }) => tracing::info!(
+                    repo = %command.repo,
+                    pr = command.pr_number,
+                    "reviews are disabled; /review ignored"
+                ),
+                (None, _) => {}
+            }
             return;
         }
 
@@ -679,6 +761,9 @@ impl Dispatcher {
                 last_sweep = Some(Instant::now());
             }
             self.spawn_close_pass(sweep);
+            if let Some(reviews) = &self.reviews {
+                reviews.spawn_pass();
+            }
 
             tokio::select! {
                 _ = self.wake.notified() => {}
@@ -850,10 +935,17 @@ impl Dispatcher {
                     | GroupState::Running { .. }
             )
         };
-        let mut active = groups.iter().filter(|g| is_active(&g.state)).count();
+        let mut active = groups
+            .iter()
+            .filter(|g| !g.key.is_review() && is_active(&g.state))
+            .count();
+        let mut active_reviews = groups
+            .iter()
+            .filter(|g| g.key.is_review() && is_active(&g.state))
+            .count();
         let mut live = groups
             .iter()
-            .filter(|g| g.state.is_tmux() && g.state != GroupState::NoSession)
+            .filter(|g| !g.key.is_review() && g.state.is_tmux() && g.state != GroupState::NoSession)
             .count();
 
         for (limit, max, used) in [
@@ -865,6 +957,9 @@ impl Dispatcher {
             metrics::gauge!("conductor_session_slots", "limit" => limit, "kind" => "used")
                 .set(used as f64);
         }
+        metrics::gauge!("conductor_review_sessions", "kind" => "max")
+            .set(self.config.review.max_sessions as f64);
+        metrics::gauge!("conductor_review_sessions", "kind" => "used").set(active_reviews as f64);
 
         self.check_timeouts(&groups);
 
@@ -875,16 +970,22 @@ impl Dispatcher {
             if self.shutting_down.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            if active >= self.config.max_sessions {
-                break;
-            }
             let key = &g.key;
+            let review = key.is_review();
+            let full = if review {
+                active_reviews >= self.config.review.max_sessions
+            } else {
+                active >= self.config.max_sessions
+            };
+            if full {
+                continue;
+            }
             match &g.state {
                 GroupState::Idle | GroupState::NoSession => {
                     if self.backed_off(&key.slug()) {
                         continue;
                     }
-                    if live >= self.config.max_live_sessions {
+                    if !review && live >= self.config.max_live_sessions {
                         if !self.evict_one(&groups).await {
                             continue;
                         }
@@ -894,8 +995,12 @@ impl Dispatcher {
                     let started = txn.begin_start(key).await?;
                     txn.commit().await?;
                     if started {
-                        active += 1;
-                        live += 1;
+                        if review {
+                            active_reviews += 1;
+                        } else {
+                            active += 1;
+                            live += 1;
+                        }
                         let me = Arc::clone(self);
                         let key = key.clone();
                         tokio::spawn(async move { me.start_session_task(key).await });
@@ -906,7 +1011,11 @@ impl Dispatcher {
                     let claimed = txn.begin_delivery(key).await?;
                     txn.commit().await?;
                     if let Some(queued) = claimed {
-                        active += 1;
+                        if review {
+                            active_reviews += 1;
+                        } else {
+                            active += 1;
+                        }
                         let me = Arc::clone(self);
                         let key = key.clone();
                         tokio::spawn(async move { me.deliver_task(key, queued).await });
@@ -937,7 +1046,11 @@ impl Dispatcher {
     async fn evict_one(&self, groups: &[Group]) -> bool {
         let mut candidates: Vec<&Group> = groups
             .iter()
-            .filter(|g| matches!(g.state, GroupState::Ready { .. }) && g.pending.is_empty())
+            .filter(|g| {
+                !g.key.is_review()
+                    && matches!(g.state, GroupState::Ready { .. })
+                    && g.pending.is_empty()
+            })
             .collect();
         candidates.sort_by_key(|g| g.last_active);
 
@@ -1020,14 +1133,16 @@ impl Dispatcher {
 
     async fn start_session(&self, key: &GroupKey) -> Result<(), String> {
         let mut spec = self.config.start_spec();
-        let (model, from_set) = resolve_set_model(
-            self.issue_source.as_deref(),
-            key,
-            self.config.model.as_deref(),
-        )
-        .await;
-        spec.model = model;
-        spec.model_from_set = from_set;
+        if !key.is_review() {
+            let (model, from_set) = resolve_set_model(
+                self.issue_source.as_deref(),
+                key,
+                self.config.model.as_deref(),
+            )
+            .await;
+            spec.model = model;
+            spec.model_from_set = from_set;
+        }
         launch_session(
             &self.registry,
             self.runtime.as_ref(),
@@ -1130,6 +1245,16 @@ impl Dispatcher {
         self.wake.notify_one();
     }
 
+    /// How long a turn in this set may run: the review timeout for a review
+    /// set, the run timeout otherwise.
+    fn turn_timeout(&self, key: &GroupKey) -> Duration {
+        if key.is_review() {
+            self.config.review.timeout
+        } else {
+            self.config.run_timeout
+        }
+    }
+
     /// Starts timeout handling for every turn that has run too long.
     fn check_timeouts(self: &Arc<Self>, groups: &[Group]) {
         let now = chrono::Utc::now();
@@ -1138,7 +1263,7 @@ impl Dispatcher {
                 continue;
             };
             let age = (now - *since).to_std().unwrap_or_default();
-            if age <= self.config.run_timeout {
+            if age <= self.turn_timeout(&g.key) {
                 continue;
             }
             let slug = g.key.slug();
@@ -1188,7 +1313,7 @@ impl Dispatcher {
         }
         tracing::warn!(
             group = %slug,
-            timeout_secs = self.config.run_timeout.as_secs(),
+            timeout_secs = self.turn_timeout(key).as_secs(),
             "turn exceeded its timeout; interrupting"
         );
         if let Err(e) = self.runtime.interrupt(&slug).await {
@@ -1333,12 +1458,31 @@ pub struct StartSpec {
     pub model: Option<String>,
     /// Whether `model` came from the set's label rather than the global default.
     pub model_from_set: bool,
+    /// Agent of review sets, in place of `agent`.
+    pub review_agent: String,
+    /// Model of review sets, in place of `model`.
+    pub review_model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// How long to wait for `SessionStart`.
     pub start_timeout: Duration,
+}
+
+impl StartSpec {
+    /// The spec for one set: a review set runs the review agent and model, any
+    /// other set the spec as it stands. [`launch_session`] applies this to
+    /// every start, so the dispatcher and `sessions attach` agree.
+    pub fn for_key(&self, key: &GroupKey) -> StartSpec {
+        let mut spec = self.clone();
+        if key.is_review() {
+            spec.agent = self.review_agent.clone();
+            spec.model = self.review_model.clone();
+            spec.model_from_set = false;
+        }
+        spec
+    }
 }
 
 impl SessionEnv {
@@ -1351,6 +1495,8 @@ impl SessionEnv {
             agent: self.agent.clone(),
             model: self.model.clone(),
             model_from_set: false,
+            review_agent: self.review_agent.clone(),
+            review_model: self.review_model.clone(),
             cargo_target_dir: self.cargo_target_dir.clone(),
             skip_permissions: self.skip_permissions,
             start_timeout: self.start_timeout,
@@ -1368,6 +1514,8 @@ impl DispatchConfig {
             agent: self.agent.clone(),
             model: self.model.clone(),
             model_from_set: false,
+            review_agent: self.review.agent.clone(),
+            review_model: self.review.model.clone(),
             cargo_target_dir: self.cargo_target_dir.clone(),
             skip_permissions: self.skip_permissions,
             start_timeout: self.start_timeout,
@@ -1428,6 +1576,7 @@ pub async fn launch_session(
     repo_lock: Option<&Mutex<()>>,
     events: Option<&Notify>,
 ) -> Result<(), String> {
+    let spec = &spec.for_key(key);
     let slug = key.slug();
     let base_ref = registry
         .worktree_ref(key)
@@ -1441,14 +1590,23 @@ pub async fn launch_session(
             Some(lock) => Some(lock.lock().await),
             None => None,
         };
-        ensure_worktree(
-            &spec.repo_root,
-            &spec.worktree_root,
-            &slug,
-            base_ref.as_deref(),
-        )
-        .await
-        .map_err(|e| e.to_string())?
+        if key.is_review() {
+            let commit = base_ref
+                .as_deref()
+                .ok_or_else(|| "review set has no commit to check out".to_string())?;
+            ensure_detached_worktree(&spec.repo_root, &spec.worktree_root, &slug, commit)
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            ensure_worktree(
+                &spec.repo_root,
+                &spec.worktree_root,
+                &slug,
+                base_ref.as_deref(),
+            )
+            .await
+            .map_err(|e| e.to_string())?
+        }
     };
 
     let (session_id, resume) = {
@@ -1617,6 +1775,70 @@ pub async fn ensure_worktree(
     Ok(path)
 }
 
+/// Prepares a review set's worktree, detached at the commit under review.
+///
+/// Detached rather than on the pull request's branch: that branch is usually
+/// checked out in the author's worktree, where git refuses a second checkout,
+/// and a review never commits. A path that already holds a worktree is reused
+/// after checking `commit` out in it, so a worktree a failed close left behind
+/// never reviews an older commit than the prompt names.
+pub async fn ensure_detached_worktree(
+    repo_root: &Path,
+    worktree_root: &Path,
+    slug: &str,
+    commit: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    let path = worktree_root.join(slug);
+    if path.exists() {
+        if path.join(".git").exists() {
+            fetch_commit(repo_root, commit).await?;
+            run_git(&path, &["checkout", "--detach", commit]).await?;
+            let head = run_git(&path, &["rev-parse", "HEAD"]).await?;
+            let wanted = run_git(&path, &["rev-parse", &format!("{commit}^{{commit}}")]).await?;
+            if head.trim() != wanted.trim() {
+                return Err(format!(
+                    "{} is at {} after checking out {commit}",
+                    path.display(),
+                    head.trim()
+                )
+                .into());
+            }
+            tracing::info!(worktree = %path.display(), %commit, "review worktree reused at the commit");
+            return Ok(path);
+        }
+        return Err(format!(
+            "{} exists but is not a git worktree; refusing to touch it",
+            path.display()
+        )
+        .into());
+    }
+    std::fs::create_dir_all(worktree_root)?;
+    fetch_commit(repo_root, commit).await?;
+    let path_str = path.to_string_lossy().to_string();
+    run_git(
+        repo_root,
+        &["worktree", "add", "--detach", &path_str, commit],
+    )
+    .await?;
+    tracing::info!(worktree = %path.display(), %commit, "review worktree ready");
+    Ok(path)
+}
+
+/// Fetches `commit` from `origin`, or everything when the server will not give
+/// out a bare commit.
+async fn fetch_commit(
+    repo_root: &Path,
+    commit: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if run_git(repo_root, &["fetch", "origin", commit])
+        .await
+        .is_err()
+    {
+        run_git(repo_root, &["fetch", "origin"]).await?;
+    }
+    Ok(())
+}
+
 /// Runs git, returning stdout or the captured error.
 pub(crate) async fn run_git(
     cwd: &Path,
@@ -1648,6 +1870,9 @@ fn event_name(event: &InboundEvent) -> &'static str {
             PrCommentKind::Comment => "pr_comment",
             PrCommentKind::ReviewComment => "pr_review_comment",
         },
+        InboundEvent::LinearIssueStateChanged { .. } => "issue_state_changed",
+        InboundEvent::ReviewCommand { .. } => "review_command",
+        InboundEvent::ReviewRequested { .. } => "review_requested",
     }
 }
 
@@ -1657,9 +1882,12 @@ fn event_name(event: &InboundEvent) -> &'static str {
 /// contributes to the command line, the working directory or the environment.
 fn prompt_for(event: &InboundEvent) -> String {
     let body = match event {
+        InboundEvent::ReviewRequested { request } => return request.prompt(),
         InboundEvent::LinearIssueTodo { issue, .. } => serde_json::to_string(issue),
         InboundEvent::LinearIssueClosed { issue, .. } => serde_json::to_string(issue),
         InboundEvent::GithubPrComment { comment, .. } => serde_json::to_string(comment),
+        InboundEvent::LinearIssueStateChanged { change, .. } => serde_json::to_string(change),
+        InboundEvent::ReviewCommand { command, .. } => serde_json::to_string(command),
     }
     .unwrap_or_else(|_| "{}".to_string());
 
@@ -1675,7 +1903,9 @@ fn issue_identifier(event: &InboundEvent) -> Option<String> {
     match event {
         InboundEvent::LinearIssueTodo { issue, .. } => Some(issue.identifier.clone()),
         InboundEvent::LinearIssueClosed { issue, .. } => Some(issue.identifier.clone()),
-        InboundEvent::GithubPrComment { .. } => None,
+        InboundEvent::LinearIssueStateChanged { change, .. } => Some(change.identifier.clone()),
+        InboundEvent::ReviewRequested { request } => Some(request.identifier.clone()),
+        InboundEvent::GithubPrComment { .. } | InboundEvent::ReviewCommand { .. } => None,
     }
 }
 
@@ -1684,7 +1914,10 @@ fn delivery_id(event: &InboundEvent) -> Option<&str> {
     match event {
         InboundEvent::LinearIssueTodo { delivery_id, .. }
         | InboundEvent::LinearIssueClosed { delivery_id, .. }
-        | InboundEvent::GithubPrComment { delivery_id, .. } => delivery_id.as_deref(),
+        | InboundEvent::GithubPrComment { delivery_id, .. }
+        | InboundEvent::LinearIssueStateChanged { delivery_id, .. }
+        | InboundEvent::ReviewCommand { delivery_id, .. } => delivery_id.as_deref(),
+        InboundEvent::ReviewRequested { .. } => None,
     }
 }
 
@@ -1771,6 +2004,39 @@ mod tests {
     }
 
     #[test]
+    fn a_review_key_starts_the_review_agent_and_model_whoever_launches_it() {
+        let spec = StartSpec {
+            repo_root: "/r".into(),
+            worktree_root: "/w".into(),
+            claude_bin: "claude".into(),
+            agent: "backend".into(),
+            model: Some("sonnet".into()),
+            model_from_set: true,
+            review_agent: "reviewer".into(),
+            review_model: Some("opus".into()),
+            cargo_target_dir: None,
+            skip_permissions: false,
+            start_timeout: Duration::from_secs(1),
+        };
+        let review = spec.for_key(&GroupKey::review("NEX-1").unwrap());
+        assert_eq!(review.agent, "reviewer");
+        assert_eq!(review.model.as_deref(), Some("opus"));
+        assert!(!review.model_from_set);
+        let argv = session_argv(&review, uuid::Uuid::nil(), false);
+        assert!(argv.contains(&"--agent=reviewer".to_string()));
+        assert!(argv.windows(2).any(|w| w == ["--model", "opus"]));
+        for key in [
+            GroupKey::Named("grp".into()),
+            GroupKey::Issue("NEX-1".into()),
+        ] {
+            let other = spec.for_key(&key);
+            assert_eq!(other.agent, "backend");
+            assert_eq!(other.model.as_deref(), Some("sonnet"));
+            assert!(other.model_from_set);
+        }
+    }
+
+    #[test]
     fn argv_carries_set_global_or_no_model() {
         let spec = |model: Option<&str>| StartSpec {
             repo_root: "/r".into(),
@@ -1779,6 +2045,8 @@ mod tests {
             agent: "backend".into(),
             model: model.map(str::to_string),
             model_from_set: false,
+            review_agent: "reviewer".into(),
+            review_model: Some("opus".into()),
             cargo_target_dir: None,
             skip_permissions: false,
             start_timeout: Duration::from_secs(1),
@@ -1988,6 +2256,8 @@ mod config_tests {
                 claude_bin: "claude".into(),
                 agent: "backend".into(),
                 model: None,
+                review_agent: "reviewer".into(),
+                review_model: "opus".into(),
                 start_timeout_secs: 60,
                 cargo_target_dir: None,
                 skip_permissions: true,
@@ -1998,6 +2268,15 @@ mod config_tests {
             github_api_url: "https://api.github.com".into(),
             close_sweep_mins: 30,
             github_token: None,
+            review: ReviewArgs {
+                review_enabled: true,
+                review_state: "In Review".into(),
+                review_max_iterations: 2,
+                max_review_sessions: 1,
+                review_timeout: Duration::from_secs(45 * 60),
+                review_bot_login: None,
+                review_repo: None,
+            },
         }
     }
 

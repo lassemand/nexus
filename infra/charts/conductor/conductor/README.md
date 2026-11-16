@@ -149,6 +149,126 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8788/health   # 200
 
 `scripts/conductor` in the repository root wraps the exec form.
 
+## Reviews
+
+Every Linear issue that moves **into** `review.state` (default `In Review`)
+gets an automatic review: a fresh Claude session running the `reviewer` agent
+(`infra/agents/reviewer.md`, model `review.model`) reviews every open pull
+request attached to the issue. Only a real transition counts
+(`updatedFrom.stateId`), so editing an issue that sits in review starts
+nothing. A review starts within seconds when a review slot is free; reviews run
+off every trading path.
+
+- **Its own set and slots.** Each review runs in the set
+  `review-<identifier>` (e.g. `review-nex-270`), in a worktree detached at the
+  pull request head, never in the author's worktree. It has its own limit,
+  `review.maxSessions` (`CONDUCTOR_MAX_REVIEW_SESSIONS`), so a review never
+  takes a slot from implementation work. The set is closed once the verdict is
+  handled (worktree and registry row removed, transcript kept), so every
+  review starts fresh and reads earlier reviews from GitHub.
+- **The verdict.** The reviewer writes `<worktree>/.review/verdict.json`;
+  conductor reads it when the turn ends (the `Stop` hook) and checks that every
+  pull request is covered with the head SHA it was given. Conductor, not the
+  agent, does the side effects:
+  - `changes_requested`: a Linear comment starting `Review send-back k of N`
+    with the summary and review links, then the issue moves to **Todo**, which
+    dispatches the author's set as usual. The send-back is counted when the
+    comment is posted, so a failed move never makes the next comment repeat
+    `k of N`; the failed move is reported in a second comment;
+  - an automatic review acts on its verdict only if the issue is still in the
+    review state; an issue that went to Done or back to In Progress meanwhile is
+    left alone, and an automatic trigger for such an issue starts nothing;
+  - `approve`: a Linear comment, `needs-human` removed, the issue stays in
+    review for you to merge;
+  - **failed** (no verdict file, invalid JSON, wrong SHAs, a turn longer than
+    `review.timeout`, or a Linear write that kept failing for 10 minutes): a
+    Linear comment with the reason, no state change, no send-back counted;
+  - a pull request whose head moved during the review: the verdict is
+    discarded and one new review is queued;
+  - the issue leaving review mid-review (Done, Todo, Canceled): the session is
+    interrupted and the verdict discarded.
+- **The limit.** After `review.maxIterations` send-backs (default 2, so at
+  most 3 automatic reviews; 0 means manual only), entering review starts no
+  review. The pull requests get the label `needs-human`, and the issue gets
+  one comment saying the limit is reached, once per send-back count (a
+  redelivered webhook or a second entry into review adds nothing until the
+  count changes or `reviews reset` runs). Only reviewer verdicts count; moving
+  an issue back to Todo by hand does not.
+- **Which pull requests.** Only those in the repository the worktrees come from
+  (`review.repo`, `CONDUCTOR_REVIEW_REPO`, default the `origin` remote of
+  `CONDUCTOR_REPO_ROOT`); others the issue lists are commented on and skipped.
+  A pull request a `/review` names stays part of the review if it is queued
+  again after a new head.
+- **Waiting.** A review waits for a free review slot without a deadline. The
+  "did not start" failure counts from the moment its set got a slot.
+- **Reserved names.** The set `review-<identifier>` belongs to reviews: a
+  `session:review-*` Linear label is ignored (the issue gets its own set), and
+  a review never closes a set of another kind that has the same name.
+- **`/review`.** A comment starting with `/review` on a pull request, from a
+  `githubWebhookUsers` login, queues a review for the issue that owns it (the
+  `NEX-<n>` in the branch name, else the Linear link in the description),
+  whatever the limit. Conductor reacts with 👀 when it is queued; the comment is
+  not sent to the author's set. At most one review per issue is queued or
+  running at a time; further triggers are dropped and logged.
+- **The reviewer bot.** Comments by `review.botLogin`
+  (`CONDUCTOR_REVIEW_BOT_LOGIN`) are never dispatched to a session; a
+  send-back reaches the author only through the move to Todo.
+
+```bash
+scripts/conductor reviews list              # send-backs, last verdict and time per issue
+scripts/conductor reviews list --json
+scripts/conductor reviews reset NEX-270     # send-backs back to 0
+```
+
+Settings (`values.yaml` `review`, environment in brackets): `enabled`
+(`CONDUCTOR_REVIEW_ENABLED`, `false` turns every trigger off), `state`
+(`CONDUCTOR_REVIEW_STATE`), `maxIterations` (`CONDUCTOR_REVIEW_MAX_ITERATIONS`),
+`model` (`CONDUCTOR_REVIEW_MODEL`), `maxSessions`
+(`CONDUCTOR_MAX_REVIEW_SESSIONS`), `timeout` (`CONDUCTOR_REVIEW_TIMEOUT`,
+`45m`, `2700s` or `1h`), `botLogin` (`CONDUCTOR_REVIEW_BOT_LOGIN`), `repo` (`CONDUCTOR_REVIEW_REPO`).
+`enabled` is `false` in the chart until `infra/agents/reviewer.md` exists
+(NEX-273) and the CI gate (NEX-275) have both merged; NEX-275's PR sets it to
+`true`. Metrics
+`conductor_reviews_total{trigger,verdict}`,
+`conductor_review_duration_seconds`, `conductor_review_limit_reached_total`,
+`conductor_review_sessions{kind}`, `conductor_review_linear_identity{kind}`,
+`conductor_review_linear_auth_failures_total`; alert
+`ConductorReviewsFailing`; row "Reviews" on the Conductor dashboard.
+
+### The reviewer's own name in Linear (Annette)
+
+Review comments and the move back to Todo are made by a Linear OAuth app
+acting as itself, so they appear under the app's name and icon and use no paid
+seat. Conductor uses Linear's **client-credentials grant** (an `app`-actor
+token, valid 30 days, no refresh token): it fetches the token from the client
+id and secret, renews it a day before expiry or when Linear rejects it, and
+keeps it only in memory. Everything else conductor does in Linear still uses
+`LINEAR_API_KEY`. One-time setup:
+
+1. In Linear, **Settings → API → OAuth applications → New**: name it
+   **Annette** and upload her icon.
+2. In the app's settings, turn on **client credentials** (the app actor).
+   Without it Linear answers
+   `Client does not support the client_credentials grant type`.
+3. Install the app on the NexusBoard workspace. The token covers every public
+   team.
+4. Store the credentials with `patch`, so the other properties stay:
+
+   ```bash
+   vault kv patch secret/nexus/conductor REVIEW_LINEAR_CLIENT_ID=<id> REVIEW_LINEAR_CLIENT_SECRET=<secret>
+   ```
+
+   The `dataFrom: extract` ExternalSecret turns them into environment
+   variables with no chart change (within its 1h refresh, then restart the
+   pod). Never paste them into a pull request, issue or chat.
+
+Without `REVIEW_LINEAR_CLIENT_ID`, review writes fall back to `LINEAR_API_KEY`,
+one warning is logged at startup, and
+`conductor_review_linear_identity{kind="fallback"}` is 1. If the app token
+fails (renewal fails or a 401), the write is retried with backoff and counted
+in `conductor_review_linear_auth_failures_total`; it never switches to
+`LINEAR_API_KEY` mid-flight.
+
 ## Enabling webhook intake
 
 Only once no local `hookdeck listen` is running anywhere:
