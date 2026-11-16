@@ -185,6 +185,7 @@ async fn every_state_change_bumps_the_version_and_a_closed_trade_has_its_result(
 
     let message = trade_to_proto(&closed, &observations);
     assert_eq!(message.version, 5);
+    assert_eq!(message.news_id, "n1");
     assert_eq!(message.entry_ask, "100.000000");
     assert_eq!(message.exit_bid, "101.500000");
     assert_eq!(message.pnl_pct, "1.5000");

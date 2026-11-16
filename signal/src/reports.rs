@@ -985,16 +985,47 @@ fn calendar_result(o: &CalendarOutcome) -> &'static str {
 }
 
 /// Stores a validated message: a release, or a calendar snapshot.
+#[cfg(test)]
 pub async fn handle(pool: &PgPool, m: &Message<'_>) -> sqlx::Result<String> {
+    handle_in(pool, m, &tracing::Span::none()).await
+}
+
+/// [`handle`] inside the release's `process special.events` span `consumer`.
+/// With a real span, the database write is a child `signal.store_special_event`
+/// and an inline reaction recompute a child `signal.reaction_recompute`. With
+/// `Span::none()` (every message that carries no `traceparent`) no span is
+/// created at all.
+pub async fn handle_in(
+    pool: &PgPool,
+    m: &Message<'_>,
+    consumer: &tracing::Span,
+) -> sqlx::Result<String> {
+    use tracing::Instrument;
+    let child = |name: &'static str| {
+        if consumer.is_none() {
+            tracing::Span::none()
+        } else {
+            match name {
+                "signal.reaction_recompute" => {
+                    tracing::info_span!(parent: consumer, "signal.reaction_recompute")
+                }
+                _ => tracing::info_span!(parent: consumer, "signal.store_special_event"),
+            }
+        }
+    };
     match m {
         Message::Release(r) => {
-            let recorded = record_report_release(pool, r).await?;
+            let recorded = record_report_release(pool, r)
+                .instrument(child("signal.store_special_event"))
+                .await?;
             // The release may be new, moved, or have turned another report into a
             // correction: recompute the company's reactions (NEX-163). A failure
             // here is repaired by the next bar, report or the startup sweep and
             // must not make the consumer re-store the event.
             if let Err(e) =
-                crate::reactions::refresh_report_reactions(pool, r.ticker, r.exchange_mic).await
+                crate::reactions::refresh_report_reactions(pool, r.ticker, r.exchange_mic)
+                    .instrument(child("signal.reaction_recompute"))
+                    .await
             {
                 tracing::warn!(ticker = r.ticker, error = %e, "failed to refresh report reactions");
             }
@@ -1008,16 +1039,24 @@ pub async fn handle(pool: &PgPool, m: &Message<'_>) -> sqlx::Result<String> {
             metrics::counter!("signal_nordic_events_total", "event_type" => r.event_type, "result" => result).increment(1);
             Ok(format!("{recorded:?}"))
         }
-        Message::Announcement(a) => crate::announcements::handle(pool, a).await,
+        Message::Announcement(a) => {
+            crate::announcements::handle(pool, a)
+                .instrument(child("signal.store_special_event"))
+                .await
+        }
         Message::Calendar(c) => {
             let today = stockholm_today(pool).await?;
-            let outcome = apply_report_calendar(pool, c, today).await?;
+            let outcome = apply_report_calendar(pool, c, today)
+                .instrument(child("signal.store_special_event"))
+                .await?;
             metrics::counter!("signal_nordic_events_total", "event_type" => CALENDAR, "result" => calendar_result(&outcome)).increment(1);
             Ok(format!("{outcome:?}"))
         }
         Message::CalendarRelease(r) => {
             let today = stockholm_today(pool).await?;
-            let outcome = apply_calendar_release(pool, r, today).await?;
+            let outcome = apply_calendar_release(pool, r, today)
+                .instrument(child("signal.store_special_event"))
+                .await?;
             metrics::counter!("signal_nordic_events_total", "event_type" => CALENDAR_RELEASE, "result" => calendar_result(&outcome)).increment(1);
             Ok(format!("{outcome:?}"))
         }

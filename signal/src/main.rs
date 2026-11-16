@@ -1,3 +1,4 @@
+mod analyst_store;
 mod announcements;
 mod calendar_sources;
 mod daily_bars;
@@ -34,7 +35,8 @@ use rdkafka::{
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use telemetry::trace::OpenTelemetrySpanExt;
+use tracing::{debug, error, field::Empty, info, info_span, warn, Span};
 
 #[derive(Parser)]
 #[command(about = "Backtest earnings strategy against historical data")]
@@ -73,6 +75,18 @@ struct Args {
         default_value = "insider.transactions"
     )]
     insider_transactions_topic: String,
+
+    /// The analyst's decisions (stored in `analyst_decisions`).
+    #[arg(
+        long,
+        env = "ANALYST_DECISIONS_TOPIC",
+        default_value = "analyst.decisions"
+    )]
+    analyst_decisions_topic: String,
+
+    /// The analyst's simulated trades (stored in `simulated_trades`).
+    #[arg(long, env = "ANALYST_TRADES_TOPIC", default_value = "analyst.trades")]
+    analyst_trades_topic: String,
 }
 
 /// Handles a raw `TickerRegistration` protobuf payload from the
@@ -160,8 +174,8 @@ async fn handle_ticker_registration<P: CompanyProvider>(
 }
 
 /// Longest wait between retries of a failed Nordic report store.
-const INITIAL_STORE_BACKOFF: Duration = Duration::from_secs(1);
-const MAX_STORE_BACKOFF: Duration = Duration::from_secs(60);
+pub(crate) const INITIAL_STORE_BACKOFF: Duration = Duration::from_secs(1);
+pub(crate) const MAX_STORE_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Stores one Nordic report event, retrying transient database errors with
 /// backoff while `set_blocked(true)` signals the stalled partition. Returns the
@@ -207,6 +221,36 @@ where
     }
 }
 
+/// The `process special.events` consumer span of a message that carries a
+/// `traceparent` header (nordic-live sets it on every live release), parented
+/// on that context. `None` for every other message, so calendar snapshots and
+/// poll-path events create no spans. Built from the already-decoded event and
+/// the extracted header only: no await, no I/O.
+fn release_span(msg: &impl KafkaMessage, event: &SpecialEvent) -> Option<Span> {
+    let parent = telemetry::kafka::extract(msg)?;
+    let key = msg
+        .key()
+        .map(|k| String::from_utf8_lossy(k).into_owned())
+        .unwrap_or_default();
+    let span = info_span!(
+        "process special.events",
+        otel.kind = "consumer",
+        messaging.system = "kafka",
+        messaging.destination.name = msg.topic(),
+        messaging.kafka.message.key = key.as_str(),
+        messaging.kafka.message.offset = msg.offset(),
+        messaging.destination.partition.id = msg.partition(),
+        nexus.ticker = event.ticker.as_str(),
+        nexus.exchange_mic = event.exchange_mic.as_str(),
+        mfn.news_id = event.source_id.as_str(),
+        nexus.event_type = event.event_type.as_str(),
+        otel.status_code = Empty,
+        otel.status_description = Empty
+    );
+    span.set_parent(parent).ok()?;
+    Some(span)
+}
+
 /// Returns the sector for `asset`, asking `provider` only for US listings.
 ///
 /// Polygon covers US venues only: asking it about e.g. `GOMX` on `FNSE` is a
@@ -227,7 +271,7 @@ async fn resolve_sector<P: CompanyProvider>(
 #[tokio::main]
 async fn main() {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
-    tracing_subscriber::fmt::init();
+    let _tracing = telemetry::trace::init("signal").expect("failed to initialise tracing");
 
     let args = Args::parse();
 
@@ -265,6 +309,8 @@ async fn main() {
             args.market_bars_topic.as_str(),
             args.insider_transactions_topic.as_str(),
             args.daily_bars_topic.as_str(),
+            args.analyst_decisions_topic.as_str(),
+            args.analyst_trades_topic.as_str(),
         ])
         .expect("failed to subscribe");
 
@@ -392,6 +438,7 @@ async fn main() {
                             }
                         };
 
+                        let release_span = release_span(&msg, &event);
                         if event.source == reports::SOURCE_MFN {
                             let message = match reports::parse(&event) {
                                 Ok(m) => m,
@@ -411,12 +458,13 @@ async fn main() {
                             // partition forever and stall every later report behind
                             // it, so it is logged, counted and committed; the producer
                             // does not resend it, so it must be replayed from MFN.
+                            let consumer_span = release_span.clone().unwrap_or_else(Span::none);
                             let stored = store_report(
                                 topic,
                                 &event.ticker,
                                 &event.event_type,
                                 &event.source_id,
-                                || reports::handle(&pool, &message),
+                                || reports::handle_in(&pool, &message, &consumer_span),
                                 INITIAL_STORE_BACKOFF,
                                 |blocked| {
                                     metrics::gauge!("signal_store_blocked").set(if blocked {
@@ -468,6 +516,10 @@ async fn main() {
                                 );
                             }
                         }
+                    } else if topic == args.analyst_decisions_topic {
+                        outcome = analyst_store::handle_decision(&pool, &msg).await;
+                    } else if topic == args.analyst_trades_topic {
+                        outcome = analyst_store::handle_trade(&pool, &msg).await;
                     } else if topic == args.market_bars_topic {
                         let event = match MarketEvent::decode(payload) {
                             Ok(e) => e,
@@ -720,6 +772,131 @@ mod tests {
             .unwrap();
         assert_eq!(sector, Some(Sector::Technology));
         assert_eq!(p.calls.load(Ordering::SeqCst), 1);
+    }
+
+    mod tracing_scope {
+        use super::*;
+        use rdkafka::message::{Header, OwnedHeaders, OwnedMessage, Timestamp};
+        use telemetry::trace::testing::Harness;
+        use tracing::instrument::WithSubscriber;
+
+        const TRACE: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
+
+        fn report() -> SpecialEvent {
+            SpecialEvent {
+                ticker: "GOMX".into(),
+                exchange_mic: "FNSE".into(),
+                event_type: "quarterly_report".into(),
+                occurred_at_unix_secs: 1_788_000_000,
+                description: "Interim report".into(),
+                source: reports::SOURCE_MFN.into(),
+                source_id: "fa0cc072-6e67-4dc5-82c0-0bb587966b31".into(),
+                url: "https://mfn.se/a".into(),
+                lang: "en".into(),
+                ..Default::default()
+            }
+        }
+
+        fn message(topic: &str, event: &SpecialEvent, traceparent: Option<&str>) -> OwnedMessage {
+            OwnedMessage::new(
+                Some(event.encode_to_vec()),
+                Some(b"GOMX:FNSE".to_vec()),
+                topic.to_string(),
+                Timestamp::NotAvailable,
+                0,
+                1,
+                traceparent.map(|value| {
+                    OwnedHeaders::new().insert(Header {
+                        key: "traceparent",
+                        value: Some(value),
+                    })
+                }),
+            )
+        }
+
+        async fn store(pool: &PgPool, msg: &OwnedMessage, event: &SpecialEvent) {
+            let span = release_span(msg, event);
+            let consumer = span.unwrap_or_else(Span::none);
+            let parsed = reports::parse(event).unwrap();
+            reports::handle_in(pool, &parsed, &consumer).await.unwrap();
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn a_release_with_a_traceparent_is_stored_in_its_trace(pool: PgPool) {
+            crate::analyst_store::install_default_subscriber();
+            let harness = Harness::new();
+            let event = report();
+            let traceparent = format!("00-{TRACE}-00f067aa0ba902b7-01");
+            let msg = message("special.events", &event, Some(&traceparent));
+            store(&pool, &msg, &event)
+                .with_subscriber(harness.subscriber())
+                .await;
+            let consumer = harness.span("process special.events");
+            assert_eq!(consumer.span_context.trace_id().to_string(), TRACE);
+            assert_eq!(consumer.parent_span_id.to_string(), "00f067aa0ba902b7");
+            let attribute = |key: &str| {
+                consumer
+                    .attributes
+                    .iter()
+                    .find(|a| a.key.as_str() == key)
+                    .map(|a| a.value.to_string())
+            };
+            assert_eq!(attribute("nexus.ticker").as_deref(), Some("GOMX"));
+            assert_eq!(
+                attribute("nexus.event_type").as_deref(),
+                Some("quarterly_report")
+            );
+            assert_eq!(
+                attribute("mfn.news_id").as_deref(),
+                Some("fa0cc072-6e67-4dc5-82c0-0bb587966b31")
+            );
+            let store = harness.span("signal.store_special_event");
+            assert_eq!(store.parent_span_id, consumer.span_context.span_id());
+            let recompute = harness.span("signal.reaction_recompute");
+            assert_eq!(recompute.parent_span_id, consumer.span_context.span_id());
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn a_release_without_a_traceparent_creates_no_spans(pool: PgPool) {
+            crate::analyst_store::install_default_subscriber();
+            let harness = Harness::new();
+            let event = report();
+            let msg = message("special.events", &event, None);
+            store(&pool, &msg, &event)
+                .with_subscriber(harness.subscriber())
+                .await;
+            assert_eq!(count_rows(&pool).await, 1);
+            assert!(harness.spans().is_empty(), "{:?}", harness.spans());
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn a_message_on_another_topic_creates_no_spans(pool: PgPool) {
+            crate::analyst_store::install_default_subscriber();
+            let harness = Harness::new();
+            let registration = TickerRegistration {
+                ticker: "GOMX".into(),
+                exchange_mic: "FNSE".into(),
+                currency: "SEK".into(),
+                unregister: true,
+                ..Default::default()
+            };
+            let outcome = handle_ticker_registration(
+                &registration.encode_to_vec(),
+                &pool,
+                &super::provider(),
+            )
+            .with_subscriber(harness.subscriber())
+            .await;
+            assert_eq!(outcome, "skipped_invalid");
+            assert!(harness.spans().is_empty(), "{:?}", harness.spans());
+        }
+
+        async fn count_rows(pool: &PgPool) -> i64 {
+            sqlx::query_scalar("SELECT COUNT(*) FROM special_events WHERE source_id IS NOT NULL")
+                .fetch_one(pool)
+                .await
+                .unwrap()
+        }
     }
 
     mod report_store {

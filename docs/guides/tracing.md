@@ -219,7 +219,7 @@ export); `OTEL_SERVICE_NAME` is `nordic-live`.
 
 An item the poll already stored ends its trace at the check (`already_ingested`). `KafkaSink`
 adds `traceparent` (and `tracestate`) to every message sent inside a span; the poll binaries send
-without a span and add no header. Consumers that do not read headers (signal) are unaffected.
+without a span and add no header. signal reads the header on `special.events` (below); consumers that do not read headers are unaffected.
 
 ## analyst
 
@@ -260,3 +260,21 @@ analyst's clock (`spans::clock_span`, `end_span`), not from when they happen to 
 `sim_trades.trace_id` is the release trace, `release_traceparent` the decision span, `trade_trace_id` the holding trace (a
 resumed trade gets a new one); `AnalystTrade` carries `trace_id` and `trade_trace_id`. Tracing never delays a quote: the
 entry request leaves before any of its spans are built (they take the request's start time from the clock), the trade's trace id is stored by a detached write, and `tests/trading_overhead.rs` asserts that tracing adds under 100 µs at p99 to the time from the hand-off to the first `GET /quote` (500 samples each with tracing off and on, collector down).
+
+## signal
+
+`telemetry::trace::init("signal")` replaces the plain log format: logs are JSON (`level` is still a top-level field, which
+Alloy's `stage.json` reads, so the `level` label is unchanged) and carry `trace_id`/`span_id` inside spans. Chart value
+`otlpEndpoint` sets `OTEL_EXPORTER_OTLP_ENDPOINT` (empty disables export); `OTEL_SERVICE_NAME` is `signal`.
+
+**Only three kinds of message are traced**; everything else in signal creates no span, so nothing else starts exporting:
+`analyst.decisions`, `analyst.trades`, and `special.events` messages that carry a `traceparent` header (every live release
+from `nordic-live`; calendar snapshots and poll-path events carry none).
+
+| Span | Notes |
+|---|---|
+| `process special.events` (consumer) | only with a `traceparent` header, which is its parent; a sibling of the analyst's own span under `send special.events`. `messaging.*`, `nexus.ticker`, `nexus.exchange_mic`, `mfn.news_id`, `nexus.event_type`. Built from the decoded event and the extracted header with no await, before the store |
+| `signal.store_special_event` | the database write of the release (child of the consumer span) |
+| `signal.reaction_recompute` | the inline recompute of the company's report reactions after a release (child of the consumer span). The debounced recompute after daily bars is not traced |
+| `process analyst.decisions` / `process analyst.trades` (consumer) | parent is the `traceparent` header; without one a root with `nexus.trace_parent_missing=true`. `messaging.*`, `nexus.ticker`, `nexus.exchange_mic`, `mfn.news_id`; trades also `analyst.trade_id`, `analyst.version`, `signal.upsert` (`applied` or `older_version_ignored`). A message that does not decode, or has a decimal that does not parse, sets the span status to ERROR |
+| `signal.store_analyst_decision` / `signal.store_analyst_trade` | the database transaction (child of the consumer span) |

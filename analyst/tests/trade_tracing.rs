@@ -280,6 +280,7 @@ fn open_trade(entry_at: DateTime<Utc>, traceparent: &str) -> StoredTrade {
     StoredTrade {
         id: 1,
         decision_id: 1,
+        news_id: "n1".into(),
         ticker: "AAA".into(),
         exchange_mic: "XSTO".into(),
         decision: "buy".into(),

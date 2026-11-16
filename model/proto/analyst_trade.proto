@@ -43,6 +43,8 @@ message AnalystTrade {
   string trace_id        = 23;
   string trade_trace_id  = 24;
   repeated TradeObservation observations = 25;
+  // MFN's news id of the release; the key that links the trade to its AnalystDecision.
+  string news_id         = 26;
 }
 
 // One observation of the bid after entry.

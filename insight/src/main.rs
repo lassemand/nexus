@@ -1,3 +1,4 @@
+mod analyst;
 mod metrics;
 
 use std::sync::Arc;
@@ -22,6 +23,13 @@ struct TradeResult {
     pnl: f64,
     pnl_pct: f64,
     created_at: DateTime<Utc>,
+}
+
+fn parse_since_arg(since: Option<String>) -> Result<Option<DateTime<Utc>>, McpError> {
+    since
+        .map(|value| analyst::parse_since(&value))
+        .transpose()
+        .map_err(|message| McpError::invalid_params(message, None))
 }
 
 #[derive(Clone)]
@@ -57,9 +65,110 @@ impl InsightServer {
         )
         .await
     }
+
+    #[tool(
+        description = "Fetch the analyst's simulated trades on Nordic report releases, newest first, with decision, reason, entry, exit, P&L, status and trace_id (the release's trace in Tempo). Forward-only and simulated: each result exists only because the system decided live, before the market reacted, so there is no look-ahead bias, and results cannot be backfilled. Per-share returns, no fees, no position sizing. For releases published before the open the figures measure the move after the open. Shadow trades (no_buy, abstain, skipped_no_kernel) show what would have happened without acting; they are not actions taken."
+    )]
+    async fn fetch_analyst_trades(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "Optional ticker to filter by")]
+        ticker: Option<String>,
+        #[tool(param)]
+        #[schemars(description = "Optional decision: buy, no_buy, abstain or skipped_no_kernel")]
+        decision: Option<String>,
+        #[tool(param)]
+        #[schemars(
+            description = "Optional lower bound on the release time, RFC 3339 or YYYY-MM-DD"
+        )]
+        since: Option<String>,
+        #[tool(param)]
+        #[schemars(description = "Include shadow trades (default true)")]
+        include_shadow: Option<bool>,
+        #[tool(param)]
+        #[schemars(description = "Maximum number of trades (default 200, at most 1000)")]
+        limit: Option<i64>,
+    ) -> Result<CallToolResult, McpError> {
+        observe(
+            "fetch_analyst_trades",
+            self.fetch_analyst_trades_body(ticker, decision, since, include_shadow, limit),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Summarise the analyst's simulated trades: counts by decision and status; for closed trades, per decision and observation horizon, the count, mean and median pnl_pct (bid at the horizon against the entry ask) and the share of positive outcomes; buy against shadow no_buy side by side; median release-to-entry time by release session; and the share of late or missed observations. Trades that are not closed are excluded from the P&L figures and counted. Forward-only and simulated: each result exists only because the system decided live, before the market reacted, so there is no look-ahead bias, and results cannot be backfilled. Per-share returns, no fees, no position sizing. For releases published before the open the figures measure the move after the open. Shadow trades (no_buy, abstain, skipped_no_kernel) show what would have happened without acting; they are not actions taken."
+    )]
+    async fn summarise_analyst_trades(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "Optional lower bound on the release time, RFC 3339 or YYYY-MM-DD"
+        )]
+        since: Option<String>,
+        #[tool(param)]
+        #[schemars(description = "Optional ticker to filter by")]
+        ticker: Option<String>,
+    ) -> Result<CallToolResult, McpError> {
+        observe(
+            "summarise_analyst_trades",
+            self.summarise_analyst_trades_body(since, ticker),
+        )
+        .await
+    }
 }
 
 impl InsightServer {
+    async fn fetch_analyst_trades_body(
+        &self,
+        ticker: Option<String>,
+        decision: Option<String>,
+        since: Option<String>,
+        include_shadow: Option<bool>,
+        limit: Option<i64>,
+    ) -> Result<ToolOutput, McpError> {
+        let since = parse_since_arg(since)?;
+        let trades = timed_db(
+            "fetch_analyst_trades",
+            analyst::fetch_trades(
+                &self.pool,
+                ticker.as_deref(),
+                decision.as_deref(),
+                since,
+                include_shadow.unwrap_or(true),
+                limit,
+            ),
+        )
+        .await
+        .map_err(db_error)?;
+        let json = serde_json::to_string_pretty(&trades)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(ToolOutput {
+            result: CallToolResult::success(vec![Content::text(json)]),
+            rows: trades.len(),
+        })
+    }
+
+    async fn summarise_analyst_trades_body(
+        &self,
+        since: Option<String>,
+        ticker: Option<String>,
+    ) -> Result<ToolOutput, McpError> {
+        let since = parse_since_arg(since)?;
+        let summary = timed_db(
+            "summarise_analyst_trades",
+            analyst::summarise(&self.pool, since, ticker.as_deref()),
+        )
+        .await
+        .map_err(db_error)?;
+        let json = serde_json::to_string_pretty(&summary)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(ToolOutput {
+            result: CallToolResult::success(vec![Content::text(json)]),
+            rows: summary["counts"].as_array().map_or(0, Vec::len),
+        })
+    }
+
     async fn fetch_trade_results_body(
         &self,
         ticker: Option<String>,
