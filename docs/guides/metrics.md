@@ -128,7 +128,7 @@ on nordic-live's `/metrics` and the `Nordic Live` dashboard:
 
 | Metric | Meaning |
 |---|---|
-| `nordic_live_insider_transactions_total{outcome}` | `published`: one per message acknowledged on `insider.transactions`. Per release: `parse_error` (no transaction parsed), `skipped` (before MAR, another language, or a zero price on a buy or sell), `dropped` (the queue was full or closed), `failed` (a message given up on after 5 minutes of retries). Dropped and failed ones are recovered by the 22:00 `nordic-reports` poll |
+| `nordic_live_insider_transactions_total{outcome}` | `published`: one per message acknowledged on `insider.transactions`. Per release: `parse_error` (no transaction parsed), `skipped` (before MAR, another language, or a zero price on a buy or sell), `conflict` (a release with this MAR reference number was already sent with other trades: the other language copy parsed differently, or a correction reused the reference; not published), `dropped` (the queue was full or closed), `failed` (a message given up on after 5 minutes of retries). Dropped and failed ones are recovered by the 22:00 `nordic-reports` poll. Live sees one copy at a time, so a copy that does not parse counts as `parse_error` even when its twin in the other language was published; the poll does not count that case. `parse_error` therefore reads higher live than `nordic_mar_parse_errors_total` |
 | `nordic_live_insider_latency_seconds` | Receive time to Kafka acknowledgement per published message (buckets 5 ms to 30 s) |
 | `nordic_live_insider_queue_depth` | Releases waiting in the insider queue (capacity 1 000) |
 

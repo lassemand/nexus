@@ -11,10 +11,16 @@
 //! ([`insiders::insider_key`]) and message, retrying a failed send.
 //!
 //! Language twins: each release comes in Finnish and English with the same MAR
-//! reference number. Both copies are published as they arrive; they carry the
-//! same key, person, dates, volume, price and type, so signal stores one row.
-//! Only the role and nature texts, `lang`, `mfn_news_id` and `url` differ;
-//! signal keeps the English role whichever copy arrived first.
+//! reference number. The first copy to arrive is published. The producer
+//! remembers what it sent per reference number ([`SentReferences`]); a later
+//! release with that reference is published only when its trades are identical
+//! (key, transaction date, volume, price, type, currency), so signal stores one
+//! row, and the English copy then sets the role (signal keeps the English role,
+//! price and filing date). A later release with that reference whose trades
+//! differ is not published and counted as `outcome="conflict"`. That happens
+//! when the two languages parse differently, or when a correction reuses the
+//! original's reference number. Either way the first copy wins, as in
+//! `nordic-reports`, where the first `(reference_number, index)` is kept.
 //!
 //! Anything dropped, unparsable or given up on is recovered by the 22:00
 //! `nordic-reports` poll, which publishes the same messages.
@@ -42,7 +48,99 @@ pub const INSIDER_LATENCY_BUCKETS: &[f64] = &[
 ];
 
 /// Every `outcome` of `nordic_live_insider_transactions_total`.
-pub const OUTCOMES: &[&str] = &["published", "parse_error", "dropped", "skipped", "failed"];
+pub const OUTCOMES: &[&str] = &[
+    "published",
+    "parse_error",
+    "dropped",
+    "skipped",
+    "conflict",
+    "failed",
+];
+
+/// How many reference numbers [`SentReferences`] remembers.
+pub const SENT_REFERENCES_CAPACITY: usize = 10_000;
+
+/// The trade fields that must agree between two releases with one reference
+/// number: the Kafka key (person and transaction date), volume, price, type and
+/// currency, one entry per trade in order.
+pub fn trades_identity(messages: &[(String, UnifiedInsiderTransaction)]) -> Vec<String> {
+    messages
+        .iter()
+        .map(|(key, m)| {
+            format!(
+                "{key}|{}|{}|{}|{}|{}",
+                m.transaction_date, m.volume, m.price_per_unit, m.transaction_type, m.currency
+            )
+        })
+        .collect()
+}
+
+fn reference_number(messages: &[(String, UnifiedInsiderTransaction)]) -> Option<&str> {
+    messages.first().and_then(|(_, m)| match &m.source_detail {
+        Some(model::generated::unified_insider_transaction::SourceDetail::Mar(d))
+            if !d.reference_number.is_empty() =>
+        {
+            Some(d.reference_number.as_str())
+        }
+        _ => None,
+    })
+}
+
+/// What the producer sent per MAR reference number, for the last
+/// [`SENT_REFERENCES_CAPACITY`] references. Lives as long as the process; after
+/// a restart the poll covers any difference.
+#[derive(Debug)]
+pub struct SentReferences {
+    sent: std::collections::HashMap<String, Vec<String>>,
+    order: std::collections::VecDeque<String>,
+    capacity: usize,
+}
+
+/// Whether a release may be published, from [`SentReferences::admit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    /// The reference was not sent before.
+    First,
+    /// Sent before with identical trades: publishing again changes nothing but
+    /// the role, price and filing date (from an English copy).
+    Repeat,
+    /// Sent before with different trades: not published.
+    Conflict,
+}
+
+impl SentReferences {
+    /// A memory of at most `capacity` reference numbers.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            sent: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            capacity,
+        }
+    }
+
+    /// Decides on a parsed release and remembers it when it is the first with
+    /// its reference. A release without a reference number is always `First`.
+    pub fn admit(&mut self, messages: &[(String, UnifiedInsiderTransaction)]) -> Admission {
+        let Some(reference) = reference_number(messages) else {
+            return Admission::First;
+        };
+        let identity = trades_identity(messages);
+        match self.sent.get(reference) {
+            Some(sent) if *sent == identity => Admission::Repeat,
+            Some(_) => Admission::Conflict,
+            None => {
+                self.sent.insert(reference.to_string(), identity);
+                self.order.push_back(reference.to_string());
+                if self.order.len() > self.capacity {
+                    if let Some(old) = self.order.pop_front() {
+                        self.sent.remove(&old);
+                    }
+                }
+                Admission::First
+            }
+        }
+    }
+}
 
 /// True if `item`, authored by a company listed on `exchange_mic`, goes the
 /// insider path: its country takes insiders from MAR releases and the item is a
@@ -132,7 +230,8 @@ pub struct ParsedRelease {
 }
 
 impl ParsedRelease {
-    /// `published` when there is something to send, `parse_error` when the
+    /// `published` when there is something to send (the producer may still
+    /// turn it into `conflict`, see [`SentReferences`]), `parse_error` when the
     /// release did not parse, `skipped` for a release that is never published
     /// (before MAR, another language, a zero price on a buy or sell).
     pub fn outcome(&self) -> &'static str {
@@ -179,6 +278,7 @@ pub async fn run_insider_producer(
     mut rx: mpsc::Receiver<InsiderJob>,
     backoff: ExponentialBuilder,
 ) {
+    let mut sent = SentReferences::new(SENT_REFERENCES_CAPACITY);
     while let Some(job) = rx.recv().await {
         gauge!("nordic_live_insider_queue_depth").set(rx.len() as f64);
         span_between(
@@ -196,7 +296,15 @@ pub async fn run_insider_producer(
             nordic_live.insider_messages = tracing::field::Empty,
         );
         let release = step.in_scope(|| parse_release(&job.company, &job.item));
-        let outcome = release.outcome();
+        let mut outcome = release.outcome();
+        if outcome == "published" && sent.admit(&release.messages) == Admission::Conflict {
+            outcome = "conflict";
+            warn!(news_id = %job.item.news_id, ticker = %job.company.ticker,
+                  lang = job.item.lang.as_deref().unwrap_or(""),
+                  reference = reference_number(&release.messages).unwrap_or(""),
+                  trades = ?trades_identity(&release.messages),
+                  "a release with this reference number was already sent with other trades; not published");
+        }
         step.record("nordic_live.insider_outcome", outcome);
         step.record(
             "nordic_live.insider_messages",

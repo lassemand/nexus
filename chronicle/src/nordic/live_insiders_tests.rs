@@ -505,3 +505,91 @@ fn parsing_one_release_is_build_on_that_item() {
     assert_eq!(parsed.outcome(), "published");
     assert_eq!(parsed.messages, poll(&[item]));
 }
+
+/// The CEO release in `lang` with another id and the volume `23201` replaced.
+fn with_volume(base: &str, news_id: &str, volume: &str) -> serde_json::Value {
+    let mut item = raw(base);
+    item["news_id"] = serde_json::json!(news_id);
+    let text = item["content"]["text"]
+        .as_str()
+        .unwrap()
+        .replace("23201", volume);
+    item["content"]["text"] = serde_json::json!(text);
+    item
+}
+
+fn volumes(s: &Sent) -> Vec<(String, f64)> {
+    keyed(s).iter().map(|m| (lang(m), m.1.volume)).collect()
+}
+
+#[tokio::test]
+async fn a_twin_that_parses_differently_is_not_published_in_either_order() {
+    let companies = metso_on("XHEL");
+    let fi_off = with_volume(CEO_FI, "0d603af2-5858-58ee-a4e4-821966dc8201", "23200");
+    let mut sent = Vec::new();
+    let text = metered(async {
+        sent = live(
+            &companies,
+            &[
+                message(&[raw(CEO_EN)]),
+                message(std::slice::from_ref(&fi_off)),
+            ],
+        )
+        .await;
+    })
+    .await;
+    assert_eq!(volumes(&sent), [("en".to_string(), 23201.0)]);
+    assert_eq!(
+        value(
+            &text,
+            "nordic_live_insider_transactions_total{outcome=\"conflict\"}"
+        ),
+        1.0
+    );
+    let sent = live(&companies, &[message(&[fi_off]), message(&[raw(CEO_EN)])]).await;
+    assert_eq!(
+        volumes(&sent),
+        [("fi".to_string(), 23200.0)],
+        "the first copy wins, as the first (reference, index) does in the poll"
+    );
+}
+
+#[tokio::test]
+async fn a_correction_reusing_the_reference_number_is_not_published() {
+    let mut correction = with_volume(CEO_EN, "9954de80-88dd-5084-a03b-4b42e17c1645", "23000");
+    correction["content"]["title"] =
+        serde_json::json!("Metso Corporation: Correction: Managers' transactions - Sami Takaluoma");
+    correction["content"]["publish_date"] = serde_json::json!("2026-03-21T08:00:00Z");
+    let sent = live(
+        &metso_on("XHEL"),
+        &[message(&[raw(CEO_EN)]), message(&[correction])],
+    )
+    .await;
+    assert_eq!(volumes(&sent), [("en".to_string(), 23201.0)]);
+    let identical = with_volume(CEO_EN, "9954de80-88dd-5084-a03b-4b42e17c1646", "23201");
+    let sent = live(
+        &metso_on("XHEL"),
+        &[message(&[raw(CEO_EN)]), message(&[identical])],
+    )
+    .await;
+    assert_eq!(sent.len(), 2, "an identical repeat is harmless and is sent");
+}
+
+#[test]
+fn the_reference_memory_forgets_the_oldest_beyond_its_capacity() {
+    use super::live_insiders::{Admission, SentReferences};
+    let en = parse_release(&metso(), &news(&raw(CEO_EN))).messages;
+    let other = parse_release(
+        &metso(),
+        &news(&raw("0915c0ba-5a9d-5c7e-a193-d997c45833b9")),
+    )
+    .messages;
+    let mut changed = en.clone();
+    changed[0].1.volume = 1.0;
+    let mut sent = SentReferences::new(1);
+    assert_eq!(sent.admit(&en), Admission::First);
+    assert_eq!(sent.admit(&en), Admission::Repeat);
+    assert_eq!(sent.admit(&changed), Admission::Conflict);
+    assert_eq!(sent.admit(&other), Admission::First);
+    assert_eq!(sent.admit(&changed), Admission::First, "forgotten");
+}

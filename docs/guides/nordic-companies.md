@@ -177,14 +177,28 @@ socket reader ──► select (headline / form text) ──► InsiderQueue::of
   producer uses `linger.ms=5`, `acks=all` and an idempotent producer
   (`KafkaInsiderSink::low_latency`). The topic is `INSIDER_TRANSACTIONS_TOPIC`, set in the
   Deployment (`nordicLive.insiderTransactionsTopic`).
-- **Language twins:** both copies are published as they arrive, in either order. They
-  produce the same key, person, transaction date, published date, volume, price, type and
-  currency, so signal's `UNIQUE (person_id, ticker, transaction_date, shares,
-  transaction_code)` stores one row. Only `person_role`, the nature text, `lang`,
-  `mfn_news_id` and `url` differ. **The English copy wins the role:** signal's upsert
-  overwrites `filer_role` only from an English MAR message, so the row ends up with the
-  English role whichever copy came first. The poll later sends the English copy again, which
-  changes nothing.
+- **Language twins:** the first copy to arrive is published. The producer remembers what it
+  sent per MAR reference number (the last 10 000, in memory). The other copy is published
+  only when its trades are identical: key (person and transaction date), volume, price, type
+  and currency. Signal's `UNIQUE (person_id, ticker, transaction_date, shares,
+  transaction_code)` then stores one row. Only `person_role`, the nature text, `lang`,
+  `mfn_news_id` and `url` differ. **The English copy wins role, price and filing date:**
+  signal's upsert overwrites `filer_role`, `price_per_share` and `filing_date` only from an
+  English MAR message, so the row ends up with the English values whichever copy came first.
+  The poll later sends the English copy again, which changes nothing.
+- **Copies that disagree:** when the other copy's trades differ, it is not published
+  (`outcome="conflict"`, logged at `warn` with both reference and trades), so live never
+  stores the same trade twice. Measured on Metso's full history (319 releases, 60 pairs,
+  2016 to 2026-11), 10 pairs disagreed, all from 2020-07 to 2021-06: in 9, the English
+  copy writes the volume with a dot as the thousands separator (`8.600`) and the parser reads
+  8.6 (the Finnish copy has 8600); in 1 correction the transaction type differs. No pair from
+  2022 on disagrees. If the English copy of such a pair comes after a published Finnish one,
+  the poll's English message is a second row in signal; the cause is the parser, not this path.
+- **Corrections** (`Correction:` / `Korjaus:`) reuse the original's reference number (Metso,
+  2021-06-08 and 2021-06-09, `549300R0VN9C371W0E07_20210607225403_5`). A correction whose
+  trades differ is therefore a `conflict` live, and the poll drops it too (it keeps the first
+  `(reference_number, index)`), so both paths keep the original. A correction whose original
+  did not parse is published by both.
 - Unparsable, pre-MAR and zero-price releases are counted and skipped as in the poll, and
   never stop the queue. Without `KAFKA_BROKERS` the path is off (`insider = "disabled"`).
 - The item's log line has `insider` = `queued`, `dropped` or `disabled`. The parse
