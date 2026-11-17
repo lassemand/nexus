@@ -101,6 +101,17 @@ of the surrounding code to understand each change. Check:
 - **Correctness:** edge cases, error paths, retries and backoff, races and
   ordering, restarts, timeouts, resource limits, what happens on an empty or
   malformed input, idempotency of consumers.
+- **Every loop, retry, reconnect and timer** the change adds or touches. For
+  each one, write down what happens when the peer is silent, slow, or refuses
+  every time, and answer:
+  - Is there a delay that grows (backoff) between attempts, or can it hammer a
+    peer or a rate limit at the loop's own pace?
+  - Is "quiet" told apart from "dead"? A liveness check that expects traffic
+    must only run when traffic is expected, or a healthy idle connection is
+    dropped and reopened forever.
+  - Does every wait have a deadline, so a stalled connect, handshake or request
+    cannot park the loop until the process restarts?
+  - Is state that depended on the lost connection cleared or marked stale?
 - **The repository's rules**, among them:
   - money and prices as decimals, never `f64`;
   - no hard-coded company in code, migrations, dashboards or docs;
@@ -136,6 +147,15 @@ never the whole workspace, and skip it when reading settles the question.
   questions.
 
 Start every non-blocking comment with `Non-blocking:`.
+
+Classify by the failure scenario, not by how sure you feel. A finding whose
+scenario is any of these is **blocking**: an outage that lasts until a restart,
+a loop that retries or reconnects without backoff or against a peer's rate
+limit, a healthy connection being dropped repeatedly, stale data served as
+current, or a security or data-loss problem. If you cannot tell whether the
+scenario can happen, run the check or read the code until you can; do not
+downgrade it to a question to avoid deciding. A question is only for something
+you genuinely cannot determine from the repository.
 
 ### 6. Post one review per PR
 
