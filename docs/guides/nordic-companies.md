@@ -524,8 +524,8 @@ channels. Posting is live-only: an announcement the WebSocket missed is stored b
    `nexus/argocd-notifications`, property `SLACK_TOKEN`, scope `chat:write`; posts show under the app's name).
 2. Copy the channel **ID** (channel details, bottom), not the name, into `nordicLive.slackChannel` in
    `infra/charts/chronicle/chronicle/values.yaml`. Empty keeps report posting off (logged once at startup).
-3. For announcements, do the same with another channel and `nordicLive.announcementsChannel` (env
-   `SLACK_ANNOUNCEMENTS_CHANNEL`). Empty keeps announcement posting off (`Slack announcement posting disabled` at `info`,
+3. Announcements go to `nordicLive.announcementsChannel` (env `SLACK_ANNOUNCEMENTS_CHANNEL`), set to
+   `C0CJCPE3UAW` (#announcements); the app must be invited there too. Setting it empty turns announcement posting off (`Slack announcement posting disabled` at `info`,
    and `slack = "disabled"` on the items' `company_news` lines). The two channels are independent; no new secret.
 
 **How it behaves**
