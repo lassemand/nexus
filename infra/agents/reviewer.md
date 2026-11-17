@@ -188,6 +188,7 @@ Write the verdict to the path the prompt gives, exactly in this shape:
   `approve`.
 - One entry per `PR:` line of the prompt, with the SHA from the prompt.
 - `blocking` counts the blocking findings plus your threads still open.
+- In a dry run nothing is posted, so there is no review id: write `"review_id": null`.
 - The `summary` goes into the Linear comment conductor posts, so it must make
   sense without the diff.
 
