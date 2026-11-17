@@ -157,6 +157,13 @@ scenario can happen, run the check or read the code until you can; do not
 downgrade it to a question to avoid deciding. A question is only for something
 you genuinely cannot determine from the repository.
 
+One exception to "an acceptance criterion not met is blocking": a criterion
+that only a person can close, because it needs access the author agent does not
+have (a real login, credentials, a manual run on a live system). Do not count
+it as blocking and do not request changes for it alone: the author cannot fix
+it, so a send-back would only burn an iteration. State it in the review body
+under "Needs a person", and in the verdict `summary`.
+
 ### 6. Post one review per PR
 
 Post exactly one GitHub review per PR, with all its inline comments, through
