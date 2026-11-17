@@ -29,6 +29,7 @@ use super::db::Company;
 use super::events::{announcement_event, company_key, release_event, EventSink};
 use super::feed::{parse_document, NewsItem};
 use super::live_emit::{EmitJob, Emitter};
+use super::live_insiders::{is_insider_release, InsiderJob, InsiderQueue};
 use super::slack::NoticeKind;
 use async_trait::async_trait;
 use backon::{BackoffBuilder, ExponentialBuilder};
@@ -260,6 +261,13 @@ pub struct LiveItem {
     /// What happened to the announcement: `queued`, `dropped` or `disabled`.
     /// `None` for items that are not announcements.
     pub emit: Option<&'static str>,
+    /// The release, when it is a managers' transaction of a company whose
+    /// insiders come from MAR releases (see [`super::live_insiders`]); taken when
+    /// it is queued.
+    pub insider_release: Option<Box<NewsItem>>,
+    /// What happened to the insider release: `queued`, `dropped` or `disabled`.
+    /// `None` for items that are not managers' transactions.
+    pub insider: Option<&'static str>,
     /// The item's trace; see [`ItemSpan`].
     pub span: ItemSpan,
 }
@@ -347,6 +355,7 @@ impl LiveItem {
             attachment_urls = %attachments,
             slack = slack.unwrap_or(""),
             emit = self.emit.unwrap_or(""),
+            insider = self.insider.unwrap_or(""),
             "nordic-live item"
         );
     }
@@ -438,6 +447,8 @@ fn pick_relevant(
                     "company_news".to_string()
                 }
             });
+        let insider_release =
+            is_insider_release(&company.exchange_mic, &item).then(|| Box::new(item.clone()));
         let span = release_span(
             &item,
             company,
@@ -468,6 +479,8 @@ fn pick_relevant(
             event,
             announcement,
             emit: None,
+            insider_release,
+            insider: None,
             span,
         });
     }
@@ -826,6 +839,9 @@ pub struct Handling<'a> {
     pub emitter: Option<&'a Emitter>,
     /// Releases and announcements older than this are never posted to Slack.
     pub slack_max_age: Duration,
+    /// Where Finnish managers' transactions are queued for
+    /// `insider.transactions`, if emission is on.
+    pub insiders: Option<&'a InsiderQueue>,
 }
 
 impl Default for Handling<'_> {
@@ -835,6 +851,7 @@ impl Default for Handling<'_> {
             channels: &NO_CHANNELS,
             emitter: None,
             slack_max_age: DEFAULT_SLACK_MAX_AGE,
+            insiders: None,
         }
     }
 }
@@ -888,7 +905,8 @@ pub async fn handle_message_with(
 }
 
 /// Handles one socket message with everything `nordic-live` does: queues each
-/// item's announcement event on the emitter right after parsing (before the
+/// item's announcement event on the emitter, and each Finnish managers'
+/// transaction on the insider queue, right after parsing (before the
 /// "already ingested" lookup, so neither that database nor Slack can delay or
 /// suppress it), then looks up, logs and returns the dispositions.
 pub async fn handle_message_full(
@@ -964,6 +982,23 @@ async fn dispatch(mut processed: Processed, h: &Handling<'_>, from_socket: bool)
                 Some(e) => e.offer(EmitJob::new(
                     item.key(),
                     event,
+                    item.received_at,
+                    item.span.clone(),
+                )),
+                None => "disabled",
+            });
+        }
+        if let Some(release) = item.insider_release.take() {
+            item.insider = Some(match h.insiders {
+                Some(q) => q.offer(InsiderJob::new(
+                    Company {
+                        ticker: item.ticker.clone(),
+                        exchange_mic: item.exchange_mic.clone(),
+                        mfn_slug: Some(item.mfn_slug.clone()),
+                        name: item.company_name.clone(),
+                        isin: None,
+                    },
+                    *release,
                     item.received_at,
                     item.span.clone(),
                 )),

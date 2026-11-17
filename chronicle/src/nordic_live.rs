@@ -1,7 +1,9 @@
 use chronicle_lib::nordic::calendar::MfnClient;
 /// Live MFN listener (NEX-170): logs Nordic releases the moment they are published
 /// and, with `KAFKA_BROKERS`, emits each company announcement to `special.events`
-/// within seconds (NEX-241; queue and producer in `chronicle_lib::nordic::live_emit`).
+/// within seconds (NEX-241; queue and producer in `chronicle_lib::nordic::live_emit`),
+/// and each Finnish managers' transaction to `insider.transactions` (NEX-279,
+/// `chronicle_lib::nordic::live_insiders`).
 ///
 /// Connects to MFN's unofficial WebSocket (`wss://mfn.se/all/s/nordic.json`),
 /// picks out items from companies registered with an `mfn_slug`, classifies them
@@ -17,6 +19,7 @@ use chronicle_lib::nordic::calendar::MfnClient;
 /// Exits non-zero only on a startup error (bad config, database unreachable at
 /// start). Network trouble never ends the process.
 use chronicle_lib::nordic::events::{KafkaSink, SPECIAL_EVENTS_TOPIC};
+use chronicle_lib::nordic::insiders::{InsiderSink, KafkaInsiderSink, INSIDER_TRANSACTIONS_TOPIC};
 use chronicle_lib::nordic::live::{
     describe_metrics, describe_publish_metrics, handle_catchup_items, handle_message_full,
     publications, publish_live, Companies, Counters, Handling, IngestedCheck, Listener, Registered,
@@ -30,6 +33,10 @@ use chronicle_lib::nordic::live_catchup::{
 use chronicle_lib::nordic::live_emit::{
     describe_emit_metrics, producer_backoff, run_producer, Emitter, EMIT_LATENCY_BUCKETS,
     QUEUE_CAPACITY as EMIT_QUEUE_CAPACITY,
+};
+use chronicle_lib::nordic::live_insiders::{
+    describe_insider_metrics, run_insider_producer, InsiderQueue, INSIDER_LATENCY_BUCKETS,
+    QUEUE_CAPACITY as INSIDER_QUEUE_CAPACITY,
 };
 use chronicle_lib::nordic::live_slack::{
     describe_metrics as describe_slack_metrics, enqueue, jobs_for_fresh, run_worker, Sessions,
@@ -76,6 +83,11 @@ struct Args {
 
     #[arg(long, env = "SPECIAL_EVENTS_TOPIC", default_value = SPECIAL_EVENTS_TOPIC)]
     special_events_topic: String,
+
+    /// Topic Finnish managers' transactions are published to (with
+    /// `KAFKA_BROKERS`), the topic `nordic-reports` uses.
+    #[arg(long, env = "INSIDER_TRANSACTIONS_TOPIC", default_value = INSIDER_TRANSACTIONS_TOPIC)]
+    insider_transactions_topic: String,
 
     /// Slack bot token (`chat:write`). Without it, or without any channel,
     /// Slack posting is off.
@@ -213,6 +225,10 @@ async fn run(args: Args) -> anyhow::Result<()> {
         &[
             ("nordic_live_release_latency_seconds", LATENCY_BUCKETS),
             ("nordic_live_emit_latency_seconds", EMIT_LATENCY_BUCKETS),
+            (
+                "nordic_live_insider_latency_seconds",
+                INSIDER_LATENCY_BUCKETS,
+            ),
         ],
     )
     .await?;
@@ -220,6 +236,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     describe_slack_metrics();
     describe_publish_metrics();
     describe_emit_metrics();
+    describe_insider_metrics();
     describe_catchup_metrics();
     gauge!("nordic_live_registered_companies").set(companies.len() as f64);
 
@@ -241,6 +258,21 @@ async fn run(args: Args) -> anyhow::Result<()> {
         tokio::spawn(run_producer(sink.clone(), jobs, producer_backoff()));
         emitter
     });
+
+    let insiders: Option<InsiderQueue> = match args.kafka_brokers.as_deref() {
+        Some(brokers) if !brokers.is_empty() => {
+            let sink: Arc<dyn InsiderSink> = Arc::new(KafkaInsiderSink::low_latency(
+                brokers,
+                args.insider_transactions_topic.clone(),
+            )?);
+            info!(topic = %args.insider_transactions_topic,
+                  "publishing Finnish managers' transactions to insider.transactions");
+            let (queue, jobs) = InsiderQueue::channel(INSIDER_QUEUE_CAPACITY);
+            tokio::spawn(run_insider_producer(sink, jobs, producer_backoff()));
+            Some(queue)
+        }
+        _ => None,
+    };
 
     let token = args.slack_bot_token.as_deref().filter(|t| !t.is_empty());
     let channels = match token {
@@ -338,6 +370,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                     channels: &channels,
                     emitter: emitter.as_ref(),
                     slack_max_age,
+                    insiders: insiders.as_ref(),
                 };
                 let handled = handle_message_full(
                     &msg.text, msg.received_at, &companies, &mut seen, &handling,
@@ -371,6 +404,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                     channels: &channels,
                     emitter: emitter.as_ref(),
                     slack_max_age,
+                    insiders: insiders.as_ref(),
                 };
                 let handled = handle_catchup_items(
                     fetched.items.clone(), Utc::now(), &companies, &mut seen, &handling,

@@ -121,6 +121,17 @@ staleness alert. Dashboard `Chronicle Jobs`; alerts group `nexus.chronicle-jobs`
 `ChronicleJobPartialFailure`, `NordicMarParseErrors`. `ChronicleJobFailed` (Kubernetes Job failed)
 is kept next to `NexusJobLastRunFailed`: only the former sees a job that died before it could push.
 
+### nordic-live: Finnish insider transactions
+
+The live path of Finnish managers' transactions (NEX-279, `chronicle_lib::nordic::live_insiders`),
+on nordic-live's `/metrics` and the `Nordic Live` dashboard:
+
+| Metric | Meaning |
+|---|---|
+| `nordic_live_insider_transactions_total{outcome}` | `published`: one per message acknowledged on `insider.transactions`. Per release: `parse_error` (no transaction parsed), `skipped` (before MAR, another language, or a zero price on a buy or sell), `dropped` (the queue was full or closed), `failed` (a message given up on after 5 minutes of retries). Dropped and failed ones are recovered by the 22:00 `nordic-reports` poll |
+| `nordic_live_insider_latency_seconds` | Receive time to Kafka acknowledgement per published message (buckets 5 ms to 30 s) |
+| `nordic_live_insider_queue_depth` | Releases waiting in the insider queue (capacity 1 000) |
+
 ## Conventions
 
 **Names:** `<service>_<subject>_<unit>`. Counters end in `_total`, durations are histograms

@@ -13,6 +13,7 @@
 
 use super::classify::strip_issuer_prefix;
 use super::db::Company;
+use super::events::trace_headers;
 use super::feed::NewsItem;
 use super::mar_release::{parse, MarParseError, ParsedMarTransaction, ReleaseContext};
 use async_trait::async_trait;
@@ -21,11 +22,12 @@ use model::generated::UnifiedInsiderTransaction;
 use model::insider::transaction_id;
 use model::nordic::{self, InsiderSourceKind};
 use prost::Message;
+use rdkafka::message::Headers;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
 use std::collections::HashSet;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::{debug, warn, Span};
 
 /// Topic signal consumes insider transactions from.
 pub const INSIDER_TRANSACTIONS_TOPIC: &str = "insider.transactions";
@@ -282,6 +284,11 @@ pub fn insider_key(txn: &UnifiedInsiderTransaction) -> String {
 pub trait InsiderSink: Send + Sync {
     /// Delivers one message; returns once the broker acknowledged it.
     async fn send(&self, key: &str, txn: &UnifiedInsiderTransaction) -> anyhow::Result<()>;
+
+    /// The topic messages go to, for the `send <topic>` span of `nordic-live`.
+    fn destination(&self) -> &str {
+        INSIDER_TRANSACTIONS_TOPIC
+    }
 }
 
 /// Publishes to a Kafka topic.
@@ -291,6 +298,22 @@ pub struct KafkaInsiderSink {
 }
 
 impl KafkaInsiderSink {
+    /// Like [`KafkaInsiderSink::new`], tuned for latency and safety:
+    /// `linger.ms` 5, `acks=all`, idempotent producer. Used by `nordic-live`.
+    pub fn low_latency(brokers: &str, topic: impl Into<String>) -> anyhow::Result<Self> {
+        let producer = ClientConfig::new()
+            .set("bootstrap.servers", brokers)
+            .set("message.timeout.ms", "10000")
+            .set("linger.ms", "5")
+            .set("acks", "all")
+            .set("enable.idempotence", "true")
+            .create()?;
+        Ok(Self {
+            producer,
+            topic: topic.into(),
+        })
+    }
+
     /// Connects a producer for `topic` on `brokers`.
     pub fn new(brokers: &str, topic: impl Into<String>) -> anyhow::Result<Self> {
         let producer = ClientConfig::new()
@@ -308,14 +331,24 @@ impl KafkaInsiderSink {
 impl InsiderSink for KafkaInsiderSink {
     async fn send(&self, key: &str, txn: &UnifiedInsiderTransaction) -> anyhow::Result<()> {
         let payload = txn.encode_to_vec();
-        self.producer
-            .send(
-                FutureRecord::to(&self.topic).key(key).payload(&payload),
-                Duration::from_secs(10),
-            )
+        let headers = trace_headers();
+        let mut record = FutureRecord::to(&self.topic).key(key).payload(&payload);
+        if headers.count() > 0 {
+            record = record.headers(headers);
+        }
+        let (partition, offset) = self
+            .producer
+            .send(record, Duration::from_secs(10))
             .await
             .map_err(|(e, _)| anyhow::anyhow!("publishing insider transaction {key}: {e}"))?;
+        let span = Span::current();
+        span.record("messaging.kafka.partition", i64::from(partition));
+        span.record("messaging.kafka.offset", offset);
         Ok(())
+    }
+
+    fn destination(&self) -> &str {
+        &self.topic
     }
 }
 

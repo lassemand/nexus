@@ -129,7 +129,9 @@ the others (`NORDIC_MICS` is `model::asset::mic::NORDIC`). What is specific to t
 ### Finnish insider transactions
 
 Finland has no insider register, so each issuer's MAR Art. 19 release on MFN is the
-source. `nordic-reports` routes a Finnish company's managers' transaction releases
+source. **`nordic-live` is the live path** (below, within seconds of MFN publishing);
+**`nordic-reports` is the fallback and the backfill** (22:00, and `--insiders-only`).
+Both use the same selection, parser and messages. `nordic-reports` routes a Finnish company's managers' transaction releases
 (headline "Managers' transactions" / "Johtohenkilöiden liiketoimet", or the form text
 "Person subject to the notification requirement" / "Ilmoitusvelvollinen") to
 `chronicle_lib::nordic::insiders` instead of the report classifier, parses them
@@ -140,7 +142,8 @@ source. `nordic-reports` routes a Finnish company's managers' transaction releas
 
 - Each release comes in Finnish and English with the same MAR reference number; the
   English copy is read, the Finnish one only when no English copy with that reference
-  was. Ids are `FIN_MAR:{reference}:{index}` and re-sending is harmless.
+  was. The Kafka key and transaction id is `FIN_MAR:{TICKER}:{PERSON}:{DATE}`
+  (`insiders::insider_key`) and re-sending is harmless.
 - `published_date` is the release date in Helsinki; `ticker` and `exchange_mic` come
   from the registry. Releases before MAR (2016-07-03) are ignored.
 - The feed cursor moves only after the company's report events **and** insider
@@ -150,6 +153,49 @@ source. `nordic-reports` routes a Finnish company's managers' transaction releas
   also in the end-of-run log line) but does not hold the cursor back.
 - A zero price on a BUY or SELL is never published; incentives and grants at 0.00 EUR
   are normal and stored as `GRANT` (code `A`).
+
+#### Live path (`nordic-live`)
+
+`nordic-live` sends a Finnish managers' transaction to `insider.transactions` within
+seconds (NEX-279, `chronicle_lib::nordic::live_insiders`). It applies to every new item it
+reads, from the socket or the catch-up after a (re)connect, of a company whose country has
+`InsiderSourceKind::MarReleases` that `insiders::is_managers_transaction` selects. The item
+is still published as a `company_announcement` (and posted to Slack) as before; the insider
+path is extra.
+
+```
+socket reader ──► select (headline / form text) ──► InsiderQueue::offer (bounded, 1 000) ──► producer task
+                                                       full: drop + count                    parse (insiders::build on the item)
+                                                                                              ──► insider.transactions
+```
+
+- The reader only selects and queues. Parsing runs in the producer task, never on the
+  reader, and the "already ingested" database lookup is not on this path.
+- The producer runs `insiders::build` on the single item, so each message, key and
+  `transaction_id` is exactly what `nordic-reports` sends for that release. A failed send is
+  retried like announcements (100 ms doubling to 30 s, give up after 5 minutes). The
+  producer uses `linger.ms=5`, `acks=all` and an idempotent producer
+  (`KafkaInsiderSink::low_latency`). The topic is `INSIDER_TRANSACTIONS_TOPIC`, set in the
+  Deployment (`nordicLive.insiderTransactionsTopic`).
+- **Language twins:** both copies are published as they arrive, in either order. They
+  produce the same key, person, transaction date, published date, volume, price, type and
+  currency, so signal's `UNIQUE (person_id, ticker, transaction_date, shares,
+  transaction_code)` stores one row. Only `person_role`, the nature text, `lang`,
+  `mfn_news_id` and `url` differ. **The English copy wins the role:** signal's upsert
+  overwrites `filer_role` only from an English MAR message, so the row ends up with the
+  English role whichever copy came first. The poll later sends the English copy again, which
+  changes nothing.
+- Unparsable, pre-MAR and zero-price releases are counted and skipped as in the poll, and
+  never stop the queue. Without `KAFKA_BROKERS` the path is off (`insider = "disabled"`).
+- The item's log line has `insider` = `queued`, `dropped` or `disabled`. The parse
+  (`nordic_live.insider_parse`), the wait in the queue (`nordic_live.insider_queue`) and each
+  `send insider.transactions` are child spans of the item's root span, and each message
+  carries `traceparent` (`docs/guides/tracing.md`).
+- Metrics: `nordic_live_insider_transactions_total{outcome}`,
+  `nordic_live_insider_latency_seconds`, `nordic_live_insider_queue_depth`
+  (`docs/guides/metrics.md`), panels on the `Nordic Live` dashboard.
+- Expected latency: under 5 s from MFN publishing, as for `company_announcement` events.
+  Nothing is batched or debounced.
 
 Re-read a company's history for insiders only (no report events, the cursor is
 neither read nor moved, safe to repeat):
