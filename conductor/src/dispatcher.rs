@@ -107,7 +107,7 @@ pub struct SessionEnvArgs {
     /// Review sessions run through `review_launcher` with it once it holds a
     /// `ready` file; until then they run like any other session.
     #[arg(long, env = "CONDUCTOR_REVIEW_IDENTITY_DIR")]
-    pub review_identity_dir: Option<PathBuf>,
+    pub review_identity_dir: Option<String>,
 
     /// Wrapper that starts a review session with only the reviewer's
     /// credentials (`conductor/deploy/review-session.sh`).
@@ -148,10 +148,10 @@ impl SessionEnvArgs {
             cargo_target_dir: self.cargo_target_dir.filter(|p| !p.as_os_str().is_empty()),
             review_launch: self
                 .review_identity_dir
-                .filter(|p| !p.as_os_str().is_empty())
+                .filter(|p| !p.is_empty())
                 .map(|identity_dir| ReviewLaunch {
                     launcher: self.review_launcher,
-                    identity_dir,
+                    identity_dir: PathBuf::from(identity_dir),
                 }),
             skip_permissions: self.skip_permissions,
             start_timeout: Duration::from_secs(self.start_timeout_secs),
@@ -2254,6 +2254,20 @@ mod tests {
         );
         assert_eq!(model_from(&[]).unwrap(), None);
         assert_eq!(model_from(&["--model", ""]).unwrap(), None);
+    }
+
+    #[test]
+    fn an_empty_review_identity_dir_means_none_not_a_startup_error() {
+        for args in [&["--review-identity-dir", ""][..], &[][..]] {
+            let argv = std::iter::once("probe").chain(args.iter().copied());
+            let probe = Probe::try_parse_from(argv).expect("an empty value must parse");
+            assert!(probe.env.resolve().review_launch.is_none());
+        }
+        let probe = Probe::try_parse_from(["probe", "--review-identity-dir", "/state/id"]).unwrap();
+        assert_eq!(
+            probe.env.resolve().review_launch.map(|l| l.identity_dir),
+            Some(PathBuf::from("/state/id"))
+        );
     }
 
     #[test]
