@@ -10,12 +10,9 @@ members = [
     "telemetry",
     "analyst",
     "verdict/sdk",
-    "verdict/kernels/sample",
-    "verdict/kernels/bench-anchored",
-    "verdict/kernels/bench-memmem",
-    "verdict/kernels/bench-aho"
+    "verdict/kernels/sample"
 ]
-exclude = ["verdict/template"]
+exclude = ["verdict/template", "verdict/bench"]
 resolver = "2"
 
 [workspace.package]

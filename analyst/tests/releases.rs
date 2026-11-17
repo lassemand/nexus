@@ -1,5 +1,5 @@
 //! The release path: a report release in, one decision out, against a real
-//! Postgres and the real `bench-anchored` kernel built for WASM.
+//! Postgres and a WAT kernel that answers `buy`.
 
 mod common;
 
@@ -17,16 +17,12 @@ use chrono::Duration as ChronoDuration;
 use model::generated::SpecialEvent;
 use sqlx::PgPool;
 
-#[allow(dead_code)]
-#[path = "../../verdict/kernels/bench-common/fixtures.rs"]
-mod fixtures;
-
 fn q3_en() -> String {
-    fixtures::fixtures()[0].text.to_owned()
+    "Interim report Q3: operational EBIT was up.".to_owned()
 }
 
 fn q3_no() -> String {
-    fixtures::fixtures()[1].text.to_owned()
+    "Delarsrapport Q3: driftsresultatet økte.".to_owned()
 }
 
 fn kind_of(processed: &Processed) -> DecisionKind {

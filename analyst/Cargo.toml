@@ -12,11 +12,6 @@ path = "src/lib.rs"
 name = "analyst"
 path = "src/bin/analyst.rs"
 
-[[bin]]
-name = "analyst-bench"
-path = "src/bin/analyst-bench.rs"
-required-features = ["bench"]
-
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
@@ -42,13 +37,7 @@ tracing = "0.1"
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 verdict-sdk = { path = "../verdict/sdk" }
-verdict-bench-anchored = { path = "../verdict/kernels/bench-anchored", optional = true }
-verdict-bench-memmem = { path = "../verdict/kernels/bench-memmem", optional = true }
-verdict-bench-aho = { path = "../verdict/kernels/bench-aho", optional = true }
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std"] }
-
-[features]
-bench = ["dep:verdict-bench-anchored", "dep:verdict-bench-memmem", "dep:verdict-bench-aho"]
 
 [dev-dependencies]
 telemetry = { path = "../telemetry", features = ["kafka", "testing"] }
@@ -56,6 +45,3 @@ tokio = { version = "1", features = ["test-util"] }
 wat = "1"
 wiremock = "0.6"
 verdict-sdk = { path = "../verdict/sdk", features = ["harness"] }
-verdict-bench-anchored = { path = "../verdict/kernels/bench-anchored" }
-verdict-bench-memmem = { path = "../verdict/kernels/bench-memmem" }
-verdict-bench-aho = { path = "../verdict/kernels/bench-aho" }

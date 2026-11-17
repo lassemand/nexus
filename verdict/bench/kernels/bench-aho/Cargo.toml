@@ -9,8 +9,8 @@ description = "Benchmark kernel: one Aho-Corasick pass over all labels."
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-verdict-sdk = { path = "../../sdk" }
+verdict-sdk = { path = "../../../sdk" }
 aho-corasick = "1.1"
 
 [dev-dependencies]
-verdict-sdk = { path = "../../sdk", features = ["harness"] }
+verdict-sdk = { path = "../../../sdk", features = ["harness"] }
