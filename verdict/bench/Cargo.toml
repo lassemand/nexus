@@ -1,0 +1,30 @@
+[workspace]
+members = [
+    ".",
+    "kernels/bench-anchored",
+    "kernels/bench-memmem",
+    "kernels/bench-aho",
+]
+resolver = "2"
+
+[package]
+name = "verdict-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Benchmark of the analyst kernel runtime: native against WASM. Separate workspace; see analyst/BENCHMARK.md."
+
+[[bin]]
+name = "analyst-bench"
+path = "src/bin/analyst-bench.rs"
+
+[dependencies]
+analyst = { path = "../../analyst" }
+anyhow = "1"
+verdict-sdk = { path = "../sdk" }
+verdict-bench-anchored = { path = "kernels/bench-anchored" }
+verdict-bench-memmem = { path = "kernels/bench-memmem" }
+verdict-bench-aho = { path = "kernels/bench-aho" }
+
+[dev-dependencies]
+verdict-sdk = { path = "../sdk", features = ["harness"] }
