@@ -2,17 +2,20 @@
 //! checks that the WASM and native JSON are byte-identical for every release.
 //!
 //! ```text
-//! analyst-bench --corpus <dir> --example <dir> [--wasm <dir>] [--iters 15]
+//! cargo run --release --manifest-path verdict/bench/Cargo.toml --bin analyst-bench -- \
+//!   --corpus <dir> --example <dir> [--wasm <dir>] [--iters 15]
 //! ```
 //!
 //! `--corpus` holds MFN releases named `<lang>__<slug>__<id>.txt`
 //! (`verdict/fetch-corpus.sh`), `--example` the example company's releases in
 //! the same naming, `--wasm` the built kernels (default
-//! `target/wasm32-unknown-unknown/release`). Build the kernels first:
+//! `verdict/bench/target/wasm32-unknown-unknown/release`). Build the kernels first:
 //!
 //! ```text
-//! cargo build --release --target wasm32-unknown-unknown \
-//!   -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho -p verdict-sample
+//! cargo build --release --manifest-path verdict/bench/Cargo.toml --target wasm32-unknown-unknown \
+//!   -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho
+//! cargo build --release --target wasm32-unknown-unknown -p verdict-sample \
+//!   --target-dir verdict/bench/target
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -39,7 +42,7 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut corpus = None;
     let mut example = None;
-    let mut wasm = PathBuf::from("target/wasm32-unknown-unknown/release");
+    let mut wasm = PathBuf::from("verdict/bench/target/wasm32-unknown-unknown/release");
     let mut iters = 15usize;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {

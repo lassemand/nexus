@@ -121,7 +121,7 @@ impl Rig {
             hand_off,
             runtime,
             processor,
-            kernel: super::wasm::bytes("verdict-bench-anchored"),
+            kernel: buy_kernel(),
         }
     }
 
@@ -213,6 +213,22 @@ impl Rig {
             .expect("status");
         row.0
     }
+}
+
+/// A kernel that answers `buy` with three metrics for every release.
+pub fn buy_kernel() -> Vec<u8> {
+    let json = r#"{"decision":"buy","reason":"group and farming EBIT up","metrics":[{"key":"group_ebit","current":"459","prior":"15"},{"key":"farming_ebit","current":"113","prior":"-306"},{"key":"wild_catch_ebit","current":"-20","prior":"3"}]}"#;
+    let escaped = json.replace('"', "\\\"");
+    wat::parse_str(format!(
+        r#"(module
+  (memory (export "memory") 17)
+  (data (i32.const 1024) "{escaped}")
+  (func (export "verdict_input") (param i32) (result i32) (i32.const 65536))
+  (func (export "verdict_run") (param i32 i32) (result i64)
+    (i64.or (i64.shl (i64.const 1024) (i64.const 32)) (i64.const {len}))))"#,
+        len = json.len()
+    ))
+    .expect("valid WAT")
 }
 
 /// A kernel that traps when the release text starts with `U`.

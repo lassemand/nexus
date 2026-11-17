@@ -1,6 +1,6 @@
 # analyst kernel runtime: benchmark
 
-Measured with `analyst-bench` on the machine the analyst service will run on
+Measured with `analyst-bench` (its own workspace, `verdict/bench/`, outside the root workspace and the images) on the machine the analyst service will run on
 (see below), 2026-11-11. This is the kernel runtime of NEX-251: a `wasmtime`
 engine with Cranelift `OptLevel::Speed`, epoch interruption and SIMD, no WASI
 and no fuel, one instance per kernel, warmed at load.
@@ -19,13 +19,13 @@ and no fuel, one instance per kernel, warmed at load.
 ## What was measured
 
 * **Kernels:** three benchmark kernels for one example company
-  (`verdict/kernels/bench-anchored`, `bench-memmem`, `bench-aho`), each
+  (`verdict/bench/kernels/bench-anchored`, `bench-memmem`, `bench-aho`), each
   entirely its own lookup: known paragraph prefixes with a `memmem` fallback,
   one `memmem::Finder` per label in a 6 KB window, one Aho-Corasick pass. They
   read the same three metrics and share the reading code and the decision rule.
   A fourth, `verdict-sample`, is the skeleton that looks nothing up.
 * **Example company:** its last four quarterly reports in Norwegian and English
-  (8 releases, 3–4.5 KB each, `verdict/kernels/bench-fixtures/`).
+  (8 releases, 3–4.5 KB each, `verdict/bench/kernels/bench-fixtures/`).
 * **Corpus:** 2,399 MFN interim-report releases from
   `verdict/fetch-corpus.sh` (24.6 MB, up to 220 KB), in several languages. The
   aho kernel runs over all of it as the worst case for scanning a whole report;
@@ -40,7 +40,7 @@ cargo build --release --target wasm32-unknown-unknown \
   -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho -p verdict-sample
 cargo build --release -p analyst --features bench
 verdict/fetch-corpus.sh /tmp/corpus 2400
-target/release/analyst-bench --corpus /tmp/corpus --example verdict/kernels/bench-fixtures/lsg --iters 15
+target/release/analyst-bench --corpus /tmp/corpus --example verdict/bench/kernels/bench-fixtures/lsg --iters 15
 ```
 
 ## Result (run 2 of 4)

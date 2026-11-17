@@ -9,8 +9,8 @@ description = "Benchmark kernel: anchored lookup (paragraph prefixes) with a mem
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-verdict-sdk = { path = "../../sdk" }
+verdict-sdk = { path = "../../../sdk" }
 memchr = "2.8"
 
 [dev-dependencies]
-verdict-sdk = { path = "../../sdk", features = ["harness"] }
+verdict-sdk = { path = "../../../sdk", features = ["harness"] }
