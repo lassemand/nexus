@@ -43,6 +43,7 @@ export GITHUB_APP_PRIVATE_KEY_PATH="${dir}/private-key.pem"
 export GIT_CONFIG_GLOBAL="${dir}/gitconfig"
 unset REVIEW_APP_ID REVIEW_INSTALLATION_ID
 
-mkdir -p -m 0700 "${HOME}/.cache/git-review"
+mkdir -p "${HOME}/.cache/git-review"
+chmod 0700 "${HOME}/.cache/git-review"
 
 exec "$@"
