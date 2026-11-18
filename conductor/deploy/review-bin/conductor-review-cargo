@@ -83,5 +83,6 @@ done
 [[ -z "$target" ]] || export CARGO_TARGET_DIR="$target"
 export CARGO_HOME="$cargo_home"
 export RUSTUP_HOME="${CONDUCTOR_REVIEW_RUSTUP_HOME:-/usr/local/rustup}"
+export RUSTUP_TOOLCHAIN=stable
 
 exec "${CONDUCTOR_REVIEW_REAL_CARGO:-/usr/local/cargo/bin/cargo}" "$sub" "$@"

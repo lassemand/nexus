@@ -573,7 +573,7 @@ configure_mcp() {
 # early return logs `review identity NOT ready: <reason>` and writes the reason
 # to `not-ready`, which conductor quotes in Linear instead of starting a session.
 
-REVIEW_UID=1001
+REVIEW_UID="${CONDUCTOR_REVIEW_UID:-1001}"
 
 review_not_ready() {
   log "review identity NOT ready: $1"

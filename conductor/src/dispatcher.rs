@@ -105,16 +105,18 @@ pub struct SessionEnvArgs {
     /// Directory the entrypoint fills with the reviewer's identity: its
     /// GitHub App key and ids, git config, MCP config and Claude settings.
     /// Review sessions run through `review_launcher` with it once it holds a
-    /// `ready` file; until then they run like any other session.
+    /// `ready` file. Until then no review session starts: there is no fallback
+    /// to the author's credentials. Unset, reviews stay off.
     #[arg(long, env = "CONDUCTOR_REVIEW_IDENTITY_DIR")]
     pub review_identity_dir: Option<String>,
 
-    /// Wrapper that starts a review session with only the reviewer's
-    /// credentials (`conductor/deploy/review-session.sh`).
+    /// Wrapper that starts a review session as the reviewer uid, with only the
+    /// reviewer's credentials (`conductor/deploy/review-launch.sh`, which
+    /// hands over through `conductor-review-switch` to `review-session.sh`).
     #[arg(
         long,
         env = "CONDUCTOR_REVIEW_LAUNCHER",
-        default_value = "conductor-review-session"
+        default_value = "conductor-review-launch"
     )]
     pub review_launcher: String,
 
@@ -180,8 +182,8 @@ pub struct SessionEnv {
     pub review_model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
-    /// How review sessions get the reviewer's own identity; `None` runs them
-    /// like any other session.
+    /// How review sessions get the reviewer's own identity. `None`, or an
+    /// identity that is not ready, means no review session starts.
     pub review_launch: Option<ReviewLaunch>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
@@ -423,8 +425,8 @@ pub struct DispatchConfig {
     pub model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
-    /// How review sessions get the reviewer's own identity; `None` runs them
-    /// like any other session.
+    /// How review sessions get the reviewer's own identity. `None`, or an
+    /// identity that is not ready, means no review session starts.
     pub review_launch: Option<ReviewLaunch>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
@@ -1499,8 +1501,8 @@ pub struct StartSpec {
     pub review_model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
-    /// How review sessions get the reviewer's own identity; `None` runs them
-    /// like any other session.
+    /// How review sessions get the reviewer's own identity. `None`, or an
+    /// identity that is not ready, means no review session starts.
     pub review_launch: Option<ReviewLaunch>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
@@ -1539,8 +1541,8 @@ pub struct StartRefused(pub String);
 /// How a review session is started under the reviewer's own identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewLaunch {
-    /// The wrapper that drops every other credential, sets the reviewer
-    /// app's, and execs Claude.
+    /// The wrapper that hands over to the reviewer uid, which drops every
+    /// other credential, sets the reviewer app's, and execs Claude.
     pub launcher: String,
     /// What the entrypoint prepared: `settings.json`, `mcp.json`,
     /// `gitconfig`, `app.env`, the key, `bot-login` and, last, `ready`.
