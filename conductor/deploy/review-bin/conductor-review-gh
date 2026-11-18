@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#
+# The only `gh` a review session may run. There is no `gh api`: the reviewer
+# app has Pull requests: write, so a raw API call could close, edit or retitle
+# any pull request. This wrapper exposes exactly these operations and builds
+# every request itself, so the method and the endpoint cannot be chosen by the
+# caller:
+#
+#   pr view|diff|checks <number> [-R owner/name] [options]   read a pull request
+#   reviews <owner/name> <number>                            list the reviews (GET)
+#   threads <owner/name> <number>                            list the review threads (GraphQL query)
+#   post-review <owner/name> <number> <file>                 POST one review from .review/<file>
+#
+# The token is minted here, per call, from the reviewer app's key, and is not
+# in the session's environment.
+set -euo pipefail
+
+die() { echo "conductor-review-gh: $*" >&2; exit 2; }
+
+[[ $# -gt 0 ]] || die "no command given"
+cmd="$1"
+shift
+
+check_repo() {
+  [[ "$1" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "'$1' is not an owner/name"
+  if [[ -n "${CONDUCTOR_REVIEW_REPO:-}" && "${1,,}" != "${CONDUCTOR_REVIEW_REPO,,}" ]]; then
+    die "only ${CONDUCTOR_REVIEW_REPO} may be used"
+  fi
+}
+check_number() { [[ "$1" =~ ^[0-9]{1,9}$ ]] || die "'$1' is not a pull request number"; }
+
+case "$cmd" in
+  pr)
+    [[ $# -ge 2 ]] || die "usage: pr view|diff|checks <number> [-R owner/name] [options]"
+    sub="$1"
+    shift
+    case "$sub" in view|diff|checks) ;; *) die "pr ${sub} is not allowed" ;; esac
+    check_number "$1"
+    args=("$@")
+    i=0
+    while [[ $i -lt ${#args[@]} ]]; do
+      case "${args[$i]}" in
+        -R|--repo) i=$((i + 1)); [[ $i -lt ${#args[@]} ]] || die "-R needs a value"; check_repo "${args[$i]}" ;;
+        --repo=*) check_repo "${args[$i]#--repo=}" ;;
+        --web|-w|--watch) die "option '${args[$i]}' is not allowed" ;;
+      esac
+      i=$((i + 1))
+    done
+    run=(pr "$sub" "${args[@]}")
+    ;;
+  reviews)
+    [[ $# -eq 2 ]] || die "usage: reviews <owner/name> <number>"
+    check_repo "$1"; check_number "$2"
+    run=(api --method GET --paginate "repos/$1/pulls/$2/reviews")
+    ;;
+  threads)
+    [[ $# -eq 2 ]] || die "usage: threads <owner/name> <number>"
+    check_repo "$1"; check_number "$2"
+    owner="${1%%/*}"
+    name="${1#*/}"
+    # shellcheck disable=SC2016
+    query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:50){nodes{databaseId author{login} body path line}}}}}}}'
+    run=(api graphql -f "query=${query}" -f "owner=${owner}" -f "name=${name}" -F "number=$2")
+    ;;
+  post-review)
+    [[ $# -eq 3 ]] || die "usage: post-review <owner/name> <number> <file>"
+    check_repo "$1"; check_number "$2"
+    file="$3"
+    [[ "$file" == ".review/review-$2.json" ]] || die "the payload must be .review/review-$2.json"
+    [[ -f "$file" && ! -L "$file" ]] || die "$file is not a regular file"
+    jq -e '
+      type == "object"
+      and ((keys - ["commit_id", "event", "body", "comments"]) | length == 0)
+      and (.event | IN("APPROVE", "REQUEST_CHANGES", "COMMENT"))
+      and (.commit_id | type == "string" and test("^[0-9a-f]{7,64}$"))
+    ' "$file" >/dev/null || die "$file is not a review payload (commit_id, event, body, comments)"
+    run=(api --method POST "repos/$1/pulls/$2/reviews" --input "$file")
+    ;;
+  *) die "command '${cmd}' is not allowed" ;;
+esac
+
+dir="${CONDUCTOR_REVIEW_IDENTITY_DIR:-}"
+[[ -n "$dir" && -f "${dir}/app.env" ]] || die "the reviewer identity is not set up"
+helper="${GITHUB_APP_CREDENTIAL_HELPER:-/usr/local/bin/github-app-credential-helper}"
+(
+  # shellcheck source=/dev/null
+  . "${dir}/app.env"
+  export GITHUB_APP_ID="$REVIEW_APP_ID"
+  export GITHUB_APP_INSTALLATION_ID="$REVIEW_INSTALLATION_ID"
+  export GITHUB_APP_PRIVATE_KEY_PATH="${dir}/private-key.pem"
+  token="$(printf 'protocol=https\nhost=github.com\n\n' | "$helper" get | sed -n 's/^password=//p')" || token=""
+  [[ -n "$token" ]] || { echo "conductor-review-gh: minting the reviewer app's token failed" >&2; exit 1; }
+
+  for var in $(compgen -e); do
+    case "$var" in GH_*|GITHUB_*|GIT_*|LD_PRELOAD|LD_LIBRARY_PATH|BROWSER|EDITOR|VISUAL|PAGER) unset "$var" ;; esac
+  done
+  config="$(mktemp -d)"
+  trap 'rm -rf "$config"' EXIT
+  export GH_TOKEN="$token" GH_CONFIG_DIR="$config" GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 GH_PAGER=cat
+  "${CONDUCTOR_REVIEW_REAL_GH:-/usr/bin/gh}" "${run[@]}"
+)
