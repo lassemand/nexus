@@ -424,6 +424,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "chef-probe"
+version = "0.0.0"
+
+[[package]]
 name = "chronicle"
 version = "0.0.0"
 dependencies = [

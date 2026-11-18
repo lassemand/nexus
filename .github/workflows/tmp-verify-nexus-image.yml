@@ -1,0 +1,26 @@
+name: TMP verify nexus image
+
+on:
+  push:
+    tags:
+      - 'nexus-check-*'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Build (plain progress, timed)
+        run: |
+          start=$(date +%s)
+          docker buildx build --progress=plain --load -f infra/Dockerfile -t nexus:verify \
+            --cache-from type=gha,scope=nexus-verify --cache-to type=gha,mode=max,scope=nexus-verify . 2>&1 | tee build.log | grep -E "CACHED|cargo chef|DONE|ERROR" | head -80
+          echo "BUILD SECONDS: $(( $(date +%s) - start ))"
+      - name: Binaries
+        run: |
+          docker run --rm --entrypoint sh nexus:verify -c 'ls -1 /usr/local/bin; test ! -e /usr/local/bin/analyst-bench && echo "no analyst-bench"'
+          for b in chronicle market earnings filings pdmr nordic-reports nordic-calendar nordic-live saxo_stream signal insight analyst; do
+            out=$(docker run --rm --entrypoint /usr/local/bin/$b nexus:verify --help 2>&1 | head -2 | tr '\n' ' ') ; echo "$b: $out"
+          done

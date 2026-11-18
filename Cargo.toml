@@ -10,7 +10,8 @@ members = [
     "telemetry",
     "analyst",
     "verdict/sdk",
-    "verdict/kernels/sample"
+    "verdict/kernels/sample",
+    "chef-probe"
 ]
 exclude = ["verdict/template", "verdict/bench"]
 resolver = "2"

@@ -1,0 +1,9 @@
+[package]
+name = "chef-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "chef-probe"
+path = "src/main.rs"
