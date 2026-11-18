@@ -9,17 +9,20 @@
  * root or any other user, and only the agent uid and group may run it (the
  * file is root:agent 0750, and it checks its real uid too).
  *
- * After the switch every id is 1001, which drops the capabilities, and
- * no_new_privs is set so nothing the session runs can gain privileges again.
+ * After the switch every id is 1001, the capabilities are cleared explicitly
+ * (a switch between two non-root uids does not clear them) and no_new_privs is
+ * set so nothing the session runs can gain privileges again.
  */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <grp.h>
+#include <linux/capability.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #ifndef AGENT_UID
@@ -44,6 +47,22 @@ static const char *const PASS[] = {
     "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
     "DISABLE_AUTOUPDATER", "CLAUDE_CODE_VERSION",
 };
+
+/*
+ * Changing between two non-root uids does not clear the capabilities the file
+ * granted, so they are cleared here explicitly: permitted, effective and
+ * inheritable to nothing, and the ambient set emptied.
+ */
+static void drop_all_capabilities(void) {
+    struct __user_cap_header_struct header = {_LINUX_CAPABILITY_VERSION_3, 0};
+    struct __user_cap_data_struct data[2];
+    memset(data, 0, sizeof data);
+    if (syscall(SYS_capset, &header, data) != 0) {
+        fprintf(stderr, "conductor-review-switch: capset: %s\n", strerror(errno));
+        exit(111);
+    }
+    prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
+}
 
 static void fail(const char *what) {
     fprintf(stderr, "conductor-review-switch: %s: %s\n", what, strerror(errno));
@@ -84,6 +103,7 @@ int main(int argc, char **argv) {
     if (setgroups(0, NULL) != 0) fail("setgroups");
     if (setresgid(REVIEWER_UID, REVIEWER_UID, REVIEWER_UID) != 0) fail("setresgid");
     if (setresuid(REVIEWER_UID, REVIEWER_UID, REVIEWER_UID) != 0) fail("setresuid");
+    drop_all_capabilities();
     if (getuid() != REVIEWER_UID || geteuid() != REVIEWER_UID || getgid() != REVIEWER_UID) {
         fprintf(stderr, "conductor-review-switch: the switch did not take effect\n");
         return 111;
