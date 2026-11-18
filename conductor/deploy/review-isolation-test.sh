@@ -140,7 +140,6 @@ denied connect_credential_socket python3 -c 'import socket,sys; s=socket.socket(
 denied write_author_worktree touch "${DATA}/worktrees/author-task/planted"
 denied create_in_worktrees touch "${DATA}/worktrees/planted"
 denied delete_author_file rm -f "${DATA}/worktrees/author-task/file.txt"
-denied create_in_data touch "${DATA}/planted"
 denied write_identity touch "${IDENTITY}/planted"
 denied replace_settings cp /dev/null "${IDENTITY}/settings.json"
 denied run_the_switch "${CONDUCTOR_REVIEW_SWITCH}" --probe
@@ -156,13 +155,14 @@ res env_model_key "\$(env | grep -c '^ANTHROPIC_API_KEY=')"
 res env_identity_dir "\${CONDUCTOR_REVIEW_IDENTITY_DIR:-}"
 denied rename_worktrees mv "${DATA}/worktrees" "${DATA}/worktrees.moved"
 denied rename_author_home mv "${HOME}" "${HOME}.moved"
+denied rename_author_state mv "${DATA}/state" "${DATA}/state.moved"
 PROBE
 chmod 0755 "$PROBES"
 
 tmux -L review-isolation -f /dev/null new-session -d -s review-nex-1 -x 200 -y 50 \
   -c "${DATA}/worktrees/review-nex-1" \
   conductor-review-launch bash -c "bash '${PROBES}' > '${OUT}' 2>&1; sleep 120"
-for _ in $(seq 1 100); do [[ -s "$OUT" ]] && grep -q '^rename_author_home=' "$OUT" && break; sleep 0.2; done
+for _ in $(seq 1 100); do [[ -s "$OUT" ]] && grep -q '^rename_author_state=' "$OUT" && break; sleep 0.2; done
 if [[ ! -s "$OUT" ]]; then
   bad "the session ran" "$(tmux -L review-isolation capture-pane -p -t review-nex-1 2>&1 | tail -5)"
   exit 1
@@ -194,7 +194,7 @@ expect create_in_worktrees denied "creating a directory beside the author worktr
 expect delete_author_file denied "deleting an author file fails"
 expect rename_worktrees denied "renaming the worktrees directory away fails"
 expect rename_author_home denied "renaming the author's home away fails"
-expect create_in_data denied "creating a file in the data directory fails"
+expect rename_author_state denied "renaming the author state directory away fails (the sticky bit)"
 expect write_identity denied "writing its own identity directory fails"
 expect replace_settings denied "replacing its own settings fails"
 expect run_the_switch denied "running the switch again fails"
