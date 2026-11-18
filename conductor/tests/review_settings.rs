@@ -158,7 +158,10 @@ fn only_the_wrappers_are_allowed_to_run() {
             rules.deny.contains(&format!("Bash({raw}:*)")),
             "raw {raw} is denied outright"
         );
-        assert!(!rules.allow.iter().any(|r| r.starts_with(&format!("Bash({raw} "))));
+        assert!(!rules
+            .allow
+            .iter()
+            .any(|r| r.starts_with(&format!("Bash({raw} "))));
     }
     assert!(!rules.allow.iter().any(|r| r.contains("gh api")));
 }
@@ -166,7 +169,11 @@ fn only_the_wrappers_are_allowed_to_run() {
 #[test]
 fn no_github_tool_that_can_close_edit_merge_or_push_is_allowed() {
     let rules = rules();
-    let allowed: Vec<&String> = rules.allow.iter().filter(|r| r.starts_with("mcp__github__")).collect();
+    let allowed: Vec<&String> = rules
+        .allow
+        .iter()
+        .filter(|r| r.starts_with("mcp__github__"))
+        .collect();
     for tool in [
         "mcp__github__merge_pull_request",
         "mcp__github__update_pull_request",
@@ -181,7 +188,10 @@ fn no_github_tool_that_can_close_edit_merge_or_push_is_allowed() {
         "mcp__github__create_branch",
         "mcp__github__actions_run_trigger",
     ] {
-        assert!(!allowed.iter().any(|r| r.as_str() == tool), "{tool} is allowed");
+        assert!(
+            !allowed.iter().any(|r| r.as_str() == tool),
+            "{tool} is allowed"
+        );
         assert!(rules.deny.iter().any(|r| r == tool), "{tool} is not denied");
     }
 }
@@ -189,10 +199,16 @@ fn no_github_tool_that_can_close_edit_merge_or_push_is_allowed() {
 #[test]
 fn no_linear_write_tool_is_allowed() {
     let rules = rules();
-    for rule in rules.allow.iter().filter(|r| r.starts_with("mcp__linear__")) {
+    for rule in rules
+        .allow
+        .iter()
+        .filter(|r| r.starts_with("mcp__linear__"))
+    {
         let name = rule.trim_start_matches("mcp__linear__");
         assert!(
-            !name.starts_with("save_") && !name.starts_with("delete_") && !name.starts_with("create_"),
+            !name.starts_with("save_")
+                && !name.starts_with("delete_")
+                && !name.starts_with("create_"),
             "{rule} writes to Linear"
         );
     }
@@ -202,7 +218,10 @@ fn no_linear_write_tool_is_allowed() {
 fn the_reviewers_files_outside_its_worktree_cannot_be_edited() {
     let rules = rules();
     for rule in rules.allow.iter().filter(|r| r.starts_with("Edit(")) {
-        assert!(rule.contains(".review"), "{rule} edits more than the verdict directory");
+        assert!(
+            rule.contains(".review"),
+            "{rule} edits more than the verdict directory"
+        );
     }
     assert!(rules.deny.iter().any(|r| r == "Read(//data/home/**)"));
 }

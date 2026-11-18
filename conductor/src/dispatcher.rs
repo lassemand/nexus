@@ -1521,9 +1521,10 @@ impl StartSpec {
             spec.model = self.review_model.clone();
             spec.model_from_set = false;
             spec.skip_permissions = false;
-            let launch = self.review_launch.as_ref().ok_or_else(|| {
-                StartRefused("no review identity directory is configured".into())
-            })?;
+            let launch = self
+                .review_launch
+                .as_ref()
+                .ok_or_else(|| StartRefused("no review identity directory is configured".into()))?;
             launch.readiness().map_err(StartRefused)?;
         } else {
             spec.review_launch = None;
@@ -1970,7 +1971,11 @@ pub async fn ensure_detached_worktree(
         let head = run_git(&staging, &["rev-parse", "HEAD"]).await?;
         let wanted = run_git(&staging, &["rev-parse", &format!("{commit}^{{commit}}")]).await?;
         if head.trim() != wanted.trim() {
-            return Err(format!("the clone is at {} after checking out {commit}", head.trim()).into());
+            return Err(format!(
+                "the clone is at {} after checking out {commit}",
+                head.trim()
+            )
+            .into());
         }
         open_to_reviewer(&staging).await?;
         std::fs::rename(&staging, &path)?;
@@ -2289,7 +2294,11 @@ mod tests {
         );
 
         std::fs::write(dir.path().join("ready"), "").unwrap();
-        let argv = session_argv(&spec.for_key(&review_key).unwrap(), uuid::Uuid::nil(), false);
+        let argv = session_argv(
+            &spec.for_key(&review_key).unwrap(),
+            uuid::Uuid::nil(),
+            false,
+        );
         assert_eq!(argv[0], "conductor-review-session");
         assert_eq!(argv[1], "claude");
         assert!(argv

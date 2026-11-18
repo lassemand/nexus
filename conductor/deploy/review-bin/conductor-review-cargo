@@ -74,12 +74,12 @@ done
 
 target="${CARGO_TARGET_DIR:-}"
 cargo_home="${CONDUCTOR_REVIEW_CARGO_HOME:-${HOME}/.cargo}"
-for var in $(compgen -e); do
+while IFS= read -r var; do
   case "$var" in
     CARGO_*|RUSTC|RUSTC_*|RUSTDOC|RUSTDOCFLAGS|RUSTFLAGS|RUSTUP_TOOLCHAIN|LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT \
       |GIT_*|GH_*|GITHUB_*|REVIEW_*|ANTHROPIC_*|CLAUDE_CODE_*) unset "$var" ;;
   esac
-done
+done < <(compgen -e)
 [[ -z "$target" ]] || export CARGO_TARGET_DIR="$target"
 export CARGO_HOME="$cargo_home"
 export RUSTUP_HOME="${CONDUCTOR_REVIEW_RUSTUP_HOME:-/usr/local/rustup}"

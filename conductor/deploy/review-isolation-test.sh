@@ -44,6 +44,7 @@ AGENT_UID="$(id -u)"
 export CONDUCTOR_DATA_DIR="$DATA"
 unset CONDUCTOR_REVIEW_IDENTITY_DIR CONDUCTOR_REVIEW_ROOT CONDUCTOR_REVIEW_SKIP_SWITCH_CHECK
 export CLAUDE_CODE_VERSION=9.9.9-test
+# shellcheck source=conductor/deploy/entrypoint.sh
 CONDUCTOR_ENTRYPOINT_LIB=1 . "${HERE}/entrypoint.sh"
 set +e
 

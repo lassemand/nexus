@@ -1477,13 +1477,16 @@ async fn an_outside_author_gets_no_review_on_a_review_command_either(pool: PgPoo
     sink.submit(manual("lassemand", "c1"));
 
     assert!(wait_until(|| !s.linear.comments().is_empty()).await);
-    assert!(s.linear.comments()[0].starts_with("Review not started: no pull request by an allowed author"));
+    assert!(s.linear.comments()[0]
+        .starts_with("Review not started: no pull request by an allowed author"));
     assert!(s.h.group(&review_key()).await.is_none());
     assert!(s.github.reactions.lock().unwrap().is_empty());
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_review_command_from_an_outsider_on_an_allowed_pr_still_reaches_the_trigger_check(pool: PgPool) {
+async fn a_review_command_from_an_outsider_on_an_allowed_pr_still_reaches_the_trigger_check(
+    pool: PgPool,
+) {
     let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
     set_author(&s.github, 316, "lassemand");
     s.h.fake.set_turn(50, Some(&verdict_cmd("approve", &s.sha)));
@@ -1591,7 +1594,10 @@ async fn a_review_checkout_is_a_standalone_clone_the_reviewer_uid_can_write(pool
         .await
         .unwrap();
 
-    assert!(path.join(".git").is_dir(), ".git is a directory, not a link back to the author's repository");
+    assert!(
+        path.join(".git").is_dir(),
+        ".git is a directory, not a link back to the author's repository"
+    );
     assert!(!path.join(".git/commondir").exists());
     assert!(!path.join(".git/objects/info/alternates").exists());
     let repo_git = std::fs::canonicalize(h.repo.join(".git")).unwrap();
@@ -1603,8 +1609,15 @@ async fn a_review_checkout_is_a_standalone_clone_the_reviewer_uid_can_write(pool
         "origin is the real remote, so the reviewer fetches from GitHub"
     );
     for inside in [".", ".git", ".git/objects", "README.md"] {
-        let mode = std::fs::metadata(path.join(inside)).unwrap().permissions().mode();
-        assert_eq!(mode & 0o006, 0o006, "{inside} is readable and writable by other users: {mode:o}");
+        let mode = std::fs::metadata(path.join(inside))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o006,
+            0o006,
+            "{inside} is readable and writable by other users: {mode:o}"
+        );
     }
     assert!(
         !h.repo.join(".git/worktrees").exists(),
@@ -1626,7 +1639,11 @@ async fn closing_a_review_removes_its_checkout_without_running_git_in_it(pool: P
 fn a_verdict_that_is_a_link_or_too_large_is_never_read() {
     let dir = tempfile::tempdir().unwrap();
     let secret = dir.path().join("secret.json");
-    std::fs::write(&secret, r#"{"verdict":"approve","prs":[],"summary":"leaked"}"#).unwrap();
+    std::fs::write(
+        &secret,
+        r#"{"verdict":"approve","prs":[],"summary":"leaked"}"#,
+    )
+    .unwrap();
     let link = dir.path().join("verdict.json");
     std::os::unix::fs::symlink(&secret, &link).unwrap();
     let err = conductor::review::read_verdict(&link, &[]).unwrap_err();

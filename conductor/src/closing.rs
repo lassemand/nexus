@@ -134,8 +134,7 @@ pub async fn close_group(
     // Git before the delete: a refusal must leave the group intact, or the
     // registry would forget a worktree that is still on disk.
     if group.key.is_review() && !group.worktree.as_os_str().is_empty() && group.worktree.exists() {
-        if let Err(e) =
-            crate::dispatcher::remove_review_checkout(repo_root, &group.worktree).await
+        if let Err(e) = crate::dispatcher::remove_review_checkout(repo_root, &group.worktree).await
         {
             return Ok(CloseOutcome::WorktreeDirty(e.to_string()));
         }

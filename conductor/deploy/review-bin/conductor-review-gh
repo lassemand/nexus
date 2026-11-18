@@ -91,9 +91,9 @@ helper="${GITHUB_APP_CREDENTIAL_HELPER:-/usr/local/bin/github-app-credential-hel
   token="$(printf 'protocol=https\nhost=github.com\n\n' | "$helper" get | sed -n 's/^password=//p')" || token=""
   [[ -n "$token" ]] || { echo "conductor-review-gh: minting the reviewer app's token failed" >&2; exit 1; }
 
-  for var in $(compgen -e); do
+  while IFS= read -r var; do
     case "$var" in GH_*|GITHUB_*|GIT_*|LD_PRELOAD|LD_LIBRARY_PATH|BROWSER|EDITOR|VISUAL|PAGER) unset "$var" ;; esac
-  done
+  done < <(compgen -e)
   config="$(mktemp -d)"
   trap 'rm -rf "$config"' EXIT
   export GH_TOKEN="$token" GH_CONFIG_DIR="$config" GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 GH_PAGER=cat

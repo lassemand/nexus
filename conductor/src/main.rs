@@ -165,13 +165,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if config.review.enabled && config.review_launch.is_none() {
                 tracing::error!(
                     "CONDUCTOR_REVIEW_IDENTITY_DIR is not set, so there is no reviewer identity; \
-                     reviews stay off rather than run as the author app"
+                     reviews stay off"
                 );
                 config.review.enabled = false;
             }
             config.review.launch = config.review_launch.clone();
-            match &config.review_launch {
-                Some(launch) => match launch.readiness() {
+            if let Some(launch) = &config.review_launch {
+                match launch.readiness() {
                     Ok(()) => {
                         if config.review.bot_login.is_none() {
                             config.review.bot_login = launch.bot_login();
@@ -186,8 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         %reason,
                         "the reviewer identity is not ready; a review will say so in Linear and start no session"
                     ),
-                },
-                None => {}
+                }
             }
             if config.review.enabled && config.review.author_bot_login.is_none() {
                 tracing::warn!(

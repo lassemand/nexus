@@ -1701,12 +1701,8 @@ mod tests {
 
     #[test]
     fn the_author_app_is_allowed_for_reviews_but_never_a_watched_user() {
-        let probe = Probe::try_parse_from([
-            "probe",
-            "--author-bot-login",
-            "nexus-mcp[bot]",
-        ])
-        .unwrap();
+        let probe =
+            Probe::try_parse_from(["probe", "--author-bot-login", "nexus-mcp[bot]"]).unwrap();
         let config = probe.review.into_config("reviewer".into(), None);
         assert!(config.allowed_authors.iter().any(|a| a == "nexus-mcp[bot]"));
         assert!(!crate::github::watched_users_from_env()

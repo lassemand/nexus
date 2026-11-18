@@ -70,8 +70,14 @@ impl Sandbox {
             .env("CONDUCTOR_REVIEW_REAL_GIT", &fake)
             .env("CONDUCTOR_REVIEW_REAL_CARGO", &fake)
             .env("CONDUCTOR_REVIEW_REAL_GH", &fake)
-            .env("GITHUB_APP_CREDENTIAL_HELPER", self.path().join("fake-helper"))
-            .env("CONDUCTOR_REVIEW_CARGO_HOME", self.path().join("cargo-home"));
+            .env(
+                "GITHUB_APP_CREDENTIAL_HELPER",
+                self.path().join("fake-helper"),
+            )
+            .env(
+                "CONDUCTOR_REVIEW_CARGO_HOME",
+                self.path().join("cargo-home"),
+            );
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -148,7 +154,14 @@ fn git_rejects_every_form_that_names_a_program_or_a_file() {
 #[test]
 fn git_runs_allowed_subcommands_with_its_own_environment() {
     for sub in [
-        "log", "diff", "show", "checkout", "blame", "ls-files", "status", "rev-parse",
+        "log",
+        "diff",
+        "show",
+        "checkout",
+        "blame",
+        "ls-files",
+        "status",
+        "rev-parse",
     ] {
         assert_allowed("conductor-review-git", &[sub, "HEAD"]);
     }
@@ -196,7 +209,11 @@ fn git_drops_environment_overrides_that_select_a_program() {
 #[test]
 fn cargo_rejects_every_form_that_names_a_program() {
     for args in [
-        &["test", "--config", "target.x86_64-unknown-linux-gnu.runner='touch /tmp/x'"][..],
+        &[
+            "test",
+            "--config",
+            "target.x86_64-unknown-linux-gnu.runner='touch /tmp/x'",
+        ][..],
         &["test", "--config=build.rustc-wrapper='touch /tmp/x'"],
         &["check", "--config", "x"],
         &["clippy", "-Zunstable-options"],
@@ -266,7 +283,10 @@ fn cargo_drops_environment_overrides_but_keeps_the_target_dir() {
         &[
             ("CARGO_TARGET_DIR", "/review/target"),
             ("CARGO_BUILD_RUSTC_WRAPPER", "touch /tmp/x"),
-            ("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER", "touch /tmp/x"),
+            (
+                "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER",
+                "touch /tmp/x",
+            ),
             ("RUSTC_WRAPPER", "touch /tmp/x"),
             ("RUSTC", "/tmp/x"),
             ("RUSTDOC", "/tmp/x"),
@@ -298,7 +318,14 @@ fn cargo_drops_environment_overrides_but_keeps_the_target_dir() {
 fn gh_has_no_api_and_no_way_to_close_edit_or_merge() {
     for args in [
         &["api", "repos/o/r/pulls/1"][..],
-        &["api", "-X", "PATCH", "repos/o/r/pulls/1", "-f", "state=closed"],
+        &[
+            "api",
+            "-X",
+            "PATCH",
+            "repos/o/r/pulls/1",
+            "-f",
+            "state=closed",
+        ],
         &["api", "--method", "PUT", "repos/o/r/pulls/1/merge"],
         &["api", "graphql", "-f", "query=mutation{closePullRequest}"],
         &["api", "-X", "POST", "repos/o/r/issues/1/labels"],
@@ -337,9 +364,21 @@ fn gh_post_review_takes_only_the_review_payload() {
         fs::write(sb.worktree().join(".review").join(name), body).unwrap();
     };
     for (name, body, file) in [
-        ("review-7.json", r#"{"event":"APPROVE","commit_id":"abcdef1","state":"closed"}"#, ".review/review-7.json"),
-        ("review-7.json", r#"{"event":"DISMISS","commit_id":"abcdef1"}"#, ".review/review-7.json"),
-        ("review-7.json", r#"{"event":"APPROVE","commit_id":"not a sha"}"#, ".review/review-7.json"),
+        (
+            "review-7.json",
+            r#"{"event":"APPROVE","commit_id":"abcdef1","state":"closed"}"#,
+            ".review/review-7.json",
+        ),
+        (
+            "review-7.json",
+            r#"{"event":"DISMISS","commit_id":"abcdef1"}"#,
+            ".review/review-7.json",
+        ),
+        (
+            "review-7.json",
+            r#"{"event":"APPROVE","commit_id":"not a sha"}"#,
+            ".review/review-7.json",
+        ),
         ("review-7.json", "not json", ".review/review-7.json"),
         ("review-8.json", payload, ".review/review-7.json"),
         ("review-7.json", payload, "/etc/passwd"),
@@ -348,7 +387,11 @@ fn gh_post_review_takes_only_the_review_payload() {
     ] {
         let sb = Sandbox::new();
         write(&sb, name, body);
-        let out = sb.run("conductor-review-gh", &["post-review", "o/r", "7", file], &[]);
+        let out = sb.run(
+            "conductor-review-gh",
+            &["post-review", "o/r", "7", file],
+            &[],
+        );
         assert!(!out.status.success(), "{name} {body} {file}");
         assert!(!sb.reached_real_program(), "{name} {body} {file}");
     }
@@ -359,9 +402,15 @@ fn gh_post_review_takes_only_the_review_payload() {
         &["post-review", "o/r", "7", ".review/review-7.json"],
         &[],
     );
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let call = fs::read_to_string(sb.marker()).unwrap();
-    assert!(call.contains("api --method POST repos/o/r/pulls/7/reviews --input .review/review-7.json"));
+    assert!(
+        call.contains("api --method POST repos/o/r/pulls/7/reviews --input .review/review-7.json")
+    );
 }
 
 #[test]

@@ -45,11 +45,11 @@ if [[ "$sub" == "fetch" ]]; then
     || die "fetch takes 'origin' as its remote"
 fi
 
-for var in $(compgen -e); do
+while IFS= read -r var; do
   case "$var" in
     GIT_*|PAGER|LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|SSH_ASKPASS|SSH_AUTH_SOCK) unset "$var" ;;
   esac
-done
+done < <(compgen -e)
 
 dir="${CONDUCTOR_REVIEW_IDENTITY_DIR:-}"
 [[ -n "$dir" && -f "${dir}/gitconfig" ]] || die "the reviewer identity is not set up"
