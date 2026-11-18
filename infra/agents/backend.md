@@ -167,6 +167,17 @@ In all cases: read the full PR diff before responding so you have complete conte
 
 ---
 
+## When CI sends a task back
+
+Conductor moves a task to **Todo** with a comment starting `CI failed; moved back to Todo` when a check fails on its PR. When such a Todo dispatch arrives for an issue that already has an open PR:
+
+1. Fix the failing checks on the **existing PR branch**; never open a new PR and never start the task over.
+2. Push, wait for CI to pass, then move the issue to **In Review**.
+
+A task moved to **In Progress** with `CI not finished on …` needs no action: conductor moves it to In Review itself when CI turns green.
+
+---
+
 ## When a task comes back from review
 
 Every task that enters **In Review** is reviewed automatically by **Annette**, the reviewer bot (the GitHub App whose login conductor knows as `CONDUCTOR_REVIEW_BOT_LOGIN`, for example `annette-review[bot]`). On blocking findings she posts a GitHub review with **Request changes**, and conductor moves the issue back to **Todo** with a Linear comment from the reviewer that starts `Review send-back k of N`.

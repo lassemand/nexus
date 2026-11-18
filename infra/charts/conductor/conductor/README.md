@@ -236,8 +236,10 @@ Settings (`values.yaml` `review`, environment in brackets): `enabled`
 `model` (`CONDUCTOR_REVIEW_MODEL`), `maxSessions`
 (`CONDUCTOR_MAX_REVIEW_SESSIONS`), `timeout` (`CONDUCTOR_REVIEW_TIMEOUT`,
 `45m`, `2700s` or `1h`), `botLogin` (`CONDUCTOR_REVIEW_BOT_LOGIN`), `repo` (`CONDUCTOR_REVIEW_REPO`).
-`enabled` is `true` in the chart now that `infra/agents/reviewer.md`
-(NEX-273) and the CI gate (NEX-275) have both merged. Metrics
+`enabled` is `false` in the chart: `infra/agents/reviewer.md` (NEX-273) and
+the CI gate (NEX-275) have merged, but reviews stay off until the reviewer's
+sandbox boundary findings from PR 325 are fixed; a follow-up PR turns them on.
+Metrics
 `conductor_reviews_total{trigger,verdict}`,
 `conductor_review_duration_seconds`, `conductor_review_limit_reached_total`,
 `conductor_review_sessions{kind}`, `conductor_review_linear_identity{kind}`,
@@ -281,6 +283,11 @@ read again, so a push in between means no review).
   the state change in under 10 s. A poll every `review.ci.pollInterval`
   (`CONDUCTOR_CI_POLL_INTERVAL`, default `60s`) re-checks watched issues in
   case a webhook is lost. Redelivered webhooks make no second move or comment.
+- **Limits.** A pull request with no check runs at all stays pending, so a PR
+  that triggers no workflow (a future path-filtered workflow, a repository
+  without Actions) sits in In Progress until `review.ci.maxWait` and then
+  times out. Only the Checks API is read: an external CI that reports legacy
+  commit statuses (`/commits/{sha}/status`) is invisible to the gate.
 - **`/review` skips the gate:** a person asked for that review explicitly.
 - **Setup:** subscribe the GitHub App **and** the repository webhook (the
   Hookdeck source `github`) to **Checks** events: the App needs the *Checks:

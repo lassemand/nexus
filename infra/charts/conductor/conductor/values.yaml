@@ -68,9 +68,10 @@ githubWebhookUsers: "lassemand"
 # `/review` comment from a githubWebhookUsers login asks for one by hand. See
 # this chart's README, "Reviews".
 review:
-  # false turns every automatic and manual trigger off. On: NEX-273
-  # (infra/agents/reviewer.md) and NEX-275 (CI gate) have both merged.
-  enabled: true
+  # false turns every automatic and manual trigger off. Stays off until the
+  # reviewer's sandbox boundary findings from PR 325 are fixed; a follow-up PR
+  # enables it. NEX-273 and the NEX-275 CI gate have both merged.
+  enabled: false
   # Linear state whose entry starts an automatic review.
   state: "In Review"
   # Send-backs per issue before automatic reviews stop (then `needs-human` and

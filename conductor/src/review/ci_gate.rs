@@ -103,7 +103,10 @@ pub fn pending_comment(unfinished: &[(String, u64)]) -> String {
 
 /// The Linear comment for failed checks, each with a link to its log.
 pub fn failed_comment(failed: &[FailedCheck]) -> String {
-    let mut lines = vec!["CI failed; moved back to Todo. Failed checks:".to_string()];
+    let mut lines = vec![
+        "CI failed; moved back to Todo. Fix it on the existing PR branch, do not open a new PR. Failed checks:"
+            .to_string(),
+    ];
     for f in failed {
         lines.push(format!("- {} PR {}: [{}]({})", f.repo, f.pr, f.name, f.url));
     }
@@ -292,6 +295,11 @@ impl Reviews {
             tracing::error!(issue = %issue.identifier, "the issue could not be moved out of review");
             self.drop_watch(&issue.id, "the move out of review failed")
                 .await;
+            let body = format!(
+                "{}\nThe issue could not be moved out of review; no review starts until CI is green. Move it to review again once it is.",
+                pending_comment(unfinished)
+            );
+            self.post_or_log(&issue.id, &body).await;
             return TriggerOutcome::CiPending;
         }
         tracing::info!(issue = %issue.identifier, "CI not green; issue moved to In Progress and watched");
