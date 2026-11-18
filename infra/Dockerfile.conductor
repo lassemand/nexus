@@ -10,6 +10,7 @@
 # that a nexus release does not restart this pod and interrupt a running agent.
 
 ARG VERSION=0.0.0
+ARG CARGO_CHEF_VERSION=0.1.78
 # Pinned, never floating: the image is the version record, and DISABLE_AUTOUPDATER
 # below stops the CLI changing underneath it at runtime.
 ARG CLAUDE_CODE_VERSION=2.1.285
@@ -18,10 +19,14 @@ ARG CLAUDE_CODE_VERSION=2.1.285
 ARG GITHUB_MCP_VERSION=1.12.2
 
 # ── builder ──────────────────────────────────────────────────────────────────
+#
+# cargo-chef reads the real workspace to list its members and targets, so no
+# crate has to be named here. chef, planner and builder share one toolchain,
+# which is what lets the cooked dependency layer survive source changes.
 
-FROM rust:bookworm AS builder
+FROM rust:bookworm AS chef
 
-ARG VERSION
+ARG CARGO_CHEF_VERSION
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
@@ -33,67 +38,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# Manifests first, so the dependency layer survives source changes. Every
-# workspace member has to be present even though only `conductor` is built:
-# Cargo refuses to parse a workspace whose members are missing.
-COPY Cargo.toml Cargo.lock ./
-COPY model/Cargo.toml     model/Cargo.toml
-COPY model/build.rs       model/build.rs
-COPY model/proto/         model/proto/
-COPY alpha/Cargo.toml     alpha/Cargo.toml
-COPY chronicle/Cargo.toml chronicle/Cargo.toml
-COPY signal/Cargo.toml    signal/Cargo.toml
-COPY insight/Cargo.toml   insight/Cargo.toml
-COPY cli/Cargo.toml       cli/Cargo.toml
-COPY conductor/Cargo.toml conductor/Cargo.toml
-COPY telemetry/Cargo.toml telemetry/Cargo.toml
-COPY analyst/Cargo.toml   analyst/Cargo.toml
-COPY verdict/sdk/Cargo.toml verdict/sdk/Cargo.toml
-COPY verdict/kernels/sample/Cargo.toml verdict/kernels/sample/Cargo.toml
+COPY rust-toolchain.toml ./
+RUN rustup toolchain install \
+    && cargo install cargo-chef --locked --version "${CARGO_CHEF_VERSION}"
 
-# Placeholder sources so Cargo can parse the workspace.
-#
-# Every `[[bin]]` any member declares needs a file here, not just the ones that
-# ship: Cargo resolves all targets of the package being built before it
-# compiles anything. conductor declares a test-fixture binary outside src/
-# (tests/fixtures/fake-claude-tty), and without a placeholder the dependency
-# layer fails with
-#   error: can't find bin `fake-claude-tty` at path `...`
-# which is a release-only failure, since the image is not built on pull
-# requests.
-RUN mkdir -p \
-      model/src alpha/src chronicle/src signal/src insight/src cli/src \
-      conductor/src conductor/tests/fixtures/fake-claude-tty telemetry/src \
-      analyst/src/bin verdict/sdk/src verdict/kernels/sample/src \
-    && touch model/src/lib.rs alpha/src/lib.rs chronicle/src/lib.rs conductor/src/lib.rs telemetry/src/lib.rs \
-       analyst/src/lib.rs verdict/sdk/src/lib.rs verdict/kernels/sample/src/lib.rs \
-    && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
-        chronicle/src/main.rs \
-        chronicle/src/market.rs \
-        chronicle/src/earnings_bin.rs \
-        chronicle/src/filings.rs \
-        chronicle/src/pdmr.rs \
-        chronicle/src/nordic_reports.rs \
-        chronicle/src/nordic_calendar.rs \
-        chronicle/src/nordic_live.rs \
-        chronicle/src/saxo_stream.rs \
-        signal/src/main.rs \
-        signal/src/scanner.rs \
-        insight/src/main.rs \
-        cli/src/main.rs \
-        conductor/src/main.rs \
-        analyst/src/bin/analyst.rs \
-        conductor/tests/fixtures/fake-claude-tty/main.rs
+FROM chef AS planner
 
-RUN cargo fetch --locked
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Dependencies only — cached as long as the manifests are unchanged.
-RUN cargo build --frozen --release -p conductor
+FROM chef AS builder
+
+ARG VERSION
+
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json -p conductor
 
 COPY . .
 RUN sed -i "s/version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml \
     && cargo update --workspace \
-    && touch conductor/src/*.rs telemetry/src/*.rs \
+    && find . -path ./target -prune -o -name '*.rs' -exec touch {} + \
     && cargo build --frozen --release -p conductor
 
 # ── claude ───────────────────────────────────────────────────────────────────

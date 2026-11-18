@@ -129,6 +129,10 @@ infra/
       conductor/             # conductor webhook router + Hookdeck sidecars (namespace `conductor`)
 ```
 
+### Images and new crates
+
+`infra/Dockerfile` (nexus) and `infra/Dockerfile.conductor` build with cargo-chef (`ARG CARGO_CHEF_VERSION`, pinned): `cargo chef prepare` reads the real workspace and `cargo chef cook` caches the dependency layer. A new workspace crate or `[[bin]]` needs **no** Dockerfile change; only a binary the nexus runtime stage should ship needs a `COPY --from=builder` line.
+
 ### Adding a new infrastructure component
 
 Drop a Helm chart directory under `infra/charts/<namespace>/<chart>/` containing at minimum `Chart.yaml` and `values.yaml`. The ApplicationSet picks it up automatically on the next ArgoCD sync — no Application CR required. The namespace is derived from the directory path (`infra/charts/<namespace>/`).

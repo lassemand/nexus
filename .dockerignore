@@ -23,6 +23,9 @@ infra/kafka/
 infra/manifests/
 infra/vault/
 
+# Recorded MFN fixtures (test-only, large)
+chronicle/tests/fixtures/mfn/e2e/
+
 # Secrets
 .vault-init.json
 

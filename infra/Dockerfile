@@ -1,8 +1,12 @@
 ARG VERSION=0.0.0
+ARG CARGO_CHEF_VERSION=0.1.78
 
-FROM rust:bookworm AS builder
+# cargo-chef reads the real workspace to list its members and targets, so no
+# crate has to be named here. chef, planner and builder share one toolchain,
+# which is what lets the cooked dependency layer survive source changes.
+FROM rust:bookworm AS chef
 
-ARG VERSION
+ARG CARGO_CHEF_VERSION
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
@@ -14,76 +18,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-COPY Cargo.toml Cargo.lock ./
-COPY model/Cargo.toml model/Cargo.toml
-COPY model/build.rs  model/build.rs
-COPY model/proto/    model/proto/
-COPY alpha/Cargo.toml    alpha/Cargo.toml
-COPY chronicle/Cargo.toml chronicle/Cargo.toml
-COPY signal/Cargo.toml   signal/Cargo.toml
-COPY insight/Cargo.toml  insight/Cargo.toml
-COPY cli/Cargo.toml      cli/Cargo.toml
-COPY conductor/Cargo.toml conductor/Cargo.toml
-COPY telemetry/Cargo.toml telemetry/Cargo.toml
-COPY analyst/Cargo.toml  analyst/Cargo.toml
-COPY verdict/sdk/Cargo.toml verdict/sdk/Cargo.toml
-COPY verdict/kernels/sample/Cargo.toml verdict/kernels/sample/Cargo.toml
+COPY rust-toolchain.toml ./
+RUN rustup toolchain install \
+    && cargo install cargo-chef --locked --version "${CARGO_CHEF_VERSION}"
 
-# Create placeholder sources so Cargo can parse the workspace.
-#
-# Every target a member declares needs a file here, including ones that never
-# ship: `cargo build` resolves all targets of every workspace member before it
-# compiles anything. conductor declares a test-fixture binary outside src/
-# (tests/fixtures/fake-claude-tty) and has a library target, and without
-# placeholders for both this layer fails with
-#   error: can't find bin `fake-claude-tty` at path ...
-# Dockerfile.conductor learned this in #184; this file did not, so it would
-# have broken the next nexus release the same way.
-RUN mkdir -p \
-      model/src alpha/src chronicle/src signal/src insight/src cli/src \
-      conductor/src conductor/tests/fixtures/fake-claude-tty telemetry/src \
-      analyst/src/bin verdict/sdk/src verdict/kernels/sample/src \
-    && touch model/src/lib.rs alpha/src/lib.rs chronicle/src/lib.rs conductor/src/lib.rs telemetry/src/lib.rs \
-       analyst/src/lib.rs verdict/sdk/src/lib.rs verdict/kernels/sample/src/lib.rs \
-    && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
-        chronicle/src/main.rs \
-        chronicle/src/market.rs \
-        chronicle/src/earnings_bin.rs \
-        chronicle/src/filings.rs \
-        chronicle/src/pdmr.rs \
-        chronicle/src/nordic_reports.rs \
-        chronicle/src/nordic_calendar.rs \
-        chronicle/src/nordic_live.rs \
-        chronicle/src/saxo_stream.rs \
-        signal/src/main.rs \
-        signal/src/scanner.rs \
-        insight/src/main.rs \
-        cli/src/main.rs \
-        conductor/src/main.rs \
-        analyst/src/bin/analyst.rs \
-        conductor/tests/fixtures/fake-claude-tty/main.rs
+FROM chef AS planner
 
-# Download dependencies as a separate layer — only re-runs when Cargo.lock changes
-RUN cargo fetch --locked
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Compile dependencies — cached as long as manifests are unchanged
-RUN cargo build --frozen --release
+FROM chef AS builder
+
+ARG VERSION
+
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json
 
 COPY . .
 RUN sed -i "s/version = \"0\.0\.0\"/version = \"${VERSION}\"/" Cargo.toml \
     && cargo update --workspace \
-    && touch \
-        model/src/*.rs \
-        alpha/src/*.rs \
-        chronicle/src/*.rs \
-        signal/src/*.rs \
-        insight/src/*.rs \
-        cli/src/*.rs \
-        conductor/src/*.rs \
-        telemetry/src/*.rs \
-        analyst/src/*.rs analyst/src/bin/*.rs \
-        verdict/sdk/src/*.rs \
-        verdict/kernels/sample/src/*.rs \
+    && find . -path ./target -prune -o -name '*.rs' -exec touch {} + \
     && cargo build --frozen --release
 
 # sqlx-cli for initContainer-driven migrations (kept off the runtime image's
