@@ -508,10 +508,38 @@ pub struct VerdictPr {
     pub non_blocking: Option<u32>,
 }
 
+/// Largest verdict file read.
+const MAX_VERDICT_BYTES: u64 = 256 * 1024;
+
+/// Reads a file the reviewer wrote. The reviewer is another uid and controls
+/// that directory, so a symlink to one of the agent's files, a device or a
+/// huge file must not be followed: only a regular file of a bounded size is
+/// read, and it must be the file that was checked.
+fn read_regular_file(path: &Path, limit: u64) -> std::io::Result<String> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+
+    let checked = std::fs::symlink_metadata(path)?;
+    if !checked.file_type().is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let file = std::fs::File::open(path)?;
+    let opened = file.metadata()?;
+    if opened.dev() != checked.dev() || opened.ino() != checked.ino() {
+        return Err(std::io::Error::other("the file changed while it was read"));
+    }
+    if opened.len() > limit {
+        return Err(std::io::Error::other("the file is too large"));
+    }
+    let mut text = String::new();
+    file.take(limit).read_to_string(&mut text)?;
+    Ok(text)
+}
+
 /// Reads and validates the verdict against the pull requests the prompt named.
 /// The `Err` is the reason the review failed, phrased for a Linear comment.
 pub fn read_verdict(path: &Path, prs: &[PrUnderReview]) -> Result<Verdict, String> {
-    let text = match std::fs::read_to_string(path) {
+    let text = match read_regular_file(path, MAX_VERDICT_BYTES) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err("the reviewer wrote no verdict file".into())

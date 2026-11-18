@@ -1580,3 +1580,64 @@ async fn no_review_identity_directory_at_all_also_starts_no_session(pool: PgPool
         .starts_with("Review not started: the reviewer identity is not ready ("));
     assert!(s.h.group(&review_key()).await.is_none());
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_review_checkout_is_a_standalone_clone_the_reviewer_uid_can_write(pool: PgPool) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = Harness::new(pool);
+    let sha = git(&h.repo, &["rev-parse", "HEAD"]).trim().to_string();
+    let path = ensure_detached_worktree(&h.repo, &h.worktrees, "review-nex-9", &sha)
+        .await
+        .unwrap();
+
+    assert!(path.join(".git").is_dir(), ".git is a directory, not a link back to the author's repository");
+    assert!(!path.join(".git/commondir").exists());
+    assert!(!path.join(".git/objects/info/alternates").exists());
+    let repo_git = std::fs::canonicalize(h.repo.join(".git")).unwrap();
+    let clone_git = std::fs::canonicalize(path.join(".git")).unwrap();
+    assert_ne!(repo_git, clone_git);
+    assert_eq!(
+        git(&path, &["remote", "get-url", "origin"]).trim(),
+        h.origin.to_str().unwrap(),
+        "origin is the real remote, so the reviewer fetches from GitHub"
+    );
+    for inside in [".", ".git", ".git/objects", "README.md"] {
+        let mode = std::fs::metadata(path.join(inside)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o006, 0o006, "{inside} is readable and writable by other users: {mode:o}");
+    }
+    assert!(
+        !h.repo.join(".git/worktrees").exists(),
+        "no worktree is registered in the author's repository"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn closing_a_review_removes_its_checkout_without_running_git_in_it(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    s.h.fake.set_turn(50, Some(&verdict_cmd("approve", &s.sha)));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+    sink.submit(entered("In Review", "d1"));
+    assert!(wait_for_closed(&s.h).await);
+    assert!(!s.h.worktrees.join("review-nex-1").exists());
+}
+
+#[test]
+fn a_verdict_that_is_a_link_or_too_large_is_never_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret.json");
+    std::fs::write(&secret, r#"{"verdict":"approve","prs":[],"summary":"leaked"}"#).unwrap();
+    let link = dir.path().join("verdict.json");
+    std::os::unix::fs::symlink(&secret, &link).unwrap();
+    let err = conductor::review::read_verdict(&link, &[]).unwrap_err();
+    assert!(err.contains("could not be read"), "{err}");
+
+    let big = dir.path().join("big.json");
+    std::fs::write(&big, vec![b' '; 300 * 1024]).unwrap();
+    let err = conductor::review::read_verdict(&big, &[]).unwrap_err();
+    assert!(err.contains("could not be read"), "{err}");
+
+    let ok = dir.path().join("ok.json");
+    std::fs::write(&ok, r#"{"verdict":"approve","prs":[],"summary":"fine"}"#).unwrap();
+    assert!(conductor::review::read_verdict(&ok, &[]).is_ok());
+}

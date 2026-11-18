@@ -1572,6 +1572,16 @@ impl ReviewLaunch {
         Err(why)
     }
 
+    /// The review sessions' own `CARGO_TARGET_DIR`, beside the identity
+    /// directory (`<review root>/target`). Never the shared one: a build
+    /// artifact the reviewer can write must not be one the author builds from.
+    pub fn target_dir(&self) -> PathBuf {
+        self.identity_dir
+            .parent()
+            .unwrap_or(&self.identity_dir)
+            .join("target")
+    }
+
     /// The reviewer app's bot login, as the entrypoint read it from GitHub
     /// (`GET /app`).
     pub fn bot_login(&self) -> Option<String> {
@@ -1718,10 +1728,12 @@ pub async fn launch_session(
             .map_err(|e| e.to_string())?;
         // Recorded now as well as after each turn: routing a pull request
         // comment back to this group needs every branch it has worked on.
-        if let Some(branch) = current_branch(&spec.worktree_root, &slug).await {
-            txn.record_branch(key, &branch)
-                .await
-                .map_err(|e| e.to_string())?;
+        if !key.is_review() {
+            if let Some(branch) = current_branch(&spec.worktree_root, &slug).await {
+                txn.record_branch(key, &branch)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
         }
         let r = txn
             .session_for_dispatch(key)
@@ -1732,11 +1744,13 @@ pub async fn launch_session(
     };
 
     let argv = session_argv(spec, session_id, resume);
+    let target = match (key.is_review(), &spec.review_launch) {
+        (true, Some(launch)) => launch.target_dir(),
+        _ => cargo_target_dir(spec, &worktree),
+    };
     let env = vec![(
         "CARGO_TARGET_DIR".to_string(),
-        cargo_target_dir(spec, &worktree)
-            .to_string_lossy()
-            .into_owned(),
+        target.to_string_lossy().into_owned(),
     )];
 
     tracing::info!(group = %slug, resume, "starting session");
@@ -1891,13 +1905,19 @@ pub async fn ensure_worktree(
     Ok(path)
 }
 
-/// Prepares a review set's worktree, detached at the commit under review.
+/// Prepares a review set's checkout: a standalone clone of the repository,
+/// detached at the commit under review.
 ///
-/// Detached rather than on the pull request's branch: that branch is usually
-/// checked out in the author's worktree, where git refuses a second checkout,
-/// and a review never commits. A path that already holds a worktree is reused
-/// after checking `commit` out in it, so a worktree a failed close left behind
-/// never reviews an older commit than the prompt names.
+/// A standalone clone rather than a `git worktree`: a worktree shares the
+/// author's `.git` (objects, config, hooks, the worktree's own index), and the
+/// review session runs as another uid that must not be able to write there.
+/// The clone is made here, as the agent uid, then opened up (`a+rwX`) so the
+/// reviewer uid can use it; it is the one tree the reviewer may write.
+///
+/// Conductor never runs git inside the clone afterwards: its config and hooks
+/// belong to the reviewer, and git would run them as the agent. A path that
+/// exists is therefore removed and cloned again, so a checkout a failed close
+/// left behind never reviews an older commit than the prompt names.
 pub async fn ensure_detached_worktree(
     repo_root: &Path,
     worktree_root: &Path,
@@ -1906,38 +1926,97 @@ pub async fn ensure_detached_worktree(
 ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     let path = worktree_root.join(slug);
     if path.exists() {
-        if path.join(".git").exists() {
-            fetch_commit(repo_root, commit).await?;
-            run_git(&path, &["checkout", "--detach", commit]).await?;
-            let head = run_git(&path, &["rev-parse", "HEAD"]).await?;
-            let wanted = run_git(&path, &["rev-parse", &format!("{commit}^{{commit}}")]).await?;
-            if head.trim() != wanted.trim() {
-                return Err(format!(
-                    "{} is at {} after checking out {commit}",
-                    path.display(),
-                    head.trim()
-                )
-                .into());
-            }
-            tracing::info!(worktree = %path.display(), %commit, "review worktree reused at the commit");
-            return Ok(path);
+        if !path.join(".git").exists() {
+            return Err(format!(
+                "{} exists but is not a git checkout; refusing to touch it",
+                path.display()
+            )
+            .into());
         }
-        return Err(format!(
-            "{} exists but is not a git worktree; refusing to touch it",
-            path.display()
-        )
-        .into());
+        remove_review_checkout(repo_root, &path).await?;
     }
     std::fs::create_dir_all(worktree_root)?;
     fetch_commit(repo_root, commit).await?;
-    let path_str = path.to_string_lossy().to_string();
-    run_git(
-        repo_root,
-        &["worktree", "add", "--detach", &path_str, commit],
-    )
-    .await?;
-    tracing::info!(worktree = %path.display(), %commit, "review worktree ready");
+
+    let review_ref = format!("refs/conductor/review/{slug}");
+    run_git(repo_root, &["update-ref", &review_ref, commit]).await?;
+    let origin = run_git(repo_root, &["remote", "get-url", "origin"]).await?;
+    let origin = origin.trim();
+
+    let staging = worktree_root.join(format!(".{slug}.staging"));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+    let result = async {
+        std::fs::create_dir(&staging)?;
+        run_git(&staging, &["init", "--quiet"]).await?;
+        run_git(&staging, &["remote", "add", "origin", origin]).await?;
+        let repo = repo_root.to_string_lossy().into_owned();
+        run_git(
+            &staging,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                &repo,
+                &format!("+{review_ref}:refs/conductor/review-head"),
+                "+refs/remotes/origin/*:refs/remotes/origin/*",
+            ],
+        )
+        .await?;
+        run_git(&staging, &["checkout", "--quiet", "--detach", commit]).await?;
+        let head = run_git(&staging, &["rev-parse", "HEAD"]).await?;
+        let wanted = run_git(&staging, &["rev-parse", &format!("{commit}^{{commit}}")]).await?;
+        if head.trim() != wanted.trim() {
+            return Err(format!("the clone is at {} after checking out {commit}", head.trim()).into());
+        }
+        open_to_reviewer(&staging).await?;
+        std::fs::rename(&staging, &path)?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .await;
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    tracing::info!(worktree = %path.display(), %commit, "review checkout ready");
     Ok(path)
+}
+
+/// Gives every user the access the owner has, so the reviewer uid can work in
+/// a tree the agent uid created. Only ever applied to a review checkout.
+async fn open_to_reviewer(path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let out = Command::new("chmod")
+        .arg("-R")
+        .arg("a+rwX")
+        .arg(path)
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(format!(
+            "chmod of {} failed: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Removes a review checkout without running anything inside it. A checkout
+/// from before reviews used clones is a worktree (`.git` is a file); that one
+/// is removed through the author's repository.
+pub async fn remove_review_checkout(
+    repo_root: &Path,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if path.join(".git").is_file() {
+        let path_str = path.to_string_lossy().into_owned();
+        run_git(repo_root, &["worktree", "remove", "--force", &path_str]).await?;
+        return Ok(());
+    }
+    std::fs::remove_dir_all(path)?;
+    Ok(())
 }
 
 /// Fetches `commit` from `origin`, or everything when the server will not give
