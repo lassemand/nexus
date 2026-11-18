@@ -77,7 +77,7 @@ cargo_home="${CONDUCTOR_REVIEW_CARGO_HOME:-${HOME}/.cargo}"
 for var in $(compgen -e); do
   case "$var" in
     CARGO_*|RUSTC|RUSTC_*|RUSTDOC|RUSTDOCFLAGS|RUSTFLAGS|RUSTUP_TOOLCHAIN|LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT \
-      |GIT_*|GH_TOKEN|GITHUB_TOKEN|ANTHROPIC_*|CLAUDE_CODE_*) unset "$var" ;;
+      |GIT_*|GH_*|GITHUB_*|REVIEW_*|ANTHROPIC_*|CLAUDE_CODE_*) unset "$var" ;;
   esac
 done
 [[ -z "$target" ]] || export CARGO_TARGET_DIR="$target"

@@ -709,52 +709,176 @@ STUB
   chmod 0755 "$path"
 }
 
-(
+# A sandbox with everything the reviewer identity needs, ready to be broken one
+# piece at a time.
+review_sandbox() {
   new_sandbox; init_layout >/dev/null
-  unset REVIEW_GITHUB_APP_ID REVIEW_GITHUB_APP_INSTALLATION_ID REVIEW_GITHUB_APP_PRIVATE_KEY
+  unset CONDUCTOR_REVIEW_IDENTITY_DIR CONDUCTOR_REVIEW_ROOT
+  review_stub_helper "${SANDBOX}/helper"
+  export GITHUB_APP_CREDENTIAL_HELPER="${SANDBOX}/helper"
+  export CONDUCTOR_REVIEW_SETTINGS_SRC="${HERE}/reviewer-settings.json"
+  export CONDUCTOR_REVIEW_SKIP_SWITCH_CHECK=1
+  mkdir -p "${SANDBOX}/agents"
+  printf -- '---\nname: reviewer\n---\n' > "${SANDBOX}/agents/reviewer.md"
+  export CONDUCTOR_AGENT_DIR="${SANDBOX}/agents"
+  export REVIEW_GITHUB_APP_ID=42 REVIEW_GITHUB_APP_INSTALLATION_ID=7 LINEAR_API_KEY=lin-key
+  export REVIEW_LINEAR_READ_API_KEY=lin-read-key
+  REVIEW_GITHUB_APP_PRIVATE_KEY="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)"
+  export REVIEW_GITHUB_APP_PRIVATE_KEY
+  REVIEW_DIR="${SANDBOX}/review/identity"
+}
+
+not_ready_case() {
+  local label="$1" reason="$2"
+  local out
   out="$(configure_review_identity 2>&1)"
-  [[ $? -eq 0 ]] && ok "no reviewer app is not fatal" || bad "no reviewer app is not fatal"
-  grep -q "author app" <<<"$out" && ok "and it is reported" || bad "and it is reported" "$out"
-  [[ ! -e "${STATE_DIR}/review-identity/ready" ]] && ok "and nothing is ready" || bad "and nothing is ready"
+  [[ $? -eq 0 ]] && ok "${label}: not fatal" || bad "${label}: not fatal"
+  [[ ! -e "${REVIEW_DIR}/ready" ]] && ok "${label}: nothing is ready" || bad "${label}: nothing is ready"
+  grep -q "review identity NOT ready: .*${reason}" <<<"$out" \
+    && ok "${label}: logged as NOT ready" || bad "${label}: logged as NOT ready" "$out"
+  grep -q "${reason}" "${REVIEW_DIR}/not-ready" 2>/dev/null \
+    && ok "${label}: the reason is kept for conductor" || bad "${label}: the reason is kept for conductor"
+  grep -qi "run as the author" <<<"$out" && bad "${label}: no author fallback wording" || ok "${label}: no author fallback wording"
+}
+
+(
+  review_sandbox
+  unset REVIEW_GITHUB_APP_ID REVIEW_GITHUB_APP_INSTALLATION_ID REVIEW_GITHUB_APP_PRIVATE_KEY
+  not_ready_case "no reviewer app" "REVIEW_GITHUB_APP_ID"
   rm -rf "$SANDBOX"
 )
 
 (
-  new_sandbox; init_layout >/dev/null
-  review_stub_helper "${SANDBOX}/helper"
-  export GITHUB_APP_CREDENTIAL_HELPER="${SANDBOX}/helper"
-  export CONDUCTOR_REVIEW_SETTINGS_SRC="${HERE}/reviewer-settings.json"
-  export REVIEW_GITHUB_APP_ID=42 REVIEW_GITHUB_APP_INSTALLATION_ID=7 LINEAR_API_KEY=lin-key
-  REVIEW_GITHUB_APP_PRIVATE_KEY="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)"
-  export REVIEW_GITHUB_APP_PRIVATE_KEY
+  review_sandbox
+  export REVIEW_GITHUB_APP_ID=abc
+  not_ready_case "a non-numeric app id" "must be numbers"
+  rm -rf "$SANDBOX"
+)
+
+(
+  review_sandbox
+  unset REVIEW_LINEAR_READ_API_KEY
+  not_ready_case "no read-only Linear key" "REVIEW_LINEAR_READ_API_KEY is not set"
+  rm -rf "$SANDBOX"
+)
+
+(
+  review_sandbox
+  export REVIEW_LINEAR_READ_API_KEY=lin-key
+  not_ready_case "the author's Linear key as the read key" "same key as LINEAR_API_KEY"
+  rm -rf "$SANDBOX"
+)
+
+(
+  review_sandbox
+  export REVIEW_GITHUB_APP_PRIVATE_KEY="not a key"
+  not_ready_case "a broken key" "not a usable private key"
+  rm -rf "$SANDBOX"
+)
+
+(
+  review_sandbox
+  export CONDUCTOR_REVIEW_SETTINGS_SRC="${SANDBOX}/missing.json"
+  not_ready_case "missing settings" "missing.json is missing"
+  rm -rf "$SANDBOX"
+)
+
+(
+  review_sandbox
+  rm -f "${SANDBOX}/agents/reviewer.md"
+  not_ready_case "missing reviewer agent" "reviewer.md is missing"
+  rm -rf "$SANDBOX"
+)
+
+(
+  review_sandbox
+  chmod 0777 "$SANDBOX"
+  not_ready_case "a world-writable data directory" "sticky bit"
+  chmod 1777 "$SANDBOX"
   configure_review_identity >/dev/null 2>&1
-  dir="${STATE_DIR}/review-identity"
+  [[ -f "${REVIEW_DIR}/ready" ]] && ok "the sticky bit makes it safe" || bad "the sticky bit makes it safe"
+  rm -rf "$SANDBOX"
+)
+
+(
+  review_sandbox
+  unset CONDUCTOR_REVIEW_SKIP_SWITCH_CHECK
+  export CONDUCTOR_REVIEW_SWITCH="${SANDBOX}/switch"
+  printf '#!/bin/sh\necho 1000\n' > "${SANDBOX}/switch"; chmod 0755 "${SANDBOX}/switch"
+  not_ready_case "a switch that does not switch" "cannot switch to uid 1001"
+  printf '#!/bin/sh\necho 1001\n' > "${SANDBOX}/switch"
+  configure_review_identity >/dev/null 2>&1
+  [[ -f "${REVIEW_DIR}/ready" ]] && ok "a switch that reaches uid 1001 is accepted" || bad "a switch that reaches uid 1001 is accepted"
+  rm -rf "$SANDBOX"
+)
+
+(
+  review_sandbox
+  configure_review_identity >/dev/null 2>&1
+  dir="$REVIEW_DIR"
   [[ -f "${dir}/ready" ]] && ok "a configured reviewer app is ready" || bad "a configured reviewer app is ready"
+  [[ ! -e "${dir}/not-ready" ]] && ok "and has no not-ready reason" || bad "and has no not-ready reason"
   check "the bot login is read from the app" "$(cat "${dir}/bot-login" 2>/dev/null)" "annette-review[bot]"
-  check "the key is private" "$(stat -c %a "${dir}/private-key.pem")" "600"
-  check "the directory is private" "$(stat -c %a "$dir")" "700"
+  check "the identity directory is read-only for the reviewer" "$(stat -c %a "$dir")" "755"
+  check "the reviewer's home is writable by it" "$(stat -c %a "${SANDBOX}/review/home")" "777"
+  check "the agent's home is private" "$(stat -c %a "$HOME")" "700"
   check "mcp uses the reviewer app" \
     "$(jq -r '.mcpServers.github.args | join(" ")' "${dir}/mcp.json")" \
     "stdio --app-id 42 --app-installation-id 7 --app-private-key-path ${dir}/private-key.pem --toolsets context,repos,pull_requests,issues"
+  check "linear in mcp.json uses the read-only key" \
+    "$(jq -r '.mcpServers.linear.headers.Authorization' "${dir}/mcp.json")" "Bearer lin-read-key"
+  grep -q "lin-key" "${dir}/mcp.json" && bad "the author's Linear key is not in mcp.json" || ok "the author's Linear key is not in mcp.json"
+  grep -rq "lin-key" "$dir" "${SANDBOX}/review" && bad "the author's Linear key is nowhere under review/" || ok "the author's Linear key is nowhere under review/"
   check "git uses its own credential cache" \
-    "$(git config --file "${dir}/gitconfig" --get-all credential.https://github.com.helper | head -1 | grep -c git-review)" "1"
-  jq -e '.permissions.deny | index("Bash(git push:*)")' "${dir}/settings.json" >/dev/null \
-    && ok "the settings deny git push" || bad "the settings deny git push"
+    "$(git config --file "${dir}/gitconfig" --get-all credential.https://github.com.helper | head -1 | grep -c "${SANDBOX}/review/home/.cache/git-review")" "1"
+  jq -e '.permissions.deny | index("Bash(git:*)")' "${dir}/settings.json" >/dev/null \
+    && ok "the settings deny raw git" || bad "the settings deny raw git"
+  jq -e '.permissions.allow | map(select(startswith("Bash(gh api"))) | length == 0' "${dir}/settings.json" >/dev/null \
+    && ok "the settings allow no gh api" || bad "the settings allow no gh api"
+  for ev in UserPromptSubmit Stop SessionStart SessionEnd; do
+    jq -e --arg ev "$ev" '.hooks[$ev][0].hooks[0].command == "/usr/local/bin/conductor hook"' "${dir}/settings.json" >/dev/null \
+      && ok "the session reports ${ev}" || bad "the session reports ${ev}"
+  done
+  [[ -f "${SANDBOX}/review/home/.claude/agents/reviewer.md" ]] && ok "the reviewer agent is in its own home" || bad "the reviewer agent is in its own home"
+  jq -e '.hasCompletedOnboarding == true' "${SANDBOX}/review/home/.claude.json" >/dev/null \
+    && ok "the reviewer's Claude is onboarded" || bad "the reviewer's Claude is onboarded"
 
-  out="$(GITHUB_APP_PRIVATE_KEY=author-key GITHUB_APP_ID=1 GITHUB_TOKEN=author-token LINEAR_API_KEY=k \
+  out="$(HOME="${SANDBOX}/review/home" GITHUB_APP_PRIVATE_KEY=author-key GITHUB_APP_ID=1 GITHUB_TOKEN=author-token LINEAR_API_KEY=k \
           CONDUCTOR_REVIEW_IDENTITY_DIR="$dir" bash "${HERE}/review-session.sh" env)"
   grep -q '^GITHUB_APP_PRIVATE_KEY=' <<<"$out" && bad "the author key is dropped" || ok "the author key is dropped"
   grep -q '^GITHUB_TOKEN=' <<<"$out" && bad "the author token is dropped" || ok "the author token is dropped"
   grep -q '^LINEAR_API_KEY=' <<<"$out" && bad "the Linear key is dropped" || ok "the Linear key is dropped"
   grep -q '^GITHUB_APP_ID=42$' <<<"$out" && ok "the reviewer app id is set" || bad "the reviewer app id is set" "$out"
-  grep -q '^GH_TOKEN=token-for-42$' <<<"$out" && ok "gh gets the reviewer token" || bad "gh gets the reviewer token"
+  grep -q '^GH_TOKEN=' <<<"$out" && bad "no token sits in the session environment" || ok "no token sits in the session environment"
   grep -q "^GIT_CONFIG_GLOBAL=${dir}/gitconfig$" <<<"$out" && ok "git gets the reviewer config" || bad "git gets the reviewer config"
+  check "the probe answers with the uid" "$(bash "${HERE}/review-session.sh" --probe)" "$(id -u)"
 
   export REVIEW_GITHUB_APP_PRIVATE_KEY="not a key"
   configure_review_identity >/dev/null 2>&1
   [[ ! -e "${dir}/ready" ]] && ok "a broken key is not ready" || bad "a broken key is not ready"
   CONDUCTOR_REVIEW_IDENTITY_DIR="$dir" bash "${HERE}/review-session.sh" true 2>/dev/null \
+    && bad "the session script refuses an unprepared identity" || ok "the session script refuses an unprepared identity"
+  CONDUCTOR_REVIEW_IDENTITY_DIR="$dir" bash "${HERE}/review-launch.sh" true 2>/dev/null \
     && bad "the launcher refuses an unprepared identity" || ok "the launcher refuses an unprepared identity"
+  rm -rf "$SANDBOX"
+)
+
+printf '== author app login ==\n'
+
+(
+  new_sandbox; init_layout >/dev/null
+  review_stub_helper "${SANDBOX}/helper"
+  export GITHUB_APP_CREDENTIAL_HELPER="${SANDBOX}/helper" GITHUB_MODE=app
+  unset CONDUCTOR_AUTHOR_BOT_LOGIN
+  read_author_bot_login >/dev/null 2>&1
+  check "the author bot login comes from the app" "${CONDUCTOR_AUTHOR_BOT_LOGIN:-}" "annette-review[bot]"
+  export CONDUCTOR_AUTHOR_BOT_LOGIN="override[bot]"
+  read_author_bot_login >/dev/null 2>&1
+  check "the override wins" "$CONDUCTOR_AUTHOR_BOT_LOGIN" "override[bot]"
+  unset CONDUCTOR_AUTHOR_BOT_LOGIN
+  export GITHUB_APP_CREDENTIAL_HELPER=/nonexistent
+  out="$(read_author_bot_login 2>&1)"
+  grep -q "CONDUCTOR_AUTHOR_BOT_LOGIN" <<<"$out" && ok "a failed read warns and names the override" || bad "a failed read warns and names the override" "$out"
   rm -rf "$SANDBOX"
 )
 
