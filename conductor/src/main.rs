@@ -162,22 +162,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if config.review.repo.is_none() {
                 config.review.repo = origin_repo(&config.repo_root).await;
             }
-            match &config.review_launch {
-                Some(launch) if launch.is_ready() => {
-                    if config.review.bot_login.is_none() {
-                        config.review.bot_login = launch.bot_login();
-                    }
-                    tracing::info!(
-                        bot_login = ?config.review.bot_login,
-                        dir = %launch.identity_dir.display(),
-                        "review sessions run as the reviewer app"
-                    );
-                }
-                _ => tracing::warn!(
-                    "the reviewer's GitHub App is not configured; review sessions run as the author app \
-                     and cannot approve its pull requests"
-                ),
+            if config.review.enabled && config.review_launch.is_none() {
+                tracing::error!(
+                    "CONDUCTOR_REVIEW_IDENTITY_DIR is not set, so there is no reviewer identity; \
+                     reviews stay off rather than run as the author app"
+                );
+                config.review.enabled = false;
             }
+            config.review.launch = config.review_launch.clone();
+            match &config.review_launch {
+                Some(launch) => match launch.readiness() {
+                    Ok(()) => {
+                        if config.review.bot_login.is_none() {
+                            config.review.bot_login = launch.bot_login();
+                        }
+                        tracing::info!(
+                            bot_login = ?config.review.bot_login,
+                            dir = %launch.identity_dir.display(),
+                            "review sessions run as the reviewer app"
+                        );
+                    }
+                    Err(reason) => tracing::error!(
+                        %reason,
+                        "the reviewer identity is not ready; a review will say so in Linear and start no session"
+                    ),
+                },
+                None => {}
+            }
+            if config.review.enabled && config.review.author_bot_login.is_none() {
+                tracing::warn!(
+                    "the author app's login is unknown (the entrypoint could not read it); only \
+                     GITHUB_WEBHOOK_USERS are reviewed. Set CONDUCTOR_AUTHOR_BOT_LOGIN to its \
+                     `<slug>[bot]` login to review its pull requests"
+                );
+            }
+            tracing::info!(allowed_authors = ?config.review.allowed_authors, "pull requests by these authors are reviewed");
             let reviews = review_deps(&config.review, github.clone())?;
             match &config.model {
                 Some(model) => tracing::info!("claude model: {model}"),

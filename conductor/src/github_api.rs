@@ -133,6 +133,12 @@ struct PrBody {
     body: Option<String>,
     head: PrHead,
     base: Option<PrBase>,
+    user: Option<PrUser>,
+}
+
+#[derive(Deserialize)]
+struct PrUser {
+    login: String,
 }
 
 #[derive(Deserialize)]
@@ -263,6 +269,7 @@ impl ReviewGithub for GithubRest {
             head_repo: pr.head.repo.and_then(|r| r.full_name),
             base_repo: pr.base.and_then(|b| b.repo).and_then(|r| r.full_name),
             body: pr.body.unwrap_or_default(),
+            author: pr.user.map(|u| u.login).unwrap_or_default(),
         })
     }
 

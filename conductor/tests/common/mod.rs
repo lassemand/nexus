@@ -607,6 +607,13 @@ impl Harness {
         );
         git(&repo, &["push", "-u", "origin", "main"]);
 
+        let identity = root.join("review-identity");
+        std::fs::create_dir_all(&identity).expect("identity dir");
+        std::fs::write(identity.join("ready"), "").expect("ready file");
+        let launch = conductor::dispatcher::ReviewLaunch {
+            launcher: "conductor-review-session".into(),
+            identity_dir: identity,
+        };
         let log = state.join("fake-claude.jsonl");
         let state_log = log.clone();
         let config = DispatchConfig {
@@ -618,7 +625,7 @@ impl Harness {
             agent: "backend".into(),
             model: Some("sonnet".into()),
             cargo_target_dir: None,
-            review_launch: None,
+            review_launch: Some(launch.clone()),
             skip_permissions: true,
             run_timeout: Duration::from_secs(30),
             shutdown_grace: Duration::from_secs(30),
@@ -631,6 +638,9 @@ impl Harness {
             interrupt_grace: Duration::from_millis(300),
             start_backoff: Duration::from_millis(500),
             review: conductor::review::ReviewConfig {
+                launch: Some(launch),
+                allowed_authors: vec!["lassemand".into(), "nexus-mcp[bot]".into()],
+                author_bot_login: Some("nexus-mcp[bot]".into()),
                 linear_write_budget: Duration::from_millis(500),
                 linear_retry: Duration::from_millis(20),
                 ci_poll_interval: Duration::from_millis(100),

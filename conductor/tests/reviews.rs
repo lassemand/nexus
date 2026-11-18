@@ -225,6 +225,7 @@ fn setup(h: Harness) -> Setup {
                 head_repo: Some(REPO.into()),
                 base_repo: Some(REPO.into()),
                 body: String::new(),
+                author: "nexus-mcp[bot]".into(),
             },
         );
     }
@@ -1380,4 +1381,202 @@ async fn a_manual_review_skips_the_gate_even_with_ci_red(pool: PgPool) {
     assert_eq!(review_prompts(&s.h).len(), 1);
     assert!(review_prompts(&s.h)[0].contains("Trigger: manual"));
     assert!(s.linear.moves.lock().unwrap().is_empty());
+}
+
+fn set_author(github: &FakeGithub, number: u64, login: &str) {
+    github.prs.lock().unwrap().get_mut(&number).unwrap().author = login.into();
+}
+
+fn manual(login: &str, delivery: &str) -> InboundEvent {
+    InboundEvent::ReviewCommand {
+        command: ReviewCommand {
+            repo: REPO.into(),
+            pr_number: 316,
+            comment_id: Some(9),
+            login: login.into(),
+        },
+        delivery_id: Some(delivery.into()),
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_pull_request_by_a_watched_user_is_reviewed(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    set_author(&s.github, 316, "lassemand");
+    s.h.fake.set_turn(50, Some(&verdict_cmd("approve", &s.sha)));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+
+    assert!(wait_for_closed(&s.h).await);
+    assert_eq!(review_prompts(&s.h).len(), 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_pull_request_by_the_author_app_is_reviewed(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    set_author(&s.github, 316, "nexus-mcp[bot]");
+    s.h.fake.set_turn(50, Some(&verdict_cmd("approve", &s.sha)));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+
+    assert!(wait_for_closed(&s.h).await);
+    assert_eq!(review_prompts(&s.h).len(), 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_author_match_ignores_case(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    set_author(&s.github, 316, "LassemAND");
+    s.h.fake.set_turn(50, Some(&verdict_cmd("approve", &s.sha)));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+
+    assert!(wait_for_closed(&s.h).await);
+    assert_eq!(review_prompts(&s.h).len(), 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn an_outside_author_gets_no_review_and_no_side_effect_on_an_automatic_trigger(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    set_author(&s.github, 316, "stranger");
+    s.github.set_ci(Ci::Pending);
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+
+    assert!(wait_until(|| !s.linear.comments().is_empty()).await);
+    assert_eq!(
+        s.linear.comments(),
+        vec![format!(
+            "Review not started: no pull request by an allowed author ({REPO} PR 316 by stranger)"
+        )]
+    );
+    assert!(s.h.group(&review_key()).await.is_none());
+    assert!(store::run(&s.h.pool, ISSUE_ID).await.unwrap().is_none());
+    assert!(
+        s.linear.moves.lock().unwrap().is_empty(),
+        "the issue stays in review: no state move"
+    );
+    assert!(store::watch(&s.h.pool, ISSUE_ID).await.unwrap().is_none());
+    assert_eq!(
+        s.github.check_calls.load(Ordering::SeqCst),
+        0,
+        "the CI gate never ran"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn an_outside_author_gets_no_review_on_a_review_command_either(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    set_author(&s.github, 316, "stranger");
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(manual("lassemand", "c1"));
+
+    assert!(wait_until(|| !s.linear.comments().is_empty()).await);
+    assert!(s.linear.comments()[0].starts_with("Review not started: no pull request by an allowed author"));
+    assert!(s.h.group(&review_key()).await.is_none());
+    assert!(s.github.reactions.lock().unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_review_command_from_an_outsider_on_an_allowed_pr_still_reaches_the_trigger_check(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    set_author(&s.github, 316, "lassemand");
+    s.h.fake.set_turn(50, Some(&verdict_cmd("approve", &s.sha)));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(manual("lassemand", "c1"));
+
+    assert!(wait_for_closed(&s.h).await);
+    assert_eq!(review_prompts(&s.h).len(), 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn mixed_pull_requests_review_only_the_allowed_ones(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    {
+        let mut prs = s.github.prs.lock().unwrap();
+        let other = prs.get_mut(&300).unwrap();
+        other.open = true;
+        other.author = "stranger".into();
+    }
+    s.h.fake.set_turn(50, Some(&verdict_cmd("approve", &s.sha)));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+
+    assert!(wait_for_closed(&s.h).await);
+    let prompts = review_prompts(&s.h);
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains("number=316"));
+    assert!(!prompts[0].contains("number=300"));
+    assert!(s
+        .linear
+        .comments()
+        .iter()
+        .any(|c| c.contains(&format!("{REPO} PR 300 by stranger")) && c.contains("not allowed")));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn an_unknown_author_login_is_not_allowed(pool: PgPool) {
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    set_author(&s.github, 316, "");
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+
+    assert!(wait_until(|| !s.linear.comments().is_empty()).await);
+    assert!(s.linear.comments()[0].contains("by an unknown author"));
+    assert!(s.h.group(&review_key()).await.is_none());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn an_identity_that_is_not_ready_starts_no_session_and_says_why(pool: PgPool) {
+    let mut h = Harness::new(pool).with_fake(50, 0, None, false);
+    let dir = h.state.join("unready-identity");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("not-ready"), "the reviewer key is not usable\n").unwrap();
+    let launch = conductor::dispatcher::ReviewLaunch {
+        launcher: "conductor-review-session".into(),
+        identity_dir: dir,
+    };
+    h.config.review_launch = Some(launch.clone());
+    h.config.review.launch = Some(launch);
+    let s = setup(h);
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+
+    assert!(wait_until(|| !s.linear.comments().is_empty()).await);
+    assert_eq!(
+        s.linear.comments(),
+        vec![
+            "Review not started: the reviewer identity is not ready (the reviewer key is not usable)"
+                .to_string()
+        ]
+    );
+    assert!(s.h.group(&review_key()).await.is_none());
+    assert!(store::run(&s.h.pool, ISSUE_ID).await.unwrap().is_none());
+    assert!(s.linear.moves.lock().unwrap().is_empty());
+    assert!(s.linear.moved.lock().unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn no_review_identity_directory_at_all_also_starts_no_session(pool: PgPool) {
+    let mut h = Harness::new(pool).with_fake(50, 0, None, false);
+    h.config.review_launch = None;
+    h.config.review.launch = None;
+    let s = setup(h);
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+
+    sink.submit(entered("In Review", "d1"));
+
+    assert!(wait_until(|| !s.linear.comments().is_empty()).await);
+    assert!(s.linear.comments()[0]
+        .starts_with("Review not started: the reviewer identity is not ready ("));
+    assert!(s.h.group(&review_key()).await.is_none());
 }

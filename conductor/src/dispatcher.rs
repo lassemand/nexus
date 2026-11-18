@@ -1512,29 +1512,29 @@ impl StartSpec {
     /// The spec for one set: a review set runs the review agent and model, any
     /// other set the spec as it stands. [`launch_session`] applies this to
     /// every start, so the dispatcher and `sessions attach` agree.
-    pub fn for_key(&self, key: &GroupKey) -> StartSpec {
+    pub fn for_key(&self, key: &GroupKey) -> Result<StartSpec, StartRefused> {
         let mut spec = self.clone();
         if key.is_review() {
             spec.agent = self.review_agent.clone();
             spec.model = self.review_model.clone();
             spec.model_from_set = false;
-            match &self.review_launch {
-                Some(launch) if launch.is_ready() => spec.skip_permissions = false,
-                Some(launch) => {
-                    tracing::warn!(
-                        dir = %launch.identity_dir.display(),
-                        "the reviewer's identity is not prepared; the review session runs as the author app"
-                    );
-                    spec.review_launch = None;
-                }
-                None => {}
-            }
+            spec.skip_permissions = false;
+            let launch = self.review_launch.as_ref().ok_or_else(|| {
+                StartRefused("no review identity directory is configured".into())
+            })?;
+            launch.readiness().map_err(StartRefused)?;
         } else {
             spec.review_launch = None;
         }
-        spec
+        Ok(spec)
     }
 }
+
+/// A review session that is not started because the reviewer's identity is
+/// not ready. There is no fallback to the author's credentials.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("review identity not ready: {0}")]
+pub struct StartRefused(pub String);
 
 /// How a review session is started under the reviewer's own identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1551,6 +1551,25 @@ impl ReviewLaunch {
     /// Whether the entrypoint finished preparing the identity.
     pub fn is_ready(&self) -> bool {
         self.identity_dir.join("ready").is_file()
+    }
+
+    /// `Ok` when the identity is ready; otherwise the reason, which is the
+    /// one the entrypoint wrote to `not-ready` when it knew it.
+    pub fn readiness(&self) -> Result<(), String> {
+        if self.is_ready() {
+            return Ok(());
+        }
+        let why = std::fs::read_to_string(self.identity_dir.join("not-ready"))
+            .ok()
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "{} has no `ready` file; see the entrypoint log for `review identity NOT ready`",
+                    self.identity_dir.display()
+                )
+            });
+        Err(why)
     }
 
     /// The reviewer app's bot login, as the entrypoint read it from GitHub
@@ -1656,7 +1675,7 @@ pub async fn launch_session(
     repo_lock: Option<&Mutex<()>>,
     events: Option<&Notify>,
 ) -> Result<(), String> {
-    let spec = &spec.for_key(key);
+    let spec = &spec.for_key(key).map_err(|e| e.to_string())?;
     let slug = key.slug();
     let base_ref = registry
         .worktree_ref(key)
@@ -2120,6 +2139,8 @@ mod tests {
 
     #[test]
     fn a_review_key_starts_the_review_agent_and_model_whoever_launches_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ready"), "").unwrap();
         let spec = StartSpec {
             repo_root: "/r".into(),
             worktree_root: "/w".into(),
@@ -2130,11 +2151,14 @@ mod tests {
             review_agent: "reviewer".into(),
             review_model: Some("opus".into()),
             cargo_target_dir: None,
-            review_launch: None,
+            review_launch: Some(ReviewLaunch {
+                launcher: "conductor-review-session".into(),
+                identity_dir: dir.path().to_path_buf(),
+            }),
             skip_permissions: false,
             start_timeout: Duration::from_secs(1),
         };
-        let review = spec.for_key(&GroupKey::review("NEX-1").unwrap());
+        let review = spec.for_key(&GroupKey::review("NEX-1").unwrap()).unwrap();
         assert_eq!(review.agent, "reviewer");
         assert_eq!(review.model.as_deref(), Some("opus"));
         assert!(!review.model_from_set);
@@ -2145,7 +2169,7 @@ mod tests {
             GroupKey::Named("grp".into()),
             GroupKey::Issue("NEX-1".into()),
         ] {
-            let other = spec.for_key(&key);
+            let other = spec.for_key(&key).unwrap();
             assert_eq!(other.agent, "backend");
             assert_eq!(other.model.as_deref(), Some("sonnet"));
             assert!(other.model_from_set);
@@ -2174,15 +2198,17 @@ mod tests {
         };
         let review_key = GroupKey::review("NEX-1").unwrap();
 
-        let unprepared = session_argv(&spec.for_key(&review_key), uuid::Uuid::nil(), false);
+        let refused = spec.for_key(&review_key).unwrap_err();
+        assert!(refused.0.contains("no `ready` file"), "{refused}");
+
+        std::fs::write(dir.path().join("not-ready"), "the key is not usable\n").unwrap();
         assert_eq!(
-            unprepared[0], "claude",
-            "no identity yet: started as before"
+            spec.for_key(&review_key).unwrap_err().0,
+            "the key is not usable"
         );
-        assert!(unprepared.contains(&"--dangerously-skip-permissions".to_string()));
 
         std::fs::write(dir.path().join("ready"), "").unwrap();
-        let argv = session_argv(&spec.for_key(&review_key), uuid::Uuid::nil(), false);
+        let argv = session_argv(&spec.for_key(&review_key).unwrap(), uuid::Uuid::nil(), false);
         assert_eq!(argv[0], "conductor-review-session");
         assert_eq!(argv[1], "claude");
         assert!(argv
@@ -2204,7 +2230,7 @@ mod tests {
         assert!(!argv.contains(&"--dangerously-skip-permissions".to_string()));
 
         let author = session_argv(
-            &spec.for_key(&GroupKey::Named("grp".into())),
+            &spec.for_key(&GroupKey::Named("grp".into())).unwrap(),
             uuid::Uuid::nil(),
             false,
         );
@@ -2216,6 +2242,56 @@ mod tests {
             spec.review_launch.as_ref().unwrap().bot_login().as_deref(),
             Some("annette-review[bot]")
         );
+    }
+
+    #[test]
+    fn a_review_session_never_starts_without_a_ready_identity_or_with_skipped_permissions() {
+        let ready = tempfile::tempdir().unwrap();
+        std::fs::write(ready.path().join("ready"), "").unwrap();
+        let unready = tempfile::tempdir().unwrap();
+        let launches = [
+            None,
+            Some(ReviewLaunch {
+                launcher: "conductor-review-session".into(),
+                identity_dir: unready.path().to_path_buf(),
+            }),
+            Some(ReviewLaunch {
+                launcher: "conductor-review-session".into(),
+                identity_dir: "/does/not/exist".into(),
+            }),
+            Some(ReviewLaunch {
+                launcher: "conductor-review-session".into(),
+                identity_dir: ready.path().to_path_buf(),
+            }),
+        ];
+        for launch in launches {
+            for skip_permissions in [true, false] {
+                let spec = StartSpec {
+                    repo_root: "/r".into(),
+                    worktree_root: "/w".into(),
+                    claude_bin: "claude".into(),
+                    agent: "backend".into(),
+                    model: None,
+                    model_from_set: false,
+                    review_agent: "reviewer".into(),
+                    review_model: None,
+                    cargo_target_dir: None,
+                    review_launch: launch.clone(),
+                    skip_permissions,
+                    start_timeout: Duration::from_secs(1),
+                };
+                match spec.for_key(&GroupKey::review("NEX-1").unwrap()) {
+                    Ok(review) => {
+                        assert!(!review.skip_permissions);
+                        assert!(review.review_launch.as_ref().unwrap().is_ready());
+                        let argv = session_argv(&review, uuid::Uuid::nil(), true);
+                        assert!(!argv.contains(&"--dangerously-skip-permissions".to_string()));
+                        assert_eq!(argv[0], "conductor-review-session");
+                    }
+                    Err(_) => assert!(launch.as_ref().is_none_or(|l| !l.is_ready())),
+                }
+            }
+        }
     }
 
     #[test]
@@ -2474,6 +2550,7 @@ mod config_tests {
                 max_review_sessions: 1,
                 review_timeout: Duration::from_secs(45 * 60),
                 review_bot_login: None,
+                author_bot_login: None,
                 review_repo: None,
                 ci_poll_interval: Duration::from_secs(60),
                 ci_max_wait: Duration::from_secs(2 * 3600),
