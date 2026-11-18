@@ -68,9 +68,9 @@ githubWebhookUsers: "lassemand"
 # `/review` comment from a githubWebhookUsers login asks for one by hand. See
 # this chart's README, "Reviews".
 review:
-  # false turns every automatic and manual trigger off. Off until NEX-273
-  # (infra/agents/reviewer.md) and NEX-275 (CI gate) have both merged;
-  # NEX-275's PR switches it on.
+  # false turns every automatic and manual trigger off. Stays off until the
+  # reviewer's sandbox boundary findings from PR 325 are fixed; a follow-up PR
+  # enables it. NEX-273 and the NEX-275 CI gate have both merged.
   enabled: false
   # Linear state whose entry starts an automatic review.
   state: "In Review"
@@ -99,6 +99,13 @@ review:
   # author through the move to Todo. Leave empty: the entrypoint reads it from
   # the reviewer app (`GET /app`) at startup. Set it only to override that.
   botLogin: ""
+  # CI gate (NEX-275): an issue enters review only with every check run on its
+  # pull requests green. Otherwise it is bounced and watched.
+  ci:
+    # How often watched issues are re-checked, in case a webhook is lost.
+    pollInterval: "60s"
+    # How long an issue is watched for green CI before conductor gives up.
+    maxWait: "2h"
 # CARGO_TARGET_DIR shared by every session (CONDUCTOR_CARGO_TARGET_DIR). One
 # workspace build instead of one per worktree (each was 4-40 GB). Parallel
 # builds then wait on cargo's lock. Empty gives each worktree its own target/.

@@ -5,7 +5,7 @@ description: Processes linear ticket and convert them into output code
 
 # Backend Agent — Instructions & Conventions
  
-You are a backend development agent. Your job is to implement tasks from Linear, produce clean, idiomatic Rust code, and open a pull request when done. You then move the Linear issue from **In Progress** to **In Review**.
+You are a backend development agent. Your job is to implement tasks from Linear, produce clean, idiomatic Rust code, and open a pull request when done. You then move the Linear issue from **In Progress** to **In Review** once the PR's CI is green.
  
 ---
  
@@ -16,7 +16,7 @@ You are a backend development agent. Your job is to implement tasks from Linear,
 - Write idiomatic Rust code using `sqlx` for all database interactions
 - Follow the event-based architecture and monorepo conventions described below
 - Open a PR with a correct prefix and a clear description
-- Move the Linear issue to **In Review** once the PR is opened
+- Move the Linear issue to **In Review** only after the PR's CI is green
 ---
  
 ## Dependency Policy
@@ -164,6 +164,17 @@ When a PR review comment arrives, assess it using the following decision tree:
 3. **The comment does not make sense, or the requested change would be incorrect or harmful** — reply on the comment explaining why the suggestion does not apply or would introduce a problem. Be specific and constructive. Do not make the change.
 
 In all cases: read the full PR diff before responding so you have complete context.
+
+---
+
+## When CI sends a task back
+
+Conductor moves a task to **Todo** with a comment starting `CI failed; moved back to Todo` when a check fails on its PR. When such a Todo dispatch arrives for an issue that already has an open PR:
+
+1. Fix the failing checks on the **existing PR branch**; never open a new PR and never start the task over.
+2. Push, wait for CI to pass, then move the issue to **In Review**.
+
+A task moved to **In Progress** with `CI not finished on …` needs no action: conductor moves it to In Review itself when CI turns green.
 
 ---
 
