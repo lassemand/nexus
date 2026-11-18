@@ -215,10 +215,13 @@ export); `OTEL_SERVICE_NAME` is `nordic-live`.
 | `nordic_live.ingested_check` | the lookup in signal's database | `nordic_live.disposition`; not made without `SIGNAL_DATABASE_URL` |
 | `nordic_live.emit_queue` | announcements: time in the emit queue | |
 | `send special.events` | producer span, until the broker acknowledged | `messaging.*`, partition and offset when acknowledged; ERROR on failure, also on the root |
+| `nordic_live.insider_queue` | Finnish managers' transactions: time in the insider queue (NEX-279) | |
+| `nordic_live.insider_parse` | parsing the release in the insider producer | `nordic_live.insider_outcome` (`published`, `parse_error`, `skipped`, `conflict`), `nordic_live.insider_messages` |
+| `send insider.transactions` | one per trade, until the broker acknowledged | like `send special.events` |
 | `nordic_live.slack` | the Slack post | `nordic_live.slack.kind`, `nordic_live.slack.outcome`; runs on the Slack worker, after publishing |
 
 An item the poll already stored ends its trace at the check (`already_ingested`). `KafkaSink`
-adds `traceparent` (and `tracestate`) to every message sent inside a span; the poll binaries send
+and `KafkaInsiderSink` add `traceparent` (and `tracestate`) to every message sent inside a span; the poll binaries send
 without a span and add no header. Consumers that do not read headers (signal) are unaffected.
 
 ## analyst

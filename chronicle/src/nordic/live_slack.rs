@@ -471,6 +471,8 @@ mod tests {
             event: None,
             announcement: None,
             emit: None,
+            insider_release: None,
+            insider: None,
             span: Default::default(),
         }
     }

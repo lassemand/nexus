@@ -22,6 +22,9 @@ pub mod lang;
 pub mod live;
 pub mod live_catchup;
 pub mod live_emit;
+pub mod live_insiders;
+#[cfg(test)]
+mod live_insiders_tests;
 pub mod live_slack;
 #[cfg(test)]
 mod live_trace_tests;

@@ -283,11 +283,26 @@ fn sec_code_for(kind: UnifiedTransactionType) -> &'static str {
     }
 }
 
+/// True for the copy whose role, price and filing date signal keeps: the
+/// English copy of a MAR release. Each release comes in the local language and
+/// English with the same reference number (NEX-279); `nordic-live` publishes the
+/// first copy and then the other when its trades are identical,
+/// `nordic-reports` the English one.
+fn english_wins(txn: &UnifiedInsiderTransaction) -> bool {
+    matches!(
+        txn.source_detail.as_ref(),
+        Some(unified_insider_transaction::SourceDetail::Mar(d)) if d.lang == "en"
+    )
+}
+
 /// Upserts a person record and inserts the filing from a `UnifiedInsiderTransaction`.
 ///
 /// Extracts SEC-specific fields (CIK, transaction code) from `SecDetail` when present.
 /// For FI transactions, `filer_cik` is left NULL (FI uses LEI, not CIK).
-/// Filing insert is `ON CONFLICT DO NOTHING` (idempotent).
+/// Filing insert is idempotent: a repeat keeps the stored row, except that an
+/// English MAR copy ([`english_wins`]) overwrites `filer_role`,
+/// `price_per_share` and `filing_date`, so a release stores the English values
+/// whichever language copy arrived first.
 pub async fn upsert_insider_filing(
     pool: &PgPool,
     txn: &UnifiedInsiderTransaction,
@@ -356,7 +371,13 @@ pub async fn upsert_insider_filing(
             (person_id, ticker, issuer_cik, filer_role,
              transaction_date, filing_date, shares, price_per_share, transaction_code)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (person_id, ticker, transaction_date, shares, transaction_code) DO NOTHING
+        ON CONFLICT (person_id, ticker, transaction_date, shares, transaction_code)
+        DO UPDATE SET
+            filer_role = EXCLUDED.filer_role,
+            price_per_share = EXCLUDED.price_per_share,
+            filing_date = EXCLUDED.filing_date
+        WHERE $10 AND (insider_filings.filer_role, insider_filings.price_per_share, insider_filings.filing_date)
+            IS DISTINCT FROM (EXCLUDED.filer_role, EXCLUDED.price_per_share, EXCLUDED.filing_date)
         "#,
     )
     .bind(person_id)
@@ -368,6 +389,7 @@ pub async fn upsert_insider_filing(
     .bind(txn.volume)
     .bind(txn.price_per_unit)
     .bind(&transaction_code)
+    .bind(english_wins(txn))
     .execute(&mut *tx)
     .await?;
 
@@ -727,11 +749,123 @@ mod tests {
         Ok(())
     }
 
+    /// A copy of the CEO's release in `lang`, as `nordic-live` and
+    /// `nordic-reports` publish it: same trade, the role in that language.
+    fn mar_copy(lang: &str) -> UnifiedInsiderTransaction {
+        let mut t = mar_txn(
+            "Sami Takaluoma",
+            "2026-03-19",
+            UnifiedTransactionType::Grant,
+            23201.0,
+            0.0,
+        );
+        if lang == "fi" {
+            t.person_role = "Toimitusjohtaja".into();
+        }
+        if let Some(unified_insider_transaction::SourceDetail::Mar(d)) = t.source_detail.as_mut() {
+            d.lang = lang.into();
+        }
+        t
+    }
+
+    async fn roles(pool: &PgPool) -> Vec<String> {
+        sqlx::query_scalar("SELECT filer_role FROM insider_filings")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn language_twins_in_either_order_store_one_row_with_the_english_role(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        for order in [["en", "fi"], ["fi", "en"]] {
+            sqlx::query("DELETE FROM insider_filings")
+                .execute(&pool)
+                .await?;
+            for lang in order {
+                upsert_insider_filing(&pool, &mar_copy(lang)).await?;
+            }
+            assert_eq!(
+                count(&pool, "SELECT COUNT(*) FROM insider_filings").await,
+                1,
+                "{order:?}"
+            );
+            assert_eq!(roles(&pool).await, ["Chief Executive Officer"], "{order:?}");
+        }
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_poll_after_the_live_path_adds_no_row(pool: PgPool) -> sqlx::Result<()> {
+        upsert_insider_filing(&pool, &mar_copy("fi")).await?;
+        assert_eq!(
+            roles(&pool).await,
+            ["Toimitusjohtaja"],
+            "only the Finnish copy so far"
+        );
+        upsert_insider_filing(&pool, &mar_copy("en")).await?;
+        upsert_insider_filing(&pool, &mar_copy("en")).await?;
+        upsert_insider_filing(&pool, &mar_copy("fi")).await?;
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM insider_filings").await,
+            1
+        );
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM persons").await, 1);
+        assert_eq!(roles(&pool).await, ["Chief Executive Officer"]);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_english_copy_also_sets_price_and_filing_date(pool: PgPool) -> sqlx::Result<()> {
+        for order in [["fi", "en"], ["en", "fi"]] {
+            sqlx::query("DELETE FROM insider_filings")
+                .execute(&pool)
+                .await?;
+            for lang in order {
+                let mut t = mar_copy(lang);
+                if lang == "fi" {
+                    t.price_per_unit = 1.5;
+                    t.published_date = "2026-03-21".into();
+                }
+                upsert_insider_filing(&pool, &t).await?;
+            }
+            let (price, filed, role): (f64, NaiveDate, String) = sqlx::query_as(
+                "SELECT price_per_share, filing_date, filer_role FROM insider_filings",
+            )
+            .fetch_one(&pool)
+            .await?;
+            assert_eq!(
+                (price, filed.to_string().as_str(), role.as_str()),
+                (0.0, "2026-03-20", "Chief Executive Officer"),
+                "{order:?}"
+            );
+            assert_eq!(
+                count(&pool, "SELECT COUNT(*) FROM insider_filings").await,
+                1
+            );
+        }
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_repeated_fi_register_row_keeps_its_first_role(pool: PgPool) -> sqlx::Result<()> {
+        let first = fi_txn("Anna Svensson", UnifiedTransactionType::Buy, 1000.0);
+        let mut second = first.clone();
+        second.person_role = "Styrelseledamot".into();
+        upsert_insider_filing(&pool, &first).await?;
+        upsert_insider_filing(&pool, &second).await?;
+        assert_eq!(roles(&pool).await, ["CEO"]);
+        Ok(())
+    }
+
     /// Known limitation, left as is on purpose (the constraint is out of scope):
     /// the unique key is `(person, ticker, date, shares, code)`, so two real
     /// trades of one person on one day with the same volume and code collapse
     /// into the first. Kesko's amendment of 2023-10-26 has such a pair: 10 shares
-    /// at 15.78 EUR and 10 shares at 15.52 EUR in one release.
+    /// at 15.78 EUR and 10 shares at 15.52 EUR in one release. Here the rows
+    /// carry no language, so the first one wins; for English MAR copies the last
+    /// one's price wins instead (`english_wins`), the row count is the same.
     #[sqlx::test(migrations = "./migrations")]
     async fn two_trades_with_the_same_volume_on_one_day_collapse(pool: PgPool) -> sqlx::Result<()> {
         let first = mar_txn(
