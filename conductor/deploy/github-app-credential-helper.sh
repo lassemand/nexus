@@ -32,24 +32,29 @@ INSTALLATION_ID="${GITHUB_APP_INSTALLATION_ID:-}"
 KEY_PATH="${GITHUB_APP_PRIVATE_KEY_PATH:-$HOME/.config/github-app/private-key.pem}"
 API="${GITHUB_API_URL:-https://api.github.com}"
 
-# Only `get` produces output. `store` and `erase` are stateless no-ops here:
-# the chained credential-cache holds the token, and git sends `erase` to it
-# when a credential is rejected.
-[[ "${1:-}" == "get" ]] || exit 0
+# `app-slug` prints the app's slug (`GET /app`), from which its bot login
+# `<slug>[bot]` follows; the entrypoint uses it for the reviewer app.
+# Otherwise only `get` produces output. `store` and `erase` are stateless
+# no-ops here: the chained credential-cache holds the token, and git sends
+# `erase` to it when a credential is rejected.
+mode="${1:-}"
+[[ "$mode" == "get" || "$mode" == "app-slug" ]] || exit 0
 
-# Drain stdin. Git will wait on us otherwise, and the host it is asking about
-# is worth checking: this helper must only ever answer for github.com.
-host=""
-while IFS= read -r line; do
-  [[ -z "$line" ]] && break
-  case "$line" in
-    host=*) host="${line#host=}" ;;
-  esac
-done
+if [[ "$mode" == "get" ]]; then
+  # Drain stdin. Git will wait on us otherwise, and the host it is asking
+  # about is worth checking: this helper must only ever answer for github.com.
+  host=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && break
+    case "$line" in
+      host=*) host="${line#host=}" ;;
+    esac
+  done
 
-# Declining by printing nothing is the correct protocol response, and keeps the
-# token from being handed to some other host if a remote is ever changed.
-[[ "$host" == "github.com" ]] || exit 0
+  # Declining by printing nothing is the correct protocol response, and keeps
+  # the token from being handed to some other host if a remote is ever changed.
+  [[ "$host" == "github.com" ]] || exit 0
+fi
 
 for required in APP_ID INSTALLATION_ID; do
   if [[ -z "${!required}" ]]; then
@@ -71,6 +76,20 @@ header="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)"
 payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$APP_ID" | b64url)"
 signature="$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$KEY_PATH" | b64url)"
 jwt="${header}.${payload}.${signature}"
+
+if [[ "$mode" == "app-slug" ]]; then
+  app="$(curl -fsS \
+    -H "Authorization: Bearer ${jwt}" \
+    -H "Accept: application/vnd.github+json" \
+    "${API}/app" 2>/dev/null)" || {
+      echo "github-app-credential-helper: reading the app failed" >&2
+      exit 1
+    }
+  slug="$(printf '%s' "$app" | jq -r '.slug // empty')"
+  [[ -n "$slug" ]] || { echo "github-app-credential-helper: the app has no slug" >&2; exit 1; }
+  printf '%s\n' "$slug"
+  exit 0
+fi
 
 response="$(curl -fsS -X POST \
   -H "Authorization: Bearer ${jwt}" \

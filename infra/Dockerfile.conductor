@@ -244,7 +244,12 @@ COPY conductor/deploy/entrypoint.sh /usr/local/bin/conductor-entrypoint
 # Git invokes this per authenticated operation to mint a short-lived GitHub App
 # installation token, which is what makes the one-hour lifetime a non-issue.
 COPY conductor/deploy/github-app-credential-helper.sh /usr/local/bin/github-app-credential-helper
-RUN chmod 0755 /usr/local/bin/conductor-entrypoint /usr/local/bin/github-app-credential-helper
+# Review sessions start through this, with only the reviewer app's
+# credentials; the entrypoint copies the settings into the reviewer identity.
+COPY conductor/deploy/review-session.sh /usr/local/bin/conductor-review-session
+COPY conductor/deploy/reviewer-settings.json /usr/local/share/conductor/reviewer-settings.json
+RUN chmod 0755 /usr/local/bin/conductor-entrypoint /usr/local/bin/github-app-credential-helper \
+      /usr/local/bin/conductor-review-session
 
 # The version is fixed by the image, so the CLI must not replace itself.
 ENV DISABLE_AUTOUPDATER=1

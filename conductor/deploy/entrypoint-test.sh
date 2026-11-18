@@ -694,6 +694,70 @@ printf '== agent definitions ==\n'
   rm -rf "$SANDBOX"
 )
 
+printf '== reviewer identity ==\n'
+
+review_stub_helper() {
+  local path="$1"
+  cat > "$path" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get) cat >/dev/null; [[ -r "${GITHUB_APP_PRIVATE_KEY_PATH:-}" ]] || exit 1
+       printf 'username=x-access-token\npassword=token-for-%s\n' "$GITHUB_APP_ID" ;;
+  app-slug) printf 'annette-review\n' ;;
+esac
+STUB
+  chmod 0755 "$path"
+}
+
+(
+  new_sandbox; init_layout >/dev/null
+  unset REVIEW_GITHUB_APP_ID REVIEW_GITHUB_APP_INSTALLATION_ID REVIEW_GITHUB_APP_PRIVATE_KEY
+  out="$(configure_review_identity 2>&1)"
+  [[ $? -eq 0 ]] && ok "no reviewer app is not fatal" || bad "no reviewer app is not fatal"
+  grep -q "author app" <<<"$out" && ok "and it is reported" || bad "and it is reported" "$out"
+  [[ ! -e "${STATE_DIR}/review-identity/ready" ]] && ok "and nothing is ready" || bad "and nothing is ready"
+  rm -rf "$SANDBOX"
+)
+
+(
+  new_sandbox; init_layout >/dev/null
+  review_stub_helper "${SANDBOX}/helper"
+  export GITHUB_APP_CREDENTIAL_HELPER="${SANDBOX}/helper"
+  export CONDUCTOR_REVIEW_SETTINGS_SRC="${HERE}/reviewer-settings.json"
+  export REVIEW_GITHUB_APP_ID=42 REVIEW_GITHUB_APP_INSTALLATION_ID=7 LINEAR_API_KEY=lin-key
+  REVIEW_GITHUB_APP_PRIVATE_KEY="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)"
+  export REVIEW_GITHUB_APP_PRIVATE_KEY
+  configure_review_identity >/dev/null 2>&1
+  dir="${STATE_DIR}/review-identity"
+  [[ -f "${dir}/ready" ]] && ok "a configured reviewer app is ready" || bad "a configured reviewer app is ready"
+  check "the bot login is read from the app" "$(cat "${dir}/bot-login" 2>/dev/null)" "annette-review[bot]"
+  check "the key is private" "$(stat -c %a "${dir}/private-key.pem")" "600"
+  check "the directory is private" "$(stat -c %a "$dir")" "700"
+  check "mcp uses the reviewer app" \
+    "$(jq -r '.mcpServers.github.args | join(" ")' "${dir}/mcp.json")" \
+    "stdio --app-id 42 --app-installation-id 7 --app-private-key-path ${dir}/private-key.pem --toolsets context,repos,pull_requests,issues"
+  check "git uses its own credential cache" \
+    "$(git config --file "${dir}/gitconfig" --get-all credential.https://github.com.helper | head -1 | grep -c git-review)" "1"
+  jq -e '.permissions.deny | index("Bash(git push:*)")' "${dir}/settings.json" >/dev/null \
+    && ok "the settings deny git push" || bad "the settings deny git push"
+
+  out="$(GITHUB_APP_PRIVATE_KEY=author-key GITHUB_APP_ID=1 GITHUB_TOKEN=author-token LINEAR_API_KEY=k \
+          CONDUCTOR_REVIEW_IDENTITY_DIR="$dir" bash "${HERE}/review-session.sh" env)"
+  grep -q '^GITHUB_APP_PRIVATE_KEY=' <<<"$out" && bad "the author key is dropped" || ok "the author key is dropped"
+  grep -q '^GITHUB_TOKEN=' <<<"$out" && bad "the author token is dropped" || ok "the author token is dropped"
+  grep -q '^LINEAR_API_KEY=' <<<"$out" && bad "the Linear key is dropped" || ok "the Linear key is dropped"
+  grep -q '^GITHUB_APP_ID=42$' <<<"$out" && ok "the reviewer app id is set" || bad "the reviewer app id is set" "$out"
+  grep -q '^GH_TOKEN=token-for-42$' <<<"$out" && ok "gh gets the reviewer token" || bad "gh gets the reviewer token"
+  grep -q "^GIT_CONFIG_GLOBAL=${dir}/gitconfig$" <<<"$out" && ok "git gets the reviewer config" || bad "git gets the reviewer config"
+
+  export REVIEW_GITHUB_APP_PRIVATE_KEY="not a key"
+  configure_review_identity >/dev/null 2>&1
+  [[ ! -e "${dir}/ready" ]] && ok "a broken key is not ready" || bad "a broken key is not ready"
+  CONDUCTOR_REVIEW_IDENTITY_DIR="$dir" bash "${HERE}/review-session.sh" true 2>/dev/null \
+    && bad "the launcher refuses an unprepared identity" || ok "the launcher refuses an unprepared identity"
+  rm -rf "$SANDBOX"
+)
+
 passed=$( [[ -f "${TALLY}/pass" ]] && wc -l < "${TALLY}/pass" || echo 0 )
 failed=$( [[ -f "${TALLY}/fail" ]] && wc -l < "${TALLY}/fail" || echo 0 )
 printf '\n%d passed, %d failed\n' "$passed" "$failed"

@@ -13,8 +13,8 @@ use axum::{
 use crate::{
     github::{
         dispatchable_issue_comment, dispatchable_review_comment, is_review_bot, is_review_command,
-        review_command, verify_github_signature, IssueCommentPayload, PrCommentKind,
-        ReviewCommentPayload,
+        review_command, review_request, verify_github_signature, IssueCommentPayload,
+        PrCommentKind, PullRequestEventPayload, ReviewCommentPayload,
     },
     linear::{closed_issue, dispatchable_issue, state_change, LinearWebhook},
     EventSink, InboundEvent,
@@ -278,6 +278,31 @@ async fn handle_github(
                     InboundEvent::GithubPrComment {
                         comment,
                         kind: PrCommentKind::ReviewComment,
+                        delivery_id: delivery,
+                    },
+                );
+            }
+        }
+        "pull_request" => {
+            let payload: PullRequestEventPayload = match serde_json::from_slice(&body) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to parse pull_request payload");
+                    metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "bad_payload").increment(1);
+                    return StatusCode::BAD_REQUEST;
+                }
+            };
+            let command = review_request(
+                &payload,
+                &state.watched_github_users,
+                state.review_bot_login.as_deref(),
+            );
+            metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => outcome_label(command.is_some())).increment(1);
+            if let Some(command) = command {
+                submit(
+                    &state.sink,
+                    InboundEvent::ReviewCommand {
+                        command,
                         delivery_id: delivery,
                     },
                 );

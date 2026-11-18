@@ -102,6 +102,22 @@ pub struct SessionEnvArgs {
     #[arg(long, env = "CONDUCTOR_CARGO_TARGET_DIR")]
     pub cargo_target_dir: Option<PathBuf>,
 
+    /// Directory the entrypoint fills with the reviewer's identity: its
+    /// GitHub App key and ids, git config, MCP config and Claude settings.
+    /// Review sessions run through `review_launcher` with it once it holds a
+    /// `ready` file; until then they run like any other session.
+    #[arg(long, env = "CONDUCTOR_REVIEW_IDENTITY_DIR")]
+    pub review_identity_dir: Option<String>,
+
+    /// Wrapper that starts a review session with only the reviewer's
+    /// credentials (`conductor/deploy/review-session.sh`).
+    #[arg(
+        long,
+        env = "CONDUCTOR_REVIEW_LAUNCHER",
+        default_value = "conductor-review-session"
+    )]
+    pub review_launcher: String,
+
     /// Pass `--dangerously-skip-permissions` to Claude.
     ///
     /// Governs dispatched runs and `sessions attach` alike. The interactive
@@ -130,6 +146,13 @@ impl SessionEnvArgs {
             review_agent: self.review_agent,
             review_model: Some(self.review_model).filter(|m| !m.is_empty()),
             cargo_target_dir: self.cargo_target_dir.filter(|p| !p.as_os_str().is_empty()),
+            review_launch: self
+                .review_identity_dir
+                .filter(|p| !p.is_empty())
+                .map(|identity_dir| ReviewLaunch {
+                    launcher: self.review_launcher,
+                    identity_dir: PathBuf::from(identity_dir),
+                }),
             skip_permissions: self.skip_permissions,
             start_timeout: Duration::from_secs(self.start_timeout_secs),
         }
@@ -157,6 +180,9 @@ pub struct SessionEnv {
     pub review_model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
+    /// How review sessions get the reviewer's own identity; `None` runs them
+    /// like any other session.
+    pub review_launch: Option<ReviewLaunch>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// How long a new session may take to report `SessionStart`.
@@ -234,6 +260,7 @@ impl DispatchArgs {
             agent: env.agent,
             model: env.model,
             cargo_target_dir: env.cargo_target_dir,
+            review_launch: env.review_launch,
             skip_permissions: env.skip_permissions,
             // Seconds win when given, so a test can use a timeout far under a minute.
             run_timeout: Duration::from_secs(
@@ -396,6 +423,9 @@ pub struct DispatchConfig {
     pub model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
+    /// How review sessions get the reviewer's own identity; `None` runs them
+    /// like any other session.
+    pub review_launch: Option<ReviewLaunch>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// How long a run may take before it is stopped.
@@ -1464,6 +1494,9 @@ pub struct StartSpec {
     pub review_model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
+    /// How review sessions get the reviewer's own identity; `None` runs them
+    /// like any other session.
+    pub review_launch: Option<ReviewLaunch>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
     /// How long to wait for `SessionStart`.
@@ -1480,8 +1513,48 @@ impl StartSpec {
             spec.agent = self.review_agent.clone();
             spec.model = self.review_model.clone();
             spec.model_from_set = false;
+            match &self.review_launch {
+                Some(launch) if launch.is_ready() => spec.skip_permissions = false,
+                Some(launch) => {
+                    tracing::warn!(
+                        dir = %launch.identity_dir.display(),
+                        "the reviewer's identity is not prepared; the review session runs as the author app"
+                    );
+                    spec.review_launch = None;
+                }
+                None => {}
+            }
+        } else {
+            spec.review_launch = None;
         }
         spec
+    }
+}
+
+/// How a review session is started under the reviewer's own identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewLaunch {
+    /// The wrapper that drops every other credential, sets the reviewer
+    /// app's, and execs Claude.
+    pub launcher: String,
+    /// What the entrypoint prepared: `settings.json`, `mcp.json`,
+    /// `gitconfig`, `app.env`, the key, `bot-login` and, last, `ready`.
+    pub identity_dir: PathBuf,
+}
+
+impl ReviewLaunch {
+    /// Whether the entrypoint finished preparing the identity.
+    pub fn is_ready(&self) -> bool {
+        self.identity_dir.join("ready").is_file()
+    }
+
+    /// The reviewer app's bot login, as the entrypoint read it from GitHub
+    /// (`GET /app`).
+    pub fn bot_login(&self) -> Option<String> {
+        std::fs::read_to_string(self.identity_dir.join("bot-login"))
+            .ok()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
     }
 }
 
@@ -1498,6 +1571,7 @@ impl SessionEnv {
             review_agent: self.review_agent.clone(),
             review_model: self.review_model.clone(),
             cargo_target_dir: self.cargo_target_dir.clone(),
+            review_launch: self.review_launch.clone(),
             skip_permissions: self.skip_permissions,
             start_timeout: self.start_timeout,
         }
@@ -1517,6 +1591,7 @@ impl DispatchConfig {
             review_agent: self.review.agent.clone(),
             review_model: self.review.model.clone(),
             cargo_target_dir: self.cargo_target_dir.clone(),
+            review_launch: self.review_launch.clone(),
             skip_permissions: self.skip_permissions,
             start_timeout: self.start_timeout,
         }
@@ -1663,7 +1738,11 @@ pub fn cargo_target_dir(spec: &StartSpec, worktree: &Path) -> PathBuf {
 
 /// The command line that starts or resumes a set's Claude session.
 pub fn session_argv(spec: &StartSpec, session_id: uuid::Uuid, resume: bool) -> Vec<String> {
-    let mut argv = vec![spec.claude_bin.clone()];
+    let mut argv = Vec::new();
+    if let Some(launch) = &spec.review_launch {
+        argv.push(launch.launcher.clone());
+    }
+    argv.push(spec.claude_bin.clone());
     argv.push(if resume { "--resume" } else { "--session-id" }.into());
     argv.push(session_id.to_string());
     argv.push(format!("--agent={}", spec.agent));
@@ -1680,7 +1759,20 @@ pub fn session_argv(spec: &StartSpec, session_id: uuid::Uuid, resume: bool) -> V
         argv.push("--model".into());
         argv.push(model.to_string());
     }
-    if spec.skip_permissions {
+    if let Some(launch) = &spec.review_launch {
+        let dir = &launch.identity_dir;
+        for arg in [
+            "--permission-mode".to_string(),
+            "dontAsk".to_string(),
+            "--settings".to_string(),
+            dir.join("settings.json").to_string_lossy().into_owned(),
+            "--mcp-config".to_string(),
+            dir.join("mcp.json").to_string_lossy().into_owned(),
+            "--strict-mcp-config".to_string(),
+        ] {
+            argv.push(arg);
+        }
+    } else if spec.skip_permissions {
         argv.push("--dangerously-skip-permissions".into());
     }
     argv
@@ -2015,6 +2107,7 @@ mod tests {
             review_agent: "reviewer".into(),
             review_model: Some("opus".into()),
             cargo_target_dir: None,
+            review_launch: None,
             skip_permissions: false,
             start_timeout: Duration::from_secs(1),
         };
@@ -2037,6 +2130,72 @@ mod tests {
     }
 
     #[test]
+    fn a_review_session_starts_through_the_launcher_once_the_identity_is_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = StartSpec {
+            repo_root: "/r".into(),
+            worktree_root: "/w".into(),
+            claude_bin: "claude".into(),
+            agent: "backend".into(),
+            model: None,
+            model_from_set: false,
+            review_agent: "reviewer".into(),
+            review_model: Some("opus".into()),
+            cargo_target_dir: None,
+            review_launch: Some(ReviewLaunch {
+                launcher: "conductor-review-session".into(),
+                identity_dir: dir.path().to_path_buf(),
+            }),
+            skip_permissions: true,
+            start_timeout: Duration::from_secs(1),
+        };
+        let review_key = GroupKey::review("NEX-1").unwrap();
+
+        let unprepared = session_argv(&spec.for_key(&review_key), uuid::Uuid::nil(), false);
+        assert_eq!(
+            unprepared[0], "claude",
+            "no identity yet: started as before"
+        );
+        assert!(unprepared.contains(&"--dangerously-skip-permissions".to_string()));
+
+        std::fs::write(dir.path().join("ready"), "").unwrap();
+        let argv = session_argv(&spec.for_key(&review_key), uuid::Uuid::nil(), false);
+        assert_eq!(argv[0], "conductor-review-session");
+        assert_eq!(argv[1], "claude");
+        assert!(argv
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "dontAsk"]));
+        let settings = dir
+            .path()
+            .join("settings.json")
+            .to_string_lossy()
+            .into_owned();
+        let mcp = dir.path().join("mcp.json").to_string_lossy().into_owned();
+        assert!(argv
+            .windows(2)
+            .any(|w| w[0] == "--settings" && w[1] == settings));
+        assert!(argv
+            .windows(2)
+            .any(|w| w[0] == "--mcp-config" && w[1] == mcp));
+        assert!(argv.contains(&"--strict-mcp-config".to_string()));
+        assert!(!argv.contains(&"--dangerously-skip-permissions".to_string()));
+
+        let author = session_argv(
+            &spec.for_key(&GroupKey::Named("grp".into())),
+            uuid::Uuid::nil(),
+            false,
+        );
+        assert_eq!(author[0], "claude", "only review sets use the launcher");
+        assert!(author.contains(&"--dangerously-skip-permissions".to_string()));
+
+        std::fs::write(dir.path().join("bot-login"), "annette-review[bot]\n").unwrap();
+        assert_eq!(
+            spec.review_launch.as_ref().unwrap().bot_login().as_deref(),
+            Some("annette-review[bot]")
+        );
+    }
+
+    #[test]
     fn argv_carries_set_global_or_no_model() {
         let spec = |model: Option<&str>| StartSpec {
             repo_root: "/r".into(),
@@ -2048,6 +2207,7 @@ mod tests {
             review_agent: "reviewer".into(),
             review_model: Some("opus".into()),
             cargo_target_dir: None,
+            review_launch: None,
             skip_permissions: false,
             start_timeout: Duration::from_secs(1),
         };
@@ -2094,6 +2254,20 @@ mod tests {
         );
         assert_eq!(model_from(&[]).unwrap(), None);
         assert_eq!(model_from(&["--model", ""]).unwrap(), None);
+    }
+
+    #[test]
+    fn an_empty_review_identity_dir_means_none_not_a_startup_error() {
+        for args in [&["--review-identity-dir", ""][..], &[][..]] {
+            let argv = std::iter::once("probe").chain(args.iter().copied());
+            let probe = Probe::try_parse_from(argv).expect("an empty value must parse");
+            assert!(probe.env.resolve().review_launch.is_none());
+        }
+        let probe = Probe::try_parse_from(["probe", "--review-identity-dir", "/state/id"]).unwrap();
+        assert_eq!(
+            probe.env.resolve().review_launch.map(|l| l.identity_dir),
+            Some(PathBuf::from("/state/id"))
+        );
     }
 
     #[test]
@@ -2260,6 +2434,8 @@ mod config_tests {
                 review_model: "opus".into(),
                 start_timeout_secs: 60,
                 cargo_target_dir: None,
+                review_identity_dir: None,
+                review_launcher: "conductor-review-session".into(),
                 skip_permissions: true,
             },
             run_timeout_min: 120,

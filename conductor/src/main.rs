@@ -162,6 +162,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if config.review.repo.is_none() {
                 config.review.repo = origin_repo(&config.repo_root).await;
             }
+            match &config.review_launch {
+                Some(launch) if launch.is_ready() => {
+                    if config.review.bot_login.is_none() {
+                        config.review.bot_login = launch.bot_login();
+                    }
+                    tracing::info!(
+                        bot_login = ?config.review.bot_login,
+                        dir = %launch.identity_dir.display(),
+                        "review sessions run as the reviewer app"
+                    );
+                }
+                _ => tracing::warn!(
+                    "the reviewer's GitHub App is not configured; review sessions run as the author app \
+                     and cannot approve its pull requests"
+                ),
+            }
             let reviews = review_deps(&config.review, github.clone())?;
             match &config.model {
                 Some(model) => tracing::info!("claude model: {model}"),

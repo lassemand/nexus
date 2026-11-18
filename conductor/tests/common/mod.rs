@@ -618,6 +618,7 @@ impl Harness {
             agent: "backend".into(),
             model: Some("sonnet".into()),
             cargo_target_dir: None,
+            review_launch: None,
             skip_permissions: true,
             run_timeout: Duration::from_secs(30),
             shutdown_grace: Duration::from_secs(30),
@@ -875,6 +876,7 @@ impl Harness {
             review_agent: self.config.review.agent.clone(),
             review_model: self.config.review.model.clone(),
             cargo_target_dir: self.config.cargo_target_dir.clone(),
+            review_launch: self.config.review_launch.clone(),
             skip_permissions: self.config.skip_permissions,
             start_timeout: self.config.start_timeout,
         }
