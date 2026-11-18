@@ -269,3 +269,87 @@ pub async fn delete_run(pool: &PgPool, issue_id: &str) -> Result<(), sqlx::Error
         .await?;
     Ok(())
 }
+
+/// An issue whose pull request checks are being waited for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CiWatch {
+    pub issue_id: String,
+    pub identifier: String,
+    pub prs: Vec<PrUnderReview>,
+    /// When the wait started or was last reset by a push.
+    pub created_at: DateTime<Utc>,
+}
+
+fn watch_from_row(r: &sqlx::postgres::PgRow) -> Result<CiWatch, sqlx::Error> {
+    Ok(CiWatch {
+        issue_id: r.try_get("issue_id")?,
+        identifier: r.try_get("identifier")?,
+        prs: r.try_get::<Json<Vec<PrUnderReview>>, _>("prs")?.0,
+        created_at: r.try_get("created_at")?,
+    })
+}
+
+/// Starts (or restarts, with a fresh timer) watching an issue.
+pub async fn upsert_watch(pool: &PgPool, watch: &CiWatch) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO ci_watch (issue_id, identifier, prs, created_at) VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (issue_id) DO UPDATE SET \
+           identifier = EXCLUDED.identifier, prs = EXCLUDED.prs, created_at = EXCLUDED.created_at",
+    )
+    .bind(&watch.issue_id)
+    .bind(&watch.identifier)
+    .bind(Json(&watch.prs))
+    .bind(watch.created_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Replaces the watched pull requests; with `reset_timer` the wait starts over.
+pub async fn update_watch_prs(
+    pool: &PgPool,
+    issue_id: &str,
+    prs: &[PrUnderReview],
+    reset_timer: Option<DateTime<Utc>>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE ci_watch SET prs = $2, created_at = COALESCE($3, created_at) WHERE issue_id = $1",
+    )
+    .bind(issue_id)
+    .bind(Json(prs))
+    .bind(reset_timer)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The watch for an issue, if there is one.
+pub async fn watch(pool: &PgPool, issue_id: &str) -> Result<Option<CiWatch>, sqlx::Error> {
+    sqlx::query("SELECT * FROM ci_watch WHERE issue_id = $1")
+        .bind(issue_id)
+        .fetch_optional(pool)
+        .await?
+        .as_ref()
+        .map(watch_from_row)
+        .transpose()
+}
+
+/// Every watch, oldest first.
+pub async fn watches(pool: &PgPool) -> Result<Vec<CiWatch>, sqlx::Error> {
+    sqlx::query("SELECT * FROM ci_watch ORDER BY created_at, issue_id")
+        .fetch_all(pool)
+        .await?
+        .iter()
+        .map(watch_from_row)
+        .collect()
+}
+
+/// Stops watching an issue. Returns whether there was a watch.
+pub async fn delete_watch(pool: &PgPool, issue_id: &str) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM ci_watch WHERE issue_id = $1")
+        .bind(issue_id)
+        .execute(pool)
+        .await?
+        .rows_affected()
+        > 0)
+}

@@ -236,14 +236,60 @@ Settings (`values.yaml` `review`, environment in brackets): `enabled`
 `model` (`CONDUCTOR_REVIEW_MODEL`), `maxSessions`
 (`CONDUCTOR_MAX_REVIEW_SESSIONS`), `timeout` (`CONDUCTOR_REVIEW_TIMEOUT`,
 `45m`, `2700s` or `1h`), `botLogin` (`CONDUCTOR_REVIEW_BOT_LOGIN`), `repo` (`CONDUCTOR_REVIEW_REPO`).
-`enabled` is `false` in the chart until `infra/agents/reviewer.md` exists
-(NEX-273) and the CI gate (NEX-275) have both merged; NEX-275's PR sets it to
-`true`. Metrics
+`enabled` is `true` in the chart now that `infra/agents/reviewer.md`
+(NEX-273) and the CI gate (NEX-275) have both merged. Metrics
 `conductor_reviews_total{trigger,verdict}`,
 `conductor_review_duration_seconds`, `conductor_review_limit_reached_total`,
 `conductor_review_sessions{kind}`, `conductor_review_linear_identity{kind}`,
 `conductor_review_linear_auth_failures_total`; alert
 `ConductorReviewsFailing`; row "Reviews" on the Conductor dashboard.
+
+### CI gate
+
+No automatic review starts for an issue whose pull request checks are not all
+green. The agent still owns the move to In Review; conductor enforces it and
+recovers when the agent moves too early. The check runs **inside**
+`ReviewManager`'s trigger (`Reviews::trigger`, `conductor/src/review/ci_gate.rs`),
+before the `review_runs` row, the `review-<id>` set, the worktree or the prompt
+exist, and again right before the review is queued (the pull request heads are
+read again, so a push in between means no review).
+
+- **What counts as green.** Every check run on the head commit of every open
+  pull request attached to the issue (`GET /repos/{repo}/commits/{sha}/check-runs`,
+  paginated) is `completed` with conclusion `success`, `neutral` or `skipped`.
+  No check runs yet is *pending*, not green. If GitHub cannot be read, CI is
+  treated as not green.
+- **Pending (or unreadable):** the issue is moved to **In Progress**, with the
+  comment `CI not finished on <repo> PR <n>; moved back until it passes.`, and
+  is added to the watch list (table `ci_watch`, kept across restarts).
+- **Failed:** the issue is moved to **Todo** with a comment listing each failed
+  check and a link to its log. This is not a review send-back
+  (`send_backs` is unchanged).
+- **Auto-promote.** When every check on a watched issue's pull requests turns
+  green, conductor moves the issue to In Review; the move's webhook runs the
+  gate again like any other entry into review. A failed check on a watched
+  issue sends it to Todo and ends the watch. A push to a watched pull request
+  moves the watch to the new head and restarts the wait. The watch is dropped
+  (and nothing moved) when the issue becomes Done or Canceled or its pull
+  requests close. An issue moved by hand to another state is left alone; the
+  watch stays. After `review.ci.maxWait` (`CONDUCTOR_CI_MAX_WAIT`, default `2h`)
+  with CI still running, conductor comments and stops watching; the issue stays
+  in In Progress.
+- **Events and poll.** Conductor handles `check_suite` and `check_run` events
+  with action `completed` and `pull_request` `synchronize`, which arrive over
+  the same Hookdeck path as the other GitHub events, so CI finishing leads to
+  the state change in under 10 s. A poll every `review.ci.pollInterval`
+  (`CONDUCTOR_CI_POLL_INTERVAL`, default `60s`) re-checks watched issues in
+  case a webhook is lost. Redelivered webhooks make no second move or comment.
+- **`/review` skips the gate:** a person asked for that review explicitly.
+- **Setup:** subscribe the GitHub App **and** the repository webhook (the
+  Hookdeck source `github`) to **Checks** events: the App needs the *Checks:
+  read* permission and the `check_suite` and `check_run` events; the webhook
+  needs `check_suite`, `check_run` and `pull_request`. Without them only the
+  poll works.
+- Metrics `conductor_ci_gate_total{outcome}` (`green`, `pending`, `failed`,
+  `promoted`, `timeout`, `github_error`) and `conductor_ci_watch_issues`; row
+  "CI gate" on the Conductor dashboard.
 
 ### The reviewer's GitHub identity (Annette)
 

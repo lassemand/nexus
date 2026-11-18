@@ -633,6 +633,7 @@ impl Harness {
             review: conductor::review::ReviewConfig {
                 linear_write_budget: Duration::from_millis(500),
                 linear_retry: Duration::from_millis(20),
+                ci_poll_interval: Duration::from_millis(100),
                 ..Default::default()
             },
         };

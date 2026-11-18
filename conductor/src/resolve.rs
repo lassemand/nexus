@@ -189,9 +189,10 @@ impl GroupResolver for BranchResolver {
             InboundEvent::LinearIssueTodo { .. }
             | InboundEvent::LinearIssueClosed { .. }
             | InboundEvent::ReviewRequested { .. } => return Some(group_key_for(event)),
-            InboundEvent::LinearIssueStateChanged { .. } | InboundEvent::ReviewCommand { .. } => {
-                return None
-            }
+            InboundEvent::LinearIssueStateChanged { .. }
+            | InboundEvent::ReviewCommand { .. }
+            | InboundEvent::GithubChecksCompleted { .. }
+            | InboundEvent::GithubPrPushed { .. } => return None,
             InboundEvent::GithubPrComment { comment, .. } => comment,
         };
 

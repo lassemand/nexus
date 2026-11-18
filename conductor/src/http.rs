@@ -12,9 +12,10 @@ use axum::{
 
 use crate::{
     github::{
-        dispatchable_issue_comment, dispatchable_review_comment, is_review_bot, is_review_command,
-        review_command, review_request, verify_github_signature, IssueCommentPayload,
-        PrCommentKind, PullRequestEventPayload, ReviewCommentPayload,
+        checks_completed, dispatchable_issue_comment, dispatchable_review_comment, is_review_bot,
+        is_review_command, pr_push, review_command, review_request, verify_github_signature,
+        CheckEventPayload, IssueCommentPayload, PrCommentKind, PullRequestEventPayload,
+        ReviewCommentPayload,
     },
     linear::{closed_issue, dispatchable_issue, state_change, LinearWebhook},
     EventSink, InboundEvent,
@@ -292,6 +293,19 @@ async fn handle_github(
                     return StatusCode::BAD_REQUEST;
                 }
             };
+            if let Some(push) = pr_push(&payload) {
+                metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "accepted").increment(1);
+                submit(
+                    &state.sink,
+                    InboundEvent::GithubPrPushed {
+                        repo: push.repo,
+                        pr_number: push.pr_number,
+                        head_sha: push.head_sha,
+                        delivery_id: delivery,
+                    },
+                );
+                return StatusCode::OK;
+            }
             let command = review_request(
                 &payload,
                 &state.watched_github_users,
@@ -303,6 +317,28 @@ async fn handle_github(
                     &state.sink,
                     InboundEvent::ReviewCommand {
                         command,
+                        delivery_id: delivery,
+                    },
+                );
+            }
+        }
+        "check_suite" | "check_run" => {
+            let payload: CheckEventPayload = match serde_json::from_slice(&body) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to parse check payload");
+                    metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => "bad_payload").increment(1);
+                    return StatusCode::BAD_REQUEST;
+                }
+            };
+            let done = checks_completed(&payload);
+            metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => outcome_label(done.is_some())).increment(1);
+            if let Some((repo, head_sha)) = done {
+                submit(
+                    &state.sink,
+                    InboundEvent::GithubChecksCompleted {
+                        repo,
+                        head_sha,
                         delivery_id: delivery,
                     },
                 );

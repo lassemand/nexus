@@ -14,9 +14,14 @@
 //! entering review gets no automatic review, only the `needs-human` label and
 //! a Linear comment; `/review` still works.
 //!
+//! An automatic review starts only when every check run on the head of every
+//! open pull request has passed ([`ci_gate`]); an issue that enters review
+//! earlier is moved out again and watched until CI settles.
+//!
 //! Every review-related Linear write goes through [`ReviewLinear`], which in
 //! production writes as the reviewer's own Linear app.
 
+pub mod ci_gate;
 pub mod cli;
 pub mod store;
 
@@ -96,6 +101,14 @@ pub struct ReviewArgs {
     /// remote of the repository the worktrees come from.
     #[arg(long, env = "CONDUCTOR_REVIEW_REPO")]
     pub review_repo: Option<String>,
+
+    /// How often watched issues are re-checked, in case a webhook is lost.
+    #[arg(long, env = "CONDUCTOR_CI_POLL_INTERVAL", default_value = "60s", value_parser = parse_duration)]
+    pub ci_poll_interval: Duration,
+
+    /// How long an issue is watched for green CI before conductor gives up.
+    #[arg(long, env = "CONDUCTOR_CI_MAX_WAIT", default_value = "2h", value_parser = parse_duration)]
+    pub ci_max_wait: Duration,
 }
 
 impl ReviewArgs {
@@ -112,6 +125,8 @@ impl ReviewArgs {
             timeout: self.review_timeout,
             bot_login: self.review_bot_login.filter(|l| !l.is_empty()),
             repo: self.review_repo.filter(|r| !r.is_empty()),
+            ci_poll_interval: self.ci_poll_interval,
+            ci_max_wait: self.ci_max_wait,
             linear_write_budget: Duration::from_secs(10 * 60),
             linear_retry: Duration::from_secs(2),
         }
@@ -166,6 +181,10 @@ pub struct ReviewConfig {
     /// `owner/name` of the repository the worktrees come from. Only its pull
     /// requests are reviewed; `None` reviews whatever the issue lists.
     pub repo: Option<String>,
+    /// How often watched issues are re-checked.
+    pub ci_poll_interval: Duration,
+    /// How long an issue is watched for green CI.
+    pub ci_max_wait: Duration,
     /// How long a Linear write is retried before the review counts as failed.
     pub linear_write_budget: Duration,
     /// First pause between Linear write retries; doubles up to a minute.
@@ -184,6 +203,8 @@ impl Default for ReviewConfig {
             timeout: Duration::from_secs(45 * 60),
             bot_login: None,
             repo: None,
+            ci_poll_interval: Duration::from_secs(60),
+            ci_max_wait: Duration::from_secs(2 * 3600),
             linear_write_budget: Duration::from_secs(10 * 60),
             linear_retry: Duration::from_secs(2),
         }
@@ -229,6 +250,9 @@ pub struct PrUnderReview {
     pub head_sha: String,
     pub head_ref: String,
 }
+
+/// `(owner/name, number)` of pull requests.
+type PrRefs = Vec<(String, u64)>;
 
 /// A review to paste into a review session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -308,6 +332,8 @@ pub trait ReviewLinear: Send + Sync {
     async fn comment(&self, issue_id: &str, body: &str) -> Result<(), LinearApiError>;
     /// Moves the issue to Todo.
     async fn move_to_todo(&self, issue: &ReviewIssue) -> Result<(), LinearApiError>;
+    /// Moves the issue to the team's workflow state with this name.
+    async fn move_to_state(&self, issue: &ReviewIssue, state: &str) -> Result<(), LinearApiError>;
 }
 
 /// The GitHub calls reviews make.
@@ -329,6 +355,12 @@ pub trait ReviewGithub: Send + Sync {
         -> Result<(), GithubApiError>;
     /// Comments on a pull request.
     async fn comment(&self, repo: &str, number: u64, body: &str) -> Result<(), GithubApiError>;
+    /// Every check run reported for a commit.
+    async fn check_runs(
+        &self,
+        repo: &str,
+        sha: &str,
+    ) -> Result<Vec<ci_gate::CheckRun>, GithubApiError>;
 }
 
 /// The external clients a [`Reviews`] needs.
@@ -547,6 +579,11 @@ pub enum TriggerOutcome {
     Unavailable,
     /// An automatic trigger for an issue that is no longer in the review state.
     NotInReview,
+    /// The checks are not all finished (or could not be read): the issue was
+    /// moved to In Progress and is watched.
+    CiPending,
+    /// A check failed: the issue was moved to Todo.
+    CiFailed,
 }
 
 /// How a finished review is handled.
@@ -603,6 +640,8 @@ pub struct Reviews {
     triggering: StdMutex<HashSet<String>>,
     /// Issues whose finished review is being handled.
     finishing: StdMutex<HashSet<String>>,
+    /// Watched issues being evaluated, so an event and the poll never both act.
+    watching: StdMutex<HashSet<String>>,
     /// Set while a pass runs, so passes never overlap.
     passing: AtomicBool,
 }
@@ -628,6 +667,7 @@ impl Reviews {
             wake,
             triggering: StdMutex::new(HashSet::new()),
             finishing: StdMutex::new(HashSet::new()),
+            watching: StdMutex::new(HashSet::new()),
             passing: AtomicBool::new(false),
         }
     }
@@ -649,6 +689,23 @@ impl Reviews {
                 command,
                 delivery_id,
             } => self.on_command(command, delivery_id).await,
+            InboundEvent::GithubChecksCompleted {
+                repo,
+                head_sha,
+                delivery_id,
+            } => {
+                self.on_checks_completed(&repo, &head_sha, delivery_id)
+                    .await
+            }
+            InboundEvent::GithubPrPushed {
+                repo,
+                pr_number,
+                head_sha,
+                delivery_id,
+            } => {
+                self.on_pr_pushed(&repo, pr_number, &head_sha, delivery_id)
+                    .await
+            }
             _ => {}
         }
     }
@@ -674,6 +731,10 @@ impl Reviews {
     async fn on_state_change(&self, change: IssueStateChange, delivery_id: Option<String>) {
         if !self.first_delivery(delivery_id.as_deref()).await {
             return;
+        }
+        if matches!(change.state_type.as_str(), "completed" | "canceled") {
+            self.drop_watch(&change.issue_id, "the issue was closed")
+                .await;
         }
         if change.state_name.eq_ignore_ascii_case(&self.config.state) {
             let outcome = self
@@ -808,6 +869,11 @@ impl Reviews {
         let prs = match self.open_prs(&issue, extra.clone()).await {
             Ok(prs) => prs,
             Err(reason) => {
+                if trigger == Trigger::Automatic {
+                    tracing::warn!(issue = %issue.identifier, %reason, "pull requests unreadable; CI cannot be confirmed");
+                    let (refs, _) = self.split_refs(&issue, extra.clone());
+                    return self.bounce_unconfirmed(&issue, &refs).await;
+                }
                 self.post_or_log(&issue.id, &failure_comment(&reason)).await;
                 record_metric(trigger, "failed");
                 return TriggerOutcome::Unavailable;
@@ -817,6 +883,11 @@ impl Reviews {
             tracing::info!(issue = %issue.identifier, "no open pull request; no review");
             self.post_or_log(&issue.id, NO_PR_COMMENT).await;
             return TriggerOutcome::NoPr;
+        }
+        if trigger == Trigger::Automatic {
+            if let Err(outcome) = self.require_green(&issue, &prs).await {
+                return outcome;
+            }
         }
 
         let slug = key.slug();
@@ -835,6 +906,15 @@ impl Reviews {
             tracing::warn!(group = %slug, "a stale review set exists; closing it first");
             self.close_set(&key).await;
         }
+
+        let prs = if trigger == Trigger::Automatic {
+            match self.reconfirm_green(&issue, extra.clone()).await {
+                Ok(fresh) => fresh,
+                Err(outcome) => return outcome,
+            }
+        } else {
+            prs
+        };
 
         let verdict_path = self.worktree_root.join(&slug).join(VERDICT_FILE);
         let _ = std::fs::remove_file(&verdict_path);
@@ -897,12 +977,9 @@ impl Reviews {
         Ok(true)
     }
 
-    /// The issue's open pull requests, with their current heads.
-    async fn open_prs(
-        &self,
-        issue: &ReviewIssue,
-        extra: Option<(String, u64)>,
-    ) -> Result<Vec<PrUnderReview>, String> {
+    /// The pull requests an issue lists (plus `extra`), split into those in
+    /// the reviewed repository and those in another one.
+    fn split_refs(&self, issue: &ReviewIssue, extra: Option<(String, u64)>) -> (PrRefs, PrRefs) {
         let mut refs: Vec<(String, u64)> = Vec::new();
         for (repo, number) in issue
             .attachment_urls
@@ -914,21 +991,21 @@ impl Reviews {
                 refs.push((repo, number));
             }
         }
-        let mut out = Vec::new();
-        let mut foreign: Vec<(String, u64)> = Vec::new();
-        for (repo, number) in refs {
-            if self
-                .config
+        refs.into_iter().partition(|(repo, _)| {
+            self.config
                 .repo
                 .as_deref()
-                .is_some_and(|ours| !ours.eq_ignore_ascii_case(&repo))
-            {
-                foreign.push((repo, number));
-                continue;
-            }
+                .is_none_or(|ours| ours.eq_ignore_ascii_case(repo))
+        })
+    }
+
+    /// The open ones of `refs`, with their current heads.
+    async fn read_prs(&self, refs: &[(String, u64)]) -> Result<Vec<PrUnderReview>, String> {
+        let mut out = Vec::new();
+        for (repo, number) in refs {
             let pr = self
                 .github
-                .pull_request(&repo, number)
+                .pull_request(repo, *number)
                 .await
                 .map_err(|e| format!("pull request {repo}#{number} could not be read ({e})"))?;
             if pr.open {
@@ -941,6 +1018,17 @@ impl Reviews {
                 });
             }
         }
+        Ok(out)
+    }
+
+    /// The issue's open pull requests, with their current heads.
+    async fn open_prs(
+        &self,
+        issue: &ReviewIssue,
+        extra: Option<(String, u64)>,
+    ) -> Result<Vec<PrUnderReview>, String> {
+        let (refs, foreign) = self.split_refs(issue, extra);
+        let out = self.read_prs(&refs).await?;
         if !foreign.is_empty() {
             let list = foreign
                 .iter()

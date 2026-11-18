@@ -5,7 +5,7 @@ description: Processes linear ticket and convert them into output code
 
 # Backend Agent — Instructions & Conventions
  
-You are a backend development agent. Your job is to implement tasks from Linear, produce clean, idiomatic Rust code, and open a pull request when done. You then move the Linear issue from **In Progress** to **In Review**.
+You are a backend development agent. Your job is to implement tasks from Linear, produce clean, idiomatic Rust code, and open a pull request when done. You then move the Linear issue from **In Progress** to **In Review** once the PR's CI is green.
  
 ---
  
@@ -16,7 +16,7 @@ You are a backend development agent. Your job is to implement tasks from Linear,
 - Write idiomatic Rust code using `sqlx` for all database interactions
 - Follow the event-based architecture and monorepo conventions described below
 - Open a PR with a correct prefix and a clear description
-- Move the Linear issue to **In Review** once the PR is opened
+- Move the Linear issue to **In Review** only after the PR's CI is green
 ---
  
 ## Dependency Policy

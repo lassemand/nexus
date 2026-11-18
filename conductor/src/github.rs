@@ -281,6 +281,68 @@ pub struct PullRequestEventPayload {
     pub requested_reviewer: Option<GithubUser>,
     pub sender: Option<GithubUser>,
     pub repository: Option<GithubRepository>,
+    pub pull_request: Option<PullRequestHead>,
+}
+
+/// The part of a `pull_request` payload's pull request that names its head.
+#[derive(Debug, Deserialize)]
+pub struct PullRequestHead {
+    pub head: Option<PullRequestHeadSha>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PullRequestHeadSha {
+    pub sha: String,
+}
+
+/// A new head on a pull request: a `pull_request` `synchronize` event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrPush {
+    pub repo: String,
+    pub pr_number: u64,
+    pub head_sha: String,
+}
+
+/// Reduces a `pull_request` event to a push, or `None` for any other action.
+pub fn pr_push(payload: &PullRequestEventPayload) -> Option<PrPush> {
+    if payload.action.as_deref() != Some("synchronize") {
+        return None;
+    }
+    Some(PrPush {
+        repo: payload.repository.as_ref()?.full_name.clone(),
+        pr_number: payload.number?,
+        head_sha: payload.pull_request.as_ref()?.head.as_ref()?.sha.clone(),
+    })
+}
+
+/// Payload for `check_suite` and `check_run`; only the commit is needed.
+#[derive(Debug, Deserialize)]
+pub struct CheckEventPayload {
+    pub action: Option<String>,
+    pub check_suite: Option<CheckCommit>,
+    pub check_run: Option<CheckCommit>,
+    pub repository: Option<GithubRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CheckCommit {
+    pub head_sha: String,
+}
+
+/// `(repo, head sha)` of a `check_suite` or `check_run` that completed, or
+/// `None` for any other action.
+pub fn checks_completed(payload: &CheckEventPayload) -> Option<(String, String)> {
+    if payload.action.as_deref() != Some("completed") {
+        return None;
+    }
+    let commit = payload
+        .check_suite
+        .as_ref()
+        .or(payload.check_run.as_ref())?;
+    Some((
+        payload.repository.as_ref()?.full_name.clone(),
+        commit.head_sha.clone(),
+    ))
 }
 
 /// Reduces a `pull_request` event to a review request when a watched user
@@ -536,5 +598,48 @@ mod tests {
             None
         )
         .is_none());
+    }
+
+    #[test]
+    fn a_completed_check_suite_or_run_names_its_commit() {
+        for kind in ["check_suite", "check_run"] {
+            let payload: CheckEventPayload = serde_json::from_value(json!({
+                "action": "completed",
+                kind: { "head_sha": "abc" },
+                "repository": { "full_name": "o/r" }
+            }))
+            .unwrap();
+            assert_eq!(
+                checks_completed(&payload),
+                Some(("o/r".into(), "abc".into()))
+            );
+        }
+        let requested: CheckEventPayload = serde_json::from_value(json!({
+            "action": "requested", "check_suite": { "head_sha": "abc" },
+            "repository": { "full_name": "o/r" }
+        }))
+        .unwrap();
+        assert_eq!(checks_completed(&requested), None);
+    }
+
+    #[test]
+    fn only_synchronize_is_a_push() {
+        let event = |action: &str| -> PullRequestEventPayload {
+            serde_json::from_value(json!({
+                "action": action, "number": 7,
+                "pull_request": { "head": { "sha": "def" } },
+                "repository": { "full_name": "o/r" }
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            pr_push(&event("synchronize")),
+            Some(PrPush {
+                repo: "o/r".into(),
+                pr_number: 7,
+                head_sha: "def".into()
+            })
+        );
+        assert_eq!(pr_push(&event("opened")), None);
     }
 }

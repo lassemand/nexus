@@ -628,6 +628,8 @@ impl Dispatcher {
             event,
             InboundEvent::LinearIssueStateChanged { .. }
                 | InboundEvent::ReviewCommand { .. }
+                | InboundEvent::GithubChecksCompleted { .. }
+                | InboundEvent::GithubPrPushed { .. }
                 | InboundEvent::ReviewRequested { .. }
         ) {
             match (&self.reviews, &event) {
@@ -767,6 +769,9 @@ impl Dispatcher {
             tracing::info!(
                 "LINEAR_API_KEY not set; automatic closing of finished sets is disabled"
             );
+        }
+        if let Some(reviews) = &self.reviews {
+            tokio::spawn(Arc::clone(reviews).run_ci_poll());
         }
         // `None` makes the first pass sweep, catching sets finished while down.
         let mut last_sweep: Option<Instant> = None;
@@ -1965,6 +1970,8 @@ fn event_name(event: &InboundEvent) -> &'static str {
         InboundEvent::LinearIssueStateChanged { .. } => "issue_state_changed",
         InboundEvent::ReviewCommand { .. } => "review_command",
         InboundEvent::ReviewRequested { .. } => "review_requested",
+        InboundEvent::GithubChecksCompleted { .. } => "checks_completed",
+        InboundEvent::GithubPrPushed { .. } => "pr_pushed",
     }
 }
 
@@ -1980,6 +1987,17 @@ fn prompt_for(event: &InboundEvent) -> String {
         InboundEvent::GithubPrComment { comment, .. } => serde_json::to_string(comment),
         InboundEvent::LinearIssueStateChanged { change, .. } => serde_json::to_string(change),
         InboundEvent::ReviewCommand { command, .. } => serde_json::to_string(command),
+        InboundEvent::GithubChecksCompleted { repo, head_sha, .. } => {
+            serde_json::to_string(&serde_json::json!({ "repo": repo, "head_sha": head_sha }))
+        }
+        InboundEvent::GithubPrPushed {
+            repo,
+            pr_number,
+            head_sha,
+            ..
+        } => serde_json::to_string(
+            &serde_json::json!({ "repo": repo, "pr_number": pr_number, "head_sha": head_sha }),
+        ),
     }
     .unwrap_or_else(|_| "{}".to_string());
 
@@ -1997,7 +2015,10 @@ fn issue_identifier(event: &InboundEvent) -> Option<String> {
         InboundEvent::LinearIssueClosed { issue, .. } => Some(issue.identifier.clone()),
         InboundEvent::LinearIssueStateChanged { change, .. } => Some(change.identifier.clone()),
         InboundEvent::ReviewRequested { request } => Some(request.identifier.clone()),
-        InboundEvent::GithubPrComment { .. } | InboundEvent::ReviewCommand { .. } => None,
+        InboundEvent::GithubPrComment { .. }
+        | InboundEvent::ReviewCommand { .. }
+        | InboundEvent::GithubChecksCompleted { .. }
+        | InboundEvent::GithubPrPushed { .. } => None,
     }
 }
 
@@ -2008,7 +2029,9 @@ fn delivery_id(event: &InboundEvent) -> Option<&str> {
         | InboundEvent::LinearIssueClosed { delivery_id, .. }
         | InboundEvent::GithubPrComment { delivery_id, .. }
         | InboundEvent::LinearIssueStateChanged { delivery_id, .. }
-        | InboundEvent::ReviewCommand { delivery_id, .. } => delivery_id.as_deref(),
+        | InboundEvent::ReviewCommand { delivery_id, .. }
+        | InboundEvent::GithubChecksCompleted { delivery_id, .. }
+        | InboundEvent::GithubPrPushed { delivery_id, .. } => delivery_id.as_deref(),
         InboundEvent::ReviewRequested { .. } => None,
     }
 }
@@ -2452,6 +2475,8 @@ mod config_tests {
                 review_timeout: Duration::from_secs(45 * 60),
                 review_bot_login: None,
                 review_repo: None,
+                ci_poll_interval: Duration::from_secs(60),
+                ci_max_wait: Duration::from_secs(2 * 3600),
             },
         }
     }

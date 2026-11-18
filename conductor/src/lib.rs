@@ -65,6 +65,20 @@ pub enum InboundEvent {
         command: ReviewCommand,
         delivery_id: Option<String>,
     },
+    /// A check suite or check run finished on a commit. Drives the CI gate's
+    /// re-check of watched issues.
+    GithubChecksCompleted {
+        repo: String,
+        head_sha: String,
+        delivery_id: Option<String>,
+    },
+    /// A push to a pull request (a new head). Resets a CI watch.
+    GithubPrPushed {
+        repo: String,
+        pr_number: u64,
+        head_sha: String,
+        delivery_id: Option<String>,
+    },
     /// A review to run, queued in a review set. Never comes from a webhook.
     ReviewRequested { request: ReviewRequest },
 }
@@ -143,6 +157,21 @@ impl EventSink for LogSink {
                     delivery_id = ?delivery_id,
                     "review requested on a pull request"
                 );
+            }
+            InboundEvent::GithubChecksCompleted {
+                repo,
+                head_sha,
+                delivery_id,
+            } => {
+                tracing::info!(%repo, %head_sha, delivery_id = ?delivery_id, "github checks completed");
+            }
+            InboundEvent::GithubPrPushed {
+                repo,
+                pr_number,
+                head_sha,
+                delivery_id,
+            } => {
+                tracing::info!(%repo, pr_number, %head_sha, delivery_id = ?delivery_id, "github pull request pushed");
             }
             InboundEvent::ReviewRequested { request } => {
                 tracing::info!(identifier = %request.identifier, "review queued");

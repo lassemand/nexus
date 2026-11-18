@@ -149,6 +149,10 @@ spec:
               value: {{ .Values.review.timeout | quote }}
             - name: CONDUCTOR_REVIEW_BOT_LOGIN
               value: {{ .Values.review.botLogin | quote }}
+            - name: CONDUCTOR_CI_POLL_INTERVAL
+              value: {{ .Values.review.ci.pollInterval | quote }}
+            - name: CONDUCTOR_CI_MAX_WAIT
+              value: {{ .Values.review.ci.maxWait | quote }}
             # Where the entrypoint prepares the reviewer app's identity, which
             # review sessions start with (conductor-review-session). Must agree
             # with ${CONDUCTOR_DATA_DIR:-/data}/state in the entrypoint.
