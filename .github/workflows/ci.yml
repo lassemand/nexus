@@ -150,4 +150,7 @@ jobs:
           echo "CONDUCTOR_REVIEW_UID=$reviewer_uid" >> "$GITHUB_ENV"
 
       - name: Review session isolation
-        run: bash conductor/deploy/review-isolation-test.sh
+        run: |
+          grep -E 'Cap(Bnd|Eff)|NoNewPrivs' /proc/self/status
+          /usr/local/libexec/conductor-review-switch --probe || true
+          bash conductor/deploy/review-isolation-test.sh

@@ -615,9 +615,9 @@ configure_review_identity() {
   fi
   if [[ "${CONDUCTOR_REVIEW_SKIP_SWITCH_CHECK:-0}" != "1" ]]; then
     local probed
-    probed="$("$switch" --probe 2>/dev/null)" || probed=""
+    probed="$("$switch" --probe 2>&1)" || probed="failed: ${probed}"
     if [[ "$probed" != "$REVIEW_UID" ]]; then
-      review_not_ready "${switch} cannot switch to uid ${REVIEW_UID} (it needs file capabilities cap_setuid,cap_setgid and a pod that allows privilege escalation)"
+      review_not_ready "${switch} cannot switch to uid ${REVIEW_UID}: ${probed//$'\n'/ } (it needs file capabilities cap_setuid,cap_setgid and a pod that allows privilege escalation)"
       return 0
     fi
   fi
