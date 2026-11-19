@@ -329,8 +329,11 @@ fn two_kernels_run_concurrently_without_blocking_each_other() {
 
 #[test]
 fn a_configured_deadline_applies() {
+    // Longer than the default, and checked from below: a slow runner only adds
+    // time, so the lower bound cannot flake, and the default would end at ~50 ms.
+    let deadline = analyst::KERNEL_DEADLINE * 6;
     let config = RuntimeConfig {
-        deadline: Duration::from_millis(10),
+        deadline,
         ..RuntimeConfig::default()
     };
     let kernel = KernelRuntime::new(config)
@@ -339,7 +342,12 @@ fn a_configured_deadline_applies() {
         .expect("loads");
     let started = Instant::now();
     assert_eq!(error_of(&kernel, b"Xspin"), KernelError::Timeout);
-    assert!(started.elapsed() < Duration::from_millis(30));
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= deadline - analyst::KERNEL_DEADLINE,
+        "timed out after {elapsed:?}, before the configured {deadline:?}"
+    );
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
 }
 
 #[tokio::test]
