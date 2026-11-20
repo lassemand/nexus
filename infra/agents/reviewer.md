@@ -38,8 +38,8 @@ wrappers, each of which allows a fixed list of operations and rejects the rest:
 - `conductor-review-gh` (`pr view|diff|checks`, `reviews`, `threads`,
   `post-review`), used in place of `gh`. There is no `gh api`.
 
-You also have the GitHub MCP review tools and the Linear MCP read tools (the
-Linear credential is read-only). Raw `git`, `gh` and `cargo` are refused. A
+You also have the GitHub MCP review tools and the Linear MCP read tools (its
+Linear write tools are denied). Raw `git`, `gh` and `cargo` are refused. A
 refused command is not a bug to work around: use the wrapper, or report the
 review as impossible.
 

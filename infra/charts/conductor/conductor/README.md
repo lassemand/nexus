@@ -44,7 +44,7 @@ change is needed.
 | `GITHUB_WEBHOOK_SECRET` | webhook signature verification |
 | `CONDUCTOR_AUTH_MODE` | `subscription` or `api_key` — the billing choice, made explicit |
 | `HOOKDECK_API_KEY` | only needed once `hookdeck.enabled` is true |
-| `REVIEW_LINEAR_READ_API_KEY` | a **read-only** Linear API key for review sessions; without it reviews start nothing ("The review session's boundary") |
+| `REVIEW_LINEAR_READ_API_KEY` | optional: a Linear API key for review sessions' Linear MCP, in place of `LINEAR_API_KEY` ("The review session's boundary") |
 
 Plus **exactly one** model credential:
 
@@ -357,7 +357,7 @@ At every start the entrypoint (`configure_review_identity`) prepares
 
 | Path | What | Reviewer uid |
 |---|---|---|
-| `identity/` | the reviewer's key, its ids, a git config with its own credential cache, an MCP config (GitHub as the reviewer app, Linear with the **read-only** key), the Claude settings (`conductor/deploy/reviewer-settings.json` plus the four conductor hooks), `bot-login`, and last `ready` (or `not-ready` with the reason) | read |
+| `identity/` | the reviewer's key, its ids, a git config with its own credential cache, an MCP config (GitHub as the reviewer app, Linear with `LINEAR_API_KEY` or the optional `REVIEW_LINEAR_READ_API_KEY`), the Claude settings (`conductor/deploy/reviewer-settings.json` plus the four conductor hooks), `bot-login`, and last `ready` (or `not-ready` with the reason) | read |
 | `home/` | its `HOME`: `.claude.json`, the `reviewer` agent, transcripts, a copy of the model login | read and write |
 | `cargo/`, `target/` | its own `CARGO_HOME` and `CARGO_TARGET_DIR` | read and write |
 
@@ -461,26 +461,24 @@ exit code and that a marker file the injected command would have written is
 absent (`conductor/tests/review_wrappers.rs`); `review_settings.rs` evaluates the
 settings the way Claude Code's `dontAsk` mode does.
 
-**4. Linear is read-only.** The reviewer's `mcp.json` holds
-`REVIEW_LINEAR_READ_API_KEY`, a Linear API key created with the **Read** permission
-only, never `LINEAR_API_KEY`; the entrypoint refuses to prepare the identity when
-it is unset or equal to `LINEAR_API_KEY`. (The reviewer's OAuth app could in
-principle mint a `read`-scope token, since the client-credentials grant takes a
-`scope`, but that token lives 30 days and would need `mcp.json` rewritten while
-the pod runs; a static read-only key needs neither.) Conductor's own review
-writes (comments, state moves) are unchanged and run in conductor, not in the
-session. One-time setup, with `patch` so the other properties stay (never
-`put`):
+**4. Linear: the existing key, with the write tools denied.** The reviewer's
+`mcp.json` uses `LINEAR_API_KEY` (the decision recorded on NEX-285: reuse the
+existing write key rather than issue a separate one), or
+`REVIEW_LINEAR_READ_API_KEY` when that optional property is set. The Linear write
+tools (`save_*`, `delete_*`, `create_*`) are not allowed and are denied, but **the
+key itself is readable by the review session**, so a prompt injection that runs
+code (through a pull request's `build.rs`, say) could use it with `curl` to write
+to Linear as the author. This is an accepted risk. To close it, create a Linear
+API key with the **Read** permission only and store it, with `patch` so the other
+properties stay (never `put`):
 
 ```bash
-# Linear -> Settings -> Account -> Security & access -> Personal API keys ->
-# New API key, permission: Read only. Then:
 vault kv patch secret/nexus/conductor REVIEW_LINEAR_READ_API_KEY=<read-only key>
 ```
 
-The `dataFrom: extract` ExternalSecret turns it into an environment variable
-within its 1h refresh; restart the pod. Never paste it into a pull request,
-issue or chat.
+and restart the pod after the ExternalSecret's 1h refresh. Conductor's own review
+writes (comments, state moves) are unchanged and run in conductor, not in the
+session.
 
 **5. Fail closed.** There is no fallback to the author's credentials any more.
 Every failure in `configure_review_identity` logs `review identity NOT ready:
@@ -502,8 +500,8 @@ the hook endpoint is unauthenticated, so a review session could forge a hook
 event for a set. Sandboxing `build.rs` and proc macros beyond the uid is out of
 scope.
 
-Without the three `REVIEW_GITHUB_APP_*` properties, `REVIEW_LINEAR_READ_API_KEY`,
-or a working switch, the identity is not ready and reviews start nothing.
+Without the three `REVIEW_GITHUB_APP_*` properties, a Linear key, or a working
+switch, the identity is not ready and reviews start nothing.
 
 Known limit: GitHub does not let an app be picked as a reviewer before it has
 reviewed (see **Re-request review**).

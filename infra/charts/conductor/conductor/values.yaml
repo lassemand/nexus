@@ -76,9 +76,9 @@ review:
   # false turns every automatic and manual trigger off. On since NEX-285, which
   # closed the review session's sandbox gaps found in the review of PR 325
   # (README, "The review session's boundary"): a separate uid, argument-checking
-  # wrappers instead of raw git/cargo/gh, a read-only Linear key, reviews only
+  # wrappers instead of raw git/cargo/gh, Linear write tools denied, reviews only
   # for allowed authors, and a fail-closed identity. Needs
-  # REVIEW_GITHUB_APP_* and REVIEW_LINEAR_READ_API_KEY in Vault; without them
+  # REVIEW_GITHUB_APP_* in Vault; without them
   # no review starts and each trigger says why in Linear.
   enabled: true
   # Linear state whose entry starts an automatic review.

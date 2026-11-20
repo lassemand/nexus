@@ -757,15 +757,18 @@ not_ready_case() {
 
 (
   review_sandbox
-  unset REVIEW_LINEAR_READ_API_KEY
-  not_ready_case "no read-only Linear key" "REVIEW_LINEAR_READ_API_KEY is not set"
+  unset REVIEW_LINEAR_READ_API_KEY LINEAR_API_KEY
+  not_ready_case "no Linear key at all" "neither REVIEW_LINEAR_READ_API_KEY nor LINEAR_API_KEY"
   rm -rf "$SANDBOX"
 )
 
 (
   review_sandbox
-  export REVIEW_LINEAR_READ_API_KEY=lin-key
-  not_ready_case "the author's Linear key as the read key" "same key as LINEAR_API_KEY"
+  unset REVIEW_LINEAR_READ_API_KEY
+  configure_review_identity >/dev/null 2>&1
+  [[ -f "${REVIEW_DIR}/ready" ]] && ok "LINEAR_API_KEY alone is enough" || bad "LINEAR_API_KEY alone is enough"
+  check "linear in mcp.json then uses LINEAR_API_KEY" \
+    "$(jq -r '.mcpServers.linear.headers.Authorization' "${REVIEW_DIR}/mcp.json")" "Bearer lin-key"
   rm -rf "$SANDBOX"
 )
 
@@ -825,10 +828,8 @@ not_ready_case() {
   check "mcp uses the reviewer app" \
     "$(jq -r '.mcpServers.github.args | join(" ")' "${dir}/mcp.json")" \
     "stdio --app-id 42 --app-installation-id 7 --app-private-key-path ${dir}/private-key.pem --toolsets context,repos,pull_requests,issues"
-  check "linear in mcp.json uses the read-only key" \
+  check "linear in mcp.json prefers the optional read-only key" \
     "$(jq -r '.mcpServers.linear.headers.Authorization' "${dir}/mcp.json")" "Bearer lin-read-key"
-  grep -q "lin-key" "${dir}/mcp.json" && bad "the author's Linear key is not in mcp.json" || ok "the author's Linear key is not in mcp.json"
-  grep -rq "lin-key" "$dir" "${SANDBOX}/review" && bad "the author's Linear key is nowhere under review/" || ok "the author's Linear key is nowhere under review/"
   check "git uses its own credential cache" \
     "$(git config --file "${dir}/gitconfig" --get-all credential.https://github.com.helper | head -1 | grep -c "${SANDBOX}/review/home/.cache/git-review")" "1"
   jq -e '.permissions.deny | index("Bash(git:*)")' "${dir}/settings.json" >/dev/null \

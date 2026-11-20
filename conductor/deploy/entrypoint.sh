@@ -631,12 +631,9 @@ configure_review_identity() {
     review_not_ready "REVIEW_GITHUB_APP_ID and REVIEW_GITHUB_APP_INSTALLATION_ID must be numbers"
     return 0
   fi
-  if [[ -z "${REVIEW_LINEAR_READ_API_KEY:-}" ]]; then
-    review_not_ready "REVIEW_LINEAR_READ_API_KEY is not set; the reviewer needs a read-only Linear API key and never gets LINEAR_API_KEY"
-    return 0
-  fi
-  if [[ -n "${REVIEW_LINEAR_READ_API_KEY:-}" && "${REVIEW_LINEAR_READ_API_KEY}" == "${LINEAR_API_KEY:-}" ]]; then
-    review_not_ready "REVIEW_LINEAR_READ_API_KEY is the same key as LINEAR_API_KEY; it must be a separate read-only key"
+  local linear_key="${REVIEW_LINEAR_READ_API_KEY:-${LINEAR_API_KEY:-}}"
+  if [[ -z "$linear_key" ]]; then
+    review_not_ready "neither REVIEW_LINEAR_READ_API_KEY nor LINEAR_API_KEY is set"
     return 0
   fi
   if [[ ! -r "$settings_src" ]]; then
@@ -682,7 +679,7 @@ configure_review_identity() {
     --arg app "$REVIEW_GITHUB_APP_ID" \
     --arg installation "$REVIEW_GITHUB_APP_INSTALLATION_ID" \
     --arg key "$key" \
-    --arg linear "$REVIEW_LINEAR_READ_API_KEY" \
+    --arg linear "$linear_key" \
     '{mcpServers: {
         github: {type: "stdio", command: "github-mcp-server",
                  args: ["stdio", "--app-id", $app, "--app-installation-id", $installation,
