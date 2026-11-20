@@ -20,6 +20,11 @@ Shadow trades (no_buy, abstain, skipped_no_kernel) show what would have happened
 pub const DEFAULT_LIMIT: i64 = 200;
 const MAX_LIMIT: i64 = 1000;
 
+/// Seconds either side of a trade's publish instant within which a stored release of the same
+/// company counts as the same release (signal's `TWIN_WINDOW_SECS`: the analyst decides on the
+/// first language copy, and signal later replaces the stored `source_id` with the English copy's).
+const TWIN_WINDOW_SECS: i32 = 120;
+
 /// Parses a `since` argument: an RFC 3339 instant or a `YYYY-MM-DD` date (UTC midnight).
 pub fn parse_since(value: &str) -> Result<DateTime<Utc>, String> {
     let value = value.trim();
@@ -170,7 +175,7 @@ pub async fn summarise(
             FROM simulated_trades t
             JOIN simulated_trade_observations o ON o.trade_id = t.trade_id
             WHERE t.status = 'closed' AND t.entry_ask > 0
-              AND o.status = 'ok' AND o.bid IS NOT NULL
+              AND o.status = 'ok' AND NOT o.late AND o.bid IS NOT NULL
               AND ($1::timestamptz IS NULL OR t.published_at >= $1)
               AND ($2::text IS NULL OR t.ticker = $2)
         ), ranked AS (
@@ -199,7 +204,12 @@ pub async fn summarise(
         WITH entered AS (
             SELECT t.release_to_entry_ms,
                    COALESCE((SELECT se.release_session FROM special_events se
-                             WHERE se.source_id = t.news_id AND se.release_session IS NOT NULL
+                             WHERE se.ticker = t.ticker AND se.exchange_mic = t.exchange_mic
+                               AND se.status = 'occurred' AND se.release_session IS NOT NULL
+                               AND se.occurred_at BETWEEN t.published_at - make_interval(secs => $3)
+                                                      AND t.published_at + make_interval(secs => $3)
+                             ORDER BY (se.source_id = t.news_id) DESC,
+                                      abs(extract(epoch FROM se.occurred_at - t.published_at)), se.id
                              LIMIT 1), 'unknown') AS release_session
             FROM simulated_trades t
             WHERE t.release_to_entry_ms IS NOT NULL
@@ -221,6 +231,7 @@ pub async fn summarise(
     )
     .bind(since)
     .bind(ticker)
+        .bind(f64::from(TWIN_WINDOW_SECS))
     .fetch_all(pool)
     .await?;
 
@@ -354,7 +365,7 @@ mod tests {
         )
         .bind(trade_id)
         .bind(bid_30m)
-        .bind(trade_id == 3)
+        .bind(status == "no_exit_quote")
         .execute(pool)
         .await
         .unwrap();
@@ -402,6 +413,41 @@ mod tests {
         let unknown = &summary["release_to_entry"]["by_release_session"][0];
         assert_eq!(unknown["release_session"], "unknown");
         assert_eq!(unknown["median_ms"], "200.0");
+    }
+
+    #[sqlx::test(migrations = "../signal/migrations")]
+    async fn a_late_observation_is_not_part_of_the_horizon_figures(pool: PgPool) {
+        seed(&pool, 1, "buy", "closed", "100", "101").await;
+        sqlx::query("UPDATE simulated_trade_observations SET late = true")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let summary = summarise(&pool, None, None).await.unwrap();
+        assert!(summary["pnl"]["by_decision_and_horizon"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(summary["pnl"]["closed_trades"], 1);
+        assert_eq!(summary["observations"]["late"], 1);
+    }
+
+    #[sqlx::test(migrations = "../signal/migrations")]
+    async fn the_release_session_survives_a_language_twin_merge(pool: PgPool) {
+        seed(&pool, 1, "buy", "closed", "100", "101").await;
+        sqlx::query(
+            r#"INSERT INTO special_events
+               (ticker, exchange_mic, event_type, occurred_at, source, source_id, lang, status,
+                release_session)
+               SELECT 'AAA', 'XSTO', 'quarterly_report', published_at - interval '20 seconds',
+                      'mfn', 'english-copy-id', 'en', 'occurred', 'pre_open'
+               FROM simulated_trades WHERE trade_id = 1"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let summary = summarise(&pool, None, None).await.unwrap();
+        let session = &summary["release_to_entry"]["by_release_session"][0];
+        assert_eq!(session["release_session"], "pre_open");
     }
 
     #[sqlx::test(migrations = "../signal/migrations")]

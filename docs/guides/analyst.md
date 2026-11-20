@@ -98,8 +98,8 @@ different topics and may arrive in either order, so they are joined on `news_id`
 `summarise_analyst_trades(since?, ticker?)`. The results are forward-only and simulated (no look-ahead, no backfill),
 per share, without fees or position sizing; a release before the open measures the move after the open; shadow trades
 (`no_buy`, `abstain`, `skipped_no_kernel`) show what would have happened and are not actions taken. The summary takes
-P&L only from `closed` trades (`(bid(horizon) - entry_ask) / entry_ask * 100`, in SQL `NUMERIC`) and reports how many
-trades were excluded and why. `trade_results` belongs to the old US earnings strategy and is untouched.
+P&L only from `closed` trades and observations with status `ok` that were not late (`(bid(horizon) - entry_ask) / entry_ask * 100`, in SQL `NUMERIC`; late observations are counted separately) and reports how many
+trades were excluded and why. The release session (pre-open or intraday) is found by the same company and an `occurred_at` within 120 s of the trade's publish time, because signal replaces a stored release's `source_id` with the English copy's id when it merges language twins. `trade_results` belongs to the old US earnings strategy and is untouched.
 
 ## Tracing
 
