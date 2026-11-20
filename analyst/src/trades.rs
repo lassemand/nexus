@@ -234,6 +234,8 @@ pub struct StoredTrade {
     pub id: i64,
     /// The decision simulated.
     pub decision_id: i64,
+    /// MFN's news id of the decision's release, read from the decision.
+    pub news_id: String,
     /// The company's ticker.
     pub ticker: String,
     /// The company's exchange.
@@ -341,7 +343,8 @@ const TRADE_COLUMNS: &str = "id, decision_id, ticker, exchange_mic, decision, sh
      entry_target_at, entry_at, entry_ask, entry_bid, entry_saxo_at, exit_target_at, exit_at, exit_bid, exit_ask, \
      pnl_per_share, pnl_pct, currency, release_to_entry_ms, status, version, trace_id, release_traceparent, \
      trade_trace_id, entry_quote_source, entry_quote_saxo_time, entry_quote_age_ms, exit_quote_source, \
-     exit_quote_saxo_time, exit_quote_age_ms";
+     exit_quote_saxo_time, exit_quote_age_ms, \
+     (SELECT d.news_id FROM decisions d WHERE d.id = sim_trades.decision_id) AS news_id";
 
 const OBSERVATION_COLUMNS: &str =
     "trade_id, horizon, scheduled_at, fetched_at, bid, ask, bid_type, ask_type, delayed_minutes, late, status, \
@@ -565,6 +568,7 @@ pub fn to_proto(trade: &StoredTrade, observations: &[StoredObservation]) -> Anal
     AnalystTrade {
         trade_id: trade.id,
         decision_id: trade.decision_id,
+        news_id: trade.news_id.clone(),
         ticker: trade.ticker.clone(),
         exchange_mic: trade.exchange_mic.clone(),
         decision: trade.decision.clone(),

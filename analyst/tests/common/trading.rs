@@ -275,6 +275,7 @@ impl TradeStore for MemStore {
         let trade = StoredTrade {
             id: i64::try_from(state.trades.len()).expect("small") + 1,
             decision_id: new.decision_id,
+            news_id: format!("n{}", new.decision_id),
             ticker: new.ticker.clone(),
             exchange_mic: new.exchange_mic.clone(),
             decision: new.decision.clone(),

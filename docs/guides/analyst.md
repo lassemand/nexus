@@ -83,6 +83,24 @@ database. Preparation transcripts: the Job logs while the Job exists (`kubectl -
 and the run record in `prep_runs`. Decisions and simulated trades: Kafka (`analyst.decisions`, 30 days;
 `analyst.trades`, 90 days) and signal's `backtest` database.
 
+## The backtest
+
+`signal` consumes `analyst.decisions` and `analyst.trades` (env `ANALYST_DECISIONS_TOPIC`, `ANALYST_TRADES_TOPIC`)
+into `analyst_decisions` (by `news_id`), `simulated_trades` (by `trade_id`) and `simulated_trade_observations`. A
+trade is written only when its `version` is higher than the stored one, and its observations are replaced in the
+same transaction, so reordered or redelivered messages never overwrite newer state. A trade and its decision come from
+different topics and may arrive in either order, so they are joined on `news_id` (indexed, no foreign key) when read.
+`AnalystTrade.news_id` (field 32) carries the key. The quote-source columns (`entry_quote_source`, `*_quote_saxo_time`,
+`*_quote_age_ms`, observation `quote_source`/`quote_age_ms`) are stored from NEX-271's fields; a source other than
+`stream` or `request` rejects the message. Prices are `NUMERIC(20,6)`, `pnl_pct` `NUMERIC(12,4)`. A decimal that does not parse rejects the whole message.
+
+`insight` reads them with `fetch_analyst_trades(ticker?, decision?, since?, include_shadow = true, limit = 200)` and
+`summarise_analyst_trades(since?, ticker?)`. The results are forward-only and simulated (no look-ahead, no backfill),
+per share, without fees or position sizing; a release before the open measures the move after the open; shadow trades
+(`no_buy`, `abstain`, `skipped_no_kernel`) show what would have happened and are not actions taken. The summary takes
+P&L only from `closed` trades and observations with status `ok` that were not late (`(bid(horizon) - entry_ask) / entry_ask * 100`, in SQL `NUMERIC`; late observations are counted separately) and reports how many
+trades were excluded and why. The release session (pre-open or intraday) is found by the same company and an `occurred_at` within 120 s of the trade's publish time, because signal replaces a stored release's `source_id` with the English copy's id when it merges language twins. `trade_results` belongs to the old US earnings strategy and is untouched.
+
 ## Tracing
 
 Each release is one trace of the `analyst` service, root span `process special.events`, continuing the
