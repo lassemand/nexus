@@ -44,6 +44,7 @@ change is needed.
 | `GITHUB_WEBHOOK_SECRET` | webhook signature verification |
 | `CONDUCTOR_AUTH_MODE` | `subscription` or `api_key` — the billing choice, made explicit |
 | `HOOKDECK_API_KEY` | only needed once `hookdeck.enabled` is true |
+| `REVIEW_LINEAR_READ_API_KEY` | optional: a Linear API key for review sessions' Linear MCP, in place of `LINEAR_API_KEY` ("The review session's boundary") |
 
 Plus **exactly one** model credential:
 
@@ -160,8 +161,9 @@ nothing. A review starts within seconds when a review slot is free; reviews run
 off every trading path.
 
 - **Its own set and slots.** Each review runs in the set
-  `review-<identifier>` (e.g. `review-nex-270`), in a worktree detached at the
-  pull request head, never in the author's worktree. It has its own limit,
+  `review-<identifier>` (e.g. `review-nex-270`), in a standalone clone detached
+  at the pull request head (`/data/worktrees/review-<id>`, writable by the
+  reviewer uid), never in the author's worktree. It has its own limit,
   `review.maxSessions` (`CONDUCTOR_MAX_REVIEW_SESSIONS`), so a review never
   takes a slot from implementation work. The set is closed once the verdict is
   handled (worktree and registry row removed, transcript kept), so every
@@ -197,6 +199,23 @@ off every trading path.
 - **Which pull requests.** Only those in the repository the worktrees come from
   (`review.repo`, `CONDUCTOR_REVIEW_REPO`, default the `origin` remote of
   `CONDUCTOR_REPO_ROOT`); others the issue lists are commented on and skipped.
+  And only those by an **allowed author**, because a review session runs the
+  pull request's code and reads its text: the pull request's GitHub author
+  (`user.login`, read from GitHub when the review is triggered, compared
+  case-insensitively) must be in `githubWebhookUsers` (`GITHUB_WEBHOOK_USERS`,
+  the same list and parser as the comment filter) or be the author app's own bot
+  login (e.g. `nexus-mcp[bot]`). The bot login is read from the author app at
+  startup (`GET /app`, logged as `author app: <slug>[bot]`) and can be set or
+  overridden with `CONDUCTOR_AUTHOR_BOT_LOGIN`; if it cannot be read and is not
+  set, only `githubWebhookUsers` are reviewed and a warning names the override.
+  The bot is **not** added to `githubWebhookUsers`: that would send the agent's
+  own pull request comments back into its session. The check applies to every
+  trigger (entering review, `/review`, a review request) and runs before the CI
+  gate and before any side effect. Other pull requests of the issue are listed
+  in a Linear comment as skipped; with none left, no session starts, the issue
+  stays in review and the comment is `Review not started: no pull request by an
+  allowed author (<repo> PR <n> by <login>, ...)`
+  (`conductor_review_skipped_total{reason="author_not_allowed"}`).
   A pull request a `/review` names stays part of the review if it is queued
   again after a new head.
 - **Waiting.** A review waits for a free review slot without a deadline. The
@@ -205,7 +224,8 @@ off every trading path.
   `session:review-*` Linear label is ignored (the issue gets its own set), and
   a review never closes a set of another kind that has the same name.
 - **`/review`.** A comment starting with `/review` on a pull request, from a
-  `githubWebhookUsers` login, queues a review for the issue that owns it (the
+  `githubWebhookUsers` login and on a pull request by an allowed author (see
+  above), queues a review for the issue that owns it (the
   `NEX-<n>` in the branch name, else the Linear link in the description),
   whatever the limit. Conductor reacts with 👀 when it is queued; the comment is
   not sent to the author's set. At most one review per issue is queued or
@@ -236,11 +256,14 @@ Settings (`values.yaml` `review`, environment in brackets): `enabled`
 `model` (`CONDUCTOR_REVIEW_MODEL`), `maxSessions`
 (`CONDUCTOR_MAX_REVIEW_SESSIONS`), `timeout` (`CONDUCTOR_REVIEW_TIMEOUT`,
 `45m`, `2700s` or `1h`), `botLogin` (`CONDUCTOR_REVIEW_BOT_LOGIN`), `repo` (`CONDUCTOR_REVIEW_REPO`).
-`enabled` is `false` in the chart: `infra/agents/reviewer.md` (NEX-273) and
-the CI gate (NEX-275) have merged, but reviews stay off until the reviewer's
-sandbox boundary findings from PR 325 are fixed; a follow-up PR turns them on.
-Metrics
+`enabled` is `true` in the chart since the review session's boundary
+(NEX-285, "The review session's boundary" below) closed the gaps found in the
+review of PR 325. Conductor keeps reviews off, with an error in its log, when
+`CONDUCTOR_REVIEW_IDENTITY_DIR` is unset, and a review whose identity is not
+ready starts no session (below). Metrics
 `conductor_reviews_total{trigger,verdict}`,
+`conductor_review_failures_total{reason}` (`identity_not_ready`),
+`conductor_review_skipped_total{reason}` (`author_not_allowed`),
 `conductor_review_duration_seconds`, `conductor_review_limit_reached_total`,
 `conductor_review_sessions{kind}`, `conductor_review_linear_identity{kind}`,
 `conductor_review_linear_auth_failures_total`; alert
@@ -330,32 +353,158 @@ if one were attempted. One-time setup:
    events" → add **Pull requests**). Only needed for **Re-request review**.
 
 At every start the entrypoint (`configure_review_identity`) prepares
-`/data/state/review-identity` (`CONDUCTOR_REVIEW_IDENTITY_DIR`, mode 0700): the
-reviewer's key, its ids, a git config with its own credential cache, an MCP
-config (GitHub as the reviewer app, Linear) and the Claude settings
-(`conductor/deploy/reviewer-settings.json`). It mints a token to prove the
-credentials work and reads the app's slug (`GET /app`) for the bot login,
-which it logs (`reviewer app: annette-review[bot]`). A review session then
-starts as `conductor-review-session claude ... --permission-mode dontAsk
---settings ... --mcp-config ... --strict-mcp-config`: the launcher drops every
-other credential from the environment (the author app's key, `GITHUB_TOKEN`,
-`LINEAR_API_KEY`, `DATABASE_URL`, ...), points git, `gh` and the credential
-helper at the reviewer app, and mints a one-hour token for `gh`. In `dontAsk`
-mode every tool outside the settings' allow list is refused: reading, `git
-log/diff/show/fetch/checkout`, `gh pr view/diff/checks`, `gh api`, `cargo
-check/clippy/test`, the GitHub review tools, the Linear read tools, and writes
-under `.review/` only; `git push`, `git commit`, `gh pr merge` and every Linear
-write are denied outright.
+`/data/review` (`CONDUCTOR_REVIEW_IDENTITY_DIR` is `/data/review/identity`):
 
-Without the three `REVIEW_GITHUB_APP_*` properties (or if the key does not
-work) the entrypoint logs a warning and review sessions run as the author app,
-with `--dangerously-skip-permissions` like any other session; such a review
-can request changes but cannot approve.
+| Path | What | Reviewer uid |
+|---|---|---|
+| `identity/` | the reviewer's key, its ids, a git config with its own credential cache, an MCP config (GitHub as the reviewer app, Linear with `LINEAR_API_KEY` or the optional `REVIEW_LINEAR_READ_API_KEY`), the Claude settings (`conductor/deploy/reviewer-settings.json` plus the four conductor hooks), `bot-login`, and last `ready` (or `not-ready` with the reason) | read |
+| `home/` | its `HOME`: `.claude.json`, the `reviewer` agent, transcripts, a copy of the model login | read and write |
+| `cargo/`, `target/` | its own `CARGO_HOME` and `CARGO_TARGET_DIR` | read and write |
 
-Known limits: the author app's key file is on the same volume, readable by the
-same user, so the separation inside the pod rests on the environment and the
-`Read` deny rules rather than on file permissions. GitHub does not let an app be
-picked as a reviewer before it has reviewed (see **Re-request review**).
+It mints a token to prove the credentials work and reads the app's slug
+(`GET /app`) for the bot login, which it logs (`reviewer app:
+annette-review[bot]`).
+
+### The review session's boundary (NEX-285)
+
+A review session reads untrusted text (the diff, comments) and runs the pull
+request's code. So that a prompt injection in a pull request cannot merge,
+close or edit pull requests, push, write to Linear as the author, or run
+arbitrary commands as the author, the session is separated from conductor and
+the author sessions in five ways.
+
+**1. A separate uid, 1001 `reviewer`.** Conductor and the author sessions run
+as uid 1000 and the container never runs as root. A review set's tmux pane
+runs `conductor-review-launch claude ...` as uid 1000, which hands over to
+`/usr/local/libexec/conductor-review-switch`, which becomes uid/gid 1001 and
+execs `conductor-review-session` with an allow-listed environment. As 1001 the
+session cannot read the author app's key (`/data/home/.config/github-app`), the
+git credential cache socket, `/data/home/.claude.json` or `~/.claude`
+credentials, a conductor process's `/proc/<pid>/environ`, or the tmux server's;
+and cannot write any author worktree, the author's home, or the identity
+directory (so it cannot rewrite its own settings). It can read and write its
+own review checkout, `home/`, `cargo/` and `target/` (so a review compiles in
+its own target directory, not the shared `CARGO_TARGET_DIR`: a build artifact
+the reviewer can write must not be one the author builds from. The cost is one
+more workspace build on `/data` per crate set touched, the first time, and
+cargo's registry cache, a few hundred MB to a few GB; `rm -rf /data/review/target`
+reclaims it).
+
+- *Mechanism, and why it is the smaller surface.* A C program, 90 lines
+  (`conductor/deploy/review-switch.c`), with the file capabilities
+  `cap_setuid,cap_setgid+ep` set in the image. It can only become uid/gid 1001
+  (compiled in; it cannot name root or anyone else), only runs for uid 1000 (the
+  file is `root:agent 0750` and it checks its real uid), execs one fixed
+  program, clears the environment down to an allow-list, drops supplementary
+  groups, sets `no_new_privs` and `umask 0`. The alternative, a second
+  container running the review tmux server as another uid, would need a shared
+  volume with the author's container, a second set of credentials and probes,
+  a way for conductor to drive a tmux server in another container (a socket
+  both can write, which is itself an attack surface) and a different
+  `sessions attach`; the helper changes none of that. The pod needs
+  `allowPrivilegeEscalation: true` (the chart sets it explicitly) and keeps the
+  default capability set; the entrypoint runs the switch with `--probe` and
+  keeps the identity not ready if it does not reach uid 1001.
+- *`/data` is made sticky.* The volume provisioner creates `/data` as `0777`
+  without the sticky bit, which would let uid 1001 rename `/data/home` or
+  `/data/worktrees` away and put its own in place. An init container
+  (`data-sticky-bit`, root, all capabilities dropped but `FOWNER`, read-only
+  root filesystem, one `chmod 1777 /data`) sets the bit before conductor
+  starts; the entrypoint refuses to declare the reviewer ready while `/data` is
+  world-writable without it. `/data/home` and `/data/state` are `0700`.
+- *The review checkout is a clone, not a worktree.* A `git worktree` shares the
+  author's `.git` (objects, config, hooks, the worktree index), which uid 1001
+  must not write. Conductor makes a standalone clone (`git init` + `fetch` from
+  the author's repository, `origin` pointing at GitHub) as uid 1000, opens it
+  with `chmod -R a+rwX`, and never runs git inside it afterwards (its config and
+  hooks are the reviewer's), removing it with `remove_dir_all`. The verdict
+  file is read as a regular file of bounded size, never through a link.
+- *The model login.* The reviewer cannot read `/data/home/.claude`, so
+  `conductor-review-launch` copies the current `~/.claude/.credentials.json` into
+  `home/.claude/` before each switch (subscription mode); with
+  `ANTHROPIC_API_KEY` the key is passed through the switch's environment
+  allow-list. A subscription login that refreshes in the reviewer's copy while
+  the author's refreshes too can leave one of them stale until the next launch
+  copies it again; a review is at most 45 minutes.
+- *Tested.* `conductor/deploy/review-isolation-test.sh` starts sessions through
+  tmux and the real switch and asserts every denial above plus that the
+  operator's tmux (`sessions attach`, `send-keys`, `kill-session`) still
+  drives the pane. CI job `review-isolation` runs it on a runner; the release
+  and image-verification workflows run it inside the image.
+
+**2. No raw GitHub API.** `Bash(gh api:*)` is gone. The reviewer app has Pull
+requests: write, so `gh api` could close, edit or retitle any pull request.
+Instead `conductor-review-gh` exposes `pr view|diff|checks <n>`, `reviews`,
+`threads` (a fixed GraphQL query) and `post-review` (a `POST` of one
+`.review/review-<n>.json` with only the keys `commit_id`, `event`, `body`,
+`comments`), building every request itself, so the method and endpoint cannot be
+chosen; replies and thread resolution use the GitHub MCP tools
+(`add_reply_to_pull_request_comment`, `pull_request_review_write`). The wrapper
+mints the reviewer app's token per call; no token sits in the session's
+environment. Merge, close and edit paths (`merge_pull_request`,
+`update_pull_request`, `issue_write`, `label_write`, ...) are not allowed and
+are also on the deny list.
+
+**3. No command injection through allowed tools.** `reviewer-settings.json`
+allows only `conductor-review-git` (`log`, `diff`, `show`, `fetch origin`,
+`checkout`, `status`, `rev-parse`, `blame`, `ls-files`), `conductor-review-cargo`
+(`check`, `clippy`, `test`) and `conductor-review-gh`; raw `git`, `gh` and
+`cargo` are denied. The wrappers reject `--config`, `-Z`, `--manifest-path`
+outside the worktree, `--upload-pack`, `--receive-pack`, `-c`, `--exec-path`,
+`--no-index`, `--output`, `ext::` remotes and more; clear `CARGO_*` (keeping
+`CARGO_TARGET_DIR`), `RUSTC*`, `RUSTFLAGS`, `GIT_*`, `LD_PRELOAD` and the tokens;
+refuse a worktree with a `.cargo/config` (a pull request controls it, and it can
+name a runner or wrapper); and pin the toolchain to `stable`. Building a pull
+request still runs its `build.rs` and proc macros: that is inherent to running
+tests, and the uid is what contains it. Tests, one per rejected form, check the
+exit code and that a marker file the injected command would have written is
+absent (`conductor/tests/review_wrappers.rs`); `review_settings.rs` evaluates the
+settings the way Claude Code's `dontAsk` mode does.
+
+**4. Linear: the existing key, with the write tools denied.** The reviewer's
+`mcp.json` uses `LINEAR_API_KEY` (the decision recorded on NEX-285: reuse the
+existing write key rather than issue a separate one), or
+`REVIEW_LINEAR_READ_API_KEY` when that optional property is set. The Linear write
+tools (`save_*`, `delete_*`, `create_*`) are not allowed and are denied, but **the
+key itself is readable by the review session**, so a prompt injection that runs
+code (through a pull request's `build.rs`, say) could use it with `curl` to write
+to Linear as the author. This is an accepted risk. To close it, create a Linear
+API key with the **Read** permission only and store it, with `patch` so the other
+properties stay (never `put`):
+
+```bash
+vault kv patch secret/nexus/conductor REVIEW_LINEAR_READ_API_KEY=<read-only key>
+```
+
+and restart the pod after the ExternalSecret's 1h refresh. Conductor's own review
+writes (comments, state moves) are unchanged and run in conductor, not in the
+session.
+
+**5. Fail closed.** There is no fallback to the author's credentials any more.
+Every failure in `configure_review_identity` logs `review identity NOT ready:
+<reason>`, keeps `ready` absent and writes the reason to `identity/not-ready`.
+`StartSpec::for_key` refuses a review set with no ready identity (and never sets
+`--dangerously-skip-permissions` on a review). A review trigger that finds the
+identity not ready starts no session, posts one Linear comment `Review not
+started: the reviewer identity is not ready (<reason>)`, counts
+`conductor_review_failures_total{reason="identity_not_ready"}` and leaves the
+issue in review. Startup keeps reviews off, with an error, when
+`CONDUCTOR_REVIEW_IDENTITY_DIR` is unset.
+
+**Not covered.** There is no per-uid network egress control inside one pod, so a
+review session can reach the network, and holds the model credential it needs
+(`ANTHROPIC_API_KEY`, or its copy of the subscription login) and the reviewer
+app's key (Pull requests: write, Contents read-only). Conductor's loopback
+listeners (hook port, webhook port) accept connections from any uid in the pod;
+the hook endpoint is unauthenticated, so a review session could forge a hook
+event for a set. Sandboxing `build.rs` and proc macros beyond the uid is out of
+scope.
+
+Without the three `REVIEW_GITHUB_APP_*` properties, a Linear key, or a working
+switch, the identity is not ready and reviews start nothing.
+
+Known limit: GitHub does not let an app be picked as a reviewer before it has
+reviewed (see **Re-request review**).
 
 ### The reviewer's own name in Linear (Annette)
 

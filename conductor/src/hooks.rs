@@ -174,7 +174,7 @@ async fn record_branch(state: &HookState, slug: &str) {
         Ok(Some(g)) => g,
         _ => return,
     };
-    if group.worktree.as_os_str().is_empty() {
+    if group.worktree.as_os_str().is_empty() || group.key.is_review() {
         return;
     }
     let Ok(out) = crate::dispatcher::run_git(&group.worktree, &["branch", "--show-current"]).await

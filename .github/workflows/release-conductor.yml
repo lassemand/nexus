@@ -128,6 +128,13 @@ jobs:
           echo "--- tini is PID 1 and reaps orphans ---"
           run bash -lc 'test -x /usr/bin/tini'
 
+          echo "--- the review session's boundary, with the real uid switch (NEX-285) ---"
+          data="$(mktemp -d)"
+          chmod 1777 "$data"
+          docker run --rm --user 1000:1000 \
+            -v "$data:/data" -v "$PWD/conductor/deploy:/test:ro" \
+            nexus-conductor:candidate bash /test/review-isolation-test.sh
+
           echo "All smoke checks passed."
 
       - name: Push image

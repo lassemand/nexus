@@ -54,10 +54,44 @@ spec:
           configMap:
             name: conductor-agents
 
+      # Review sessions run as uid 1001 (NEX-285). /data is created world-writable
+      # by the volume provisioner and without the sticky bit, so that user could
+      # rename the agents' directories under it away and put its own in their
+      # place. This sets the sticky bit and nothing else: it runs as root only
+      # because /data is owned by root, drops every capability but FOWNER, has a
+      # read-only root filesystem and exits before any agent or review runs. The
+      # entrypoint refuses to declare the reviewer ready while /data is
+      # world-writable without the bit.
+      initContainers:
+        - name: data-sticky-bit
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/chmod", "1777", "/data"]
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["FOWNER"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
       containers:
         - name: conductor
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: IfNotPresent
+          # Must stay true, with the default capability set. The review uid
+          # switch (conductor-review-switch) is a file-capability binary
+          # (cap_setuid, cap_setgid); with privilege escalation off or those
+          # capabilities dropped it cannot run, the entrypoint reports
+          # `review identity NOT ready` and reviews fail closed. Nothing is
+          # added to the container's capabilities.
+          securityContext:
+            allowPrivilegeEscalation: true
           # tini as PID 1 reaps the grandchildren claude leaves behind; the
           # entrypoint builds the environment on /data and then execs
           # `conductor serve`.
@@ -154,10 +188,15 @@ spec:
             - name: CONDUCTOR_CI_MAX_WAIT
               value: {{ .Values.review.ci.maxWait | quote }}
             # Where the entrypoint prepares the reviewer app's identity, which
-            # review sessions start with (conductor-review-session). Must agree
-            # with ${CONDUCTOR_DATA_DIR:-/data}/state in the entrypoint.
+            # review sessions start with (conductor-review-launch). Must agree
+            # with ${CONDUCTOR_DATA_DIR:-/data}/review/identity in the
+            # entrypoint, and with the path compiled into
+            # conductor-review-switch.
+            #
+            # A second chart value is deliberately not offered: review.enabled
+            # needs this set, and conductor keeps reviews off without it.
             - name: CONDUCTOR_REVIEW_IDENTITY_DIR
-              value: "/data/state/review-identity"
+              value: "/data/review/identity"
 
           volumeMounts:
             - name: data

@@ -105,16 +105,18 @@ pub struct SessionEnvArgs {
     /// Directory the entrypoint fills with the reviewer's identity: its
     /// GitHub App key and ids, git config, MCP config and Claude settings.
     /// Review sessions run through `review_launcher` with it once it holds a
-    /// `ready` file; until then they run like any other session.
+    /// `ready` file. Until then no review session starts: there is no fallback
+    /// to the author's credentials. Unset, reviews stay off.
     #[arg(long, env = "CONDUCTOR_REVIEW_IDENTITY_DIR")]
     pub review_identity_dir: Option<String>,
 
-    /// Wrapper that starts a review session with only the reviewer's
-    /// credentials (`conductor/deploy/review-session.sh`).
+    /// Wrapper that starts a review session as the reviewer uid, with only the
+    /// reviewer's credentials (`conductor/deploy/review-launch.sh`, which
+    /// hands over through `conductor-review-switch` to `review-session.sh`).
     #[arg(
         long,
         env = "CONDUCTOR_REVIEW_LAUNCHER",
-        default_value = "conductor-review-session"
+        default_value = "conductor-review-launch"
     )]
     pub review_launcher: String,
 
@@ -180,8 +182,8 @@ pub struct SessionEnv {
     pub review_model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
-    /// How review sessions get the reviewer's own identity; `None` runs them
-    /// like any other session.
+    /// How review sessions get the reviewer's own identity. `None`, or an
+    /// identity that is not ready, means no review session starts.
     pub review_launch: Option<ReviewLaunch>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
@@ -423,8 +425,8 @@ pub struct DispatchConfig {
     pub model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
-    /// How review sessions get the reviewer's own identity; `None` runs them
-    /// like any other session.
+    /// How review sessions get the reviewer's own identity. `None`, or an
+    /// identity that is not ready, means no review session starts.
     pub review_launch: Option<ReviewLaunch>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
@@ -1499,8 +1501,8 @@ pub struct StartSpec {
     pub review_model: Option<String>,
     /// Shared `CARGO_TARGET_DIR`; `None` means one per worktree.
     pub cargo_target_dir: Option<PathBuf>,
-    /// How review sessions get the reviewer's own identity; `None` runs them
-    /// like any other session.
+    /// How review sessions get the reviewer's own identity. `None`, or an
+    /// identity that is not ready, means no review session starts.
     pub review_launch: Option<ReviewLaunch>,
     /// Whether to pass `--dangerously-skip-permissions`.
     pub skip_permissions: bool,
@@ -1512,35 +1514,36 @@ impl StartSpec {
     /// The spec for one set: a review set runs the review agent and model, any
     /// other set the spec as it stands. [`launch_session`] applies this to
     /// every start, so the dispatcher and `sessions attach` agree.
-    pub fn for_key(&self, key: &GroupKey) -> StartSpec {
+    pub fn for_key(&self, key: &GroupKey) -> Result<StartSpec, StartRefused> {
         let mut spec = self.clone();
         if key.is_review() {
             spec.agent = self.review_agent.clone();
             spec.model = self.review_model.clone();
             spec.model_from_set = false;
-            match &self.review_launch {
-                Some(launch) if launch.is_ready() => spec.skip_permissions = false,
-                Some(launch) => {
-                    tracing::warn!(
-                        dir = %launch.identity_dir.display(),
-                        "the reviewer's identity is not prepared; the review session runs as the author app"
-                    );
-                    spec.review_launch = None;
-                }
-                None => {}
-            }
+            spec.skip_permissions = false;
+            let launch = self
+                .review_launch
+                .as_ref()
+                .ok_or_else(|| StartRefused("no review identity directory is configured".into()))?;
+            launch.readiness().map_err(StartRefused)?;
         } else {
             spec.review_launch = None;
         }
-        spec
+        Ok(spec)
     }
 }
+
+/// A review session that is not started because the reviewer's identity is
+/// not ready. There is no fallback to the author's credentials.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("review identity not ready: {0}")]
+pub struct StartRefused(pub String);
 
 /// How a review session is started under the reviewer's own identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewLaunch {
-    /// The wrapper that drops every other credential, sets the reviewer
-    /// app's, and execs Claude.
+    /// The wrapper that hands over to the reviewer uid, which drops every
+    /// other credential, sets the reviewer app's, and execs Claude.
     pub launcher: String,
     /// What the entrypoint prepared: `settings.json`, `mcp.json`,
     /// `gitconfig`, `app.env`, the key, `bot-login` and, last, `ready`.
@@ -1551,6 +1554,35 @@ impl ReviewLaunch {
     /// Whether the entrypoint finished preparing the identity.
     pub fn is_ready(&self) -> bool {
         self.identity_dir.join("ready").is_file()
+    }
+
+    /// `Ok` when the identity is ready; otherwise the reason, which is the
+    /// one the entrypoint wrote to `not-ready` when it knew it.
+    pub fn readiness(&self) -> Result<(), String> {
+        if self.is_ready() {
+            return Ok(());
+        }
+        let why = std::fs::read_to_string(self.identity_dir.join("not-ready"))
+            .ok()
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "{} has no `ready` file; see the entrypoint log for `review identity NOT ready`",
+                    self.identity_dir.display()
+                )
+            });
+        Err(why)
+    }
+
+    /// The review sessions' own `CARGO_TARGET_DIR`, beside the identity
+    /// directory (`<review root>/target`). Never the shared one: a build
+    /// artifact the reviewer can write must not be one the author builds from.
+    pub fn target_dir(&self) -> PathBuf {
+        self.identity_dir
+            .parent()
+            .unwrap_or(&self.identity_dir)
+            .join("target")
     }
 
     /// The reviewer app's bot login, as the entrypoint read it from GitHub
@@ -1656,7 +1688,7 @@ pub async fn launch_session(
     repo_lock: Option<&Mutex<()>>,
     events: Option<&Notify>,
 ) -> Result<(), String> {
-    let spec = &spec.for_key(key);
+    let spec = &spec.for_key(key).map_err(|e| e.to_string())?;
     let slug = key.slug();
     let base_ref = registry
         .worktree_ref(key)
@@ -1699,10 +1731,12 @@ pub async fn launch_session(
             .map_err(|e| e.to_string())?;
         // Recorded now as well as after each turn: routing a pull request
         // comment back to this group needs every branch it has worked on.
-        if let Some(branch) = current_branch(&spec.worktree_root, &slug).await {
-            txn.record_branch(key, &branch)
-                .await
-                .map_err(|e| e.to_string())?;
+        if !key.is_review() {
+            if let Some(branch) = current_branch(&spec.worktree_root, &slug).await {
+                txn.record_branch(key, &branch)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
         }
         let r = txn
             .session_for_dispatch(key)
@@ -1713,11 +1747,13 @@ pub async fn launch_session(
     };
 
     let argv = session_argv(spec, session_id, resume);
+    let target = match (key.is_review(), &spec.review_launch) {
+        (true, Some(launch)) => launch.target_dir(),
+        _ => cargo_target_dir(spec, &worktree),
+    };
     let env = vec![(
         "CARGO_TARGET_DIR".to_string(),
-        cargo_target_dir(spec, &worktree)
-            .to_string_lossy()
-            .into_owned(),
+        target.to_string_lossy().into_owned(),
     )];
 
     tracing::info!(group = %slug, resume, "starting session");
@@ -1872,13 +1908,19 @@ pub async fn ensure_worktree(
     Ok(path)
 }
 
-/// Prepares a review set's worktree, detached at the commit under review.
+/// Prepares a review set's checkout: a standalone clone of the repository,
+/// detached at the commit under review.
 ///
-/// Detached rather than on the pull request's branch: that branch is usually
-/// checked out in the author's worktree, where git refuses a second checkout,
-/// and a review never commits. A path that already holds a worktree is reused
-/// after checking `commit` out in it, so a worktree a failed close left behind
-/// never reviews an older commit than the prompt names.
+/// A standalone clone rather than a `git worktree`: a worktree shares the
+/// author's `.git` (objects, config, hooks, the worktree's own index), and the
+/// review session runs as another uid that must not be able to write there.
+/// The clone is made here, as the agent uid, then opened up (`a+rwX`) so the
+/// reviewer uid can use it; it is the one tree the reviewer may write.
+///
+/// Conductor never runs git inside the clone afterwards: its config and hooks
+/// belong to the reviewer, and git would run them as the agent. A path that
+/// exists is therefore removed and cloned again, so a checkout a failed close
+/// left behind never reviews an older commit than the prompt names.
 pub async fn ensure_detached_worktree(
     repo_root: &Path,
     worktree_root: &Path,
@@ -1887,38 +1929,101 @@ pub async fn ensure_detached_worktree(
 ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     let path = worktree_root.join(slug);
     if path.exists() {
-        if path.join(".git").exists() {
-            fetch_commit(repo_root, commit).await?;
-            run_git(&path, &["checkout", "--detach", commit]).await?;
-            let head = run_git(&path, &["rev-parse", "HEAD"]).await?;
-            let wanted = run_git(&path, &["rev-parse", &format!("{commit}^{{commit}}")]).await?;
-            if head.trim() != wanted.trim() {
-                return Err(format!(
-                    "{} is at {} after checking out {commit}",
-                    path.display(),
-                    head.trim()
-                )
-                .into());
-            }
-            tracing::info!(worktree = %path.display(), %commit, "review worktree reused at the commit");
-            return Ok(path);
+        if !path.join(".git").exists() {
+            return Err(format!(
+                "{} exists but is not a git checkout; refusing to touch it",
+                path.display()
+            )
+            .into());
         }
-        return Err(format!(
-            "{} exists but is not a git worktree; refusing to touch it",
-            path.display()
-        )
-        .into());
+        remove_review_checkout(repo_root, &path).await?;
     }
     std::fs::create_dir_all(worktree_root)?;
     fetch_commit(repo_root, commit).await?;
-    let path_str = path.to_string_lossy().to_string();
-    run_git(
-        repo_root,
-        &["worktree", "add", "--detach", &path_str, commit],
-    )
-    .await?;
-    tracing::info!(worktree = %path.display(), %commit, "review worktree ready");
+
+    let review_ref = format!("refs/conductor/review/{slug}");
+    run_git(repo_root, &["update-ref", &review_ref, commit]).await?;
+    let origin = run_git(repo_root, &["remote", "get-url", "origin"]).await?;
+    let origin = origin.trim();
+
+    let staging = worktree_root.join(format!(".{slug}.staging"));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+    let result = async {
+        std::fs::create_dir(&staging)?;
+        run_git(&staging, &["init", "--quiet"]).await?;
+        run_git(&staging, &["remote", "add", "origin", origin]).await?;
+        let repo = repo_root.to_string_lossy().into_owned();
+        run_git(
+            &staging,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                &repo,
+                &format!("+{review_ref}:refs/conductor/review-head"),
+                "+refs/remotes/origin/*:refs/remotes/origin/*",
+            ],
+        )
+        .await?;
+        run_git(&staging, &["checkout", "--quiet", "--detach", commit]).await?;
+        let head = run_git(&staging, &["rev-parse", "HEAD"]).await?;
+        let wanted = run_git(&staging, &["rev-parse", &format!("{commit}^{{commit}}")]).await?;
+        if head.trim() != wanted.trim() {
+            return Err(format!(
+                "the clone is at {} after checking out {commit}",
+                head.trim()
+            )
+            .into());
+        }
+        open_to_reviewer(&staging).await?;
+        std::fs::rename(&staging, &path)?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .await;
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    tracing::info!(worktree = %path.display(), %commit, "review checkout ready");
     Ok(path)
+}
+
+/// Gives every user the access the owner has, so the reviewer uid can work in
+/// a tree the agent uid created. Only ever applied to a review checkout.
+async fn open_to_reviewer(path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let out = Command::new("chmod")
+        .arg("-R")
+        .arg("a+rwX")
+        .arg(path)
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(format!(
+            "chmod of {} failed: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Removes a review checkout without running anything inside it. A checkout
+/// from before reviews used clones is a worktree (`.git` is a file); that one
+/// is removed through the author's repository.
+pub async fn remove_review_checkout(
+    repo_root: &Path,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if path.join(".git").is_file() {
+        let path_str = path.to_string_lossy().into_owned();
+        run_git(repo_root, &["worktree", "remove", "--force", &path_str]).await?;
+        return Ok(());
+    }
+    std::fs::remove_dir_all(path)?;
+    Ok(())
 }
 
 /// Fetches `commit` from `origin`, or everything when the server will not give
@@ -2120,6 +2225,8 @@ mod tests {
 
     #[test]
     fn a_review_key_starts_the_review_agent_and_model_whoever_launches_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ready"), "").unwrap();
         let spec = StartSpec {
             repo_root: "/r".into(),
             worktree_root: "/w".into(),
@@ -2130,11 +2237,14 @@ mod tests {
             review_agent: "reviewer".into(),
             review_model: Some("opus".into()),
             cargo_target_dir: None,
-            review_launch: None,
+            review_launch: Some(ReviewLaunch {
+                launcher: "conductor-review-session".into(),
+                identity_dir: dir.path().to_path_buf(),
+            }),
             skip_permissions: false,
             start_timeout: Duration::from_secs(1),
         };
-        let review = spec.for_key(&GroupKey::review("NEX-1").unwrap());
+        let review = spec.for_key(&GroupKey::review("NEX-1").unwrap()).unwrap();
         assert_eq!(review.agent, "reviewer");
         assert_eq!(review.model.as_deref(), Some("opus"));
         assert!(!review.model_from_set);
@@ -2145,7 +2255,7 @@ mod tests {
             GroupKey::Named("grp".into()),
             GroupKey::Issue("NEX-1".into()),
         ] {
-            let other = spec.for_key(&key);
+            let other = spec.for_key(&key).unwrap();
             assert_eq!(other.agent, "backend");
             assert_eq!(other.model.as_deref(), Some("sonnet"));
             assert!(other.model_from_set);
@@ -2174,15 +2284,21 @@ mod tests {
         };
         let review_key = GroupKey::review("NEX-1").unwrap();
 
-        let unprepared = session_argv(&spec.for_key(&review_key), uuid::Uuid::nil(), false);
+        let refused = spec.for_key(&review_key).unwrap_err();
+        assert!(refused.0.contains("no `ready` file"), "{refused}");
+
+        std::fs::write(dir.path().join("not-ready"), "the key is not usable\n").unwrap();
         assert_eq!(
-            unprepared[0], "claude",
-            "no identity yet: started as before"
+            spec.for_key(&review_key).unwrap_err().0,
+            "the key is not usable"
         );
-        assert!(unprepared.contains(&"--dangerously-skip-permissions".to_string()));
 
         std::fs::write(dir.path().join("ready"), "").unwrap();
-        let argv = session_argv(&spec.for_key(&review_key), uuid::Uuid::nil(), false);
+        let argv = session_argv(
+            &spec.for_key(&review_key).unwrap(),
+            uuid::Uuid::nil(),
+            false,
+        );
         assert_eq!(argv[0], "conductor-review-session");
         assert_eq!(argv[1], "claude");
         assert!(argv
@@ -2204,7 +2320,7 @@ mod tests {
         assert!(!argv.contains(&"--dangerously-skip-permissions".to_string()));
 
         let author = session_argv(
-            &spec.for_key(&GroupKey::Named("grp".into())),
+            &spec.for_key(&GroupKey::Named("grp".into())).unwrap(),
             uuid::Uuid::nil(),
             false,
         );
@@ -2216,6 +2332,56 @@ mod tests {
             spec.review_launch.as_ref().unwrap().bot_login().as_deref(),
             Some("annette-review[bot]")
         );
+    }
+
+    #[test]
+    fn a_review_session_never_starts_without_a_ready_identity_or_with_skipped_permissions() {
+        let ready = tempfile::tempdir().unwrap();
+        std::fs::write(ready.path().join("ready"), "").unwrap();
+        let unready = tempfile::tempdir().unwrap();
+        let launches = [
+            None,
+            Some(ReviewLaunch {
+                launcher: "conductor-review-session".into(),
+                identity_dir: unready.path().to_path_buf(),
+            }),
+            Some(ReviewLaunch {
+                launcher: "conductor-review-session".into(),
+                identity_dir: "/does/not/exist".into(),
+            }),
+            Some(ReviewLaunch {
+                launcher: "conductor-review-session".into(),
+                identity_dir: ready.path().to_path_buf(),
+            }),
+        ];
+        for launch in launches {
+            for skip_permissions in [true, false] {
+                let spec = StartSpec {
+                    repo_root: "/r".into(),
+                    worktree_root: "/w".into(),
+                    claude_bin: "claude".into(),
+                    agent: "backend".into(),
+                    model: None,
+                    model_from_set: false,
+                    review_agent: "reviewer".into(),
+                    review_model: None,
+                    cargo_target_dir: None,
+                    review_launch: launch.clone(),
+                    skip_permissions,
+                    start_timeout: Duration::from_secs(1),
+                };
+                match spec.for_key(&GroupKey::review("NEX-1").unwrap()) {
+                    Ok(review) => {
+                        assert!(!review.skip_permissions);
+                        assert!(review.review_launch.as_ref().unwrap().is_ready());
+                        let argv = session_argv(&review, uuid::Uuid::nil(), true);
+                        assert!(!argv.contains(&"--dangerously-skip-permissions".to_string()));
+                        assert_eq!(argv[0], "conductor-review-session");
+                    }
+                    Err(_) => assert!(launch.as_ref().is_none_or(|l| !l.is_ready())),
+                }
+            }
+        }
     }
 
     #[test]
@@ -2474,6 +2640,7 @@ mod config_tests {
                 max_review_sessions: 1,
                 review_timeout: Duration::from_secs(45 * 60),
                 review_bot_login: None,
+                author_bot_login: None,
                 review_repo: None,
                 ci_poll_interval: Duration::from_secs(60),
                 ci_max_wait: Duration::from_secs(2 * 3600),

@@ -28,9 +28,20 @@ criteria and the repository's own rules.
   name the file and line and say a secret is exposed.
 
 Your GitHub identity is the reviewer app (Contents read-only), so a push would
-fail anyway. Your tool permissions are limited to reading, `git
-log/diff/show/fetch/checkout`, `gh pr view/diff/checks`, `gh api`, `cargo
-check/clippy/test`, the GitHub MCP review tools and the Linear MCP read tools.
+fail anyway. Your tool permissions are limited to reading, and to these
+wrappers, each of which allows a fixed list of operations and rejects the rest:
+
+- `conductor-review-git` (`log`, `diff`, `show`, `fetch origin`, `checkout`,
+  `status`, `rev-parse`, `blame`, `ls-files`), used in place of `git`;
+- `conductor-review-cargo` (`check`, `clippy`, `test`), used in place of
+  `cargo`;
+- `conductor-review-gh` (`pr view|diff|checks`, `reviews`, `threads`,
+  `post-review`), used in place of `gh`. There is no `gh api`.
+
+You also have the GitHub MCP review tools and the Linear MCP read tools (its
+Linear write tools are denied). Raw `git`, `gh` and `cargo` are refused. A
+refused command is not a bug to work around: use the wrapper, or report the
+review as impossible.
 
 ## The prompt
 
@@ -51,7 +62,7 @@ Verdict file: /data/worktrees/review-nex-270/.review/verdict.json
 There is one `PR:` line per open pull request of the task (stacked PRs too).
 Review exactly the `head_sha` given for each: it is the `commit_id` of your
 review and the `head_sha` of your verdict. Your worktree is detached at the
-first PR's head; fetch others with `git fetch origin <sha>`. If a PR's head has
+first PR's head; fetch others with `conductor-review-git fetch origin <sha>`. If a PR's head has
 moved since, review the given SHA anyway: conductor notices the move, discards
 your verdict and starts a new review.
 
@@ -75,14 +86,16 @@ to `.review/threads-<number>.json`, then write the verdict as usual.
 
 ### 2. Settle the earlier reviews
 
-For each PR, list the review threads (`gh api graphql`, `reviewThreads` with
-`isResolved`, `comments { author { login } body path line }`) and the earlier
-reviews (`gh api repos/{owner}/{repo}/pulls/{n}/reviews`).
+For each PR, list the review threads (`conductor-review-gh threads
+<owner/name> <n>`: each thread's `id`, `isResolved`, and its comments with
+`author { login }`, `body`, `path`, `line`) and the earlier reviews
+(`conductor-review-gh reviews <owner/name> <n>`).
 
 For every **unresolved** thread that you (the reviewer bot) opened:
 
-- **Fixed in the code:** resolve it (`resolveReviewThread`), after a one-line
-  reply saying where (`file:line` or commit).
+- **Fixed in the code:** resolve it (`pull_request_review_write` with method
+  `resolve_thread` and the thread's `id`), after a one-line reply
+  (`add_reply_to_pull_request_comment`) saying where (`file:line` or commit).
 - **The author replied with a sound reason** not to change it: resolve it,
   replying that the reason is accepted and why.
 - **Neither:** leave it open. It still blocks, and it counts in this review.
@@ -93,8 +106,8 @@ person is context for your review.
 
 ### 3. Review the whole diff
 
-Read the full diff of every PR (`gh pr diff <n>`, or `git diff
-<base>...<head_sha>`), not only the commits since the last review. Read enough
+Read the full diff of every PR (`conductor-review-gh pr diff <n>`, or
+`conductor-review-git diff <base>...<head_sha>`), not only the commits since the last review. Read enough
 of the surrounding code to understand each change. Check:
 
 - **The acceptance criteria**, one by one, against the checklist.
@@ -129,13 +142,13 @@ of the surrounding code to understand each change. Check:
 ### 4. Verify before reporting
 
 For every candidate finding, read the code around it again and trace the
-scenario. Where it is cheap, prove it: run the relevant test, `cargo check -p
+scenario. Where it is cheap, prove it: run the relevant test, `conductor-review-cargo check -p
 <crate>`, or a small reasoning trace through the code. Report only what holds
 up. A finding you cannot confirm is either dropped or posted as a
 non-blocking question.
 
 Builds share the pod's memory with the author agents. Only build or test the
-crates a PR touches (`cargo test -p <crate>`, `cargo clippy -p <crate>`),
+crates a PR touches (`conductor-review-cargo test -p <crate>`, `conductor-review-cargo clippy -p <crate>`),
 never the whole workspace, and skip it when reading settles the question.
 
 ### 5. Classify
@@ -166,13 +179,15 @@ under "Needs a person", and in the verdict `summary`.
 
 ### 6. Post one review per PR
 
-Post exactly one GitHub review per PR, with all its inline comments, through
-the reviews API. Write the payload to `.review/review-<number>.json` and post
-it:
+Post exactly one GitHub review per PR, with all its inline comments. Write the
+payload to `.review/review-<number>.json` and post it:
 
 ```bash
-gh api -X POST repos/<owner>/<repo>/pulls/<number>/reviews --input .review/review-<number>.json
+conductor-review-gh post-review <owner>/<repo> <number> .review/review-<number>.json
 ```
+
+The wrapper accepts only that file name and only the keys `commit_id`, `event`,
+`body` and `comments`.
 
 ```json
 {
@@ -197,6 +212,7 @@ gh api -X POST repos/<owner>/<repo>/pulls/<number>/reviews --input .review/revie
 - Every comment states the problem, a concrete failure scenario and a
   suggested fix, with `file:line`.
 - The response's `id` is the review id for the verdict.
+- `conductor-review-cargo` refuses a worktree that has a `.cargo/config.toml`. If a PR adds one, that is a blocking finding in itself (a cargo config can name a program to run); say so and do not build.
 
 If a review cannot be posted, do not write the verdict file. Conductor then
 reports the review as failed, and someone can ask for it again.
