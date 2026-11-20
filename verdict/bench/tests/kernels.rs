@@ -1,18 +1,18 @@
-//! The bench kernels and the skeleton sample, built for `wasm32-unknown-unknown`
+//! The bench kernels, built for `wasm32-unknown-unknown`
 //! in the test, run through `KernelRuntime` and compared with native.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 
 use analyst::{KernelRuntime, RunOutcome, RuntimeConfig};
 use verdict_sdk::{run_into, Analyze, Decision, Lang};
 
-#[path = "../../verdict/kernels/bench-common/fixtures.rs"]
+#[path = "../kernels/bench-common/fixtures.rs"]
 mod fixtures;
 
 fn workspace() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn wasm_path(package: &str) -> PathBuf {
@@ -31,7 +31,7 @@ fn build_wasm() {
             .current_dir(workspace())
             .args(["build", "--release", "--target", "wasm32-unknown-unknown"])
             .args(["-p", "verdict-bench-anchored", "-p", "verdict-bench-memmem"])
-            .args(["-p", "verdict-bench-aho", "-p", "verdict-sample"])
+            .args(["-p", "verdict-bench-aho"])
             .status()
             .expect("cargo runs");
         assert!(status.success(), "building the kernels for wasm32 failed");
@@ -120,21 +120,6 @@ fn a_second_run_on_the_same_instance_gives_identical_output() {
             .expect("runs")
             .0;
         assert_eq!(again, first);
-    }
-}
-
-#[test]
-fn the_skeleton_sample_loads_and_abstains() {
-    let kernel = runtime()
-        .load(4, &wasm("verdict-sample"))
-        .expect("the kernel loads");
-    match kernel.run(b"any release text", Lang::Other) {
-        RunOutcome::Ok { verdict, .. } => {
-            assert_eq!(verdict.decision, Decision::Abstain);
-            assert_eq!(verdict.reason, "no lookup defined");
-            assert!(verdict.metrics.is_empty());
-        }
-        RunOutcome::Err(error) => panic!("{error}"),
     }
 }
 

@@ -47,6 +47,9 @@ COPY insight/Cargo.toml   insight/Cargo.toml
 COPY cli/Cargo.toml       cli/Cargo.toml
 COPY conductor/Cargo.toml conductor/Cargo.toml
 COPY telemetry/Cargo.toml telemetry/Cargo.toml
+COPY analyst/Cargo.toml   analyst/Cargo.toml
+COPY verdict/sdk/Cargo.toml verdict/sdk/Cargo.toml
+COPY verdict/kernels/sample/Cargo.toml verdict/kernels/sample/Cargo.toml
 
 # Placeholder sources so Cargo can parse the workspace.
 #
@@ -61,7 +64,9 @@ COPY telemetry/Cargo.toml telemetry/Cargo.toml
 RUN mkdir -p \
       model/src alpha/src chronicle/src signal/src insight/src cli/src \
       conductor/src conductor/tests/fixtures/fake-claude-tty telemetry/src \
+      analyst/src/bin verdict/sdk/src verdict/kernels/sample/src \
     && touch model/src/lib.rs alpha/src/lib.rs chronicle/src/lib.rs conductor/src/lib.rs telemetry/src/lib.rs \
+       analyst/src/lib.rs verdict/sdk/src/lib.rs verdict/kernels/sample/src/lib.rs \
     && printf 'fn main() {\n    println!("Hello, world!");\n}\n' | tee \
         chronicle/src/main.rs \
         chronicle/src/market.rs \
@@ -77,6 +82,7 @@ RUN mkdir -p \
         insight/src/main.rs \
         cli/src/main.rs \
         conductor/src/main.rs \
+        analyst/src/bin/analyst.rs \
         conductor/tests/fixtures/fake-claude-tty/main.rs
 
 RUN cargo fetch --locked
@@ -169,6 +175,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
     tmux \
     ncurses-term \
+    libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
 # gh from GitHub's own apt repository. Used by the agents to open pull
@@ -204,6 +211,15 @@ RUN rustup toolchain install stable --component clippy --component rustfmt \
 RUN groupadd --gid 1000 agent \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash agent
 
+# uid/gid 1001, the reviewer. Review sessions run as this user (NEX-285), so a
+# prompt injection in a pull request cannot read the agent's home, GitHub App
+# key, credential cache or process environment, nor write the agent's
+# worktrees. No login shell, no home on the image: its home is
+# /data/review/home, made by the entrypoint.
+RUN groupadd --gid 1001 reviewer \
+    && useradd --uid 1001 --gid 1001 --no-create-home --home-dir /data/review/home \
+       --shell /usr/sbin/nologin reviewer
+
 # The rust image keeps its toolchain and registry under /usr/local, root-owned.
 # `cargo build` as uid 1000 writes to CARGO_HOME, so this has to be writable by
 # the agent — otherwise every agent build fails on a read-only registry. Done
@@ -238,7 +254,34 @@ COPY conductor/deploy/entrypoint.sh /usr/local/bin/conductor-entrypoint
 # Git invokes this per authenticated operation to mint a short-lived GitHub App
 # installation token, which is what makes the one-hour lifetime a non-issue.
 COPY conductor/deploy/github-app-credential-helper.sh /usr/local/bin/github-app-credential-helper
-RUN chmod 0755 /usr/local/bin/conductor-entrypoint /usr/local/bin/github-app-credential-helper
+# Review sessions start through this, with only the reviewer app's
+# credentials; the entrypoint copies the settings into the reviewer identity.
+COPY conductor/deploy/review-session.sh /usr/local/bin/conductor-review-session
+COPY conductor/deploy/review-launch.sh /usr/local/bin/conductor-review-launch
+# The only git, cargo and gh a review session may run: each allows a fixed list
+# of operations and rejects every argument and variable that names a program.
+COPY conductor/deploy/review-bin/ /usr/local/bin/
+COPY conductor/deploy/reviewer-settings.json /usr/local/share/conductor/reviewer-settings.json
+RUN chmod 0755 /usr/local/bin/conductor-entrypoint /usr/local/bin/github-app-credential-helper \
+      /usr/local/bin/conductor-review-session /usr/local/bin/conductor-review-launch \
+      /usr/local/bin/conductor-review-git /usr/local/bin/conductor-review-cargo \
+      /usr/local/bin/conductor-review-gh
+
+# The uid switch: a C program with file capabilities cap_setuid and cap_setgid
+# that can only become uid/gid 1001 and exec conductor-review-session. Only
+# root:agent may run it (0750), it checks its real uid, and the target is
+# compiled in, so it cannot become root or anyone else. This needs the pod to
+# allow privilege escalation and to keep the default capability bounding set;
+# the entrypoint proves the switch works before it declares the reviewer ready.
+COPY conductor/deploy/review-switch.c /tmp/review-switch.c
+RUN set -eux; \
+    mkdir -p /usr/local/libexec; \
+    gcc -O2 -Wall -Wextra -Werror -o /usr/local/libexec/conductor-review-switch /tmp/review-switch.c; \
+    rm /tmp/review-switch.c; \
+    chown root:agent /usr/local/libexec/conductor-review-switch; \
+    chmod 0750 /usr/local/libexec/conductor-review-switch; \
+    setcap cap_setuid,cap_setgid+ep /usr/local/libexec/conductor-review-switch; \
+    getcap /usr/local/libexec/conductor-review-switch | grep -Eq 'cap_setgid,cap_setuid(=|\+)ep'
 
 # The version is fixed by the image, so the CLI must not replace itself.
 ENV DISABLE_AUTOUPDATER=1

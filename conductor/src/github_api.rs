@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
 
+use crate::review::ci_gate::CheckRun;
 use crate::review::{PullRequest, ReviewGithub};
 
 /// How long a minted installation token is reused; GitHub issues them for an hour.
@@ -132,6 +133,12 @@ struct PrBody {
     body: Option<String>,
     head: PrHead,
     base: Option<PrBase>,
+    user: Option<PrUser>,
+}
+
+#[derive(Deserialize)]
+struct PrUser {
+    login: String,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +158,29 @@ struct PrBase {
 struct PrRepo {
     full_name: Option<String>,
 }
+
+#[derive(Deserialize)]
+struct CheckRunsPage {
+    #[serde(default)]
+    total_count: usize,
+    #[serde(default)]
+    check_runs: Vec<CheckRunBody>,
+}
+
+#[derive(Deserialize)]
+struct CheckRunBody {
+    name: String,
+    status: String,
+    conclusion: Option<String>,
+    html_url: Option<String>,
+    details_url: Option<String>,
+}
+
+/// Check runs asked for per page, GitHub's maximum.
+const CHECK_RUNS_PER_PAGE: usize = 100;
+
+/// Pages read before the list is given up as malformed.
+const CHECK_RUNS_MAX_PAGES: usize = 30;
 
 /// [`ReviewGithub`] over GitHub's REST API.
 pub struct GithubRest {
@@ -239,6 +269,7 @@ impl ReviewGithub for GithubRest {
             head_repo: pr.head.repo.and_then(|r| r.full_name),
             base_repo: pr.base.and_then(|b| b.repo).and_then(|r| r.full_name),
             body: pr.body.unwrap_or_default(),
+            author: pr.user.map(|u| u.login).unwrap_or_default(),
         })
     }
 
@@ -294,6 +325,39 @@ impl ReviewGithub for GithubRest {
             )
             .await?;
         Self::check(&response, &[])
+    }
+
+    async fn check_runs(&self, repo: &str, sha: &str) -> Result<Vec<CheckRun>, GithubApiError> {
+        let mut out: Vec<CheckRun> = Vec::new();
+        for page in 1..=CHECK_RUNS_MAX_PAGES {
+            let response = self
+                .send(
+                    reqwest::Method::GET,
+                    &format!(
+                        "/repos/{repo}/commits/{sha}/check-runs?per_page={CHECK_RUNS_PER_PAGE}&page={page}"
+                    ),
+                    None,
+                )
+                .await?;
+            Self::check(&response, &[])?;
+            let body: CheckRunsPage = response
+                .json()
+                .await
+                .map_err(|e| GithubApiError::Malformed(e.without_url().to_string()))?;
+            let got = body.check_runs.len();
+            out.extend(body.check_runs.into_iter().map(|c| CheckRun {
+                name: c.name,
+                status: c.status,
+                conclusion: c.conclusion,
+                url: c.html_url.or(c.details_url).unwrap_or_default(),
+            }));
+            if got < CHECK_RUNS_PER_PAGE || out.len() >= body.total_count {
+                return Ok(out);
+            }
+        }
+        Err(GithubApiError::Malformed(
+            "check runs did not end after the page limit".into(),
+        ))
     }
 }
 
@@ -373,6 +437,50 @@ mod tests {
         c.remove_label("o/r", 7, "needs-human").await.unwrap();
         c.react("o/r", 9, "eyes").await.unwrap();
         c.comment("o/r", 7, "hi").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_runs_are_read_across_pages() {
+        let server = MockServer::start().await;
+        let run = |n: usize| {
+            serde_json::json!({
+                "name": format!("c{n}"), "status": "completed", "conclusion": "success",
+                "html_url": format!("https://github.com/o/r/runs/{n}")
+            })
+        };
+        let first: Vec<_> = (0..100).map(run).collect();
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/commits/abc/check-runs"))
+            .and(wiremock::matchers::query_param("page", "1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "total_count": 101, "check_runs": first })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/commits/abc/check-runs"))
+            .and(wiremock::matchers::query_param("page", "2"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({ "total_count": 101, "check_runs": [run(100)] }),
+                ),
+            )
+            .mount(&server)
+            .await;
+        let runs = client(&server).check_runs("o/r", "abc").await.unwrap();
+        assert_eq!(runs.len(), 101);
+        assert_eq!(runs[100].url, "https://github.com/o/r/runs/100");
+    }
+
+    #[tokio::test]
+    async fn a_failing_check_run_read_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&server)
+            .await;
+        assert!(client(&server).check_runs("o/r", "abc").await.is_err());
     }
 
     #[tokio::test]

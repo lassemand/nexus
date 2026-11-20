@@ -822,6 +822,12 @@ fn summarise(queued: &QueuedEvent) -> String {
             "{received}  github /review {}#{}",
             command.repo, command.pr_number
         ),
+        InboundEvent::GithubChecksCompleted { repo, head_sha, .. } => {
+            format!("{received}  github checks completed {repo}@{head_sha}")
+        }
+        InboundEvent::GithubPrPushed {
+            repo, pr_number, ..
+        } => format!("{received}  github push {repo}#{pr_number}"),
         InboundEvent::ReviewRequested { request } => format!(
             "{received}  review {} #{} ({})",
             request.identifier,

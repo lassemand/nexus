@@ -14,9 +14,14 @@
 //! entering review gets no automatic review, only the `needs-human` label and
 //! a Linear comment; `/review` still works.
 //!
+//! An automatic review starts only when every check run on the head of every
+//! open pull request has passed ([`ci_gate`]); an issue that enters review
+//! earlier is moved out again and watched until CI settles.
+//!
 //! Every review-related Linear write goes through [`ReviewLinear`], which in
 //! production writes as the reviewer's own Linear app.
 
+pub mod ci_gate;
 pub mod cli;
 pub mod store;
 
@@ -92,17 +97,39 @@ pub struct ReviewArgs {
     #[arg(long, env = "CONDUCTOR_REVIEW_BOT_LOGIN")]
     pub review_bot_login: Option<String>,
 
+    /// GitHub login of the author app (`<slug>[bot]`), whose pull requests are
+    /// reviewed in addition to those of `GITHUB_WEBHOOK_USERS`. The entrypoint
+    /// reads it from the app (`GET /app`); set it to override or to supply it
+    /// when that read failed. It is for reviews only: it is never a watched
+    /// user, so the agent's own comments never come back as events.
+    #[arg(long, env = "CONDUCTOR_AUTHOR_BOT_LOGIN")]
+    pub author_bot_login: Option<String>,
+
     /// `owner/name` of the repository reviews cover; defaults to the `origin`
     /// remote of the repository the worktrees come from.
     #[arg(long, env = "CONDUCTOR_REVIEW_REPO")]
     pub review_repo: Option<String>,
+
+    /// How often watched issues are re-checked, in case a webhook is lost.
+    #[arg(long, env = "CONDUCTOR_CI_POLL_INTERVAL", default_value = "60s", value_parser = parse_duration)]
+    pub ci_poll_interval: Duration,
+
+    /// How long an issue is watched for green CI before conductor gives up.
+    #[arg(long, env = "CONDUCTOR_CI_MAX_WAIT", default_value = "2h", value_parser = parse_duration)]
+    pub ci_max_wait: Duration,
 }
 
 impl ReviewArgs {
     /// Resolves the arguments; the agent and model come from the session
     /// settings, which `conductor sessions` shares.
     pub fn into_config(self, agent: String, model: Option<String>) -> ReviewConfig {
+        let author_bot_login = self.author_bot_login.filter(|l| !l.trim().is_empty());
+        let mut allowed_authors = crate::github::watched_users_from_env();
+        allowed_authors.extend(author_bot_login.clone());
         ReviewConfig {
+            allowed_authors,
+            author_bot_login,
+            launch: None,
             enabled: self.review_enabled,
             state: self.review_state,
             max_iterations: self.review_max_iterations,
@@ -112,6 +139,8 @@ impl ReviewArgs {
             timeout: self.review_timeout,
             bot_login: self.review_bot_login.filter(|l| !l.is_empty()),
             repo: self.review_repo.filter(|r| !r.is_empty()),
+            ci_poll_interval: self.ci_poll_interval,
+            ci_max_wait: self.ci_max_wait,
             linear_write_budget: Duration::from_secs(10 * 60),
             linear_retry: Duration::from_secs(2),
         }
@@ -149,6 +178,15 @@ pub fn parse_duration(value: &str) -> Result<Duration, String> {
 pub struct ReviewConfig {
     /// `false` turns every trigger off.
     pub enabled: bool,
+    /// GitHub logins whose pull requests are reviewed: `GITHUB_WEBHOOK_USERS`
+    /// plus the author app's bot login. Compared case-insensitively. A pull
+    /// request by anyone else never reaches a review session.
+    pub allowed_authors: Vec<String>,
+    /// The author app's bot login, when known.
+    pub author_bot_login: Option<String>,
+    /// How review sessions are started; a review starts only when its
+    /// identity is ready.
+    pub launch: Option<crate::dispatcher::ReviewLaunch>,
     /// Linear state whose entry starts an automatic review.
     pub state: String,
     /// Most send-backs before automatic reviews stop.
@@ -166,6 +204,10 @@ pub struct ReviewConfig {
     /// `owner/name` of the repository the worktrees come from. Only its pull
     /// requests are reviewed; `None` reviews whatever the issue lists.
     pub repo: Option<String>,
+    /// How often watched issues are re-checked.
+    pub ci_poll_interval: Duration,
+    /// How long an issue is watched for green CI.
+    pub ci_max_wait: Duration,
     /// How long a Linear write is retried before the review counts as failed.
     pub linear_write_budget: Duration,
     /// First pause between Linear write retries; doubles up to a minute.
@@ -176,6 +218,9 @@ impl Default for ReviewConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            allowed_authors: vec!["lassemand".into()],
+            author_bot_login: None,
+            launch: None,
             state: "In Review".into(),
             max_iterations: 2,
             model: Some("opus".into()),
@@ -184,6 +229,8 @@ impl Default for ReviewConfig {
             timeout: Duration::from_secs(45 * 60),
             bot_login: None,
             repo: None,
+            ci_poll_interval: Duration::from_secs(60),
+            ci_max_wait: Duration::from_secs(2 * 3600),
             linear_write_budget: Duration::from_secs(10 * 60),
             linear_retry: Duration::from_secs(2),
         }
@@ -229,6 +276,9 @@ pub struct PrUnderReview {
     pub head_sha: String,
     pub head_ref: String,
 }
+
+/// `(owner/name, number)` of pull requests.
+type PrRefs = Vec<(String, u64)>;
 
 /// A review to paste into a review session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -296,6 +346,9 @@ pub struct PullRequest {
     /// Repository the pull request targets, when GitHub says.
     pub base_repo: Option<String>,
     pub body: String,
+    /// GitHub login of the pull request's author (`user.login`); empty when
+    /// GitHub did not say, which no allow-list matches.
+    pub author: String,
 }
 
 /// The Linear calls reviews make. Reads may use any identity; every write is
@@ -308,6 +361,8 @@ pub trait ReviewLinear: Send + Sync {
     async fn comment(&self, issue_id: &str, body: &str) -> Result<(), LinearApiError>;
     /// Moves the issue to Todo.
     async fn move_to_todo(&self, issue: &ReviewIssue) -> Result<(), LinearApiError>;
+    /// Moves the issue to the team's workflow state with this name.
+    async fn move_to_state(&self, issue: &ReviewIssue, state: &str) -> Result<(), LinearApiError>;
 }
 
 /// The GitHub calls reviews make.
@@ -329,6 +384,12 @@ pub trait ReviewGithub: Send + Sync {
         -> Result<(), GithubApiError>;
     /// Comments on a pull request.
     async fn comment(&self, repo: &str, number: u64, body: &str) -> Result<(), GithubApiError>;
+    /// Every check run reported for a commit.
+    async fn check_runs(
+        &self,
+        repo: &str,
+        sha: &str,
+    ) -> Result<Vec<ci_gate::CheckRun>, GithubApiError>;
 }
 
 /// The external clients a [`Reviews`] needs.
@@ -447,10 +508,38 @@ pub struct VerdictPr {
     pub non_blocking: Option<u32>,
 }
 
+/// Largest verdict file read.
+const MAX_VERDICT_BYTES: u64 = 256 * 1024;
+
+/// Reads a file the reviewer wrote. The reviewer is another uid and controls
+/// that directory, so a symlink to one of the agent's files, a device or a
+/// huge file must not be followed: only a regular file of a bounded size is
+/// read, and it must be the file that was checked.
+fn read_regular_file(path: &Path, limit: u64) -> std::io::Result<String> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+
+    let checked = std::fs::symlink_metadata(path)?;
+    if !checked.file_type().is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let file = std::fs::File::open(path)?;
+    let opened = file.metadata()?;
+    if opened.dev() != checked.dev() || opened.ino() != checked.ino() {
+        return Err(std::io::Error::other("the file changed while it was read"));
+    }
+    if opened.len() > limit {
+        return Err(std::io::Error::other("the file is too large"));
+    }
+    let mut text = String::new();
+    file.take(limit).read_to_string(&mut text)?;
+    Ok(text)
+}
+
 /// Reads and validates the verdict against the pull requests the prompt named.
 /// The `Err` is the reason the review failed, phrased for a Linear comment.
 pub fn read_verdict(path: &Path, prs: &[PrUnderReview]) -> Result<Verdict, String> {
-    let text = match std::fs::read_to_string(path) {
+    let text = match read_regular_file(path, MAX_VERDICT_BYTES) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err("the reviewer wrote no verdict file".into())
@@ -528,6 +617,50 @@ pub fn limit_comment(send_backs: i32) -> String {
     )
 }
 
+/// A pull request left out of a review because of its author.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedPr {
+    pub repo: String,
+    pub number: u64,
+    pub login: String,
+}
+
+impl SkippedPr {
+    fn describe(&self) -> String {
+        let login = if self.login.is_empty() {
+            "an unknown author"
+        } else {
+            &self.login
+        };
+        format!("{} PR {} by {}", self.repo, self.number, login)
+    }
+}
+
+/// The Linear comment when every pull request is by an author that is not allowed.
+pub fn no_allowed_author_comment(skipped: &[SkippedPr]) -> String {
+    let list = skipped
+        .iter()
+        .map(SkippedPr::describe)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Review not started: no pull request by an allowed author ({list})")
+}
+
+/// The Linear comment when some pull requests are by authors that are not allowed.
+pub fn skipped_authors_comment(skipped: &[SkippedPr]) -> String {
+    let list = skipped
+        .iter()
+        .map(SkippedPr::describe)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Review skipped for pull requests by an author that is not allowed: {list}")
+}
+
+/// The Linear comment when the reviewer identity is not ready.
+pub fn identity_not_ready_comment(reason: &str) -> String {
+    format!("Review not started: the reviewer identity is not ready ({reason})")
+}
+
 /// The Linear comment when there is nothing to review.
 pub const NO_PR_COMMENT: &str =
     "Automatic review skipped: no open pull request is attached to this issue.";
@@ -543,10 +676,19 @@ pub enum TriggerOutcome {
     LimitReached,
     /// The issue has no open pull request.
     NoPr,
+    /// Every open pull request is by an author that is not allowed.
+    NoAllowedAuthor,
+    /// The reviewer identity is not ready; no session was started.
+    IdentityNotReady,
     /// The issue could not be found or read.
     Unavailable,
     /// An automatic trigger for an issue that is no longer in the review state.
     NotInReview,
+    /// The checks are not all finished (or could not be read): the issue was
+    /// moved to In Progress and is watched.
+    CiPending,
+    /// A check failed: the issue was moved to Todo.
+    CiFailed,
 }
 
 /// How a finished review is handled.
@@ -603,6 +745,8 @@ pub struct Reviews {
     triggering: StdMutex<HashSet<String>>,
     /// Issues whose finished review is being handled.
     finishing: StdMutex<HashSet<String>>,
+    /// Watched issues being evaluated, so an event and the poll never both act.
+    watching: StdMutex<HashSet<String>>,
     /// Set while a pass runs, so passes never overlap.
     passing: AtomicBool,
 }
@@ -628,6 +772,7 @@ impl Reviews {
             wake,
             triggering: StdMutex::new(HashSet::new()),
             finishing: StdMutex::new(HashSet::new()),
+            watching: StdMutex::new(HashSet::new()),
             passing: AtomicBool::new(false),
         }
     }
@@ -649,6 +794,23 @@ impl Reviews {
                 command,
                 delivery_id,
             } => self.on_command(command, delivery_id).await,
+            InboundEvent::GithubChecksCompleted {
+                repo,
+                head_sha,
+                delivery_id,
+            } => {
+                self.on_checks_completed(&repo, &head_sha, delivery_id)
+                    .await
+            }
+            InboundEvent::GithubPrPushed {
+                repo,
+                pr_number,
+                head_sha,
+                delivery_id,
+            } => {
+                self.on_pr_pushed(&repo, pr_number, &head_sha, delivery_id)
+                    .await
+            }
             _ => {}
         }
     }
@@ -674,6 +836,10 @@ impl Reviews {
     async fn on_state_change(&self, change: IssueStateChange, delivery_id: Option<String>) {
         if !self.first_delivery(delivery_id.as_deref()).await {
             return;
+        }
+        if matches!(change.state_type.as_str(), "completed" | "canceled") {
+            self.drop_watch(&change.issue_id, "the issue was closed")
+                .await;
         }
         if change.state_name.eq_ignore_ascii_case(&self.config.state) {
             let outcome = self
@@ -736,12 +902,8 @@ impl Reviews {
             )
             .await;
         tracing::info!(issue = %identifier, by = %command.login, ?outcome, "manual review trigger handled");
-        if outcome == TriggerOutcome::Queued {
-            if let Err(e) = self
-                .github
-                .react(&command.repo, command.comment_id, "eyes")
-                .await
-            {
+        if let (TriggerOutcome::Queued, Some(comment_id)) = (outcome, command.comment_id) {
+            if let Err(e) = self.github.react(&command.repo, comment_id, "eyes").await {
                 tracing::warn!(error = %e, "cannot react to the /review comment");
             }
         }
@@ -809,18 +971,50 @@ impl Reviews {
             return TriggerOutcome::LimitReached;
         }
 
-        let prs = match self.open_prs(&issue, extra.clone()).await {
-            Ok(prs) => prs,
+        let (prs, skipped) = match self.open_prs(&issue, extra.clone()).await {
+            Ok(found) => found,
             Err(reason) => {
+                if trigger == Trigger::Automatic {
+                    tracing::warn!(issue = %issue.identifier, %reason, "pull requests unreadable; CI cannot be confirmed");
+                    let (refs, _) = self.split_refs(&issue, extra.clone());
+                    return self.bounce_unconfirmed(&issue, &refs).await;
+                }
                 self.post_or_log(&issue.id, &failure_comment(&reason)).await;
                 record_metric(trigger, "failed");
                 return TriggerOutcome::Unavailable;
             }
         };
+        for pr in &skipped {
+            tracing::warn!(issue = %issue.identifier, repo = %pr.repo, pr = pr.number, author = %pr.login, "pull request by an author that is not allowed; not reviewed");
+            metrics::counter!("conductor_review_skipped_total", "reason" => "author_not_allowed")
+                .increment(1);
+        }
         if prs.is_empty() {
+            if !skipped.is_empty() {
+                self.post_or_log(&issue.id, &no_allowed_author_comment(&skipped))
+                    .await;
+                return TriggerOutcome::NoAllowedAuthor;
+            }
             tracing::info!(issue = %issue.identifier, "no open pull request; no review");
             self.post_or_log(&issue.id, NO_PR_COMMENT).await;
             return TriggerOutcome::NoPr;
+        }
+        if let Err(reason) = self.identity_ready() {
+            tracing::error!(issue = %issue.identifier, %reason, "the reviewer identity is not ready; no review");
+            metrics::counter!("conductor_review_failures_total", "reason" => "identity_not_ready")
+                .increment(1);
+            self.post_or_log(&issue.id, &identity_not_ready_comment(&reason))
+                .await;
+            return TriggerOutcome::IdentityNotReady;
+        }
+        if !skipped.is_empty() {
+            self.post_or_log(&issue.id, &skipped_authors_comment(&skipped))
+                .await;
+        }
+        if trigger == Trigger::Automatic {
+            if let Err(outcome) = self.require_green(&issue, &prs).await {
+                return outcome;
+            }
         }
 
         let slug = key.slug();
@@ -839,6 +1033,15 @@ impl Reviews {
             tracing::warn!(group = %slug, "a stale review set exists; closing it first");
             self.close_set(&key).await;
         }
+
+        let prs = if trigger == Trigger::Automatic {
+            match self.reconfirm_green(&issue, extra.clone()).await {
+                Ok(fresh) => fresh,
+                Err(outcome) => return outcome,
+            }
+        } else {
+            prs
+        };
 
         let verdict_path = self.worktree_root.join(&slug).join(VERDICT_FILE);
         let _ = std::fs::remove_file(&verdict_path);
@@ -901,12 +1104,9 @@ impl Reviews {
         Ok(true)
     }
 
-    /// The issue's open pull requests, with their current heads.
-    async fn open_prs(
-        &self,
-        issue: &ReviewIssue,
-        extra: Option<(String, u64)>,
-    ) -> Result<Vec<PrUnderReview>, String> {
+    /// The pull requests an issue lists (plus `extra`), split into those in
+    /// the reviewed repository and those in another one.
+    fn split_refs(&self, issue: &ReviewIssue, extra: Option<(String, u64)>) -> (PrRefs, PrRefs) {
         let mut refs: Vec<(String, u64)> = Vec::new();
         for (repo, number) in issue
             .attachment_urls
@@ -918,33 +1118,84 @@ impl Reviews {
                 refs.push((repo, number));
             }
         }
-        let mut out = Vec::new();
-        let mut foreign: Vec<(String, u64)> = Vec::new();
-        for (repo, number) in refs {
-            if self
-                .config
+        refs.into_iter().partition(|(repo, _)| {
+            self.config
                 .repo
                 .as_deref()
-                .is_some_and(|ours| !ours.eq_ignore_ascii_case(&repo))
-            {
-                foreign.push((repo, number));
-                continue;
-            }
+                .is_none_or(|ours| ours.eq_ignore_ascii_case(repo))
+        })
+    }
+
+    /// Whether review sessions can start: the reviewer's identity is prepared.
+    /// `Err` carries the reason, which goes into the Linear comment.
+    fn identity_ready(&self) -> Result<(), String> {
+        match &self.config.launch {
+            Some(launch) => launch.readiness(),
+            None => Err("no review identity directory is configured".into()),
+        }
+    }
+
+    /// Whether a pull request by `login` may be reviewed.
+    fn author_allowed(&self, login: &str) -> bool {
+        !login.is_empty()
+            && self
+                .config
+                .allowed_authors
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(login))
+    }
+
+    /// The open ones of `refs`, read from GitHub now, split into those by an
+    /// allowed author, with their current heads, and those that are not.
+    async fn read_pr_set(
+        &self,
+        refs: &[(String, u64)],
+    ) -> Result<(Vec<PrUnderReview>, Vec<SkippedPr>), String> {
+        let mut out = Vec::new();
+        let mut skipped = Vec::new();
+        for (repo, number) in refs {
             let pr = self
                 .github
-                .pull_request(&repo, number)
+                .pull_request(repo, *number)
                 .await
                 .map_err(|e| format!("pull request {repo}#{number} could not be read ({e})"))?;
-            if pr.open {
-                out.push(PrUnderReview {
+            if !pr.open {
+                continue;
+            }
+            if !self.author_allowed(&pr.author) {
+                skipped.push(SkippedPr {
                     repo: pr.repo,
                     number: pr.number,
-                    url: pr.url,
-                    head_sha: pr.head_sha,
-                    head_ref: pr.head_ref,
+                    login: pr.author,
                 });
+                continue;
             }
+            out.push(PrUnderReview {
+                repo: pr.repo,
+                number: pr.number,
+                url: pr.url,
+                head_sha: pr.head_sha,
+                head_ref: pr.head_ref,
+            });
         }
+        Ok((out, skipped))
+    }
+
+    /// The open pull requests of `refs` by allowed authors, with their
+    /// current heads.
+    async fn read_prs(&self, refs: &[(String, u64)]) -> Result<Vec<PrUnderReview>, String> {
+        self.read_pr_set(refs).await.map(|(prs, _)| prs)
+    }
+
+    /// The issue's open pull requests by allowed authors, with their current
+    /// heads, and those left out because of their author.
+    async fn open_prs(
+        &self,
+        issue: &ReviewIssue,
+        extra: Option<(String, u64)>,
+    ) -> Result<(Vec<PrUnderReview>, Vec<SkippedPr>), String> {
+        let (refs, foreign) = self.split_refs(issue, extra);
+        let out = self.read_pr_set(&refs).await?;
         if !foreign.is_empty() {
             let list = foreign
                 .iter()
@@ -978,7 +1229,7 @@ impl Reviews {
         metrics::counter!("conductor_review_limit_reached_total").increment(1);
         tracing::info!(issue = %issue.identifier, send_backs, "automatic review limit reached");
         match self.open_prs(issue, None).await {
-            Ok(prs) => {
+            Ok((prs, _)) => {
                 for pr in prs {
                     if let Err(e) = self
                         .github
@@ -1440,6 +1691,28 @@ fn record_metric(trigger: Trigger, verdict: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Probe {
+        #[command(flatten)]
+        review: ReviewArgs,
+    }
+
+    #[test]
+    fn the_author_app_is_allowed_for_reviews_but_never_a_watched_user() {
+        let probe =
+            Probe::try_parse_from(["probe", "--author-bot-login", "nexus-mcp[bot]"]).unwrap();
+        let config = probe.review.into_config("reviewer".into(), None);
+        assert!(config.allowed_authors.iter().any(|a| a == "nexus-mcp[bot]"));
+        assert!(!crate::github::watched_users_from_env()
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case("nexus-mcp[bot]")));
+        let none = Probe::try_parse_from(["probe", "--author-bot-login", " "]).unwrap();
+        let config = none.review.into_config("reviewer".into(), None);
+        assert_eq!(config.author_bot_login, None);
+        assert!(!config.allowed_authors.is_empty());
+    }
 
     fn pr(number: u64, sha: &str) -> PrUnderReview {
         PrUnderReview {

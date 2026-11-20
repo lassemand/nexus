@@ -145,7 +145,9 @@ pub fn group_key_for(event: &InboundEvent) -> GroupKey {
         }
         InboundEvent::GithubPrComment { .. }
         | InboundEvent::LinearIssueStateChanged { .. }
-        | InboundEvent::ReviewCommand { .. } => GroupKey::Unresolved,
+        | InboundEvent::ReviewCommand { .. }
+        | InboundEvent::GithubChecksCompleted { .. }
+        | InboundEvent::GithubPrPushed { .. } => GroupKey::Unresolved,
         InboundEvent::ReviewRequested { request } => GroupKey::Review(request.identifier.clone()),
     }
 }
@@ -1427,7 +1429,9 @@ impl RegistryTxn<'_> {
                     InboundEvent::ReviewRequested { request } => Some(request.identifier.clone()),
                     InboundEvent::GithubPrComment { .. }
                     | InboundEvent::LinearIssueStateChanged { .. }
-                    | InboundEvent::ReviewCommand { .. } => None,
+                    | InboundEvent::ReviewCommand { .. }
+                    | InboundEvent::GithubChecksCompleted { .. }
+                    | InboundEvent::GithubPrPushed { .. } => None,
                 };
                 if let Some(issue) = issue {
                     self.append_issue_to(slug, &issue).await?;

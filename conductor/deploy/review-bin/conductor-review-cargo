@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#
+# The only cargo a review session may run: `check`, `clippy` and `test`.
+#
+# cargo runs a program when told to by an argument (`--config
+# target.<triple>.runner=...`, `-Z` flags) or by the environment (`CARGO_*`,
+# `RUSTC_WRAPPER`, `RUSTC`, `RUSTDOC`), and it reads `.cargo/config.toml` from
+# the worktree, which a pull request controls. This wrapper rejects those
+# arguments, refuses a worktree with a cargo config, and clears the variables
+# that pick a program. Building a pull request still runs its `build.rs` and
+# proc macros; that is inherent to running tests, and the uid the session runs
+# as is what contains it.
+set -euo pipefail
+
+die() { echo "conductor-review-cargo: $*" >&2; exit 2; }
+
+[[ $# -gt 0 ]] || die "no subcommand given"
+sub="$1"
+shift
+case "$sub" in
+  check|clippy|test) ;;
+  *) die "subcommand '${sub}' is not allowed" ;;
+esac
+
+worktree="$(pwd -P)"
+case "$worktree" in
+  "${CONDUCTOR_REVIEW_WORKTREE_ROOT:-/data/worktrees}"/review-*) ;;
+  *) die "run cargo inside the review worktree" ;;
+esac
+
+inside_worktree() {
+  local resolved
+  resolved="$(realpath -m -- "$1")"
+  [[ "$resolved" == "$worktree" || "$resolved" == "$worktree"/* ]]
+}
+
+after_separator=0
+expect_manifest=0
+for arg in "$@"; do
+  if [[ $expect_manifest -eq 1 ]]; then
+    inside_worktree "$arg" || die "--manifest-path must be inside the worktree"
+    expect_manifest=0
+    continue
+  fi
+  if [[ $after_separator -eq 1 ]]; then
+    if [[ "$sub" != "test" ]]; then
+      case "$arg" in
+        -D|-W|-A|-F|-D*|-W*|-A*|-F*) ;;
+        warnings|clippy::*|[a-z_]*) ;;
+        *) die "argument '${arg}' is not allowed after --" ;;
+      esac
+    fi
+    continue
+  fi
+  case "$arg" in
+    --) after_separator=1 ;;
+    --config|--config=*|-Z|-Z*|--target-dir|--target-dir=*|--artifact-dir|--artifact-dir=* \
+      |--out-dir|--out-dir=*|--timings|--timings=*|--message-format=*-path*|+*)
+      die "option '${arg}' is not allowed" ;;
+    --manifest-path) expect_manifest=1 ;;
+    --manifest-path=*) inside_worktree "${arg#--manifest-path=}" || die "--manifest-path must be inside the worktree" ;;
+  esac
+done
+[[ $expect_manifest -eq 0 ]] || die "--manifest-path needs a value"
+
+dir="$worktree"
+while :; do
+  for f in .cargo/config .cargo/config.toml; do
+    [[ ! -e "${dir}/${f}" ]] || die "${dir}/${f} exists; a cargo config can name a program to run"
+  done
+  [[ "$dir" != "/" ]] || break
+  dir="$(dirname "$dir")"
+done
+
+target="${CARGO_TARGET_DIR:-}"
+cargo_home="${CONDUCTOR_REVIEW_CARGO_HOME:-${HOME}/.cargo}"
+while IFS= read -r var; do
+  case "$var" in
+    CARGO_*|RUSTC|RUSTC_*|RUSTDOC|RUSTDOCFLAGS|RUSTFLAGS|RUSTUP_TOOLCHAIN|LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT \
+      |GIT_*|GH_*|GITHUB_*|REVIEW_*|ANTHROPIC_*|CLAUDE_CODE_*) unset "$var" ;;
+  esac
+done < <(compgen -e)
+[[ -z "$target" ]] || export CARGO_TARGET_DIR="$target"
+export CARGO_HOME="$cargo_home"
+export RUSTUP_HOME="${CONDUCTOR_REVIEW_RUSTUP_HOME:-/usr/local/rustup}"
+export RUSTUP_TOOLCHAIN=stable
+
+exec "${CONDUCTOR_REVIEW_REAL_CARGO:-/usr/local/cargo/bin/cargo}" "$sub" "$@"

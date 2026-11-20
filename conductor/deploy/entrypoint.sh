@@ -45,6 +45,8 @@ init_layout() {
   export GITHUB_APP_CREDENTIAL_HELPER
 
   mkdir -p "$HOME" "$REPO_DIR" "$WORKTREE_DIR" "$STATE_DIR" "$HOME/.claude/agents"
+  # The reviewer runs as another uid; what it must not read is in here.
+  chmod 0700 "$HOME" "$STATE_DIR"
   log "layout ready under ${DATA_DIR} (HOME=${HOME})"
 }
 
@@ -447,7 +449,8 @@ seed_claude_credentials() {
     # so it is moved aside rather than left to compete. Renamed, not deleted:
     # it is the only copy of whatever session it belonged to.
     if [[ -f "$creds" ]]; then
-      local superseded="${creds}.superseded-$(date +%s)"
+      local superseded
+      superseded="${creds}.superseded-$(date +%s)"
       mv "$creds" "$superseded"
       log "moved an existing credentials file to ${superseded}; CLAUDE_CODE_OAUTH_TOKEN takes precedence"
     fi
@@ -552,6 +555,216 @@ configure_mcp() {
   log "MCP servers connected: linear, github"
 }
 
+# ── reviewer identity ────────────────────────────────────────────────────────
+#
+# Review sessions run as a second GitHub App, the reviewer (Annette), under a
+# second uid (1001), so that a prompt injection in a pull request cannot reach
+# the author's credentials, home, worktrees or process environment. This
+# prepares everything conductor-review-launch and conductor-review-session
+# need under ${DATA_DIR}/review:
+#
+#   identity/  read-only for the reviewer: app.env, private-key.pem, gitconfig,
+#              mcp.json, settings.json, bot-login, ready (or not-ready)
+#   home/      the reviewer's HOME, writable by it
+#   cargo/     its own CARGO_HOME; target/ its own CARGO_TARGET_DIR
+#
+# `ready` is written last and removed first, so conductor never launches a
+# review session from a half-written identity. There is no fallback: every
+# early return logs `review identity NOT ready: <reason>` and writes the reason
+# to `not-ready`, which conductor quotes in Linear instead of starting a session.
+
+REVIEW_UID="${CONDUCTOR_REVIEW_UID:-1001}"
+
+review_not_ready() {
+  log "review identity NOT ready: $1"
+  if [[ -n "${REVIEW_IDENTITY_DIR:-}" && -d "$REVIEW_IDENTITY_DIR" ]]; then
+    printf '%s\n' "$1" > "${REVIEW_IDENTITY_DIR}/not-ready"
+    chmod 0644 "${REVIEW_IDENTITY_DIR}/not-ready"
+  fi
+}
+
+# The agents' directories sit directly under the data directory, so anyone who
+# can write there without the sticky bit can rename them away and put their
+# own in place. The chart's init container sets the sticky bit.
+review_data_dir_is_safe() {
+  local mode other sticky
+  mode="$(stat -c %a "$DATA_DIR")" || return 1
+  other=$(( 8#${mode: -1} ))
+  sticky=$(( 8#${mode} & 8#1000 ))
+  [[ $(( other & 2 )) -eq 0 || $sticky -ne 0 ]]
+}
+
+configure_review_identity() {
+  local root="${CONDUCTOR_REVIEW_ROOT:-${DATA_DIR}/review}"
+  REVIEW_IDENTITY_DIR="${CONDUCTOR_REVIEW_IDENTITY_DIR:-${root}/identity}"
+  local dir="$REVIEW_IDENTITY_DIR"
+  local rhome="${root}/home"
+  local helper="${GITHUB_APP_CREDENTIAL_HELPER:-/usr/local/bin/github-app-credential-helper}"
+  local settings_src="${CONDUCTOR_REVIEW_SETTINGS_SRC:-/usr/local/share/conductor/reviewer-settings.json}"
+  local switch="${CONDUCTOR_REVIEW_SWITCH:-/usr/local/libexec/conductor-review-switch}"
+  local agent_src="${CONDUCTOR_AGENT_DIR:-/etc/conductor/agents}/reviewer.md"
+
+  mkdir -p "$root" "$dir" "$rhome" "${root}/cargo" "${root}/target"
+  chmod 0755 "$root" "$dir"
+  chmod 0777 "$rhome" "${root}/cargo" "${root}/target"
+  rm -f "${dir}/ready" "${dir}/bot-login" "${dir}/not-ready"
+
+  if ! review_data_dir_is_safe; then
+    review_not_ready "${DATA_DIR} is writable by other users without the sticky bit, so the reviewer could replace the agents' directories (the chart's init container runs chmod 1777 on it)"
+    return 0
+  fi
+  if [[ "${CONDUCTOR_REVIEW_SKIP_SWITCH_CHECK:-0}" != "1" ]]; then
+    local probed
+    probed="$("$switch" --probe 2>&1)" || probed="failed: ${probed}"
+    if [[ "$probed" != "$REVIEW_UID" ]]; then
+      review_not_ready "${switch} cannot switch to uid ${REVIEW_UID}: ${probed//$'\n'/ } (it needs file capabilities cap_setuid,cap_setgid and a pod that allows privilege escalation)"
+      return 0
+    fi
+  fi
+
+  if [[ -z "${REVIEW_GITHUB_APP_ID:-}" || -z "${REVIEW_GITHUB_APP_INSTALLATION_ID:-}" \
+        || -z "${REVIEW_GITHUB_APP_PRIVATE_KEY:-}" ]]; then
+    review_not_ready "REVIEW_GITHUB_APP_ID, REVIEW_GITHUB_APP_INSTALLATION_ID and REVIEW_GITHUB_APP_PRIVATE_KEY are not all set"
+    return 0
+  fi
+  if [[ ! "$REVIEW_GITHUB_APP_ID" =~ ^[0-9]+$ || ! "$REVIEW_GITHUB_APP_INSTALLATION_ID" =~ ^[0-9]+$ ]]; then
+    review_not_ready "REVIEW_GITHUB_APP_ID and REVIEW_GITHUB_APP_INSTALLATION_ID must be numbers"
+    return 0
+  fi
+  local linear_key="${REVIEW_LINEAR_READ_API_KEY:-${LINEAR_API_KEY:-}}"
+  if [[ -z "$linear_key" ]]; then
+    review_not_ready "neither REVIEW_LINEAR_READ_API_KEY nor LINEAR_API_KEY is set"
+    return 0
+  fi
+  if [[ ! -r "$settings_src" ]]; then
+    review_not_ready "${settings_src} is missing"
+    return 0
+  fi
+  if [[ ! -r "$agent_src" ]]; then
+    review_not_ready "${agent_src} is missing"
+    return 0
+  fi
+
+  local key="${dir}/private-key.pem" tmp
+  tmp="$(mktemp)"
+  chmod 0600 "$tmp"
+  printf '%s' "$REVIEW_GITHUB_APP_PRIVATE_KEY" > "$tmp"
+  if ! openssl pkey -in "$tmp" -noout >/dev/null 2>&1; then
+    rm -f "$tmp"
+    review_not_ready "REVIEW_GITHUB_APP_PRIVATE_KEY is not a usable private key"
+    return 0
+  fi
+  chmod 0644 "$tmp"
+  mv "$tmp" "$key"
+
+  printf 'REVIEW_APP_ID=%s\nREVIEW_INSTALLATION_ID=%s\n' \
+    "$REVIEW_GITHUB_APP_ID" "$REVIEW_GITHUB_APP_INSTALLATION_ID" > "${dir}/app.env"
+  chmod 0644 "${dir}/app.env"
+
+  local cache_dir="${rhome}/.cache/git-review"
+  rm -f "${dir}/gitconfig"
+  git config --file "${dir}/gitconfig" user.name "Annette (automated reviewer)"
+  git config --file "${dir}/gitconfig" user.email "annette-review@nexus.local"
+  git config --file "${dir}/gitconfig" safe.directory "*"
+  git config --file "${dir}/gitconfig" \
+    "credential.https://github.com.helper" \
+    "cache --timeout=${CONDUCTOR_GIT_CREDENTIAL_TTL:-3300} --socket ${cache_dir}/credential-socket"
+  git config --file "${dir}/gitconfig" --add "credential.https://github.com.helper" "$helper"
+  git config --file "${dir}/gitconfig" credential.https://github.com.useHttpPath false
+  chmod 0644 "${dir}/gitconfig"
+
+  tmp="$(mktemp)"
+  chmod 0600 "$tmp"
+  jq -n \
+    --arg app "$REVIEW_GITHUB_APP_ID" \
+    --arg installation "$REVIEW_GITHUB_APP_INSTALLATION_ID" \
+    --arg key "$key" \
+    --arg linear "$linear_key" \
+    '{mcpServers: {
+        github: {type: "stdio", command: "github-mcp-server",
+                 args: ["stdio", "--app-id", $app, "--app-installation-id", $installation,
+                        "--app-private-key-path", $key,
+                        "--toolsets", "context,repos,pull_requests,issues"]},
+        linear: {type: "http", url: "https://mcp.linear.app/mcp",
+                 headers: {Authorization: ("Bearer " + $linear)}}}}' > "$tmp"
+  chmod 0644 "$tmp"
+  mv "$tmp" "${dir}/mcp.json"
+
+  tmp="$(mktemp)"
+  if ! jq --arg cmd "$CONDUCTOR_HOOK_COMMAND" '
+        reduce ("UserPromptSubmit", "Stop", "SessionStart", "SessionEnd") as $e (.;
+          .hooks[$e] = ((.hooks[$e] // []) + [{hooks: [{type: "command", command: $cmd, timeout: 5}]}]))
+      ' "$settings_src" > "$tmp"; then
+    rm -f "$tmp"
+    review_not_ready "${settings_src} is not valid JSON"
+    return 0
+  fi
+  chmod 0644 "$tmp"
+  mv "$tmp" "${dir}/settings.json"
+
+  mkdir -p "${rhome}/.claude/agents"
+  chmod 0777 "${rhome}/.claude" "${rhome}/.claude/agents"
+  cp -f "$agent_src" "${rhome}/.claude/agents/reviewer.md"
+  chmod 0666 "${rhome}/.claude/agents/reviewer.md"
+  local version
+  version="${CLAUDE_CODE_VERSION:-0.0.0}"
+  tmp="$(mktemp)"
+  jq -n --arg version "$version" --arg worktrees "$WORKTREE_DIR" '
+      {hasCompletedOnboarding: true, lastOnboardingVersion: $version,
+       projects: {($worktrees): {hasTrustDialogAccepted: true}}}' > "$tmp"
+  if [[ -s "${rhome}/.claude.json" ]] && jq empty "${rhome}/.claude.json" >/dev/null 2>&1; then
+    rm -f "$tmp"
+  else
+    chmod 0666 "$tmp"
+    mv "$tmp" "${rhome}/.claude.json"
+  fi
+
+  if ! printf 'protocol=https\nhost=github.com\n\n' \
+       | GITHUB_APP_ID="$REVIEW_GITHUB_APP_ID" \
+         GITHUB_APP_INSTALLATION_ID="$REVIEW_GITHUB_APP_INSTALLATION_ID" \
+         GITHUB_APP_PRIVATE_KEY_PATH="$key" \
+         "$helper" get >/dev/null 2>&1; then
+    review_not_ready "could not mint a token for the reviewer app; check REVIEW_GITHUB_APP_*"
+    return 0
+  fi
+
+  local slug
+  slug="$(GITHUB_APP_ID="$REVIEW_GITHUB_APP_ID" \
+          GITHUB_APP_INSTALLATION_ID="$REVIEW_GITHUB_APP_INSTALLATION_ID" \
+          GITHUB_APP_PRIVATE_KEY_PATH="$key" \
+          "$helper" app-slug 2>/dev/null)" || slug=""
+  if [[ -n "$slug" ]]; then
+    printf '%s[bot]\n' "$slug" > "${dir}/bot-login"
+    chmod 0644 "${dir}/bot-login"
+    log "reviewer app: ${slug}[bot]"
+  else
+    log "WARNING: could not read the reviewer app's slug; set CONDUCTOR_REVIEW_BOT_LOGIN"
+  fi
+
+  touch "${dir}/ready"
+  chmod 0644 "${dir}/ready"
+  log "reviewer identity ready in ${dir}"
+}
+
+# The author app's bot login (`<slug>[bot]`), for the review author filter.
+# CONDUCTOR_AUTHOR_BOT_LOGIN overrides it. A failure is only a warning: without
+# it conductor reviews pull requests of GITHUB_WEBHOOK_USERS alone.
+read_author_bot_login() {
+  if [[ -n "${CONDUCTOR_AUTHOR_BOT_LOGIN:-}" ]]; then
+    log "author app: ${CONDUCTOR_AUTHOR_BOT_LOGIN} (CONDUCTOR_AUTHOR_BOT_LOGIN)"
+    return 0
+  fi
+  [[ "${GITHUB_MODE:-}" == "app" ]] || return 0
+  local slug
+  slug="$("$GITHUB_APP_CREDENTIAL_HELPER" app-slug 2>/dev/null)" || slug=""
+  if [[ -n "$slug" ]]; then
+    export CONDUCTOR_AUTHOR_BOT_LOGIN="${slug}[bot]"
+    log "author app: ${CONDUCTOR_AUTHOR_BOT_LOGIN}"
+  else
+    log "WARNING: could not read the author app's slug; only GITHUB_WEBHOOK_USERS are reviewed. Set CONDUCTOR_AUTHOR_BOT_LOGIN=<slug>[bot] to review the author app's pull requests"
+  fi
+}
+
 # ── smoke check ──────────────────────────────────────────────────────────────
 
 smoke_check() {
@@ -582,6 +795,7 @@ main() {
   check_env || exit 1
   configure_git
   configure_gh
+  read_author_bot_login
   sync_repo
   install_agents
   seed_claude_config
@@ -592,6 +806,7 @@ main() {
     seed_claude_credentials
   fi
   configure_mcp
+  configure_review_identity
   smoke_check
   log "starting conductor serve"
   exec conductor serve

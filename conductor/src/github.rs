@@ -225,12 +225,15 @@ pub fn dispatchable_review_comment(
     })
 }
 
-/// A `/review` comment on a pull request: a manual request for a review.
+/// A manual request for a review: a `/review` comment, or the reviewer app
+/// (re-)requested as a reviewer on the pull request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReviewCommand {
     pub repo: String,
     pub pr_number: u64,
-    pub comment_id: u64,
+    /// The `/review` comment to react to; `None` for a review request.
+    #[serde(default)]
+    pub comment_id: Option<u64>,
     /// Who asked.
     pub login: String,
 }
@@ -264,8 +267,115 @@ pub fn review_command(payload: &IssueCommentPayload, watched: &[String]) -> Opti
             .map(|r| r.full_name.clone())
             .unwrap_or_default(),
         pr_number: issue.number,
-        comment_id: comment.id,
+        comment_id: Some(comment.id),
         login: comment.user.login.clone(),
+    })
+}
+
+/// Payload for the `pull_request` event; only what a review request needs.
+#[derive(Debug, Deserialize)]
+pub struct PullRequestEventPayload {
+    pub action: Option<String>,
+    pub number: Option<u64>,
+    /// Present on `review_requested` for a single reviewer (absent for a team).
+    pub requested_reviewer: Option<GithubUser>,
+    pub sender: Option<GithubUser>,
+    pub repository: Option<GithubRepository>,
+    pub pull_request: Option<PullRequestHead>,
+}
+
+/// The part of a `pull_request` payload's pull request that names its head.
+#[derive(Debug, Deserialize)]
+pub struct PullRequestHead {
+    pub head: Option<PullRequestHeadSha>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PullRequestHeadSha {
+    pub sha: String,
+}
+
+/// A new head on a pull request: a `pull_request` `synchronize` event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrPush {
+    pub repo: String,
+    pub pr_number: u64,
+    pub head_sha: String,
+}
+
+/// Reduces a `pull_request` event to a push, or `None` for any other action.
+pub fn pr_push(payload: &PullRequestEventPayload) -> Option<PrPush> {
+    if payload.action.as_deref() != Some("synchronize") {
+        return None;
+    }
+    Some(PrPush {
+        repo: payload.repository.as_ref()?.full_name.clone(),
+        pr_number: payload.number?,
+        head_sha: payload.pull_request.as_ref()?.head.as_ref()?.sha.clone(),
+    })
+}
+
+/// Payload for `check_suite` and `check_run`; only the commit is needed.
+#[derive(Debug, Deserialize)]
+pub struct CheckEventPayload {
+    pub action: Option<String>,
+    pub check_suite: Option<CheckCommit>,
+    pub check_run: Option<CheckCommit>,
+    pub repository: Option<GithubRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CheckCommit {
+    pub head_sha: String,
+}
+
+/// `(repo, head sha)` of a `check_suite` or `check_run` that completed, or
+/// `None` for any other action.
+pub fn checks_completed(payload: &CheckEventPayload) -> Option<(String, String)> {
+    if payload.action.as_deref() != Some("completed") {
+        return None;
+    }
+    let commit = payload
+        .check_suite
+        .as_ref()
+        .or(payload.check_run.as_ref())?;
+    Some((
+        payload.repository.as_ref()?.full_name.clone(),
+        commit.head_sha.clone(),
+    ))
+}
+
+/// Reduces a `pull_request` event to a review request when a watched user
+/// requested (or re-requested) the reviewer app as a reviewer.
+///
+/// GitHub only offers an app in the reviewer list once it has reviewed the
+/// pull request, so this is the "Re-request review" button next to the
+/// reviewer after its first, automatic review.
+pub fn review_request(
+    payload: &PullRequestEventPayload,
+    watched: &[String],
+    bot_login: Option<&str>,
+) -> Option<ReviewCommand> {
+    if payload.action.as_deref() != Some("review_requested") {
+        return None;
+    }
+    let reviewer = payload.requested_reviewer.as_ref()?;
+    if !is_review_bot(bot_login, &reviewer.login) {
+        return None;
+    }
+    let sender = payload.sender.as_ref()?;
+    if !is_watched_user(watched, &sender.login) {
+        return None;
+    }
+    Some(ReviewCommand {
+        repo: payload
+            .repository
+            .as_ref()
+            .map(|r| r.full_name.clone())
+            .unwrap_or_default(),
+        pr_number: payload.number?,
+        comment_id: None,
+        login: sender.login.clone(),
     })
 }
 
@@ -418,7 +528,7 @@ mod tests {
         let got = review_command(&comment_with_body("lassemand", "/review"), &watched())
             .expect("a review command");
         assert_eq!(got.pr_number, 316);
-        assert_eq!(got.comment_id, 5);
+        assert_eq!(got.comment_id, Some(5));
         assert_eq!(got.repo, "lassemand/nexus");
     }
 
@@ -439,5 +549,97 @@ mod tests {
         assert!(!is_review_bot(Some("annette-review[bot]"), "lassemand"));
         assert!(!is_review_bot(None, "annette-review[bot]"));
         assert!(!is_review_bot(Some(""), ""));
+    }
+
+    fn pr_event(action: &str, reviewer: &str, sender: &str) -> PullRequestEventPayload {
+        serde_json::from_value(json!({
+            "action": action,
+            "number": 318,
+            "requested_reviewer": { "login": reviewer, "type": "Bot" },
+            "sender": { "login": sender },
+            "repository": { "full_name": "lassemand/nexus" }
+        }))
+        .expect("valid payload")
+    }
+
+    #[test]
+    fn requesting_the_reviewer_app_is_a_review_request() {
+        let bot = Some("annette-review[bot]");
+        let got = review_request(
+            &pr_event("review_requested", "annette-review[bot]", "lassemand"),
+            &watched(),
+            bot,
+        )
+        .expect("a review request");
+        assert_eq!(got.pr_number, 318);
+        assert_eq!(got.comment_id, None);
+        assert_eq!(got.login, "lassemand");
+        assert!(review_request(
+            &pr_event("review_requested", "someone", "lassemand"),
+            &watched(),
+            bot
+        )
+        .is_none());
+        assert!(review_request(
+            &pr_event("review_requested", "annette-review[bot]", "stranger"),
+            &watched(),
+            bot
+        )
+        .is_none());
+        assert!(review_request(
+            &pr_event("review_request_removed", "annette-review[bot]", "lassemand"),
+            &watched(),
+            bot
+        )
+        .is_none());
+        assert!(review_request(
+            &pr_event("review_requested", "annette-review[bot]", "lassemand"),
+            &watched(),
+            None
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_completed_check_suite_or_run_names_its_commit() {
+        for kind in ["check_suite", "check_run"] {
+            let payload: CheckEventPayload = serde_json::from_value(json!({
+                "action": "completed",
+                kind: { "head_sha": "abc" },
+                "repository": { "full_name": "o/r" }
+            }))
+            .unwrap();
+            assert_eq!(
+                checks_completed(&payload),
+                Some(("o/r".into(), "abc".into()))
+            );
+        }
+        let requested: CheckEventPayload = serde_json::from_value(json!({
+            "action": "requested", "check_suite": { "head_sha": "abc" },
+            "repository": { "full_name": "o/r" }
+        }))
+        .unwrap();
+        assert_eq!(checks_completed(&requested), None);
+    }
+
+    #[test]
+    fn only_synchronize_is_a_push() {
+        let event = |action: &str| -> PullRequestEventPayload {
+            serde_json::from_value(json!({
+                "action": action, "number": 7,
+                "pull_request": { "head": { "sha": "def" } },
+                "repository": { "full_name": "o/r" }
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            pr_push(&event("synchronize")),
+            Some(PrPush {
+                repo: "o/r".into(),
+                pr_number: 7,
+                head_sha: "def".into()
+            })
+        );
+        assert_eq!(pr_push(&event("opened")), None);
     }
 }

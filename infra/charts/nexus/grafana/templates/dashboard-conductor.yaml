@@ -872,6 +872,99 @@ data:
             }
           ],
           "description": "identity app = writes as the reviewer's Linear app; fallback = LINEAR_API_KEY."
+        },
+        {
+          "id": 21,
+          "type": "row",
+          "title": "CI gate",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 57,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 22,
+          "type": "timeseries",
+          "title": "CI gate outcomes (per hour)",
+          "gridPos": {
+            "x": 0,
+            "y": 58,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "sum by (outcome) (increase(conductor_ci_gate_total{job=\"conductor\"}[1h]))",
+              "legendFormat": "{{ "{{" }}outcome{{ "}}" }}"
+            }
+          ],
+          "description": "green, pending, failed and github_error are checks made when an issue enters review (or is re-checked before queueing); promoted is a watched issue moved into review; timeout is a watch given up."
+        },
+        {
+          "id": 23,
+          "type": "timeseries",
+          "title": "Issues watched for green CI",
+          "gridPos": {
+            "x": 12,
+            "y": 58,
+            "w": 12,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "conductor_ci_watch_issues{job=\"conductor\"}",
+              "legendFormat": "watched"
+            }
+          ],
+          "description": "Issues bounced out of review that conductor is waiting on. Stuck above zero for long means webhooks or the poll are not working."
         }
       ]
     }

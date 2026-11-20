@@ -630,8 +630,8 @@ impl LinearWriter {
 pub struct LinearReviewApi {
     reader: LinearGraphql,
     writer: LinearWriter,
-    /// Todo state id per team; workflow states almost never change.
-    todo_states: Mutex<HashMap<String, String>>,
+    /// State id per team and state name; workflow states almost never change.
+    states: Mutex<HashMap<(String, String), String>>,
 }
 
 impl LinearReviewApi {
@@ -640,19 +640,17 @@ impl LinearReviewApi {
         Self {
             reader,
             writer,
-            todo_states: Mutex::new(HashMap::new()),
+            states: Mutex::new(HashMap::new()),
         }
     }
 
-    async fn todo_state(&self, team_id: &str) -> Result<String, LinearApiError> {
-        if let Some(id) = self.todo_states.lock().await.get(team_id) {
+    async fn state(&self, team_id: &str, name: &str) -> Result<String, LinearApiError> {
+        let key = (team_id.to_string(), name.to_ascii_lowercase());
+        if let Some(id) = self.states.lock().await.get(&key) {
             return Ok(id.clone());
         }
-        let id = self.reader.state_id(team_id, TODO_STATE).await?;
-        self.todo_states
-            .lock()
-            .await
-            .insert(team_id.to_string(), id.clone());
+        let id = self.reader.state_id(team_id, name).await?;
+        self.states.lock().await.insert(key, id.clone());
         Ok(id)
     }
 }
@@ -672,8 +670,12 @@ impl ReviewLinear for LinearReviewApi {
     }
 
     async fn move_to_todo(&self, issue: &ReviewIssue) -> Result<(), LinearApiError> {
-        let state = self.todo_state(&issue.team_id).await?;
-        self.writer.set_state(&issue.id, &state).await
+        self.move_to_state(issue, TODO_STATE).await
+    }
+
+    async fn move_to_state(&self, issue: &ReviewIssue, state: &str) -> Result<(), LinearApiError> {
+        let id = self.state(&issue.team_id, state).await?;
+        self.writer.set_state(&issue.id, &id).await
     }
 }
 

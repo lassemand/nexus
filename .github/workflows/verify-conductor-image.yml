@@ -77,6 +77,15 @@ jobs:
             -v "$PWD/conductor/deploy:/test:ro" \
             nexus-conductor:verify bash /test/entrypoint-test.sh
 
+      - name: Review session isolation, in the image as uid 1000
+        run: |
+          set -euo pipefail
+          data="$(mktemp -d)"
+          chmod 1777 "$data"
+          docker run --rm --user 1000:1000 \
+            -v "$data:/data" -v "$PWD/conductor/deploy:/test:ro" \
+            nexus-conductor:verify bash /test/review-isolation-test.sh
+
       # End to end as far as it can go without secrets. With none set it must
       # refuse immediately and name every missing variable; with fakes it must
       # get past validation, build the layout, and then stop at gh auth with a

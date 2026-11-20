@@ -6,7 +6,12 @@ image:
   # missing file. (0.1.0 and 0.1.1 additionally carry two defects the
   # in-container workspace build found: a login shell lost the Rust toolchain
   # from PATH, and clippy/rustfmt were on the wrong toolchain.)
-  tag: "0.1.12"
+  # 0.1.16 is the first image with the review session boundary (NEX-285): the
+  # uid switch, the wrappers and the fail-closed identity. `review.enabled`
+  # below is true, and an image older than this would run reviews without
+  # that boundary, so the tag and the switch change together. Push the tag
+  # `conductor-v0.1.16` (release-conductor.yml) before merging.
+  tag: "0.1.15"
 claude:
   # Model for every Claude process conductor starts (`--model`). `sonnet` is an
   # alias that follows the newest Sonnet known to the image's pinned Claude Code
@@ -68,10 +73,14 @@ githubWebhookUsers: "lassemand"
 # `/review` comment from a githubWebhookUsers login asks for one by hand. See
 # this chart's README, "Reviews".
 review:
-  # false turns every automatic and manual trigger off. Off until NEX-273
-  # (infra/agents/reviewer.md) and NEX-275 (CI gate) have both merged;
-  # NEX-275's PR switches it on.
-  enabled: false
+  # false turns every automatic and manual trigger off. On since NEX-285, which
+  # closed the review session's sandbox gaps found in the review of PR 325
+  # (README, "The review session's boundary"): a separate uid, argument-checking
+  # wrappers instead of raw git/cargo/gh, Linear write tools denied, reviews only
+  # for allowed authors, and a fail-closed identity. Needs
+  # REVIEW_GITHUB_APP_* in Vault; without them
+  # no review starts and each trigger says why in Linear.
+  enabled: true
   # Linear state whose entry starts an automatic review.
   state: "In Review"
   # Send-backs per issue before automatic reviews stop (then `needs-human` and
@@ -96,8 +105,16 @@ review:
   timeout: "45m"
   # GitHub login of the reviewer app, e.g. `annette-review[bot]`. Its comments
   # and reviews are never dispatched to a session; the send-back reaches the
-  # author through the move to Todo. Empty until the app exists (NEX-273).
+  # author through the move to Todo. Leave empty: the entrypoint reads it from
+  # the reviewer app (`GET /app`) at startup. Set it only to override that.
   botLogin: ""
+  # CI gate (NEX-275): an issue enters review only with every check run on its
+  # pull requests green. Otherwise it is bounced and watched.
+  ci:
+    # How often watched issues are re-checked, in case a webhook is lost.
+    pollInterval: "60s"
+    # How long an issue is watched for green CI before conductor gives up.
+    maxWait: "2h"
 # CARGO_TARGET_DIR shared by every session (CONDUCTOR_CARGO_TARGET_DIR). One
 # workspace build instead of one per worktree (each was 4-40 GB). Parallel
 # builds then wait on cargo's lock. Empty gives each worktree its own target/.

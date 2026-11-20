@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#
+# The only git a review session may run (reviewer-settings.json allows this
+# wrapper and no raw `git`).
+#
+# git runs a program when told to by an argument (`--upload-pack=<cmd>`,
+# `-c core.sshCommand=<cmd>`, `-c core.fsmonitor=<cmd>`) or by the environment
+# (`GIT_SSH_COMMAND`, `GIT_EXEC_PATH`, `GIT_CONFIG_*`). A prompt injection in a
+# pull request could use either, so this wrapper allows a fixed list of
+# read-only subcommands, rejects every option that names a program or writes a
+# file outside the worktree, and drops every GIT_* variable before it sets its
+# own. The uid the session runs as is the real boundary; this removes the easy
+# ways to run code through an allowed command.
+set -euo pipefail
+
+die() { echo "conductor-review-git: $*" >&2; exit 2; }
+
+[[ $# -gt 0 ]] || die "no subcommand given"
+sub="$1"
+shift
+case "$sub" in
+  fetch|show|diff|log|checkout|blame|ls-files|status|rev-parse) ;;
+  *) die "subcommand '${sub}' is not allowed" ;;
+esac
+
+for arg in "$@"; do
+  case "$arg" in
+    -c|-c*|--config|--config=*|--upload-pack|--upload-pack=*|--receive-pack|--receive-pack=* \
+      |--exec-path|--exec-path=*|--exec|--exec=*|--no-index|--output|--output=*|-o \
+      |--ext-diff|--textconv|--git-dir|--git-dir=*|--work-tree|--work-tree=*|--template|--template=* \
+      |--recurse-submodules|--recurse-submodules=*|--submodule|--submodule=*|--run|--run=*)
+      die "option '${arg}' is not allowed" ;;
+  esac
+  case "$arg" in
+    ext::*|*"::"*) die "argument '${arg}' is not allowed" ;;
+  esac
+done
+
+if [[ "$sub" == "fetch" ]]; then
+  positional=()
+  for arg in "$@"; do
+    [[ "$arg" == -* ]] || positional+=("$arg")
+  done
+  [[ ${#positional[@]} -ge 1 && "${positional[0]}" == "origin" ]] \
+    || die "fetch takes 'origin' as its remote"
+fi
+
+while IFS= read -r var; do
+  case "$var" in
+    GIT_*|PAGER|LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|SSH_ASKPASS|SSH_AUTH_SOCK) unset "$var" ;;
+  esac
+done < <(compgen -e)
+
+dir="${CONDUCTOR_REVIEW_IDENTITY_DIR:-}"
+[[ -n "$dir" && -f "${dir}/gitconfig" ]] || die "the reviewer identity is not set up"
+
+export GIT_CONFIG_GLOBAL="${dir}/gitconfig"
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_TERMINAL_PROMPT=0
+export GIT_ALLOW_PROTOCOL=https
+export GIT_PAGER=cat
+
+exec "${CONDUCTOR_REVIEW_REAL_GIT:-/usr/bin/git}" --no-pager "$sub" "$@"

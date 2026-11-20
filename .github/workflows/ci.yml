@@ -72,8 +72,17 @@ jobs:
 
       - name: Verdict kernel for WASM
         run: |
-          cargo clippy -p verdict-sdk -p verdict-sample -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho --target wasm32-unknown-unknown -- -D warnings
-          cargo build --release --target wasm32-unknown-unknown -p verdict-sample -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho
+          cargo clippy -p verdict-sdk -p verdict-sample --target wasm32-unknown-unknown -- -D warnings
+          cargo build --release --target wasm32-unknown-unknown -p verdict-sample
+          cargo clippy --manifest-path verdict/bench/Cargo.toml -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho --target wasm32-unknown-unknown -- -D warnings
+          cargo build --manifest-path verdict/bench/Cargo.toml --release --target wasm32-unknown-unknown -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho
+
+      - name: Verdict bench workspace
+        run: |
+          cargo fmt --manifest-path verdict/bench/Cargo.toml --all -- --check
+          cargo clippy --manifest-path verdict/bench/Cargo.toml --workspace --all-targets -- -D warnings
+          cargo build --manifest-path verdict/bench/Cargo.toml --workspace --all-targets
+          cargo test --manifest-path verdict/bench/Cargo.toml --workspace
 
       - name: Verdict template
         working-directory: verdict/template
@@ -90,3 +99,58 @@ jobs:
             bash -n "verdict/prep/$script.sh"
           done
           bash verdict/prep/test_entrypoint.sh
+
+  # The review session's boundary (NEX-285), with the real mechanism: the
+  # uid-switch helper is built with this runner's uids, given its file
+  # capabilities, and conductor/deploy/review-isolation-test.sh then starts
+  # sessions through tmux as the reviewer user and checks what that user can
+  # and cannot reach. No network access to GitHub or Linear is needed.
+  review-isolation:
+    name: review session isolation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y tmux libcap2-bin jq shellcheck python3
+
+      - name: shellcheck the deploy scripts
+        run: shellcheck -S warning conductor/deploy/*.sh conductor/deploy/review-bin/*
+
+      - name: Entrypoint tests
+        run: bash conductor/deploy/entrypoint-test.sh
+
+      - name: Build and install the switch and the wrappers
+        run: |
+          set -euxo pipefail
+          reviewer_uid=2001
+          sudo useradd --uid "$reviewer_uid" --no-create-home --shell /usr/sbin/nologin reviewerci
+          data=/tmp/rdata
+          mkdir -p "$data"
+          chmod 1777 "$data"
+          sudo install -d -m 0755 /usr/local/libexec
+          sudo gcc -O2 -Wall -Wextra -Werror \
+            -DAGENT_UID="$(id -u)" -DREVIEWER_UID="$reviewer_uid" \
+            -DREVIEWER_HOME="\"$data/review/home\"" \
+            -DREVIEWER_IDENTITY="\"$data/review/identity\"" \
+            -DSESSION_PROGRAM="\"/usr/local/bin/conductor-review-session\"" \
+            -o /usr/local/libexec/conductor-review-switch conductor/deploy/review-switch.c
+          sudo chown "root:$(id -g)" /usr/local/libexec/conductor-review-switch
+          sudo chmod 0750 /usr/local/libexec/conductor-review-switch
+          sudo setcap cap_setuid,cap_setgid+ep /usr/local/libexec/conductor-review-switch
+          getcap /usr/local/libexec/conductor-review-switch
+          sudo install -m 0755 conductor/deploy/review-session.sh /usr/local/bin/conductor-review-session
+          sudo install -m 0755 conductor/deploy/review-launch.sh /usr/local/bin/conductor-review-launch
+          sudo install -m 0755 conductor/deploy/review-bin/* /usr/local/bin/
+          echo "REVIEW_TEST_DATA=$data" >> "$GITHUB_ENV"
+          echo "CONDUCTOR_REVIEW_UID=$reviewer_uid" >> "$GITHUB_ENV"
+
+      - name: Review session isolation
+        run: |
+          grep -E 'Cap(Bnd|Eff)|NoNewPrivs' /proc/self/status
+          /usr/local/libexec/conductor-review-switch --probe || true
+          bash conductor/deploy/review-isolation-test.sh

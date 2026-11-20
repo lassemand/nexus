@@ -1,5 +1,6 @@
 # Live MFN listener (NEX-170): logs Nordic releases the moment they are published,
-# emits company announcements to special.events within seconds (NEX-241) and,
+# emits company announcements to special.events within seconds (NEX-241), Finnish
+# managers' transactions to insider.transactions (NEX-279) and,
 # when nordicLive.slackChannel is set, posts results releases to Slack (NEX-222), and
 # company announcements to nordicLive.announcementsChannel when that is set (NEX-239). Its
 # only write is the slack_report_posts claim in chronicle's database; the nordic-reports
@@ -39,6 +40,10 @@ spec:
               value: {{ .Values.nordicLive.logLevel | quote }}
             - name: OTEL_SERVICE_NAME
               value: nordic-live
+            # Finnish managers' transactions go here within seconds (NEX-279), the topic
+            # the nordic-reports poll (the fallback and backfill) publishes them to.
+            - name: INSIDER_TRANSACTIONS_TOPIC
+              value: {{ .Values.nordicLive.insiderTransactionsTopic | quote }}
             {{- if .Values.nordicLive.otlpEndpoint }}
             # Where trace spans go (empty/unset: no export). HOSTNAME, the pod name,
             # becomes the host.name resource attribute.
