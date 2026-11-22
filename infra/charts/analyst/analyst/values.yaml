@@ -7,8 +7,9 @@ image:
 replicaCount: 0
 analyst:
   # Preparation Job image (infra/Dockerfile.analyst-prep, release workflow
-  # release-analyst-prep.yml, NEX-253). Pinned tag; set it to the first released tag.
-  prepImage: "lmapwns/nexus-analyst-prep:analyst-prep-v0.1.0"
+  # release-analyst-prep.yml, NEX-253). Pinned tag: the release pushes the version
+  # without the git tag's prefix (git tag analyst-prep-v0.1.0 -> image :0.1.0).
+  prepImage: "lmapwns/nexus-analyst-prep:0.1.0"
   prepNamespace: "analyst"
   prepLead: "12h"
   prepMinLead: "1h"
