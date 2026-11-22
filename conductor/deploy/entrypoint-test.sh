@@ -751,7 +751,27 @@ not_ready_case() {
 (
   review_sandbox
   export REVIEW_GITHUB_APP_ID=abc
-  not_ready_case "a non-numeric app id" "must be numbers"
+  not_ready_case "an app id that is neither a number nor a client id" "App ID (a number) or its client ID"
+  rm -rf "$SANDBOX"
+)
+
+(
+  review_sandbox
+  export REVIEW_GITHUB_APP_INSTALLATION_ID=Iv23liABCDEFGHIJ0123
+  not_ready_case "a non-numeric installation id" "INSTALLATION_ID must be a number"
+  rm -rf "$SANDBOX"
+)
+
+(
+  review_sandbox
+  export REVIEW_GITHUB_APP_ID=Iv23liABCDEFGHIJ0123
+  configure_review_identity >/dev/null 2>&1
+  [[ -f "${REVIEW_DIR}/ready" ]] && ok "a client id as the app id is ready" || bad "a client id as the app id is ready"
+  grep -qx 'REVIEW_APP_ID=Iv23liABCDEFGHIJ0123' "${REVIEW_DIR}/app.env" \
+    && ok "and is passed on to the session" || bad "and is passed on to the session"
+  check "and to the GitHub MCP server's --app-id" \
+    "$(jq -r '.mcpServers.github.args | index("--app-id") as $i | .[$i + 1]' "${REVIEW_DIR}/mcp.json")" \
+    "Iv23liABCDEFGHIJ0123"
   rm -rf "$SANDBOX"
 )
 

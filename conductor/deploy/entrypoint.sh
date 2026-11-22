@@ -627,8 +627,14 @@ configure_review_identity() {
     review_not_ready "REVIEW_GITHUB_APP_ID, REVIEW_GITHUB_APP_INSTALLATION_ID and REVIEW_GITHUB_APP_PRIVATE_KEY are not all set"
     return 0
   fi
-  if [[ ! "$REVIEW_GITHUB_APP_ID" =~ ^[0-9]+$ || ! "$REVIEW_GITHUB_APP_INSTALLATION_ID" =~ ^[0-9]+$ ]]; then
-    review_not_ready "REVIEW_GITHUB_APP_ID and REVIEW_GITHUB_APP_INSTALLATION_ID must be numbers"
+  # The App ID or the app's client ID (Iv1.… / Iv23…): GitHub accepts either as
+  # the JWT issuer, and github-mcp-server's --app-id takes both.
+  if [[ ! "$REVIEW_GITHUB_APP_ID" =~ ^([0-9]+|Iv[0-9A-Za-z.]+)$ ]]; then
+    review_not_ready "REVIEW_GITHUB_APP_ID must be the App ID (a number) or its client ID (Iv...)"
+    return 0
+  fi
+  if [[ ! "$REVIEW_GITHUB_APP_INSTALLATION_ID" =~ ^[0-9]+$ ]]; then
+    review_not_ready "REVIEW_GITHUB_APP_INSTALLATION_ID must be a number"
     return 0
   fi
   local linear_key="${REVIEW_LINEAR_READ_API_KEY:-${LINEAR_API_KEY:-}}"
