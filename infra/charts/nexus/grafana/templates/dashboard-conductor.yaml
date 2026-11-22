@@ -965,6 +965,69 @@ data:
             }
           ],
           "description": "Issues bounced out of review that conductor is waiting on. Stuck above zero for long means webhooks or the poll are not working."
+        },
+        {
+          "id": 24,
+          "type": "stat",
+          "title": "Claude credential: days left",
+          "gridPos": {
+            "x": 0,
+            "y": 65,
+            "w": 6,
+            "h": 5
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "nexus-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "d",
+              "decimals": 1,
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "green",
+                    "value": 7
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "nexus-prometheus"
+              },
+              "expr": "(conductor_claude_credential_expiry_timestamp_seconds{job=\"conductor\"} - time()) / 86400",
+              "legendFormat": "{{ "{{" }}source{{ "}}" }}"
+            }
+          ],
+          "description": "Days until the Claude credential in use expires. Orange under 7 days, red under 1. No data means the expiry is unknown (ConductorClaudeCredentialExpiryUnknown) or api_key mode."
         }
       ]
     }

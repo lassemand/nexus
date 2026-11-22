@@ -222,6 +222,15 @@ only `source="request"` quotes (stream reads must not dilute it) and only outcom
 request-source quote was taken in the last 15 minutes, Mon-Fri 07:00-16:00 UTC; the fallback should be rare. Panels: the Analyst
 dashboard and its "Quote stream" panels.
 
+## conductor Claude credential
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `conductor_claude_credential_expiry_timestamp_seconds` | `source` = `oauth_token`, `credentials_file` | Unix seconds at which the credential in use expires. `oauth_token` (a set `CLAUDE_CODE_OAUTH_TOKEN`, which wins) reads `CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT` from the environment; `credentials_file` reads `claudeAiOauth.refreshTokenExpiresAt` from `$HOME/.claude/.credentials.json`, again every 5 minutes. **Absent** when there is no usable date or in `api_key` mode: no date is ever invented. A previously good value stays until a good one replaces it. |
+| `conductor_claude_auth_mode` | `mode` = `subscription`, `api_key` | 1 for the mode in use, 0 for the other. Lets `ConductorClaudeCredentialExpiryUnknown` stay quiet in `api_key` mode. |
+
+Alerts `ConductorClaudeCredentialExpiring` (under 7 days, 1 h), `ConductorClaudeCredentialExpired` and `ConductorClaudeCredentialExpiryUnknown`; rotation steps in the conductor chart README. Dashboard "Conductor": stat "Claude credential: days left".
+
 ## Cluster pieces
 
 | Piece | Where |

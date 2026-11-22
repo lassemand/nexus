@@ -614,6 +614,59 @@ groups:
             `scripts/conductor reviews list`, the "Reviews" row on the
             Conductor dashboard and the pod logs.
 
+      # Slow deadline, polled: the gauge is read every 5 minutes. A revoked
+      # credential still reports a valid date; that is a different alert.
+      - alert: ConductorClaudeCredentialExpiring
+        expr: conductor_claude_credential_expiry_timestamp_seconds{job="conductor"} - time() < 7 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Claude credential expires in {{ $value | humanizeDuration }}"
+          description: >-
+            Every conductor run fails once the credential expires. Run
+            `claude setup-token`, then `vault kv patch secret/nexus/conductor`
+            (patch, not put: put replaces every other property in the path)
+            with the new CLAUDE_CODE_OAUTH_TOKEN and
+            CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT (an RFC 3339 date such as
+            2027-11-14), then `kubectl -n conductor rollout restart
+            deploy/conductor`.
+
+      - alert: ConductorClaudeCredentialExpired
+        expr: conductor_claude_credential_expiry_timestamp_seconds{job="conductor"} - time() <= 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The Claude credential has expired"
+          description: >-
+            Every conductor run fails until the credential is replaced. Run
+            `claude setup-token`, then `vault kv patch secret/nexus/conductor`
+            (patch, not put) with the new CLAUDE_CODE_OAUTH_TOKEN and
+            CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT, then `kubectl -n conductor
+            rollout restart deploy/conductor`.
+
+      # Without this, a missing date would silence the 7-day alert for good.
+      # Quiet while conductor is down (other alerts cover that) and in api_key
+      # mode, where nothing expires.
+      - alert: ConductorClaudeCredentialExpiryUnknown
+        expr: >
+          absent(conductor_claude_credential_expiry_timestamp_seconds{job="conductor"})
+          and on() up{job="conductor"} == 1
+          unless on() conductor_claude_auth_mode{job="conductor",mode="api_key"} == 1
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Claude credential's expiry date is unknown"
+          description: >-
+            Conductor is up but exports no expiry. For a static token, write
+            CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT (an RFC 3339 date or date-time)
+            with `vault kv patch secret/nexus/conductor` and restart the pod;
+            for a credentials file, check that it exists and holds
+            claudeAiOauth.refreshTokenExpiresAt. The pod log has the reason
+            ("Claude credential expiry unknown").
+
   - name: nexus.nordic-live
     rules:
       - alert: NordicLiveDisconnected

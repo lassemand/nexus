@@ -50,8 +50,8 @@ Plus **exactly one** model credential:
 
 | Property | Lifetime |
 |---|---|
-| `CLAUDE_CODE_CREDENTIALS_JSON` | **Preferred.** Renews itself — see below. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | ~2 hours, cannot renew. Every dispatch fails once it expires. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token`; valid for about a year, cannot renew. Wins over the file when both are present. Every dispatch fails once it expires. Write its expiry date next to it in `CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT` (below). |
+| `CLAUDE_CODE_CREDENTIALS_JSON` | Seeds `~/.claude/.credentials.json`, which renews its access token but rotates its refresh token, so nothing else may hold a copy — see below. |
 | `ANTHROPIC_API_KEY` | No expiry; metered per-token billing. |
 
 Both a subscription credential and `ANTHROPIC_API_KEY` present without
@@ -126,8 +126,38 @@ Two consequences worth knowing:
   an expired credential otherwise fails every dispatch while the pod still
   reports Ready, which reads as a dispatcher bug.
 
-To renew by hand: `claude setup-token` on the Mac, then the `vault kv patch`
-above, then `kubectl -n conductor rollout restart deploy/conductor`.
+### Expiry alerts
+
+Conductor exports `conductor_claude_credential_expiry_timestamp_seconds{source}`
+(`docs/guides/metrics.md`), re-read every 5 minutes:
+
+- `source="oauth_token"` when `CLAUDE_CODE_OAUTH_TOKEN` is set: the date comes
+  from the optional property `CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT`, an RFC 3339
+  date or date-time (`2027-11-14`, or `2027-11-14T10:00:00Z`; a date alone is
+  00:00 UTC). The token is opaque, so whoever creates it writes the date.
+- `source="credentials_file"` otherwise: `claudeAiOauth.refreshTokenExpiresAt`
+  of `$HOME/.claude/.credentials.json`, which moves on every renewal.
+
+With `CONDUCTOR_AUTH_MODE=api_key` neither applies and no expiry is exported.
+A missing or unparseable date leaves the gauge unset (a warning is logged once
+per change); `ConductorClaudeCredentialExpiryUnknown` fires after 1 hour. The
+other alerts are `ConductorClaudeCredentialExpiring` (under 7 days, warning) and
+`ConductorClaudeCredentialExpired` (critical). A revoked credential still
+reports a valid date and is not detected by these.
+
+### Rotating the token
+
+1. `claude setup-token` on the Mac.
+2. Patch, not put: put replaces every other property in the path.
+
+   ```bash
+   vault kv patch secret/nexus/conductor \
+     CLAUDE_CODE_OAUTH_TOKEN=<new token> \
+     CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT=<date the token expires, e.g. 2027-11-14>
+   ```
+
+3. `kubectl -n conductor rollout restart deploy/conductor`. The ExternalSecret
+   refreshes hourly; restart after it has synced.
 
 ## Operating it
 

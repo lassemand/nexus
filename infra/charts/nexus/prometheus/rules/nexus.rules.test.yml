@@ -1791,6 +1791,92 @@ tests:
               summary: "Automatic reviews are failing"
               description: "At least 3 automatic reviews failed in the last 6 hours (no verdict file, an invalid verdict, a timeout or a Linear write that kept failing). Each failure left a Linear comment with its reason; see `scripts/conductor reviews list`, the \"Reviews\" row on the Conductor dashboard and the pod logs."
 
+  - name: ConductorClaudeCredentialExpiring is quiet with 8 days left
+    input_series:
+      - series: 'conductor_claude_credential_expiry_timestamp_seconds{job="conductor",source="oauth_token"}'
+        values: '691200x200'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: ConductorClaudeCredentialExpiring
+        exp_alerts: []
+
+  - name: ConductorClaudeCredentialExpiring fires after 1h with 6 days left
+    input_series:
+      - series: 'conductor_claude_credential_expiry_timestamp_seconds{job="conductor",source="oauth_token"}'
+        values: '518400x200'
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: ConductorClaudeCredentialExpiring
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: ConductorClaudeCredentialExpiring
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: conductor
+              source: oauth_token
+            exp_annotations:
+              summary: "The Claude credential expires in 5d 22h 59m 0s"
+              description: "Every conductor run fails once the credential expires. Run `claude setup-token`, then `vault kv patch secret/nexus/conductor` (patch, not put: put replaces every other property in the path) with the new CLAUDE_CODE_OAUTH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT (an RFC 3339 date such as 2027-11-14), then `kubectl -n conductor rollout restart deploy/conductor`."
+
+  - name: ConductorClaudeCredentialExpired fires when the date has passed
+    input_series:
+      - series: 'conductor_claude_credential_expiry_timestamp_seconds{job="conductor",source="oauth_token"}'
+        values: '100x200'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ConductorClaudeCredentialExpired
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: ConductorClaudeCredentialExpired
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: conductor
+              source: oauth_token
+            exp_annotations:
+              summary: "The Claude credential has expired"
+              description: "Every conductor run fails until the credential is replaced. Run `claude setup-token`, then `vault kv patch secret/nexus/conductor` (patch, not put) with the new CLAUDE_CODE_OAUTH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT, then `kubectl -n conductor rollout restart deploy/conductor`."
+
+  - name: ConductorClaudeCredentialExpiryUnknown fires after 1h when the gauge is absent and conductor is up
+    input_series:
+      - series: 'up{job="conductor"}'
+        values: '1x200'
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: ConductorClaudeCredentialExpiryUnknown
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: ConductorClaudeCredentialExpiryUnknown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "The Claude credential's expiry date is unknown"
+              description: "Conductor is up but exports no expiry. For a static token, write CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT (an RFC 3339 date or date-time) with `vault kv patch secret/nexus/conductor` and restart the pod; for a credentials file, check that it exists and holds claudeAiOauth.refreshTokenExpiresAt. The pod log has the reason (\"Claude credential expiry unknown\")."
+
+  - name: ConductorClaudeCredentialExpiryUnknown is quiet while conductor is down
+    input_series:
+      - series: 'up{job="conductor"}'
+        values: '0x200'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: ConductorClaudeCredentialExpiryUnknown
+        exp_alerts: []
+
+  - name: ConductorClaudeCredentialExpiryUnknown is quiet in api_key mode
+    input_series:
+      - series: 'up{job="conductor"}'
+        values: '1x200'
+      - series: 'conductor_claude_auth_mode{job="conductor",mode="api_key"}'
+        values: '1x200'
+      - series: 'conductor_claude_auth_mode{job="conductor",mode="subscription"}'
+        values: '0x200'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: ConductorClaudeCredentialExpiryUnknown
+        exp_alerts: []
+
   - name: AnalystQuoteErrors ignores stream reads
     input_series:
       - series: 'analyst_quotes_total{job="analyst",source="request",outcome="ok"}'

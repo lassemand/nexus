@@ -11,6 +11,7 @@
 //! of those sessions.
 
 pub mod closing;
+pub mod credential;
 pub mod dispatcher;
 pub mod github;
 pub mod github_api;
