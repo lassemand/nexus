@@ -647,12 +647,19 @@ groups:
             rollout restart deploy/conductor`.
 
       # Without this, a missing date would silence the 7-day alert for good.
+      # Two cases: the gauge was never set (absent), or it was set and the
+      # date can no longer be read, where a gauge cannot be removed and the
+      # old value stays, so `expiry_known` is 0.
       # Quiet while conductor is down (other alerts cover that) and in api_key
       # mode, where nothing expires.
       - alert: ConductorClaudeCredentialExpiryUnknown
         expr: >
-          absent(conductor_claude_credential_expiry_timestamp_seconds{job="conductor"})
-          and on() up{job="conductor"} == 1
+          (
+            absent(conductor_claude_credential_expiry_timestamp_seconds{job="conductor"})
+            and on() up{job="conductor"} == 1
+            or
+            conductor_claude_credential_expiry_known{job="conductor"} == 0
+          )
           unless on() conductor_claude_auth_mode{job="conductor",mode="api_key"} == 1
         for: 1h
         labels:

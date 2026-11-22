@@ -139,8 +139,10 @@ Conductor exports `conductor_claude_credential_expiry_timestamp_seconds{source}`
   of `$HOME/.claude/.credentials.json`, which moves on every renewal.
 
 With `CONDUCTOR_AUTH_MODE=api_key` neither applies and no expiry is exported.
-A missing or unparseable date leaves the gauge unset (a warning is logged once
-per change); `ConductorClaudeCredentialExpiryUnknown` fires after 1 hour. The
+A missing or unparseable date is logged once per change and leaves the expiry
+gauge unset, or at its last good value if it had been set (a gauge cannot be
+removed); `conductor_claude_credential_expiry_known` goes to 0 either way and
+`ConductorClaudeCredentialExpiryUnknown` fires after 1 hour. The
 other alerts are `ConductorClaudeCredentialExpiring` (under 7 days, warning) and
 `ConductorClaudeCredentialExpired` (critical). A revoked credential still
 reports a valid date and is not detected by these.

@@ -21,6 +21,9 @@ pub const EXPIRY_GAUGE: &str = "conductor_claude_credential_expiry_timestamp_sec
 /// Name of the gauge that tells the alert rules whether the expiry applies.
 pub const AUTH_MODE_GAUGE: &str = "conductor_claude_auth_mode";
 
+/// Name of the 0/1 gauge that says whether the expiry could be determined.
+pub const KNOWN_GAUGE: &str = "conductor_claude_credential_expiry_known";
+
 /// How often the credentials file is read again.
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -191,8 +194,10 @@ pub fn credentials_path(home: &Path) -> PathBuf {
 }
 
 /// Applies a reading to the gauges. An unknown reading leaves the expiry gauge
-/// untouched: a date is never invented, and a date that was good a moment ago
-/// stays until a good one replaces it.
+/// untouched (a date is never invented, and a gauge cannot be removed), so
+/// `conductor_claude_credential_expiry_known` is what tells Prometheus the
+/// date is no longer being confirmed: 1 for a known date and in `api_key` mode,
+/// 0 for an unknown one.
 pub fn publish(mode: AuthMode, reading: Reading) {
     for m in [AuthMode::Subscription, AuthMode::ApiKey] {
         metrics::gauge!(AUTH_MODE_GAUGE, "mode" => m.label()).set(if m == mode {
@@ -201,6 +206,8 @@ pub fn publish(mode: AuthMode, reading: Reading) {
             0.0
         });
     }
+    let known = !matches!(reading, Reading::Unknown(..));
+    metrics::gauge!(KNOWN_GAUGE).set(if known { 1.0 } else { 0.0 });
     if let Reading::Known(source, ts) = reading {
         metrics::gauge!(EXPIRY_GAUGE, "source" => source.label()).set(ts as f64);
     }
@@ -239,20 +246,42 @@ impl StateLog {
     }
 }
 
+/// The credentials file as read from disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnedFile {
+    /// The file does not exist.
+    Missing,
+    /// The file exists but could not be read.
+    Unreadable,
+    /// The file's contents.
+    Contents(String),
+}
+
+impl OwnedFile {
+    /// Borrows the file as the state [`expiry`] takes.
+    pub fn state(&self) -> FileState<'_> {
+        match self {
+            OwnedFile::Missing => FileState::Missing,
+            OwnedFile::Unreadable => FileState::Unreadable,
+            OwnedFile::Contents(c) => FileState::Contents(c),
+        }
+    }
+}
+
+/// Reads the credentials file under `home`.
+pub async fn read_file(home: &Path) -> OwnedFile {
+    match tokio::fs::read_to_string(credentials_path(home)).await {
+        Ok(c) => OwnedFile::Contents(c),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OwnedFile::Missing,
+        Err(_) => OwnedFile::Unreadable,
+    }
+}
+
 /// Reads the file and the environment once and publishes the result.
 pub async fn refresh(home: &Path, log: &mut StateLog) {
     let env = CredentialEnv::from_process();
-    let contents = match tokio::fs::read_to_string(credentials_path(home)).await {
-        Ok(c) => Some(Ok(c)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => Some(Err(())),
-    };
-    let file = match &contents {
-        None => FileState::Missing,
-        Some(Err(())) => FileState::Unreadable,
-        Some(Ok(c)) => FileState::Contents(c),
-    };
-    let reading = expiry(&env, file);
+    let file = read_file(home).await;
+    let reading = expiry(&env, file.state());
     log.observe(reading);
     publish(env.mode(), reading);
 }
@@ -386,13 +415,17 @@ mod tests {
     async fn value_follows_a_rewritten_file() {
         let home = tempfile::tempdir().expect("tempdir");
         let path = credentials_path(home.path());
-        std::fs::create_dir_all(path.parent().expect("has parent")).expect("mkdir");
         let env = CredentialEnv::default();
-        let read = |p: &Path| std::fs::read_to_string(p).expect("read");
+        let now = |file: OwnedFile| expiry(&env, file.state());
 
+        assert!(matches!(
+            now(read_file(home.path()).await),
+            Reading::Unknown(Source::CredentialsFile, _)
+        ));
+        std::fs::create_dir_all(path.parent().expect("has parent")).expect("mkdir");
         std::fs::write(&path, FILE_MS).expect("write");
         assert_eq!(
-            expiry(&env, FileState::Contents(&read(&path))),
+            now(read_file(home.path()).await),
             Reading::Known(Source::CredentialsFile, 1_800_000_000)
         );
         std::fs::write(
@@ -401,9 +434,14 @@ mod tests {
         )
         .expect("rewrite");
         assert_eq!(
-            expiry(&env, FileState::Contents(&read(&path))),
+            now(read_file(home.path()).await),
             Reading::Known(Source::CredentialsFile, 1_900_000_000)
         );
+        std::fs::remove_file(&path).expect("remove");
+        assert!(matches!(
+            now(read_file(home.path()).await),
+            Reading::Unknown(Source::CredentialsFile, _)
+        ));
     }
 
     #[test]
