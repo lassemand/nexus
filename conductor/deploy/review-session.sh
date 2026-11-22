@@ -46,4 +46,22 @@ unset REVIEW_APP_ID REVIEW_INSTALLATION_ID
 mkdir -p "${HOME}/.cache/git-review"
 chmod 0700 "${HOME}/.cache/git-review"
 
+# Claude Code asks whether to trust each folder, and trust on /data/worktrees
+# (set by the entrypoint) does not carry over to the review's own checkout. A
+# review never answers the prompt, so its SessionStart never came and conductor
+# killed it after 60 s. Trust the folder this session runs in.
+claude_json="${HOME}/.claude.json"
+if [[ ! -s "$claude_json" ]] || ! jq empty "$claude_json" >/dev/null 2>&1; then
+  printf '{}\n' > "$claude_json"
+fi
+trust_tmp="$(mktemp "${HOME}/.claude.json.XXXXXX")"
+if jq --arg p "$PWD" '.projects[$p] = ((.projects[$p] // {}) | .hasTrustDialogAccepted = true)' \
+     "$claude_json" > "$trust_tmp"; then
+  chmod 0666 "$trust_tmp"
+  mv -f "$trust_tmp" "$claude_json"
+else
+  rm -f "$trust_tmp"
+  echo "review-session: could not mark ${PWD} as trusted in ${claude_json}" >&2
+fi
+
 exec "$@"
