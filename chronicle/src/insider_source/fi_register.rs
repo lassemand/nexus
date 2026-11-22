@@ -19,6 +19,25 @@ const FI_BASE: &str = "https://marknadssok.fi.se/Publiceringsklient/sv-SE/Search
 const FI_AUTOCOMPLETE: &str =
     "https://marknadssok.fi.se/Publiceringsklient/sv-SE/AutoComplete/H\u{00e4}mtaAutoCompleteListaFull";
 
+/// The URLs of FI's register, replaceable so tests can point at a stub.
+#[derive(Debug, Clone)]
+pub struct FiEndpoints {
+    /// The search (CSV export) URL.
+    pub search: String,
+    /// The issuer autocomplete URL.
+    pub autocomplete: String,
+}
+
+impl FiEndpoints {
+    /// FI's public endpoints.
+    pub fn live() -> Self {
+        Self {
+            search: FI_BASE.to_string(),
+            autocomplete: FI_AUTOCOMPLETE.to_string(),
+        }
+    }
+}
+
 /// Pre-MAR data boundary. FI's MAR register reliably covers from this date.
 pub const MAR_START: &str = "2016-07-03";
 
@@ -27,11 +46,12 @@ pub const MAR_START: &str = "2016-07-03";
 /// Resolve a ticker to the exact FI issuer name via the autocomplete endpoint.
 pub async fn resolve_issuer(
     client: &reqwest::Client,
+    endpoints: &FiEndpoints,
     ticker: &str,
 ) -> anyhow::Result<Option<String>> {
     let url = format!(
         "{}?sokfunktion=Insyn&falt=Utgivare&sokterm={}",
-        FI_AUTOCOMPLETE,
+        endpoints.autocomplete,
         urlencoding::encode(ticker)
     );
     let names: Vec<String> = client
@@ -54,6 +74,7 @@ pub async fn resolve_issuer(
 #[derive(Debug, Clone)]
 pub struct FiRow {
     ticker: String,
+    exchange_mic: String,
     publication_date: NaiveDateTime,
     lei: String,
     reporting_person: String,
@@ -85,7 +106,7 @@ impl From<FiRow> for UnifiedInsiderTransaction {
 
         UnifiedInsiderTransaction {
             ticker: r.ticker,
-            exchange_mic: "FNSE".to_string(),
+            exchange_mic: r.exchange_mic,
             source_registry: SourceRegistry::Fi as i32,
             person_name: r.reporting_person,
             person_role: r.role,
@@ -129,7 +150,9 @@ pub fn map_transaction_type(karaktar: &str) -> i32 {
 /// Fetch and parse the PDMR CSV for a given ticker/FI issuer name and date range.
 pub async fn fetch_pdmr_rows(
     client: &reqwest::Client,
+    endpoints: &FiEndpoints,
     ticker: &str,
+    exchange_mic: &str,
     issuer: &str,
     from: NaiveDate,
     to: NaiveDate,
@@ -138,7 +161,7 @@ pub async fn fetch_pdmr_rows(
         "{}?SearchFunctionType=Insyn&Utgivare={}&PersonILedandeStällningNamn=\
          &Transaktionsdatum.From={}&Transaktionsdatum.To={}\
          &Publiceringsdatum.From=&Publiceringsdatum.To=&button=export",
-        FI_BASE,
+        endpoints.search,
         urlencoding::encode(issuer),
         from.format("%Y-%m-%d"),
         to.format("%Y-%m-%d"),
@@ -210,6 +233,7 @@ pub async fn fetch_pdmr_rows(
 
         rows.push(FiRow {
             ticker: ticker.to_string(),
+            exchange_mic: exchange_mic.to_string(),
             publication_date: pub_dt,
             lei: get(i_lei).to_string(),
             reporting_person: get(i_rep).to_string(),
@@ -234,6 +258,53 @@ pub async fn fetch_pdmr_rows(
 /// FI's insider register as an [`InsiderSource`].
 pub struct FiRegister;
 
+impl FiRegister {
+    /// The issuer name to search: `ctx.fi_issuer`, else FI's autocomplete by
+    /// ticker; `None` when neither gives one.
+    pub async fn issuer(
+        ctx: &SourceContext<'_>,
+        endpoints: &FiEndpoints,
+        company: &Company,
+    ) -> anyhow::Result<Option<String>> {
+        match ctx.fi_issuer {
+            Some(name) => Ok(Some(name.to_string())),
+            None => resolve_issuer(ctx.http, endpoints, &company.ticker).await,
+        }
+    }
+
+    /// Fetches the company's PDMR rows from `since` (clamped to the MAR start)
+    /// until today from `endpoints`. Empty when no issuer is found; the caller
+    /// reports that through [`FiRegister::issuer`].
+    pub async fn fetch_from(
+        ctx: &mut SourceContext<'_>,
+        endpoints: &FiEndpoints,
+        company: &Company,
+        since: NaiveDate,
+    ) -> anyhow::Result<Vec<UnifiedInsiderTransaction>> {
+        let Some(issuer) = Self::issuer(ctx, endpoints, company).await? else {
+            warn!(
+                ticker = %company.ticker,
+                mic = %company.exchange_mic,
+                "no FI issuer found for ticker, skipping — set companies.fi_issuer"
+            );
+            return Ok(Vec::new());
+        };
+        let mar_start = NaiveDate::parse_from_str(MAR_START, "%Y-%m-%d")?;
+        let to = Utc::now().date_naive();
+        let rows = fetch_pdmr_rows(
+            ctx.http,
+            endpoints,
+            &company.ticker,
+            &company.exchange_mic,
+            &issuer,
+            since.max(mar_start),
+            to,
+        )
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+}
+
 #[async_trait]
 impl InsiderSource for FiRegister {
     fn name(&self) -> &'static str {
@@ -249,24 +320,7 @@ impl InsiderSource for FiRegister {
         company: &Company,
         since: NaiveDate,
     ) -> anyhow::Result<Vec<UnifiedInsiderTransaction>> {
-        let issuer = match ctx.fi_issuer {
-            Some(name) => name.to_string(),
-            None => match resolve_issuer(ctx.http, &company.ticker).await? {
-                Some(name) => name,
-                None => {
-                    warn!(
-                        ticker = %company.ticker,
-                        "no FI issuer found for ticker, skipping — set companies.fi_issuer"
-                    );
-                    return Ok(Vec::new());
-                }
-            },
-        };
-        let mar_start = NaiveDate::parse_from_str(MAR_START, "%Y-%m-%d")?;
-        let to = Utc::now().date_naive();
-        let rows =
-            fetch_pdmr_rows(ctx.http, &company.ticker, &issuer, since.max(mar_start), to).await?;
-        Ok(rows.into_iter().map(Into::into).collect())
+        Self::fetch_from(ctx, &FiEndpoints::live(), company, since).await
     }
 }
 
@@ -277,6 +331,7 @@ mod fi_row_conversion_tests {
     fn sample_row(is_correction: bool) -> FiRow {
         FiRow {
             ticker: "GOMX".to_string(),
+            exchange_mic: "FNSE".to_string(),
             publication_date: parse_fi_datetime("2024-03-18 09:00:00").unwrap(),
             lei: "549300ABCDEF1234567".to_string(),
             reporting_person: "Jane Doe".to_string(),

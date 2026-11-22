@@ -237,6 +237,16 @@ pub fn venue(mic: &str) -> Option<&'static Venue> {
         .find(|v| v.mic == mic)
 }
 
+/// The MICs of every venue in a country whose insider source is `kind`.
+pub fn mics_with_insider_source(kind: InsiderSourceKind) -> Vec<&'static str> {
+    COUNTRIES
+        .iter()
+        .filter(|c| c.insider_source == kind)
+        .flat_map(|c| c.venues.iter())
+        .map(|v| v.mic)
+        .collect()
+}
+
 /// Every Nordic MIC, in country then venue order.
 pub fn nordic_mics() -> impl Iterator<Item = &'static str> {
     COUNTRIES

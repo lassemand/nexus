@@ -15,7 +15,7 @@ sets them on the chronicle `companies` table:
 |---|---|
 | `name` | Display name used by the dashboard, free text |
 | `mfn_slug` | Slug of the company page on MFN (`https://mfn.se/a/<slug>`). Must match `^[a-z0-9][a-z0-9-]*$` and be unique |
-| `fi_issuer` | Issuer name exactly as Finansinspektionen's insider register spells it. Used by `pdmr` for PDMR (insider) transactions (Swedish listings only). Unique |
+| `fi_issuer` | Issuer name exactly as Finansinspektionen's insider register spells it. Used by `pdmr` for PDMR (insider) transactions (every Swedish listing, `FNSE` and `XSTO`). Unique |
 | `isin` | Sent by `nexus register`, else filled in by `nordic-reports` (see below); set by hand only when MFN lists several |
 
 All are nullable. A registration that leaves a mapping empty never clears it,
@@ -279,8 +279,13 @@ Swedish listings only. `nexus register` queries FI's issuer autocomplete with
 the MFN name; to look one up yourself, use part of the company name (not the
 ticker) and copy the current name verbatim:
 `https://marknadssok.fi.se/Publiceringsklient/sv-SE/AutoComplete/H%C3%A4mtaAutoCompleteListaFull?sokfunktion=Insyn&falt=Utgivare&sokterm=<part-of-name>`.
-Without `fi_issuer`, pdmr searches with the ticker, which only works when the
-ticker is part of the issuer name. **Danish insider trades are not covered**:
+pdmr reads every registered company on a venue of a country with the FI
+register (`FNSE` and `XSTO`, from `model::nordic`) and publishes each message
+with the company's own MIC. Without `fi_issuer`, pdmr searches with the ticker,
+which only works when the ticker is part of the issuer name; a company whose
+ticker FI does not know is skipped with a warning naming ticker and MIC and
+counted in the gauge `pdmr_companies_without_issuer`. Running `nexus register`
+again fills `fi_issuer` in. **Danish insider trades are not covered**:
 there is no FI-style register for them, deliberately deferred.
 
 ## SQL
