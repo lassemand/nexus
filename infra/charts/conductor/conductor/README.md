@@ -345,6 +345,9 @@ if one were attempted. One-time setup:
    vault kv patch secret/nexus/conductor REVIEW_GITHUB_APP_ID=<id> REVIEW_GITHUB_APP_INSTALLATION_ID=<installation id> REVIEW_GITHUB_APP_PRIVATE_KEY=@<file.pem>
    ```
 
+   `<id>` is the app's client ID (`Iv…`, GitHub's recommended JWT issuer) or
+   its numeric App ID; both work. The installation id is always a number.
+
    Then delete the `.pem`. Never paste the key into a pull request, issue or
    chat. The ExternalSecret picks the properties up within an hour; restart
    the pod (`kubectl -n conductor rollout restart deploy/conductor`).
