@@ -121,6 +121,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tracing::error!(error = %e, "metrics endpoint unavailable, continuing without it");
             }
 
+            match std::env::var_os("HOME") {
+                Some(home) => {
+                    tokio::spawn(conductor::credential::run(std::path::PathBuf::from(home)));
+                }
+                None => {
+                    tracing::warn!("HOME is not set; the Claude credential expiry is not exported")
+                }
+            }
+
             let github_webhook_secret = std::env::var("GITHUB_WEBHOOK_SECRET").ok();
             if github_webhook_secret.is_none() {
                 tracing::warn!(
