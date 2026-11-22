@@ -130,7 +130,11 @@ jobs:
 
           echo "--- the review session's boundary, with the real uid switch (NEX-285) ---"
           data="$(mktemp -d)"
-          chmod 1777 "$data"
+          # Like production (root:1000, sticky): not owned by the runner, whose
+          # uid (1001 on GitHub's runners) is the reviewer's. The owner of a
+          # sticky directory may rename any entry in it, which voids the test.
+          sudo chown root:1000 "$data"
+          sudo chmod 3777 "$data"
           docker run --rm --user 1000:1000 \
             -v "$data:/data" -v "$PWD/conductor/deploy:/test:ro" \
             nexus-conductor:candidate bash /test/review-isolation-test.sh

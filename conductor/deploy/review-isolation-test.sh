@@ -41,6 +41,16 @@ bad()  { printf '%s\n' "$1" >> "${TALLY}/fail"; printf '  FAIL  %s\n' "$1"; [[ -
 [[ "$(id -u)" != "0" ]] || { echo "run as the agent user, not root" >&2; exit 2; }
 AGENT_UID="$(id -u)"
 
+# The setup must match production, or the result means nothing: the owner of a
+# sticky directory may rename any entry in it, so a data directory owned by the
+# reviewer uid reports holes that production (root:1000, 3777) does not have.
+DATA_OWNER="$(stat -c %u "$DATA")"
+if [[ "$DATA_OWNER" == "$REVIEWER_UID" ]]; then
+  echo "setup error: $DATA is owned by uid $REVIEWER_UID, the reviewer; make it root-owned like production (chown root:1000, chmod 3777)" >&2
+  exit 2
+fi
+[[ -k "$DATA" ]] || { echo "setup error: $DATA is not sticky (chmod 3777, as the chart's init container does)" >&2; exit 2; }
+
 export CONDUCTOR_DATA_DIR="$DATA"
 unset CONDUCTOR_REVIEW_IDENTITY_DIR CONDUCTOR_REVIEW_ROOT CONDUCTOR_REVIEW_SKIP_SWITCH_CHECK
 export CLAUDE_CODE_VERSION=9.9.9-test
