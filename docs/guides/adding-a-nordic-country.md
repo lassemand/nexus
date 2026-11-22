@@ -59,11 +59,17 @@ The worked example is Norway (Oslo Børs, `XOSL`, which is already listed in
    `chronicle/tests/fixtures/classify_titles.txt` and regenerate the classify
    snapshot deliberately (`UPDATE_SNAPSHOTS=1 cargo test -p chronicle --test classify_snapshot`),
    reviewing the diff.
-6. **Insider source.** Pick `Country::insider_source`. Reuse an existing kind
-   (`MarReleases` works for any country whose issuers publish MAR Art. 19 releases on
-   MFN; `FiRegister` is Sweden's register; `None` means no insider data). A
-   register of its own is a new `InsiderSourceKind` variant plus an `InsiderSource`
-   implementation in `chronicle/src/insider_source/`, wired in `insider_source(kind)`.
+6. **Insider source.** Pick `Country::insider_source`. Reuse an existing kind:
+   `MarReleases` (MAR Art. 19 releases on MFN in the Finnish FSA's layout, with a
+   reference number; Finland), `EsmaReleases` (MAR releases in ESMA's notification
+   template, 2016/523, parsed from the text in the vocabularies of the country's
+   `languages`; Denmark), `FiRegister` (Sweden's register) or `None` (no insider data).
+   `EsmaReleases` needs a vocabulary for each of the country's languages in
+   `chronicle/src/nordic/esma_release.rs` (labels, headline phrases, decimal
+   separator) and its own `SourceRegistry` value and key source (today `DK_MAR` in
+   `insiders::InsiderDialect`). A register of its own is a new `InsiderSourceKind`
+   variant plus an `InsiderSource` implementation in `chronicle/src/insider_source/`,
+   wired in `insider_source(kind)`.
 7. **Snapshots.** Add the new MICs to `alpha/tests/nordic_snapshot.rs`, save the
    Nager responses under `alpha/tests/fixtures/nager/`, and regenerate
    `alpha/tests/snapshots/` deliberately.

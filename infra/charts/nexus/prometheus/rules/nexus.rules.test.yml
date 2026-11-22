@@ -1478,7 +1478,7 @@ tests:
               severity: warning
               job: nordic-reports
             exp_annotations:
-              summary: "nordic-reports could not parse 3 Finnish insider releases"
+              summary: "nordic-reports could not parse 3 Finnish or Danish insider releases"
               description: "The last nordic-reports run read 3 managers' transaction releases it could not parse; they are not published. Find them in the logs (`managers' transaction not parsed, skipped`)."
 
   - name: NordicMarParseErrors is silent at zero and for the backfill job

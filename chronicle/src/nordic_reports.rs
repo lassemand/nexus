@@ -53,8 +53,8 @@ struct Args {
     #[arg(long, env = "INSIDER_TRANSACTIONS_TOPIC", default_value = INSIDER_TRANSACTIONS_TOPIC)]
     insider_transactions_topic: String,
 
-    /// Only re-read Finnish companies' feeds for managers' transactions and
-    /// publish those. No report events, and no cursor is read or moved. Use it
+    /// Only re-read Finnish and Danish companies' feeds for managers'
+    /// transactions and publish those. No report events, and no cursor is read or moved. Use it
     /// for history (`--from`) or to re-send; it is idempotent.
     #[arg(long, env = "NORDIC_INSIDERS_ONLY")]
     insiders_only: bool,
@@ -68,7 +68,7 @@ struct Args {
     #[arg(long, env = "NORDIC_TICKER")]
     ticker: Option<String>,
 
-    /// Only this MIC (with `--insiders-only`), e.g. `XHEL`.
+    /// Only this MIC (with `--insiders-only`), e.g. `XHEL` or `XCSE`.
     #[arg(long, env = "NORDIC_MIC")]
     mic: Option<String>,
 }

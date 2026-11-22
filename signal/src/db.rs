@@ -295,6 +295,14 @@ fn english_wins(txn: &UnifiedInsiderTransaction) -> bool {
     )
 }
 
+/// True for a Danish MAR amendment (NEX-282): its rows replace the original
+/// notification's rows of the same person, ticker and transaction date (the
+/// same `transaction_id`, `DK_MAR:{TICKER}:{PERSON}:{DATE}`). Rows written from
+/// an amendment are kept when the amendment arrives again, in either language.
+fn replaces_original(txn: &UnifiedInsiderTransaction) -> bool {
+    txn.is_amendment && txn.source_registry == model::generated::SourceRegistry::DkMar as i32
+}
+
 /// Upserts a person record and inserts the filing from a `UnifiedInsiderTransaction`.
 ///
 /// Extracts SEC-specific fields (CIK, transaction code) from `SecDetail` when present.
@@ -302,7 +310,8 @@ fn english_wins(txn: &UnifiedInsiderTransaction) -> bool {
 /// Filing insert is idempotent: a repeat keeps the stored row, except that an
 /// English MAR copy ([`english_wins`]) overwrites `filer_role`,
 /// `price_per_share` and `filing_date`, so a release stores the English values
-/// whichever language copy arrived first.
+/// whichever language copy arrived first. A Danish MAR amendment
+/// ([`replaces_original`]) first deletes the original's rows.
 pub async fn upsert_insider_filing(
     pool: &PgPool,
     txn: &UnifiedInsiderTransaction,
@@ -365,12 +374,25 @@ pub async fn upsert_insider_filing(
         .get("id"),
     };
 
+    if replaces_original(txn) {
+        sqlx::query(
+            "DELETE FROM insider_filings \
+             WHERE person_id = $1 AND ticker = $2 AND transaction_date = $3 AND NOT is_amendment",
+        )
+        .bind(person_id)
+        .bind(&txn.ticker)
+        .bind(transaction_date)
+        .execute(&mut *tx)
+        .await?;
+    }
+
     sqlx::query(
         r#"
         INSERT INTO insider_filings
             (person_id, ticker, issuer_cik, filer_role,
-             transaction_date, filing_date, shares, price_per_share, transaction_code)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             transaction_date, filing_date, shares, price_per_share, transaction_code,
+             is_amendment)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $11)
         ON CONFLICT (person_id, ticker, transaction_date, shares, transaction_code)
         DO UPDATE SET
             filer_role = EXCLUDED.filer_role,
@@ -390,6 +412,7 @@ pub async fn upsert_insider_filing(
     .bind(txn.price_per_unit)
     .bind(&transaction_code)
     .bind(english_wins(txn))
+    .bind(replaces_original(txn))
     .execute(&mut *tx)
     .await?;
 
@@ -845,6 +868,97 @@ mod tests {
                 1
             );
         }
+        Ok(())
+    }
+
+    /// A Danish MAR row as chronicle publishes it (NEX-282).
+    fn dk_txn(volume: f64, price: f64, lang: &str, amendment: bool) -> UnifiedInsiderTransaction {
+        UnifiedInsiderTransaction {
+            ticker: "NOVO-B".into(),
+            exchange_mic: "XCSE".into(),
+            source_registry: model::generated::SourceRegistry::DkMar as i32,
+            person_name: "Martin Holst Lange".into(),
+            person_role: if lang == "en" {
+                "Executive Vice President".into()
+            } else {
+                "Koncerndirektør".into()
+            },
+            transaction_date: "2026-11-04".into(),
+            published_date: "2026-11-05".into(),
+            transaction_type: UnifiedTransactionType::Sell as i32,
+            volume,
+            price_per_unit: price,
+            currency: "DKK".into(),
+            is_amendment: amendment,
+            amended_transaction_id: if amendment {
+                "DK_MAR:NOVO-B:MARTIN HOLST LANGE:2026-11-04".into()
+            } else {
+                String::new()
+            },
+            source_detail: Some(unified_insider_transaction::SourceDetail::Mar(
+                model::generated::MarReleaseDetail {
+                    lang: lang.into(),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    async fn trades(pool: &PgPool) -> Vec<(f64, f64, bool)> {
+        sqlx::query_as(
+            "SELECT shares, price_per_share, is_amendment FROM insider_filings ORDER BY shares",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_danish_trade_is_stored_with_its_code(pool: PgPool) -> sqlx::Result<()> {
+        upsert_insider_filing(&pool, &dk_txn(12000.0, 285.0, "en", false)).await?;
+        let code: String = sqlx::query_scalar("SELECT transaction_code FROM insider_filings")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(code, "S");
+        assert_eq!(trades(&pool).await, [(12000.0, 285.0, false)]);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_danish_amendment_replaces_the_original(pool: PgPool) -> sqlx::Result<()> {
+        upsert_insider_filing(&pool, &dk_txn(12000.0, 285.0, "en", false)).await?;
+        upsert_insider_filing(&pool, &dk_txn(1200.0, 285.0, "en", true)).await?;
+        assert_eq!(trades(&pool).await, [(1200.0, 285.0, true)]);
+        // Its twin, a re-delivery and the original sent again by the poll before
+        // the amendment change nothing in the end.
+        upsert_insider_filing(&pool, &dk_txn(1200.0, 285.0, "da", true)).await?;
+        upsert_insider_filing(&pool, &dk_txn(12000.0, 285.0, "en", false)).await?;
+        upsert_insider_filing(&pool, &dk_txn(1200.0, 285.0, "en", true)).await?;
+        assert_eq!(trades(&pool).await, [(1200.0, 285.0, true)]);
+        assert_eq!(roles(&pool).await, ["Executive Vice President"]);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_price_amendment_overwrites_in_place(pool: PgPool) -> sqlx::Result<()> {
+        upsert_insider_filing(&pool, &dk_txn(1400.0, 697.24, "en", false)).await?;
+        upsert_insider_filing(&pool, &dk_txn(1400.0, 753.02, "en", true)).await?;
+        assert_eq!(trades(&pool).await, [(1400.0, 753.02, true)]);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_finnish_amendment_deletes_nothing(pool: PgPool) -> sqlx::Result<()> {
+        let original = mar_copy("en");
+        let mut amendment = mar_copy("en");
+        amendment.volume = 100.0;
+        amendment.is_amendment = true;
+        upsert_insider_filing(&pool, &original).await?;
+        upsert_insider_filing(&pool, &amendment).await?;
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM insider_filings").await,
+            2
+        );
         Ok(())
     }
 

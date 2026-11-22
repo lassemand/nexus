@@ -699,7 +699,7 @@ data:
         {
           "id": 15,
           "type": "timeseries",
-          "title": "Finnish insider transactions (per hour)",
+          "title": "Insider transactions by country and outcome (per hour)",
           "gridPos": {
             "x": 0,
             "y": 48,
@@ -729,8 +729,8 @@ data:
                 "type": "prometheus",
                 "uid": "nexus-prometheus"
               },
-              "expr": "sum by (outcome) (increase(nordic_live_insider_transactions_total{job=\"nordic-live\"}[1h]))",
-              "legendFormat": "{{ "{{" }}outcome{{ "}}" }}"
+              "expr": "sum by (country, outcome) (increase(nordic_live_insider_transactions_total{job=\"nordic-live\"}[1h]))",
+              "legendFormat": "{{ "{{" }}country{{ "}}" }} {{ "{{" }}outcome{{ "}}" }}"
             }
           ]
         },

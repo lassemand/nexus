@@ -32,6 +32,7 @@ enum SourceRegistry {
   SOURCE_REGISTRY_SEC = 1; // U.S. Securities and Exchange Commission (Form 4)
   SOURCE_REGISTRY_FI  = 2; // Finansinspektionen, Sweden (MAR Article 19 PDMR)
   SOURCE_REGISTRY_FIN_MAR = 3; // Finnish issuer MAR Art. 19 release (via MFN)
+  SOURCE_REGISTRY_DK_MAR = 4; // Danish issuer MAR Art. 19 release, ESMA form (via MFN)
 }
 
 // Unified transaction type — broader than the FI-only TransactionType in

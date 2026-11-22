@@ -1,26 +1,35 @@
-//! Finnish managers' transactions from MFN releases (NEX-207).
+//! Managers' transactions from MFN releases: Finland (NEX-207) and Denmark
+//! (NEX-282).
 //!
-//! Finland has no insider register, so each issuer's MAR Art. 19 release is the
-//! source. `nordic-reports` already reads every item of a company's feed; the
-//! items that are managers' transactions are routed here, parsed by
-//! [`super::mar_release`] and turned into `UnifiedInsiderTransaction`s for
-//! `insider.transactions`. Swedish companies are not handled here (FI's register
-//! covers them, see `pdmr.rs`) and Danish insiders are out of scope.
+//! Neither country has a register we read, so each issuer's MAR Art. 19 release
+//! is the source. `nordic-reports` already reads every item of a company's feed;
+//! the items that are managers' transactions are routed here, parsed and turned
+//! into `UnifiedInsiderTransaction`s for `insider.transactions`. Swedish
+//! companies are not handled here (FI's register covers them, see `pdmr.rs`).
 //!
-//! Every release comes twice (Finnish and English) with the same MAR reference
-//! number. The English copy is preferred; the Finnish one is used only when no
-//! English copy with the same reference was read.
+//! The country's [`InsiderSourceKind`] picks the [`InsiderDialect`]:
+//!
+//! * **Finnish** ([`InsiderSourceKind::MarReleases`]): the Finnish FSA's layout,
+//!   parsed by [`super::mar_release`]. Every release comes twice (Finnish and
+//!   English) with the same MAR reference number. The English copy is
+//!   preferred; the Finnish one is used only when no English copy with the same
+//!   reference was read.
+//! * **ESMA** ([`InsiderSourceKind::EsmaReleases`], Denmark): ESMA's template,
+//!   parsed by [`super::esma_release`]. The template has no reference number, so
+//!   a local-language copy is skipped when an English copy of the same release
+//!   gives identical trades; a copy without a twin is used as it is.
 
 use super::classify::strip_issuer_prefix;
 use super::db::Company;
+use super::esma_release;
 use super::events::trace_headers;
 use super::feed::NewsItem;
 use super::mar_release::{parse, MarParseError, ParsedMarTransaction, ReleaseContext};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
-use model::generated::UnifiedInsiderTransaction;
+use model::generated::{SourceRegistry, UnifiedInsiderTransaction};
 use model::insider::transaction_id;
-use model::nordic::{self, InsiderSourceKind};
+use model::nordic::{self, InsiderSourceKind, Lang};
 use prost::Message;
 use rdkafka::message::Headers;
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -34,6 +43,61 @@ pub const INSIDER_TRANSACTIONS_TOPIC: &str = "insider.transactions";
 
 /// Source label in the Kafka key, as `pdmr.rs` uses `FI` and `SEC`.
 pub const KEY_SOURCE: &str = "FIN_MAR";
+
+/// Source label of the Danish (ESMA template) messages.
+pub const DK_KEY_SOURCE: &str = "DK_MAR";
+
+/// How a country's managers' transaction releases are written, from its
+/// [`InsiderSourceKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsiderDialect {
+    /// The Finnish FSA's layout, with a reference number.
+    Finnish,
+    /// ESMA's template (Commission Implementing Regulation (EU) 2016/523).
+    Esma,
+}
+
+impl InsiderDialect {
+    /// The dialect of the country listing `exchange_mic`, if it takes its
+    /// insider transactions from issuers' releases on MFN.
+    pub fn for_mic(exchange_mic: &str) -> Option<Self> {
+        match nordic::country_for_mic(exchange_mic)?.insider_source {
+            InsiderSourceKind::MarReleases => Some(Self::Finnish),
+            InsiderSourceKind::EsmaReleases => Some(Self::Esma),
+            InsiderSourceKind::FiRegister | InsiderSourceKind::None => None,
+        }
+    }
+
+    /// The registry of its messages.
+    pub fn registry(self) -> SourceRegistry {
+        match self {
+            Self::Finnish => SourceRegistry::FinMar,
+            Self::Esma => SourceRegistry::DkMar,
+        }
+    }
+}
+
+/// True for listings whose country takes its insider transactions from
+/// issuers' releases on MFN, in either dialect.
+pub fn takes_releases(exchange_mic: &str) -> bool {
+    InsiderDialect::for_mic(exchange_mic).is_some()
+}
+
+/// True if `item`, from a company listed on `exchange_mic`, is a managers'
+/// transaction release in its country's dialect and languages.
+pub fn selects(exchange_mic: &str, item: &NewsItem) -> bool {
+    match InsiderDialect::for_mic(exchange_mic) {
+        Some(InsiderDialect::Finnish) => is_managers_transaction(item),
+        Some(InsiderDialect::Esma) => {
+            esma_release::is_managers_transaction(item, country_languages(exchange_mic))
+        }
+        None => false,
+    }
+}
+
+fn country_languages(exchange_mic: &str) -> &'static [Lang] {
+    nordic::country_for_mic(exchange_mic).map_or(&[], |c| c.languages)
+}
 
 /// MAR applies from 2016-07-03; earlier releases use the old Finnish format.
 pub fn mar_start() -> NaiveDate {
@@ -97,6 +161,10 @@ pub struct InsiderStats {
     pub twins_skipped: usize,
     /// Transactions dropped as repeats of `(reference_number, index)`.
     pub duplicates: usize,
+    /// The notification form is not in the text (a PDF attachment).
+    pub form_not_in_text: usize,
+    /// In the older short form without a unit price.
+    pub unsupported_form: usize,
 }
 
 /// The messages to publish for a set of items, oldest first.
@@ -162,6 +230,9 @@ fn parse_item(item: &NewsItem, lang: &str) -> Result<Vec<ParsedMarTransaction>, 
 /// Per MAR reference number the English copy wins, the Finnish one is a
 /// fallback, and `(reference_number, index)` is unique in the result.
 pub fn build(company: &Company, items: &[&NewsItem]) -> Batch {
+    if InsiderDialect::for_mic(&company.exchange_mic) == Some(InsiderDialect::Esma) {
+        return build_esma(company, items);
+    }
     let mut stats = InsiderStats::default();
     let mut en: Vec<Parsed> = Vec::new();
     let mut fi: Vec<Parsed> = Vec::new();
@@ -268,15 +339,209 @@ pub fn build(company: &Company, items: &[&NewsItem]) -> Batch {
     Batch { messages, stats }
 }
 
+/// Messages with their Kafka keys.
+type Keyed = Vec<(String, UnifiedInsiderTransaction)>;
+
+/// The messages of the ESMA dialect, oldest first. Per release, an English
+/// copy wins over a local-language copy with identical trades.
+fn build_esma(company: &Company, items: &[&NewsItem]) -> Batch {
+    let mut stats = InsiderStats::default();
+    let langs = country_languages(&company.exchange_mic);
+    let english = Lang::En.code();
+    let mut parsed: Vec<(&NewsItem, String, Keyed)> = Vec::new();
+    let mut seen_ids: HashSet<uuid::Uuid> = HashSet::new();
+    for &item in items {
+        stats.items += 1;
+        if !seen_ids.insert(item.news_id) {
+            stats.duplicates += 1;
+            continue;
+        }
+        if item.published_at.date_naive() < mar_start() {
+            stats.before_mar += 1;
+            continue;
+        }
+        let known = item
+            .lang
+            .as_deref()
+            .and_then(Lang::from_code)
+            .is_some_and(|l| langs.contains(&l));
+        if !known {
+            stats.other_language += 1;
+            continue;
+        }
+        let Some(text) = item.text.as_deref() else {
+            stats.form_not_in_text += 1;
+            continue;
+        };
+        match esma_release::parse(text, langs) {
+            Ok(transactions) => {
+                let messages = esma_messages(company, item, transactions);
+                let lang = item.lang.clone().unwrap_or_default();
+                parsed.push((item, lang, messages));
+            }
+            Err(e) => {
+                match e {
+                    MarParseError::FormNotInText => stats.form_not_in_text += 1,
+                    MarParseError::UnsupportedForm => stats.unsupported_form += 1,
+                    MarParseError::SuspiciousZeroPrice { .. } => stats.suspicious_zero_price += 1,
+                    _ => stats.parse_errors += 1,
+                }
+                let quiet = matches!(
+                    e,
+                    MarParseError::FormNotInText | MarParseError::UnsupportedForm
+                );
+                if quiet {
+                    debug!(ticker = %company.ticker, news_id = %item.news_id, error = %e,
+                           "managers' transaction without a parsable form in the text, skipped");
+                } else {
+                    warn!(ticker = %company.ticker, news_id = %item.news_id,
+                          url = item.url.as_deref().unwrap_or(""), error = %e,
+                          "managers' transaction not parsed, skipped");
+                }
+            }
+        }
+    }
+    let english_releases: HashSet<String> = parsed
+        .iter()
+        .filter(|(_, lang, _)| lang == english)
+        .filter_map(|(item, _, m)| esma_fingerprint(&company.exchange_mic, item, m))
+        .collect();
+    let mut chosen: Vec<_> = parsed
+        .into_iter()
+        .filter(|(item, lang, m)| {
+            let twin = lang != english
+                && esma_fingerprint(&company.exchange_mic, item, m)
+                    .is_some_and(|f| english_releases.contains(&f));
+            if twin {
+                stats.twins_skipped += 1;
+            }
+            !twin
+        })
+        .collect();
+    chosen.sort_by_key(|(item, _, _)| (item.published_at, item.news_id));
+    let messages = chosen
+        .into_iter()
+        .flat_map(|(item, _, m)| m.into_iter().map(move |(_, msg)| (item.published_at, msg)))
+        .collect();
+    Batch { messages, stats }
+}
+
+fn esma_messages(
+    company: &Company,
+    item: &NewsItem,
+    transactions: Vec<ParsedMarTransaction>,
+) -> Vec<(String, UnifiedInsiderTransaction)> {
+    let published_date = model::exchange::local_date(&company.exchange_mic, item.published_at)
+        .unwrap_or_else(|| item.published_at.date_naive())
+        .format("%Y-%m-%d")
+        .to_string();
+    let news_id = item.news_id.to_string();
+    transactions
+        .into_iter()
+        .map(|t| {
+            let amended = t.is_amendment.then(|| {
+                transaction_id(
+                    DK_KEY_SOURCE,
+                    &company.ticker,
+                    &t.person_name,
+                    &t.transaction_date.format("%Y-%m-%d").to_string(),
+                )
+            });
+            let msg = t.into_unified_as(
+                ReleaseContext {
+                    ticker: &company.ticker,
+                    exchange_mic: &company.exchange_mic,
+                    published_date: &published_date,
+                    mfn_news_id: &news_id,
+                    url: item.url.as_deref().unwrap_or(""),
+                },
+                SourceRegistry::DkMar,
+                amended.unwrap_or_default(),
+            );
+            (insider_key(&msg), msg)
+        })
+        .collect()
+}
+
+/// What identifies one release across its language copies: the MAR reference
+/// number (Finnish dialect), or for the ESMA template, which has none, the
+/// release's local publish date with each trade's date, volume, price and
+/// currency (names and nature texts are left out: they are translated, and an
+/// issuer's typo in one copy must not split the pair). `None` when there is
+/// nothing to identify.
+pub fn release_reference(
+    exchange_mic: &str,
+    item: &NewsItem,
+    messages: &[(String, UnifiedInsiderTransaction)],
+) -> Option<String> {
+    match InsiderDialect::for_mic(exchange_mic)? {
+        InsiderDialect::Finnish => messages.first().and_then(|(_, m)| match &m.source_detail {
+            Some(model::generated::unified_insider_transaction::SourceDetail::Mar(d))
+                if !d.reference_number.is_empty() =>
+            {
+                Some(d.reference_number.clone())
+            }
+            _ => None,
+        }),
+        InsiderDialect::Esma => esma_fingerprint(exchange_mic, item, messages),
+    }
+}
+
+fn esma_fingerprint(
+    exchange_mic: &str,
+    item: &NewsItem,
+    messages: &[(String, UnifiedInsiderTransaction)],
+) -> Option<String> {
+    if messages.is_empty() {
+        return None;
+    }
+    let day = model::exchange::local_date(exchange_mic, item.published_at)
+        .unwrap_or_else(|| item.published_at.date_naive());
+    let mut trades: Vec<String> = messages
+        .iter()
+        .map(|(_, m)| {
+            format!(
+                "{}|{}|{}|{}",
+                m.transaction_date, m.volume, m.price_per_unit, m.currency
+            )
+        })
+        .collect();
+    trades.sort();
+    Some(format!(
+        "{DK_KEY_SOURCE}:{}:{day}#{}",
+        item_ticker(messages),
+        trades.join(";")
+    ))
+}
+
+fn item_ticker(messages: &[(String, UnifiedInsiderTransaction)]) -> &str {
+    messages.first().map_or("", |(_, m)| m.ticker.as_str())
+}
+
+/// The trade fields that must agree between two copies of one release: the
+/// Kafka key (person and transaction date), volume, price, type and currency,
+/// one entry per trade in order.
+pub fn trades_identity(messages: &[(String, UnifiedInsiderTransaction)]) -> Vec<String> {
+    messages
+        .iter()
+        .map(|(key, m)| {
+            format!(
+                "{key}|{}|{}|{}|{}|{}",
+                m.transaction_date, m.volume, m.price_per_unit, m.transaction_type, m.currency
+            )
+        })
+        .collect()
+}
+
 /// The Kafka key of a message, the convention of `pdmr.rs`:
-/// `{SOURCE}:{TICKER}:{PERSON}:{DATE}`.
+/// `{SOURCE}:{TICKER}:{PERSON}:{DATE}`, the source from the message's registry.
 pub fn insider_key(txn: &UnifiedInsiderTransaction) -> String {
-    transaction_id(
-        KEY_SOURCE,
-        &txn.ticker,
-        &txn.person_name,
-        &txn.transaction_date,
-    )
+    let source = if txn.source_registry == SourceRegistry::DkMar as i32 {
+        DK_KEY_SOURCE
+    } else {
+        KEY_SOURCE
+    };
+    transaction_id(source, &txn.ticker, &txn.person_name, &txn.transaction_date)
 }
 
 /// Where insider messages go: Kafka in production, a vector in tests.

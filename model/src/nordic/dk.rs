@@ -76,6 +76,6 @@ pub const DENMARK: Country = Country {
             },
         ],
     },
-    insider_source: InsiderSourceKind::None,
+    insider_source: InsiderSourceKind::EsmaReleases,
     languages: &[Lang::Da, Lang::En],
 };

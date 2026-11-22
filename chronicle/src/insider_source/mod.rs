@@ -44,7 +44,9 @@ pub trait InsiderSource: Send + Sync {
     ) -> anyhow::Result<Vec<UnifiedInsiderTransaction>>;
 }
 
-/// MAR Art. 19 managers' transaction releases read from the company's MFN feed.
+/// MAR Art. 19 managers' transaction releases read from the company's MFN feed,
+/// in either dialect ([`insiders::InsiderDialect`]: Finland's layout or ESMA's
+/// template, Denmark).
 ///
 /// `nordic-reports` reads the same feed for reports and routes these items to
 /// [`insiders::build`] in the same pass; this implementation is the
@@ -87,7 +89,7 @@ impl InsiderSource for MarReleases {
 pub fn insider_source(kind: InsiderSourceKind) -> Option<&'static dyn InsiderSource> {
     match kind {
         InsiderSourceKind::FiRegister => Some(&FiRegister),
-        InsiderSourceKind::MarReleases => Some(&MarReleases),
+        InsiderSourceKind::MarReleases | InsiderSourceKind::EsmaReleases => Some(&MarReleases),
         InsiderSourceKind::None => None,
     }
 }

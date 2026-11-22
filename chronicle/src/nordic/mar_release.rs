@@ -89,6 +89,22 @@ pub enum MarParseError {
     /// A unit price in a unit that is not a currency (e.g. `PCT` of par for debt).
     #[error("unit price {0:?} is not a per-unit amount in a currency")]
     UnsupportedPriceUnit(String),
+    /// The release text holds no notification form (it is a PDF attachment).
+    #[error("the notification form is not in the release text")]
+    FormNotInText,
+    /// The text holds the older short form (number and market value, no unit
+    /// price), not the MAR notification template.
+    #[error("the release uses the short form without a unit price, not the MAR template")]
+    UnsupportedForm,
+    /// A transaction block's price/volume pairs do not add up to its stated
+    /// aggregated volume, so a number was misread.
+    #[error("price/volume pairs add up to {sum}, the aggregated volume is {stated}")]
+    AggregateMismatch {
+        /// Aggregated volume as stated in the form.
+        stated: String,
+        /// Sum of the volumes read.
+        sum: String,
+    },
     /// A zero price on an open-market BUY or SELL; never publish this as a trade.
     #[error("zero unit price on a {nature:?} transaction (index {index})")]
     SuspiciousZeroPrice {
@@ -189,10 +205,20 @@ impl ParsedMarTransaction {
     /// exact decimals here and nowhere else.
     pub fn into_unified(self, ctx: ReleaseContext<'_>) -> UnifiedInsiderTransaction {
         let amended_transaction_id = self.amended_transaction_id();
+        self.into_unified_as(ctx, SourceRegistry::FinMar, amended_transaction_id)
+    }
+
+    /// [`Self::into_unified`] for another registry, with the amended id given.
+    pub fn into_unified_as(
+        self,
+        ctx: ReleaseContext<'_>,
+        registry: SourceRegistry,
+        amended_transaction_id: String,
+    ) -> UnifiedInsiderTransaction {
         UnifiedInsiderTransaction {
             ticker: ctx.ticker.trim().to_uppercase(),
             exchange_mic: ctx.exchange_mic.to_string(),
-            source_registry: SourceRegistry::FinMar as i32,
+            source_registry: registry as i32,
             person_name: self.person_name,
             person_role: self.person_role,
             transaction_date: self.transaction_date.format("%Y-%m-%d").to_string(),
