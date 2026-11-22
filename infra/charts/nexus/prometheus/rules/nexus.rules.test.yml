@@ -1851,6 +1851,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
+              job: conductor
             exp_annotations:
               summary: "The Claude credential's expiry date is unknown"
               description: "Conductor is up but exports no expiry. For a static token, write CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT (an RFC 3339 date or date-time) with `vault kv patch secret/nexus/conductor` and restart the pod; for a credentials file, check that it exists and holds claudeAiOauth.refreshTokenExpiresAt. The pod log has the reason (\"Claude credential expiry unknown\")."
