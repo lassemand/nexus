@@ -228,6 +228,11 @@ cmp -s "${HOME}/.claude/.credentials.json" "${DATA}/review/home/.claude/.credent
   && ok "afterwards the author's tree is intact" || bad "afterwards the author's tree is intact"
 rm -f "${DATA}/worktrees/review-nex-1/verdict-probe" && ok "the agent removes what the reviewer wrote in its worktree" || bad "the agent removes what the reviewer wrote in its worktree"
 rm -f "${DATA}/review/home/probe" && ok "and in the reviewer's home" || bad "and in the reviewer's home"
+[[ "$(jq -r --arg p "${DATA}/worktrees/review-nex-1" '.projects[$p].hasTrustDialogAccepted' \
+      "${DATA}/review/home/.claude.json" 2>/dev/null)" == "true" ]] \
+  && ok "its review folder is trusted, so Claude starts without a prompt" \
+  || bad "its review folder is trusted, so Claude starts without a prompt" \
+         "$(head -c 300 "${DATA}/review/home/.claude.json" 2>&1)"
 
 printf '== tmux still works for the operator ==\n'
 
