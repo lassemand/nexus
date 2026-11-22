@@ -109,7 +109,7 @@ failure (some companies failed, exit code non-zero) still updates `last_success`
 | Job | Run metrics (last run) |
 |---|---|
 | `chronicle`, `market`, `earnings`, `filings` | `<job>_items_fetched_total`, `<job>_events_published_total`, `<job>_api_errors_total{status_class}` (`4xx`, `5xx`, `network`, `other`). Units: filings found (8-K), bars, earnings records, Form 4 filings; published `EarningsEvent`s, bars, `UnifiedInsiderTransaction`s |
-| `pdmr` | `pdmr_rows_fetched_total`, `pdmr_transactions_published_total`, `pdmr_parse_errors_total` |
+| `pdmr` | `pdmr_rows_fetched_total`, `pdmr_transactions_published_total`, `pdmr_parse_errors_total`, gauge `pdmr_companies_without_issuer` |
 | `nordic-reports` | `nordic_reports_companies_total{outcome}`, `nordic_reports_items_seen_total`, `nordic_reports_events_published_total{event_type}`, `nordic_reports_calendar_refreshes_total{outcome}`, `nordic_mar_*` |
 | `nordic-calendar` | `nordic_calendar_companies_total{outcome}` (`published`, `unchanged`, `no_slug`, `failed`), `nordic_calendar_upcoming_reports` |
 
