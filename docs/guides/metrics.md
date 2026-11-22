@@ -164,6 +164,16 @@ committed (`outcome="db_error_committed"`). The producer does not resend it, so 
 alert `SignalReportRejected` (`increase(signal_report_db_errors_total[15m]) > 0`,
 warning) means the report was dropped and must be replayed from MFN.
 
+## signal analyst backtest
+
+`signal` stores `analyst.decisions` and `analyst.trades` in `analyst_decisions`, `simulated_trades` and
+`simulated_trade_observations` (`docs/guides/analyst.md`). They count in the same `signal_messages_total{topic,outcome}`,
+`signal_store_duration_seconds{topic}` and `signal_last_processed_timestamp_seconds{topic}` as every topic, with outcomes
+`stored` (also for a trade whose version is not newer: logged and the span carries `signal.upsert=older_version_ignored`),
+`skipped_malformed` (does not decode), `skipped_invalid` (a decimal or trace id that does not parse, a required field empty),
+`db_error_retried` and `db_error_committed`. A database error that waiting cannot fix is logged and counted in
+`signal_analyst_db_errors_total{topic}`, and the offset is committed.
+
 ## analyst kernel runtime
 
 `analyst` runs AI-written WASM kernels in `wasmtime` (`analyst/src/runtime.rs`) and records,

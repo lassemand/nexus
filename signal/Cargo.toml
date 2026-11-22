@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 model = { path = "../model" }
 alpha = { path = "../alpha" }
-telemetry = { path = "../telemetry" }
+telemetry = { path = "../telemetry", features = ["kafka"] }
 metrics = "0.24"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 rdkafka = { version = "0.36", features = ["cmake-build", "tokio"] }
@@ -26,3 +26,6 @@ clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
 async-trait = "0.1"
 rust_decimal = { version = "1.43.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+telemetry = { path = "../telemetry", features = ["kafka", "testing"] }

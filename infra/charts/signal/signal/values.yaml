@@ -17,3 +17,6 @@ resources:
 # Topics of the analyst's decisions and simulated trades (NEX-257, stored in the backtest database).
 analystDecisionsTopic: "analyst.decisions"
 analystTradesTopic: "analyst.trades"
+# OpenTelemetry traces (docs/guides/tracing.md): Alloy's OTLP/HTTP port. An empty value disables export.
+# Only analyst.decisions, analyst.trades and special.events messages with a traceparent header are traced.
+otlpEndpoint: "http://alloy.nexus.svc.cluster.local:4318"

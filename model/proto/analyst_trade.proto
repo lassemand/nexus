@@ -55,6 +55,8 @@ message AnalystTrade {
   string exit_quote_source = 29;
   int64  exit_quote_saxo_time_unix_millis = 30;
   optional int64 exit_quote_age_ms = 31;
+  // MFN's news id of the release; the key that links the trade to its AnalystDecision.
+  string news_id = 32;
 }
 
 // One observation of the bid after entry.
