@@ -277,13 +277,18 @@ pub async fn read_file(home: &Path) -> OwnedFile {
     }
 }
 
-/// Reads the file and the environment once and publishes the result.
-pub async fn refresh(home: &Path, log: &mut StateLog) {
-    let env = CredentialEnv::from_process();
+/// Reads the file once, publishes the result for `env` and returns it.
+pub async fn refresh_with(env: &CredentialEnv, home: &Path, log: &mut StateLog) -> Reading {
     let file = read_file(home).await;
-    let reading = expiry(&env, file.state());
+    let reading = expiry(env, file.state());
     log.observe(reading);
     publish(env.mode(), reading);
+    reading
+}
+
+/// Reads the process environment and the file once and publishes the result.
+pub async fn refresh(home: &Path, log: &mut StateLog) -> Reading {
+    refresh_with(&CredentialEnv::from_process(), home, log).await
 }
 
 /// Publishes the expiry at startup and every [`REFRESH_INTERVAL`], for ever.
@@ -416,16 +421,16 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         let path = credentials_path(home.path());
         let env = CredentialEnv::default();
-        let now = |file: OwnedFile| expiry(&env, file.state());
+        let mut log = StateLog::default();
 
         assert!(matches!(
-            now(read_file(home.path()).await),
+            refresh_with(&env, home.path(), &mut log).await,
             Reading::Unknown(Source::CredentialsFile, _)
         ));
         std::fs::create_dir_all(path.parent().expect("has parent")).expect("mkdir");
         std::fs::write(&path, FILE_MS).expect("write");
         assert_eq!(
-            now(read_file(home.path()).await),
+            refresh_with(&env, home.path(), &mut log).await,
             Reading::Known(Source::CredentialsFile, 1_800_000_000)
         );
         std::fs::write(
@@ -434,12 +439,12 @@ mod tests {
         )
         .expect("rewrite");
         assert_eq!(
-            now(read_file(home.path()).await),
+            refresh_with(&env, home.path(), &mut log).await,
             Reading::Known(Source::CredentialsFile, 1_900_000_000)
         );
         std::fs::remove_file(&path).expect("remove");
         assert!(matches!(
-            now(read_file(home.path()).await),
+            refresh_with(&env, home.path(), &mut log).await,
             Reading::Unknown(Source::CredentialsFile, _)
         ));
     }
