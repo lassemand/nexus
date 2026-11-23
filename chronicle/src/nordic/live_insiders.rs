@@ -85,7 +85,8 @@ fn reference_number(messages: &[(String, UnifiedInsiderTransaction)]) -> Option<
 /// a restart the poll covers any difference.
 #[derive(Debug)]
 pub struct SentReferences {
-    sent: std::collections::HashMap<String, Vec<String>>,
+    /// Per reference: the trades sent and the language of the copy.
+    sent: std::collections::HashMap<String, (Vec<String>, String)>,
     order: std::collections::VecDeque<String>,
     capacity: usize,
 }
@@ -116,14 +117,23 @@ impl SentReferences {
     /// its reference. A release without a reference number is always `First`.
     pub fn admit(&mut self, messages: &[(String, UnifiedInsiderTransaction)]) -> Admission {
         let reference = reference_number(messages).map(str::to_string);
-        self.admit_as(reference.as_deref(), messages)
+        self.admit_as(reference.as_deref(), "", false, messages)
     }
 
     /// [`Self::admit`] under a given release reference (the MAR reference
     /// number, or [`insiders::release_reference`] where the form has none).
+    ///
+    /// With `twins_only` (the ESMA fingerprint, which has no person in it) only
+    /// a copy in another language than the one sent can be a repeat or a
+    /// conflict: a release in the same language with an equal fingerprint is
+    /// another release (two board members granted the same shares on one day)
+    /// and is `First`. Without it (a MAR reference number, unique per release)
+    /// any second release with that reference is compared.
     pub fn admit_as(
         &mut self,
         reference: Option<&str>,
+        lang: &str,
+        twins_only: bool,
         messages: &[(String, UnifiedInsiderTransaction)],
     ) -> Admission {
         let Some(reference) = reference else {
@@ -131,10 +141,12 @@ impl SentReferences {
         };
         let identity = trades_identity(messages);
         match self.sent.get(reference) {
-            Some(sent) if *sent == identity => Admission::Repeat,
+            Some((sent, _)) if *sent == identity => Admission::Repeat,
+            Some((_, sent_lang)) if twins_only && sent_lang == lang => Admission::First,
             Some(_) => Admission::Conflict,
             None => {
-                self.sent.insert(reference.to_string(), identity);
+                self.sent
+                    .insert(reference.to_string(), (identity, lang.to_string()));
                 self.order.push_back(reference.to_string());
                 if self.order.len() > self.capacity {
                     if let Some(old) = self.order.pop_front() {
@@ -318,7 +330,13 @@ pub async fn run_insider_producer(
         let reference =
             insiders::release_reference(&job.company.exchange_mic, &job.item, &release.messages);
         if outcome == "published"
-            && sent.admit_as(reference.as_deref(), &release.messages) == Admission::Conflict
+            && sent.admit_as(
+                reference.as_deref(),
+                job.item.lang.as_deref().unwrap_or(""),
+                insiders::InsiderDialect::for_mic(&job.company.exchange_mic)
+                    == Some(insiders::InsiderDialect::Esma),
+                &release.messages,
+            ) == Admission::Conflict
         {
             outcome = "conflict";
             warn!(news_id = %job.item.news_id, ticker = %job.company.ticker,

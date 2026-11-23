@@ -68,13 +68,13 @@ impl Field {
         )
     }
 
-    /// Fields whose value can continue in a later table or after a blank line
-    /// (the plain layout puts them in a small box table of their own).
     /// Fields whose label may stand alone on a plain line, without a colon.
     fn stands_alone(self) -> bool {
         self.is_heading() || matches!(self, Field::Instrument | Field::Prices | Field::Aggregated)
     }
 
+    /// Fields whose value can continue in a later table or after a blank line
+    /// (the plain layout puts them in a small box table of their own).
     fn spans_tables(self) -> bool {
         matches!(
             self,

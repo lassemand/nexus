@@ -281,15 +281,26 @@ the item stays a `company_announcement` too.
 - **Language twins** (Danish and English copies of one release, often the same second) are
   paired by a fingerprint of the release (local publish date and each trade's date, volume,
   price and currency; names and nature texts are left out, they are translated or misspelt).
-  The poll keeps the English copy; live publishes the first copy and the other only when its
-  trades are identical, else counts it as `conflict`. Signal keeps the English role, price and
-  filing date, as for Finland.
+  The poll keeps the English copy; live publishes the first copy and a copy **in the other
+  language** with the same fingerprint only when its trades are identical, else counts it as
+  `conflict`. A release in the same language with an equal fingerprint is a release of its own
+  (two board members granted the same shares on one day) and is published. Signal keeps the
+  English role, price and filing date, as for Finland.
+- **A twin that spells a name differently** (one issuer does) is sent live under the first
+  copy's name and by the poll under the English name. Signal stores it once: a `DK_MAR` row
+  with the same ticker, transaction date, filing date, shares, price and code under another
+  person, written from the other language's copy (`insider_filings.release_lang`), is that
+  trade. An English copy moves it to the English name; a local copy adds nothing. The person
+  row of the other spelling stays, without filings.
 - **Amendments** (`Amendment` / `Ændring` / `Korrektion` in 2b) are published with
   `is_amendment = true` and `amended_transaction_id` = their own `transaction_id`. Signal then
-  deletes that person's unamended rows for the ticker and transaction date and stores the
-  amended trades (`insider_filings.is_amendment` marks them, so the amendment arriving again,
-  in either language, keeps them). The original sent again later by the poll comes back until
-  the amendment, sent after it in the same run, removes it again.
+  deletes that person's rows for the ticker and transaction date that came from the original
+  or from an amendment filed earlier, and stores the amended trades (`insider_filings.is_amendment`
+  marks them; the amendment arriving again, in either language, has the same filing date and
+  keeps them). The original sent again later by the poll comes back until the amendment, sent
+  after it in the same run, removes it again. An amendment that corrects the transaction date
+  or the person's name has another `transaction_id`, so it cannot find the original and is
+  stored beside it.
 - Metrics: the MAR counters carry `country` (`FI`, `DK`); see `docs/guides/metrics.md`.
 
 Measured on the registered Danish companies' full MFN history from 2016-07-03 (2026-11): of

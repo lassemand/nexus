@@ -584,3 +584,106 @@ fn a_sale_to_cover_tax_is_a_sale_and_a_gift_a_gift() {
         UnifiedTransactionType::Grant
     );
 }
+
+fn with(prefix: &str, news_id: &str, from: &str, to: &str) -> serde_json::Value {
+    let mut item = raw(prefix);
+    item["news_id"] = serde_json::json!(news_id);
+    let text = item["content"]["text"].as_str().unwrap().replace(from, to);
+    item["content"]["text"] = serde_json::json!(text);
+    item
+}
+
+async fn live_raw(companies: &Companies, items: &[serde_json::Value]) -> Sent {
+    let (queue, jobs) = InsiderQueue::channel(16);
+    let handling = Handling {
+        insiders: Some(&queue),
+        ..Handling::default()
+    };
+    let mut seen = SeenSet::new(100);
+    for item in items {
+        handle_message_full(
+            &message(std::slice::from_ref(item)),
+            Utc::now(),
+            companies,
+            &mut seen,
+            &handling,
+        )
+        .await;
+    }
+    drop(queue);
+    let sink = Arc::new(VecSink::default());
+    let backoff = ExponentialBuilder::default()
+        .with_min_delay(Duration::from_millis(1))
+        .with_total_delay(Some(Duration::from_millis(10)));
+    run_insider_producer(sink.clone(), jobs, backoff).await;
+    let sent = std::mem::take(&mut *sink.sent.lock().unwrap());
+    sent
+}
+
+#[tokio::test]
+async fn same_language_releases_with_identical_trades_by_two_persons_are_both_sent() {
+    let other = with(
+        NOVO_SALE,
+        "99c0b2db-0000-4000-8000-000000000001",
+        "Martin Holst Lange",
+        "Another Executive",
+    );
+    let sent = live_raw(
+        &registered("NOVO-B", "XCSE", "novo-nordisk"),
+        &[raw(NOVO_SALE), other],
+    )
+    .await;
+    let keys: Vec<&str> = sent.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "DK_MAR:NOVO-B:MARTIN HOLST LANGE:2026-11-04",
+            "DK_MAR:NOVO-B:ANOTHER EXECUTIVE:2026-11-04"
+        ],
+        "not a twin: same language, so the second is a release of its own"
+    );
+}
+
+#[tokio::test]
+async fn a_twin_spelt_differently_is_sent_once_live_and_as_english_by_the_poll() {
+    let da = with(
+        DEMANT_DA,
+        "8635234f-0000-4000-8000-000000000001",
+        "Niels Wagner",
+        "Niels Wagnér",
+    );
+    let sent = live_raw(
+        &registered("DEMANT", "XCSE", "demant"),
+        &[da.clone(), raw(DEMANT_EN)],
+    )
+    .await;
+    assert_eq!(sent.len(), 1, "the English copy conflicts on the name");
+    assert_eq!(sent[0].0, "DK_MAR:DEMANT:NIELS WAGNÉR:2026-08-18");
+    assert_eq!(detail(&sent[0].1).lang, "da");
+
+    let items: Vec<NewsItem> = parse_document(&message(&[da, raw(DEMANT_EN)]))
+        .unwrap()
+        .items;
+    let refs: Vec<&NewsItem> = items.iter().collect();
+    let batch = insiders::build(&demant(), &refs);
+    assert_eq!(batch.stats.twins_skipped, 1);
+    assert_eq!(batch.messages.len(), 1);
+    let poll = &batch.messages[0].1;
+    assert_eq!(poll.person_name, "Niels Wagner");
+    assert_eq!(detail(poll).lang, "en");
+    assert_eq!(
+        (
+            poll.transaction_date.as_str(),
+            poll.published_date.as_str(),
+            poll.volume,
+            poll.price_per_unit
+        ),
+        (
+            sent[0].1.transaction_date.as_str(),
+            sent[0].1.published_date.as_str(),
+            sent[0].1.volume,
+            sent[0].1.price_per_unit
+        ),
+        "the same trade and filing date, which signal matches across the two names"
+    );
+}
