@@ -101,6 +101,17 @@ per share, without fees or position sizing; a release before the open measures t
 P&L only from `closed` trades and observations with status `ok` that were not late (`(bid(horizon) - entry_ask) / entry_ask * 100`, in SQL `NUMERIC`; late observations are counted separately) and reports how many
 trades were excluded and why. The release session (pre-open or intraday) is found by the same company and an `occurred_at` within 120 s of the trade's publish time, because signal replaces a stored release's `source_id` with the English copy's id when it merges language twins. `trade_results` belongs to the old US earnings strategy and is untouched.
 
+## Dashboards
+
+Two Grafana dashboards (folder Nexus) read the analyst; each links to the other.
+
+- **Analyst** (`nexus-analyst`): operations. Preparation runs, kernels, latency p50/p99, quote stream health, recent decisions. It answers "is the analyst running and fast?".
+- **Analyst results** (`nexus-analyst-results`, signal's `backtest` database, default range 90 days, refresh 1 min): it answers "does it make money?", "do the kernel's choices beat buying blindly?" and "how fast is each report processed?". Rows: *Results* (time filter on `exit_at`: tiles, gain per report, closed-trade table, compounded curve, gain by holding time), *Speed per report* (on `decided_at`: stage timings per decision, with a Tempo link, and publish to decision on a log scale) and *Coverage* (on `decided_at`: decisions per ISO week by outcome, excluded trades by status). Variables `ticker` and `exchange_mic` (multi, All) come from `simulated_trades`; `include_shadow` (default false) adds shadow trades to the gain-per-report bars.
+
+Only `closed` trades with `-100 < pnl_pct` count toward any gain; every other trade is counted as excluded, never as 0 %. A gain is per share, spread included, no fees; a release before the open is bought at the open.
+
+**Reading the compounded curve.** Each line is `exp(sum(ln(1 + pnl_pct/100))) - 1` over the closed trades in exit order, starting at the first trade inside the chosen time range (+10 % then -10 % gives -1 %, not 0 %). It assumes all money is reinvested in every trade, so trades that overlap on the same morning make it optimistic. *Strategy* is the closed `buy` trades, *Buy every report* all closed trades (shadow included) and *Not bought* the closed `no_buy` shadow trades: the strategy beats buying blindly only when its line ends above *Buy every report*.
+
 ## Tracing
 
 Each release is one trace of the `analyst` service, root span `process special.events`, continuing the

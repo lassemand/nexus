@@ -22,6 +22,15 @@ data:
         "to": "now"
       },
       "refresh": "1m",
+      "links": [
+        {
+          "title": "Analyst results",
+          "type": "link",
+          "url": "/d/nexus-analyst-results",
+          "icon": "dashboard",
+          "targetBlank": false
+        }
+      ],
       "schemaVersion": 39,
       "templating": {
         "list": []
@@ -463,39 +472,6 @@ data:
           "id": 10,
           "gridPos": {
             "x": 0,
-            "y": 32,
-            "w": 12,
-            "h": 8
-          }
-        },
-        {
-          "type": "table",
-          "title": "Simulated P&L by decision and horizon (%)",
-          "description": "From signal's simulated_trades (NEX-257).",
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "nexus-postgres"
-          },
-          "fieldConfig": {
-            "defaults": {},
-            "overrides": []
-          },
-          "targets": [
-            {
-              "refId": "A",
-              "datasource": {
-                "type": "grafana-postgresql-datasource",
-                "uid": "nexus-postgres"
-              },
-              "format": "table",
-              "rawQuery": true,
-              "editorMode": "code",
-              "rawSql": "SELECT decision, horizon, count(*) AS trades, avg(pnl_pct) AS avg_pnl_pct, sum(pnl_pct) AS sum_pnl_pct FROM simulated_trades GROUP BY decision, horizon ORDER BY decision, horizon"
-            }
-          ],
-          "id": 11,
-          "gridPos": {
-            "x": 12,
             "y": 32,
             "w": 12,
             "h": 8
