@@ -286,12 +286,19 @@ the item stays a `company_announcement` too.
   `conflict`. A release in the same language with an equal fingerprint is a release of its own
   (two board members granted the same shares on one day) and is published. Signal keeps the
   English role, price and filing date, as for Finland.
-- **A twin that spells a name differently** (one issuer does) is sent live under the first
-  copy's name and by the poll under the English name. Signal stores it once: a `DK_MAR` row
-  with the same ticker, transaction date, filing date, shares, price and code under another
-  person, written from the other language's copy (`insider_filings.release_lang`), is that
-  trade. An English copy moves it to the English name; a local copy adds nothing. The person
-  row of the other spelling stays, without filings.
+- **A twin that spells a name differently** (one issuer does) is recognised in chronicle,
+  the only place that sees both copies, never by equal trades alone: two persons with
+  identical trades on one day are two releases. A copy is a misspelt twin of a copy in the
+  other language only when no copy seen with its fingerprint has its names, each of its names
+  is a variant of the other copy's (equal after folding case and diacritics, or three or more
+  words with the same first word and one other word different; `insiders::similar_names`),
+  and exactly one unpaired copy fits. Live then publishes the English copy with
+  `MarReleaseDetail.replaced_person_name` (the other spelling) on each changed trade, and
+  skips a local copy that follows an English one; the poll pairs its copies the same way and
+  marks the English messages too. signal deletes only that named person's row for the same
+  trade (ticker, transaction date, shares, code) and stores the English name. When it cannot
+  tell (two candidates, or names that are not variants) nothing is replaced: at worst a
+  trade is stored under both spellings, never one person's trade deleted for another's.
 - **Amendments** (`Amendment` / `Ændring` / `Korrektion` in 2b) are published with
   `is_amendment = true` and `amended_transaction_id` = their own `transaction_id`. Signal then
   deletes that person's rows for the ticker and transaction date that came from the original

@@ -300,11 +300,15 @@ fn is_dk_mar(txn: &UnifiedInsiderTransaction) -> bool {
     txn.source_registry == model::generated::SourceRegistry::DkMar as i32
 }
 
-/// The language of the release copy a MAR message was read from.
-fn release_lang(txn: &UnifiedInsiderTransaction) -> Option<String> {
+/// For the English copy of a Danish release whose other-language copy wrote
+/// this trade's person differently (`replaced_person_name`, set by chronicle,
+/// which sees both copies): that spelling, whose row for this trade is replaced.
+fn replaced_person(txn: &UnifiedInsiderTransaction) -> Option<&str> {
     match txn.source_detail.as_ref() {
-        Some(unified_insider_transaction::SourceDetail::Mar(d)) if !d.lang.is_empty() => {
-            Some(d.lang.clone())
+        Some(unified_insider_transaction::SourceDetail::Mar(d))
+            if is_dk_mar(txn) && english_wins(txn) && !d.replaced_person_name.is_empty() =>
+        {
+            Some(d.replaced_person_name.as_str())
         }
         _ => None,
     }
@@ -327,10 +331,10 @@ fn replaces_original(txn: &UnifiedInsiderTransaction) -> bool {
 /// English MAR copy ([`english_wins`]) overwrites `filer_role`,
 /// `price_per_share` and `filing_date`, so a release stores the English values
 /// whichever language copy arrived first. A Danish MAR amendment
-/// ([`replaces_original`]) first deletes the original's rows. A Danish message
-/// whose trade is already stored under another person from the other language
-/// copy (a name spelt differently in the twin) is that trade: an English copy
-/// moves it to its own person, a local copy adds nothing.
+/// ([`replaces_original`]) first deletes the original's rows. The English copy
+/// of a Danish twin that spelt a person differently ([`replaced_person`])
+/// replaces that spelling's row for the same trade; nothing else is matched
+/// across persons, so two persons with identical trades stay two rows.
 pub async fn upsert_insider_filing(
     pool: &PgPool,
     txn: &UnifiedInsiderTransaction,
@@ -393,7 +397,6 @@ pub async fn upsert_insider_filing(
         .get("id"),
     };
 
-    let lang = release_lang(txn);
     if replaces_original(txn) {
         sqlx::query(
             "DELETE FROM insider_filings \
@@ -408,36 +411,21 @@ pub async fn upsert_insider_filing(
         .await?;
     }
 
-    if is_dk_mar(txn) {
-        let twin: Option<i64> = sqlx::query_scalar(
-            "SELECT id FROM insider_filings \
-             WHERE source_registry = $1 AND ticker = $2 AND transaction_date = $3 \
-               AND filing_date = $4 AND shares = $5 AND price_per_share = $6 \
-               AND transaction_code = $7 AND person_id <> $8 \
-               AND release_lang IS NOT NULL AND release_lang IS DISTINCT FROM $9 \
-             ORDER BY id LIMIT 1",
+    if let Some(replaced) = replaced_person(txn) {
+        sqlx::query(
+            "DELETE FROM insider_filings f USING persons p \
+             WHERE f.person_id = p.id AND p.filer_name = $1 AND p.filer_cik IS NULL \
+               AND f.person_id <> $2 AND f.ticker = $3 AND f.transaction_date = $4 \
+               AND f.shares = $5 AND f.transaction_code = $6",
         )
-        .bind(txn.source_registry)
+        .bind(replaced)
+        .bind(person_id)
         .bind(&txn.ticker)
         .bind(transaction_date)
-        .bind(filing_date)
         .bind(txn.volume)
-        .bind(txn.price_per_unit)
         .bind(&transaction_code)
-        .bind(person_id)
-        .bind(lang.as_deref())
-        .fetch_optional(&mut *tx)
+        .execute(&mut *tx)
         .await?;
-        if let Some(id) = twin {
-            if !english_wins(txn) {
-                tx.commit().await?;
-                return Ok(());
-            }
-            sqlx::query("DELETE FROM insider_filings WHERE id = $1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-        }
     }
 
     sqlx::query(
@@ -445,14 +433,13 @@ pub async fn upsert_insider_filing(
         INSERT INTO insider_filings
             (person_id, ticker, issuer_cik, filer_role,
              transaction_date, filing_date, shares, price_per_share, transaction_code,
-             is_amendment, source_registry, release_lang)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $11, $12, $13)
+             is_amendment)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $11)
         ON CONFLICT (person_id, ticker, transaction_date, shares, transaction_code)
         DO UPDATE SET
             filer_role = EXCLUDED.filer_role,
             price_per_share = EXCLUDED.price_per_share,
-            filing_date = EXCLUDED.filing_date,
-            release_lang = EXCLUDED.release_lang
+            filing_date = EXCLUDED.filing_date
         WHERE $10 AND (insider_filings.filer_role, insider_filings.price_per_share, insider_filings.filing_date)
             IS DISTINCT FROM (EXCLUDED.filer_role, EXCLUDED.price_per_share, EXCLUDED.filing_date)
         "#,
@@ -468,8 +455,6 @@ pub async fn upsert_insider_filing(
     .bind(&transaction_code)
     .bind(english_wins(txn))
     .bind(replaces_original(txn))
-    .bind(txn.source_registry)
-    .bind(lang.as_deref())
     .execute(&mut *tx)
     .await?;
 
@@ -1051,22 +1036,72 @@ mod tests {
     async fn a_twin_with_another_spelling_is_one_trade_under_the_english_name(
         pool: PgPool,
     ) -> sqlx::Result<()> {
-        for order in [["da", "en"], ["en", "da"]] {
+        // chronicle sends the Danish copy, then the English one naming the
+        // spelling it replaces; the poll may send the English one again.
+        let mut english = misspelt_twin("en");
+        if let Some(unified_insider_transaction::SourceDetail::Mar(d)) =
+            english.source_detail.as_mut()
+        {
+            d.replaced_person_name = "Sisse Fjelsted Rasmussen".into();
+        }
+        upsert_insider_filing(&pool, &misspelt_twin("da")).await?;
+        upsert_insider_filing(&pool, &english).await?;
+        upsert_insider_filing(&pool, &english).await?;
+        assert_eq!(
+            holders(&pool).await,
+            [(
+                "Sisse Fjelsted Jacobsen".to_string(),
+                "Executive Vice President".to_string()
+            )]
+        );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_twin_without_a_replaced_name_never_touches_another_person(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        upsert_insider_filing(&pool, &misspelt_twin("da")).await?;
+        upsert_insider_filing(&pool, &misspelt_twin("en")).await?;
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM insider_filings").await,
+            2,
+            "only chronicle, which sees both copies, can say it is a twin"
+        );
+        Ok(())
+    }
+
+    /// Two board members paid the same shares on one day, each release in
+    /// Danish and English (review of PR #336).
+    fn board_member(name: &str, lang: &str) -> UnifiedInsiderTransaction {
+        let mut t = dk_txn(500.0, 412.0, lang, false);
+        t.person_name = name.into();
+        t.person_role = "Board member".into();
+        t.transaction_type = UnifiedTransactionType::Grant as i32;
+        t
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn two_persons_with_identical_trades_in_both_languages_stay_two_trades(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        let orders: [[(&str, &str); 4]; 3] = [
+            [("X", "da"), ("Y", "da"), ("X", "en"), ("Y", "en")],
+            [("X", "da"), ("Y", "da"), ("Y", "en"), ("X", "en")],
+            [("X", "da"), ("X", "en"), ("Y", "da"), ("Y", "en")],
+        ];
+        for order in orders {
             sqlx::query("DELETE FROM insider_filings")
                 .execute(&pool)
                 .await?;
-            for lang in order {
-                upsert_insider_filing(&pool, &misspelt_twin(lang)).await?;
+            for (who, lang) in order {
+                upsert_insider_filing(&pool, &board_member(who, lang)).await?;
             }
-            upsert_insider_filing(&pool, &misspelt_twin("en")).await?;
-            assert_eq!(
-                holders(&pool).await,
-                [(
-                    "Sisse Fjelsted Jacobsen".to_string(),
-                    "Executive Vice President".to_string()
-                )],
-                "{order:?}"
-            );
+            for (who, lang) in [("X", "en"), ("Y", "en")] {
+                upsert_insider_filing(&pool, &board_member(who, lang)).await?;
+            }
+            let names: Vec<String> = holders(&pool).await.into_iter().map(|(n, _)| n).collect();
+            assert_eq!(names, ["X", "Y"], "{order:?}");
         }
         Ok(())
     }

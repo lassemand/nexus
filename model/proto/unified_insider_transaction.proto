@@ -121,4 +121,8 @@ message MarReleaseDetail {
   string lang             = 11; // "en" or "fi"
   string volume_decimal     = 12; // Exact volume, e.g. "23201" or "12.5"
   string unit_price_decimal = 13; // Exact unit price in `currency`, e.g. "0.00"
+  // Set on the English copy of a release whose other-language copy, sent
+  // earlier, wrote this trade's person differently (DK_MAR): the name as that
+  // copy wrote it. signal replaces that person's row for this trade.
+  string replaced_person_name = 14;
 }

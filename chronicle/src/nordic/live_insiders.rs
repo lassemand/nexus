@@ -85,8 +85,8 @@ fn reference_number(messages: &[(String, UnifiedInsiderTransaction)]) -> Option<
 /// a restart the poll covers any difference.
 #[derive(Debug)]
 pub struct SentReferences {
-    /// Per reference: the trades sent and the language of the copy.
-    sent: std::collections::HashMap<String, (Vec<String>, String)>,
+    /// Per reference: every copy sent (a MAR reference keeps only the first).
+    sent: std::collections::HashMap<String, Vec<insiders::SeenCopy>>,
     order: std::collections::VecDeque<String>,
     capacity: usize,
 }
@@ -101,6 +101,9 @@ pub enum Admission {
     Repeat,
     /// Sent before with different trades: not published.
     Conflict,
+    /// The English twin of a copy sent earlier that wrote a person
+    /// differently: published, its messages marked with the replaced name.
+    Replaces,
 }
 
 impl SentReferences {
@@ -117,45 +120,77 @@ impl SentReferences {
     /// its reference. A release without a reference number is always `First`.
     pub fn admit(&mut self, messages: &[(String, UnifiedInsiderTransaction)]) -> Admission {
         let reference = reference_number(messages).map(str::to_string);
-        self.admit_as(reference.as_deref(), "", false, messages)
+        self.admit_as(reference.as_deref(), "", false, &mut messages.to_vec())
     }
 
     /// [`Self::admit`] under a given release reference (the MAR reference
     /// number, or [`insiders::release_reference`] where the form has none).
     ///
-    /// With `twins_only` (the ESMA fingerprint, which has no person in it) only
-    /// a copy in another language than the one sent can be a repeat or a
-    /// conflict: a release in the same language with an equal fingerprint is
-    /// another release (two board members granted the same shares on one day)
-    /// and is `First`. Without it (a MAR reference number, unique per release)
-    /// any second release with that reference is compared.
+    /// Without `twins_only` (a MAR reference number, unique per release) any
+    /// second release with that reference is compared with the first.
+    ///
+    /// With `twins_only` (the ESMA fingerprint, which has no person in it) the
+    /// copy is matched with every copy sent under the fingerprint
+    /// ([`insiders::match_twin`]): twins are recognised by their persons, so a
+    /// release of another person with identical trades is `First`. An English
+    /// twin of a copy that wrote a person differently is `Replaces`, with
+    /// `replaced_person_name` set on `messages`; the local copy after an English
+    /// one that spells differently is a `Conflict` (the English copy is kept).
     pub fn admit_as(
         &mut self,
         reference: Option<&str>,
         lang: &str,
         twins_only: bool,
-        messages: &[(String, UnifiedInsiderTransaction)],
+        messages: &mut [(String, UnifiedInsiderTransaction)],
     ) -> Admission {
         let Some(reference) = reference else {
             return Admission::First;
         };
-        let identity = trades_identity(messages);
-        match self.sent.get(reference) {
-            Some((sent, _)) if *sent == identity => Admission::Repeat,
-            Some((_, sent_lang)) if twins_only && sent_lang == lang => Admission::First,
-            Some(_) => Admission::Conflict,
-            None => {
-                self.sent
-                    .insert(reference.to_string(), (identity, lang.to_string()));
-                self.order.push_back(reference.to_string());
-                if self.order.len() > self.capacity {
-                    if let Some(old) = self.order.pop_front() {
-                        self.sent.remove(&old);
-                    }
+        let copy = insiders::SeenCopy::of(lang, messages);
+        let Some(copies) = self.sent.get_mut(reference) else {
+            self.sent.insert(reference.to_string(), vec![copy]);
+            self.order.push_back(reference.to_string());
+            if self.order.len() > self.capacity {
+                if let Some(old) = self.order.pop_front() {
+                    self.sent.remove(&old);
                 }
-                Admission::First
             }
+            return Admission::First;
+        };
+        if !twins_only {
+            return if copies[0].identity == copy.identity {
+                Admission::Repeat
+            } else {
+                Admission::Conflict
+            };
         }
+        let english = model::nordic::Lang::En.code();
+        let admission = match insiders::match_twin(copies, &copy) {
+            insiders::TwinMatch::Repeat(i) => {
+                if copies[i].lang != lang {
+                    copies[i].paired = true;
+                }
+                Admission::Repeat
+            }
+            insiders::TwinMatch::Conflict(i) => {
+                copies[i].paired = true;
+                Admission::Conflict
+            }
+            insiders::TwinMatch::Misspelt(i) => {
+                copies[i].paired = true;
+                if lang == english {
+                    insiders::mark_replaced(messages, &copies[i]);
+                    Admission::Replaces
+                } else {
+                    Admission::Conflict
+                }
+            }
+            insiders::TwinMatch::New => Admission::First,
+        };
+        let mut copy = copy;
+        copy.paired = admission != Admission::First;
+        copies.push(copy);
+        admission
     }
 }
 
@@ -325,7 +360,7 @@ pub async fn run_insider_producer(
             nordic_live.insider_outcome = tracing::field::Empty,
             nordic_live.insider_messages = tracing::field::Empty,
         );
-        let release = step.in_scope(|| parse_release(&job.company, &job.item));
+        let mut release = step.in_scope(|| parse_release(&job.company, &job.item));
         let mut outcome = release.outcome();
         let reference =
             insiders::release_reference(&job.company.exchange_mic, &job.item, &release.messages);
@@ -335,7 +370,7 @@ pub async fn run_insider_producer(
                 job.item.lang.as_deref().unwrap_or(""),
                 insiders::InsiderDialect::for_mic(&job.company.exchange_mic)
                     == Some(insiders::InsiderDialect::Esma),
-                &release.messages,
+                &mut release.messages,
             ) == Admission::Conflict
         {
             outcome = "conflict";

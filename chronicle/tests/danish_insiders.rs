@@ -644,22 +644,37 @@ async fn same_language_releases_with_identical_trades_by_two_persons_are_both_se
     );
 }
 
+fn replaced(m: &UnifiedInsiderTransaction) -> &str {
+    detail(m).replaced_person_name.as_str()
+}
+
 #[tokio::test]
-async fn a_twin_spelt_differently_is_sent_once_live_and_as_english_by_the_poll() {
+async fn a_twin_spelt_differently_names_the_replaced_spelling_live_and_in_the_poll() {
     let da = with(
         DEMANT_DA,
         "8635234f-0000-4000-8000-000000000001",
         "Niels Wagner",
         "Niels Wagnér",
     );
-    let sent = live_raw(
-        &registered("DEMANT", "XCSE", "demant"),
-        &[da.clone(), raw(DEMANT_EN)],
-    )
-    .await;
-    assert_eq!(sent.len(), 1, "the English copy conflicts on the name");
+    let companies = registered("DEMANT", "XCSE", "demant");
+    let sent = live_raw(&companies, &[da.clone(), raw(DEMANT_EN)]).await;
+    assert_eq!(sent.len(), 2);
     assert_eq!(sent[0].0, "DK_MAR:DEMANT:NIELS WAGNÉR:2026-08-18");
-    assert_eq!(detail(&sent[0].1).lang, "da");
+    assert_eq!(replaced(&sent[0].1), "");
+    assert_eq!(sent[1].0, "DK_MAR:DEMANT:NIELS WAGNER:2026-08-18");
+    assert_eq!(
+        replaced(&sent[1].1),
+        "Niels Wagnér",
+        "signal replaces that row"
+    );
+
+    let english_first = live_raw(&companies, &[raw(DEMANT_EN), da.clone()]).await;
+    assert_eq!(
+        english_first.len(),
+        1,
+        "the later Danish spelling is not sent"
+    );
+    assert_eq!(replaced(&english_first[0].1), "");
 
     let items: Vec<NewsItem> = parse_document(&message(&[da, raw(DEMANT_EN)]))
         .unwrap()
@@ -668,22 +683,81 @@ async fn a_twin_spelt_differently_is_sent_once_live_and_as_english_by_the_poll()
     let batch = insiders::build(&demant(), &refs);
     assert_eq!(batch.stats.twins_skipped, 1);
     assert_eq!(batch.messages.len(), 1);
-    let poll = &batch.messages[0].1;
-    assert_eq!(poll.person_name, "Niels Wagner");
-    assert_eq!(detail(poll).lang, "en");
-    assert_eq!(
-        (
-            poll.transaction_date.as_str(),
-            poll.published_date.as_str(),
-            poll.volume,
-            poll.price_per_unit
-        ),
-        (
-            sent[0].1.transaction_date.as_str(),
-            sent[0].1.published_date.as_str(),
-            sent[0].1.volume,
-            sent[0].1.price_per_unit
-        ),
-        "the same trade and filing date, which signal matches across the two names"
+    assert_eq!(batch.messages[0].1.person_name, "Niels Wagner");
+    assert_eq!(replaced(&batch.messages[0].1), "Niels Wagnér");
+}
+
+/// Two releases of one day, X's and Y's, with identical trades, each in
+/// Danish and English (review of PR #336).
+fn two_releases() -> [serde_json::Value; 4] {
+    let x_da = raw(DEMANT_DA);
+    let x_en = raw(DEMANT_EN);
+    let y_da = with(
+        DEMANT_DA,
+        "8635234f-0000-4000-8000-0000000000b1",
+        "Niels Wagner",
+        "Søren Nielsen",
     );
+    let y_en = with(
+        DEMANT_EN,
+        "1bf179f5-0000-4000-8000-0000000000b2",
+        "Niels Wagner",
+        "Søren Nielsen",
+    );
+    [x_da, y_da, x_en, y_en]
+}
+
+#[tokio::test]
+async fn two_persons_with_identical_trades_in_both_languages_are_never_twins() {
+    let companies = registered("DEMANT", "XCSE", "demant");
+    let [x_da, y_da, x_en, y_en] = two_releases();
+    let orders = [
+        vec![x_da.clone(), y_da.clone(), x_en.clone(), y_en.clone()],
+        vec![x_da.clone(), y_da.clone(), y_en.clone(), x_en.clone()],
+        vec![x_da.clone(), x_en.clone(), y_da.clone(), y_en.clone()],
+        vec![y_en.clone(), x_da.clone(), x_en.clone(), y_da.clone()],
+        vec![x_da.clone(), y_en.clone(), y_da.clone(), x_en.clone()],
+    ];
+    for order in orders {
+        let sent = live_raw(&companies, &order).await;
+        let mut people: Vec<&str> = sent.iter().map(|(_, m)| m.person_name.as_str()).collect();
+        people.sort();
+        people.dedup();
+        assert_eq!(people, ["Niels Wagner", "Søren Nielsen"]);
+        assert!(
+            sent.iter().all(|(_, m)| replaced(m).is_empty()),
+            "nobody replaces anybody"
+        );
+        assert_eq!(sent.len(), 4, "every copy agrees with its own twin");
+    }
+    let items: Vec<NewsItem> = parse_document(&message(&two_releases())).unwrap().items;
+    let refs: Vec<&NewsItem> = items.iter().collect();
+    let batch = insiders::build(&demant(), &refs);
+    let mut people: Vec<&str> = batch
+        .messages
+        .iter()
+        .map(|(_, m)| m.person_name.as_str())
+        .collect();
+    people.sort();
+    assert_eq!(people, ["Niels Wagner", "Søren Nielsen"]);
+    assert_eq!(batch.stats.twins_skipped, 2);
+    assert!(batch.messages.iter().all(|(_, m)| replaced(m).is_empty()));
+}
+
+#[test]
+fn which_spellings_can_name_one_person() {
+    use chronicle_lib::nordic::insiders::similar_names;
+    assert!(similar_names("Niels Wagnér", "Niels Wagner"));
+    assert!(similar_names("SØREN NIELSEN", "Søren Nielsen"));
+    assert!(similar_names(
+        "Sisse Fjelsted Rasmussen",
+        "Sisse Fjelsted Jacobsen"
+    ));
+    assert!(!similar_names("Anders Hansen", "Anders Jensen"));
+    assert!(!similar_names("Niels Wagner", "Søren Nielsen"));
+    assert!(!similar_names(
+        "Sisse Fjelsted Rasmussen",
+        "Karen Fjelsted Rasmussen"
+    ));
+    assert!(!similar_names("Ann Marie Lund Holm", "Ann Mette Lund Hald"));
 }

@@ -34,7 +34,7 @@ use prost::Message;
 use rdkafka::message::Headers;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tracing::{debug, warn, Span};
 
@@ -401,23 +401,40 @@ fn build_esma(company: &Company, items: &[&NewsItem]) -> Batch {
             }
         }
     }
-    let english_releases: HashSet<String> = parsed
-        .iter()
-        .filter(|(_, lang, _)| lang == english)
-        .filter_map(|(item, _, m)| esma_fingerprint(&company.exchange_mic, item, m))
-        .collect();
-    let mut chosen: Vec<_> = parsed
-        .into_iter()
-        .filter(|(item, lang, m)| {
-            let twin = lang != english
-                && esma_fingerprint(&company.exchange_mic, item, m)
-                    .is_some_and(|f| english_releases.contains(&f));
-            if twin {
+    // English copies first, so a local copy is compared with every English copy
+    // of its release.
+    let (mut english_copies, local): (Vec<_>, Vec<_>) =
+        parsed.into_iter().partition(|(_, lang, _)| lang == english);
+    let mut seen: HashMap<String, Vec<(SeenCopy, usize)>> = HashMap::new();
+    for (k, (item, lang, m)) in english_copies.iter().enumerate() {
+        if let Some(f) = esma_fingerprint(&company.exchange_mic, item, m) {
+            seen.entry(f).or_default().push((SeenCopy::of(lang, m), k));
+        }
+    }
+    let mut chosen_local = Vec::new();
+    for (item, lang, m) in local {
+        let Some(f) = esma_fingerprint(&company.exchange_mic, item, &m) else {
+            chosen_local.push((item, lang, m));
+            continue;
+        };
+        let copies = seen.entry(f).or_default();
+        let copy = SeenCopy::of(&lang, &m);
+        let known: Vec<SeenCopy> = copies.iter().map(|(c, _)| c.clone()).collect();
+        match match_twin(&known, &copy) {
+            TwinMatch::Repeat(i) | TwinMatch::Conflict(i) => {
                 stats.twins_skipped += 1;
+                copies[i].0.paired = true;
             }
-            !twin
-        })
-        .collect();
+            TwinMatch::Misspelt(i) => {
+                stats.twins_skipped += 1;
+                copies[i].0.paired = true;
+                let english_index = copies[i].1;
+                mark_replaced(&mut english_copies[english_index].2, &copy);
+            }
+            TwinMatch::New => chosen_local.push((item, lang, m)),
+        }
+    }
+    let mut chosen: Vec<_> = english_copies.into_iter().chain(chosen_local).collect();
     chosen.sort_by_key(|(item, _, _)| (item.published_at, item.news_id));
     let messages = chosen
         .into_iter()
@@ -516,6 +533,136 @@ fn esma_fingerprint(
 
 fn item_ticker(messages: &[(String, UnifiedInsiderTransaction)]) -> &str {
     messages.first().map_or("", |(_, m)| m.ticker.as_str())
+}
+
+/// One copy of a release already sent (live) or chosen (poll), for
+/// [`match_twin`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeenCopy {
+    /// The copy's language.
+    pub lang: String,
+    /// Each trade's person, in order.
+    pub names: Vec<String>,
+    /// [`trades_identity`] of the copy.
+    pub identity: Vec<String>,
+    /// Already matched with a copy in the other language.
+    pub paired: bool,
+}
+
+impl SeenCopy {
+    /// The copy of `messages`, in `lang`.
+    pub fn of(lang: &str, messages: &[(String, UnifiedInsiderTransaction)]) -> Self {
+        Self {
+            lang: lang.to_string(),
+            names: messages
+                .iter()
+                .map(|(_, m)| m.person_name.clone())
+                .collect(),
+            identity: trades_identity(messages),
+            paired: false,
+        }
+    }
+}
+
+/// How a copy relates to the copies seen of releases with its fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TwinMatch {
+    /// The same trades as copy `i`: a repeat or a twin that agrees.
+    Repeat(usize),
+    /// Copy `i` in the other language has the same persons but other trades
+    /// (a nature translated into another type): a twin that disagrees.
+    Conflict(usize),
+    /// Copy `i` in the other language is this copy's twin with persons spelt
+    /// differently: no seen copy has this copy's names, every name is a
+    /// variant of copy `i`'s ([`similar_names`]), and copy `i` is the only
+    /// unpaired copy in the other language that fits.
+    Misspelt(usize),
+    /// Another release (other persons with identical trades).
+    New,
+}
+
+/// Matches `copy` against `seen`, the copies of releases with the same ESMA
+/// fingerprint. Twins are recognised by their persons, never by equal trades
+/// alone: two persons with identical trades on one day are two releases.
+pub fn match_twin(seen: &[SeenCopy], copy: &SeenCopy) -> TwinMatch {
+    if let Some(i) = seen.iter().position(|c| c.identity == copy.identity) {
+        return TwinMatch::Repeat(i);
+    }
+    if let Some(i) = seen.iter().position(|c| c.names == copy.names) {
+        return if seen[i].lang != copy.lang && !seen[i].paired {
+            TwinMatch::Conflict(i)
+        } else {
+            TwinMatch::New
+        };
+    }
+    let candidates: Vec<usize> = seen
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            c.lang != copy.lang
+                && !c.paired
+                && c.names.len() == copy.names.len()
+                && c.names
+                    .iter()
+                    .zip(&copy.names)
+                    .all(|(a, b)| similar_names(a, b))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    match candidates.as_slice() {
+        [i] => TwinMatch::Misspelt(*i),
+        _ => TwinMatch::New,
+    }
+}
+
+/// True if two spellings can name one person: equal after folding case and
+/// diacritics (`Wagnér` / `Wagner`), or three or more words with the same first
+/// word and exactly one other word different (`Sisse Fjelsted Rasmussen` /
+/// `Sisse Fjelsted Jacobsen`). Two-word names differing in a word are two
+/// persons (`Anders Hansen` / `Anders Jensen`).
+pub fn similar_names(a: &str, b: &str) -> bool {
+    let fold = |s: &str| -> Vec<String> {
+        s.split_whitespace()
+            .map(|w| {
+                w.to_lowercase()
+                    .chars()
+                    .map(|c| match c {
+                        'á' | 'à' | 'â' | 'ä' | 'å' | 'ã' => "a".to_string(),
+                        'é' | 'è' | 'ê' | 'ë' => "e".to_string(),
+                        'í' | 'ì' | 'î' | 'ï' => "i".to_string(),
+                        'ó' | 'ò' | 'ô' | 'ö' | 'ø' | 'õ' => "o".to_string(),
+                        'ú' | 'ù' | 'û' | 'ü' => "u".to_string(),
+                        'æ' => "ae".to_string(),
+                        'ñ' => "n".to_string(),
+                        'ç' => "c".to_string(),
+                        c => c.to_string(),
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let (x, y) = (fold(a), fold(b));
+    if x == y {
+        return true;
+    }
+    x.len() >= 3
+        && x.len() == y.len()
+        && x[0] == y[0]
+        && x.iter().zip(&y).filter(|(p, q)| p != q).count() == 1
+}
+
+/// Sets `replaced_person_name` on each of `messages` whose person `earlier`
+/// (the twin copy, in order) wrote differently.
+pub fn mark_replaced(messages: &mut [(String, UnifiedInsiderTransaction)], earlier: &SeenCopy) {
+    for ((_, m), name) in messages.iter_mut().zip(&earlier.names) {
+        if m.person_name != *name {
+            if let Some(model::generated::unified_insider_transaction::SourceDetail::Mar(d)) =
+                m.source_detail.as_mut()
+            {
+                d.replaced_person_name = name.clone();
+            }
+        }
+    }
 }
 
 /// The trade fields that must agree between two copies of one release: the

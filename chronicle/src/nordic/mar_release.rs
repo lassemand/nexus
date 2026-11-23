@@ -244,6 +244,7 @@ impl ParsedMarTransaction {
                     lang: self.lang,
                     volume_decimal: self.volume.to_string(),
                     unit_price_decimal: self.unit_price.map(|p| p.to_string()).unwrap_or_default(),
+                    replaced_person_name: String::new(),
                 },
             )),
         }
