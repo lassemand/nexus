@@ -22,3 +22,7 @@ target/release/build/**/out/*.rs
 # verdict: benchmark corpus (verdict/fetch-corpus.sh) and the template's own build output
 verdict/corpus/
 verdict/template/target/
+
+# moon: local cache and Docker scaffolding (docs/guides/ci.md)
+.moon/cache/
+.moon/docker/

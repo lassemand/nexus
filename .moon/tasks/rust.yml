@@ -1,0 +1,35 @@
+$schema: '../cache/schemas/tasks.json'
+
+# Inherited by every Cargo package (a project with a Cargo.toml). The
+# verdict/bench and verdict/template workspaces replace the commands.
+inheritedBy:
+  toolchain: 'rust'
+
+implicitInputs:
+  - 'group://globals'
+
+# A crate's tasks depend on the `lint` of each crate it depends on (the edges
+# the Rust plugin reads from Cargo.toml). With `--downstream deep`, a change to
+# a crate thus selects every crate above it. The commands in
+# docs/guides/ci.md pass `--upstream none`, so these deps run nothing.
+implicitDeps:
+  - '^:lint'
+
+# One target directory for every task, unless the environment sets one.
+env:
+  CARGO_TARGET_DIR: '$workspaceRoot/target'
+
+taskOptions:
+  cache: false
+
+tasks:
+  lint:
+    description: 'clippy on this crate, all targets and features'
+    command: 'cargo clippy -p $projectAlias --all-targets --all-features -- -D warnings'
+    inputs:
+      - '**/*'
+  test:
+    description: 'tests of this crate'
+    command: 'cargo test -p $projectAlias'
+    inputs:
+      - '**/*'

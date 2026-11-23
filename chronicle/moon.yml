@@ -1,0 +1,7 @@
+$schema: '../.moon/cache/schemas/project.json'
+
+tasks:
+  test:
+    inputs:
+      # tests/nordic_live.rs and tests/smoke_test.rs: sqlx::migrate!("../signal/migrations").
+      - '/signal/migrations/**/*'

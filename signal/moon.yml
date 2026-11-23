@@ -1,0 +1,10 @@
+$schema: '../.moon/cache/schemas/project.json'
+
+tasks:
+  lint:
+    inputs:
+      # src/e2e_announcements.rs: include_bytes! of chronicle's recorded events.
+      - '/chronicle/tests/fixtures/mfn/e2e/**/*'
+  test:
+    inputs:
+      - '/chronicle/tests/fixtures/mfn/e2e/**/*'

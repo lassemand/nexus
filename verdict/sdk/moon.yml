@@ -1,0 +1,7 @@
+$schema: '../../.moon/cache/schemas/project.json'
+
+tasks:
+  test:
+    inputs:
+      # tests/wasm_abi.rs builds verdict-sample for wasm32 from the workspace root.
+      - '/verdict/kernels/sample/**/*'

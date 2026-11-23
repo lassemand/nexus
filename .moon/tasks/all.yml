@@ -1,0 +1,11 @@
+$schema: '../cache/schemas/tasks.json'
+
+# Files whose change runs every Rust task.
+fileGroups:
+  globals:
+    - '/Cargo.toml'
+    - '/Cargo.lock'
+    - '/rust-toolchain.toml'
+    - '/.cargo/**/*'
+    - '/.moon/**/*'
+    - '/.github/workflows/ci.yml'
