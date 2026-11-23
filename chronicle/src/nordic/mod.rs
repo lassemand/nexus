@@ -14,6 +14,7 @@ pub mod calendar;
 pub mod calendar_release;
 pub mod classify;
 pub mod db;
+pub mod esma_release;
 pub mod events;
 pub mod feed;
 pub mod ingest;

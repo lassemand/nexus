@@ -138,7 +138,7 @@ Both use the same selection, parser and messages. `nordic-reports` routes a Finn
 (`mar_release`) and publishes one `UnifiedInsiderTransaction` per transaction to
 `insider.transactions` (`source_registry = FIN_MAR`). Signal stores them in
 `insider_filings`. Swedish companies are not touched (FI's register covers them,
-`pdmr`), Danish insiders are not collected.
+`pdmr`); Danish companies have their own parser, see "Danish insider transactions" below.
 
 - Each release comes in Finnish and English with the same MAR reference number; the
   English copy is read, the Finnish one only when no English copy with that reference
@@ -234,8 +234,105 @@ FROM insider_filings f WHERE f.ticker = '<TICKER>' GROUP BY 1, 2 ORDER BY 1, 2;
 
 Known limits: `insider_filings` is `UNIQUE (person_id, ticker, transaction_date, shares,
 transaction_code)`, so two trades of one person on one day with the same volume and
-code keep only the first (the price differs); a corrected (amended) notification adds a
-row instead of replacing the first; money is `DOUBLE PRECISION`.
+code keep only the first (the price differs); a corrected (amended) Finnish
+notification adds a row instead of replacing the first (a Danish one replaces it, see
+below); money is `DOUBLE PRECISION`.
+
+### Danish insider transactions
+
+Denmark (`XCSE`, `FNDK`) has no register we read either: under MAR Art. 19(3) each issuer
+publishes its managers' transactions as company announcements, which MFN carries. The
+country's insider source is `InsiderSourceKind::EsmaReleases` (`model/src/nordic/dk.rs`),
+a kind of its own because the releases use **ESMA's notification template** (Commission
+Implementing Regulation (EU) 2016/523), not the Finnish FSA's layout: no reference number,
+numbered sections 1-4, a price/volume sub-table. They are parsed by
+`chronicle_lib::nordic::esma_release` and published to `insider.transactions` with
+`source_registry = DK_MAR`, Kafka key and `transaction_id`
+`DK_MAR:{TICKER}:{PERSON}:{DATE}`. Exactly like Finland, **`nordic-live` is the live path**
+(the same insider queue and producer) and **`nordic-reports` the fallback and backfill**;
+the item stays a `company_announcement` too.
+
+- **Selection** (`esma_release::is_managers_transaction`, in the vocabularies of the
+  country's languages): headlines such as "Trading in <issuer> shares by board members,
+  executives and associated persons", "Transactions by persons discharging managerial
+  responsibilities", "Notification of Executive's transaction", "Ledende medarbejderes
+  transaktioner", "nærtstående personers handel", "Indberetning af insideres handel", or the
+  form text itself ("Details of the person discharging managerial responsibilities",
+  "Oplysninger om personen med ledelsesansvar"). A headline naming a share buyback or
+  repurchase, a major shareholder (§ 38), treasury or own shares is never selected.
+- **Parsing**: box tables (with or without a column of section numbers), markdown pipe
+  tables and plain `a) Navn: ...` lines, in Danish and English; several persons (one form
+  each) and several transaction blocks in one release; labels wrapped mid-word in narrow
+  columns; prices wrapped over two lines. Person, role, initial/amendment, issuer and LEI,
+  instrument and ISIN, nature (kept as written; a nature starting with a sale word is
+  `SELL`, gifts, exercises and grants are recognised anywhere, only a nature starting with
+  an acquisition word is `BUY`), each price/volume pair, date and venue. A volume of 0 or a
+  missing price is not a trade.
+- **Numbers** stay decimals and are read in the form's language (the language whose labels
+  matched): `1.234,56` in Danish, `1,234.56` in English; a single separator followed by three
+  digits follows the language (`5.000` is 5000 in Danish, `5,000` in English).
+- **Refused, never guessed**: a block whose pairs do not add up to its stated aggregated
+  volume, or a release whose prices of one currency differ by more than a factor of 100
+  (a misread separator), is a parse error; the language twin, if any, is used instead.
+- `published_date` is the release date in Copenhagen.
+- **PDF-only** releases (the form is an attachment) count as `form_not_in_text`; releases in
+  the older Danish short form (number and market value, no unit price) count as
+  `unsupported_form`. Neither is published; neither is a parse error.
+- **Language twins** (Danish and English copies of one release, often the same second) are
+  paired by a fingerprint of the release (local publish date and each trade's date, volume,
+  price and currency; names and nature texts are left out, they are translated or misspelt).
+  The poll keeps the English copy; live publishes the first copy and a copy **in the other
+  language** with the same fingerprint only when its trades are identical, else counts it as
+  `conflict`. A release in the same language with an equal fingerprint is a release of its own
+  (two board members granted the same shares on one day) and is published. Signal keeps the
+  English role, price and filing date, as for Finland.
+- **A twin that spells a name differently** (one issuer does) is recognised in chronicle,
+  the only place that sees both copies, never by equal trades alone: two persons with
+  identical trades on one day are two releases. A copy is a misspelt twin of a copy in the
+  other language only when no copy seen with its fingerprint has its names, each of its names
+  is a variant of the other copy's (equal after folding case and diacritics, or three or more
+  words with the same first word and one other word different; `insiders::similar_names`),
+  and exactly one unpaired copy fits. Live then publishes the English copy with
+  `MarReleaseDetail.replaced_person_name` (the other spelling) on each changed trade, and
+  skips a local copy that follows an English one; the poll pairs its copies the same way and
+  marks the English messages too. signal deletes only that named person's row for the same
+  trade (ticker, transaction date, shares, code) and stores the English name. When it cannot
+  tell (two candidates, or names that are not variants) nothing is replaced: at worst a
+  trade is stored under both spellings, never one person's trade deleted for another's.
+- **Amendments** (`Amendment` / `Ændring` / `Korrektion` in 2b) are published with
+  `is_amendment = true` and `amended_transaction_id` = their own `transaction_id`. Signal then
+  deletes that person's rows for the ticker and transaction date that came from the original
+  or from an amendment filed earlier, and stores the amended trades (`insider_filings.is_amendment`
+  marks them; the amendment arriving again, in either language, has the same filing date and
+  keeps them). The original sent again later by the poll comes back until the amendment, sent
+  after it in the same run, removes it again. An amendment that corrects the transaction date
+  or the person's name has another `transaction_id`, so it cannot find the original and is
+  stored beside it.
+- Metrics: the MAR counters carry `country` (`FI`, `DK`); see `docs/guides/metrics.md`.
+
+Measured on the registered Danish companies' full MFN history from 2016-07-03 (2026-11): of
+361 managers' transaction releases, 176 (48.8 %) are PDF-only, 92 (25.5 %) use the short
+form, 88 (24.4 %) are published and 5 (1.4 %) are refused (dates listed as `(a) 17 December,
+(b) 18 December`, an off-by-one aggregate, a price outlier). Issuers differ completely: one
+writes every form in the text, one only in PDFs, one only in the short form.
+
+Backfill every Danish company (one Job per Danish MIC; without `NORDIC_TICKER` every company
+on that MIC is read, safe to repeat):
+
+```bash
+for mic in XCSE FNDK; do
+  kubectl --context orbstack -n chronicle create job "nordic-insiders-$(echo $mic | tr A-Z a-z)" \
+    --from=cronjob/nordic-reports --dry-run=client -o json \
+    | jq --arg mic "$mic" '.spec.template.spec.containers[0].env += [
+        {"name":"NORDIC_INSIDERS_ONLY","value":"true"},
+        {"name":"NORDIC_MIC","value":$mic},
+        {"name":"NORDIC_INSIDERS_FROM","value":"2016-07-03"}]' \
+    | kubectl --context orbstack apply -f -
+done
+```
+
+(`nordic-reports --insiders-only --mic XCSE --from 2016-07-03`, and the same for `FNDK`; add
+`--ticker <TICKER>` for one company.)
 
 ## Unregistering
 
@@ -285,8 +382,8 @@ with the company's own MIC. Without `fi_issuer`, pdmr searches with the ticker,
 which only works when the ticker is part of the issuer name; a company whose
 ticker FI does not know is skipped with a warning naming ticker and MIC and
 counted in the gauge `pdmr_companies_without_issuer`. Running `nexus register`
-again fills `fi_issuer` in. **Danish insider trades are not covered**:
-there is no FI-style register for them, deliberately deferred.
+again fills `fi_issuer` in. Danish insider trades come from the issuers' MAR
+releases instead, see "Danish insider transactions".
 
 ## SQL
 

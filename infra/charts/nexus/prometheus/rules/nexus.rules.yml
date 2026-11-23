@@ -210,7 +210,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "nordic-reports could not parse {{ $value }} Finnish insider releases"
+          summary: "nordic-reports could not parse {{ $value }} Finnish or Danish insider releases"
           description: >-
             The last nordic-reports run read {{ $value }} managers' transaction
             releases it could not parse; they are not published. Find them in the

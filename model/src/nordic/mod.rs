@@ -44,15 +44,43 @@ pub enum Lang {
     En,
 }
 
+impl Lang {
+    /// Every language.
+    pub const ALL: [Lang; 4] = [Lang::Sv, Lang::Da, Lang::Fi, Lang::En];
+
+    /// The ISO 639-1 code MFN uses in an item's `lang` (`da`, `en`, ...).
+    pub const fn code(self) -> &'static str {
+        match self {
+            Lang::Sv => "sv",
+            Lang::Da => "da",
+            Lang::Fi => "fi",
+            Lang::En => "en",
+        }
+    }
+
+    /// The language with ISO 639-1 code `code`, ignoring case and spaces.
+    pub fn from_code(code: &str) -> Option<Lang> {
+        let code = code.trim();
+        Lang::ALL
+            .into_iter()
+            .find(|l| l.code().eq_ignore_ascii_case(code))
+    }
+}
+
 /// What kind of source a country's insider transactions come from. The
 /// implementation that fetches it lives in `chronicle`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InsiderSourceKind {
     /// Finansinspektionen's insider register (Sweden).
     FiRegister,
-    /// MAR Art. 19 managers' transaction releases on MFN (Finland).
+    /// MAR Art. 19 managers' transaction releases on MFN in the Finnish FSA's
+    /// notification layout, with a reference number (Finland).
     MarReleases,
-    /// No insider source yet (Denmark).
+    /// MAR Art. 19 managers' transaction releases on MFN in ESMA's notification
+    /// template (Commission Implementing Regulation (EU) 2016/523), parsed from
+    /// the release text (Denmark).
+    EsmaReleases,
+    /// No insider source yet.
     None,
 }
 

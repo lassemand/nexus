@@ -1,31 +1,40 @@
-//! Finnish managers' transactions from MFN releases (NEX-207).
+//! Managers' transactions from MFN releases: Finland (NEX-207) and Denmark
+//! (NEX-282).
 //!
-//! Finland has no insider register, so each issuer's MAR Art. 19 release is the
-//! source. `nordic-reports` already reads every item of a company's feed; the
-//! items that are managers' transactions are routed here, parsed by
-//! [`super::mar_release`] and turned into `UnifiedInsiderTransaction`s for
-//! `insider.transactions`. Swedish companies are not handled here (FI's register
-//! covers them, see `pdmr.rs`) and Danish insiders are out of scope.
+//! Neither country has a register we read, so each issuer's MAR Art. 19 release
+//! is the source. `nordic-reports` already reads every item of a company's feed;
+//! the items that are managers' transactions are routed here, parsed and turned
+//! into `UnifiedInsiderTransaction`s for `insider.transactions`. Swedish
+//! companies are not handled here (FI's register covers them, see `pdmr.rs`).
 //!
-//! Every release comes twice (Finnish and English) with the same MAR reference
-//! number. The English copy is preferred; the Finnish one is used only when no
-//! English copy with the same reference was read.
+//! The country's [`InsiderSourceKind`] picks the [`InsiderDialect`]:
+//!
+//! * **Finnish** ([`InsiderSourceKind::MarReleases`]): the Finnish FSA's layout,
+//!   parsed by [`super::mar_release`]. Every release comes twice (Finnish and
+//!   English) with the same MAR reference number. The English copy is
+//!   preferred; the Finnish one is used only when no English copy with the same
+//!   reference was read.
+//! * **ESMA** ([`InsiderSourceKind::EsmaReleases`], Denmark): ESMA's template,
+//!   parsed by [`super::esma_release`]. The template has no reference number, so
+//!   a local-language copy is skipped when an English copy of the same release
+//!   gives identical trades; a copy without a twin is used as it is.
 
 use super::classify::strip_issuer_prefix;
 use super::db::Company;
+use super::esma_release;
 use super::events::trace_headers;
 use super::feed::NewsItem;
 use super::mar_release::{parse, MarParseError, ParsedMarTransaction, ReleaseContext};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
-use model::generated::UnifiedInsiderTransaction;
+use model::generated::{SourceRegistry, UnifiedInsiderTransaction};
 use model::insider::transaction_id;
-use model::nordic::{self, InsiderSourceKind};
+use model::nordic::{self, InsiderSourceKind, Lang};
 use prost::Message;
 use rdkafka::message::Headers;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tracing::{debug, warn, Span};
 
@@ -34,6 +43,61 @@ pub const INSIDER_TRANSACTIONS_TOPIC: &str = "insider.transactions";
 
 /// Source label in the Kafka key, as `pdmr.rs` uses `FI` and `SEC`.
 pub const KEY_SOURCE: &str = "FIN_MAR";
+
+/// Source label of the Danish (ESMA template) messages.
+pub const DK_KEY_SOURCE: &str = "DK_MAR";
+
+/// How a country's managers' transaction releases are written, from its
+/// [`InsiderSourceKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsiderDialect {
+    /// The Finnish FSA's layout, with a reference number.
+    Finnish,
+    /// ESMA's template (Commission Implementing Regulation (EU) 2016/523).
+    Esma,
+}
+
+impl InsiderDialect {
+    /// The dialect of the country listing `exchange_mic`, if it takes its
+    /// insider transactions from issuers' releases on MFN.
+    pub fn for_mic(exchange_mic: &str) -> Option<Self> {
+        match nordic::country_for_mic(exchange_mic)?.insider_source {
+            InsiderSourceKind::MarReleases => Some(Self::Finnish),
+            InsiderSourceKind::EsmaReleases => Some(Self::Esma),
+            InsiderSourceKind::FiRegister | InsiderSourceKind::None => None,
+        }
+    }
+
+    /// The registry of its messages.
+    pub fn registry(self) -> SourceRegistry {
+        match self {
+            Self::Finnish => SourceRegistry::FinMar,
+            Self::Esma => SourceRegistry::DkMar,
+        }
+    }
+}
+
+/// True for listings whose country takes its insider transactions from
+/// issuers' releases on MFN, in either dialect.
+pub fn takes_releases(exchange_mic: &str) -> bool {
+    InsiderDialect::for_mic(exchange_mic).is_some()
+}
+
+/// True if `item`, from a company listed on `exchange_mic`, is a managers'
+/// transaction release in its country's dialect and languages.
+pub fn selects(exchange_mic: &str, item: &NewsItem) -> bool {
+    match InsiderDialect::for_mic(exchange_mic) {
+        Some(InsiderDialect::Finnish) => is_managers_transaction(item),
+        Some(InsiderDialect::Esma) => {
+            esma_release::is_managers_transaction(item, country_languages(exchange_mic))
+        }
+        None => false,
+    }
+}
+
+fn country_languages(exchange_mic: &str) -> &'static [Lang] {
+    nordic::country_for_mic(exchange_mic).map_or(&[], |c| c.languages)
+}
 
 /// MAR applies from 2016-07-03; earlier releases use the old Finnish format.
 pub fn mar_start() -> NaiveDate {
@@ -97,6 +161,10 @@ pub struct InsiderStats {
     pub twins_skipped: usize,
     /// Transactions dropped as repeats of `(reference_number, index)`.
     pub duplicates: usize,
+    /// The notification form is not in the text (a PDF attachment).
+    pub form_not_in_text: usize,
+    /// In the older short form without a unit price.
+    pub unsupported_form: usize,
 }
 
 /// The messages to publish for a set of items, oldest first.
@@ -162,6 +230,9 @@ fn parse_item(item: &NewsItem, lang: &str) -> Result<Vec<ParsedMarTransaction>, 
 /// Per MAR reference number the English copy wins, the Finnish one is a
 /// fallback, and `(reference_number, index)` is unique in the result.
 pub fn build(company: &Company, items: &[&NewsItem]) -> Batch {
+    if InsiderDialect::for_mic(&company.exchange_mic) == Some(InsiderDialect::Esma) {
+        return build_esma(company, items);
+    }
     let mut stats = InsiderStats::default();
     let mut en: Vec<Parsed> = Vec::new();
     let mut fi: Vec<Parsed> = Vec::new();
@@ -268,15 +339,356 @@ pub fn build(company: &Company, items: &[&NewsItem]) -> Batch {
     Batch { messages, stats }
 }
 
+/// Messages with their Kafka keys.
+type Keyed = Vec<(String, UnifiedInsiderTransaction)>;
+
+/// The messages of the ESMA dialect, oldest first. Per release, an English
+/// copy wins over a local-language copy with identical trades.
+fn build_esma(company: &Company, items: &[&NewsItem]) -> Batch {
+    let mut stats = InsiderStats::default();
+    let langs = country_languages(&company.exchange_mic);
+    let english = Lang::En.code();
+    let mut parsed: Vec<(&NewsItem, String, Keyed)> = Vec::new();
+    let mut seen_ids: HashSet<uuid::Uuid> = HashSet::new();
+    for &item in items {
+        stats.items += 1;
+        if !seen_ids.insert(item.news_id) {
+            stats.duplicates += 1;
+            continue;
+        }
+        if item.published_at.date_naive() < mar_start() {
+            stats.before_mar += 1;
+            continue;
+        }
+        let known = item
+            .lang
+            .as_deref()
+            .and_then(Lang::from_code)
+            .is_some_and(|l| langs.contains(&l));
+        if !known {
+            stats.other_language += 1;
+            continue;
+        }
+        let Some(text) = item.text.as_deref() else {
+            stats.form_not_in_text += 1;
+            continue;
+        };
+        match esma_release::parse(text, langs) {
+            Ok(transactions) => {
+                let messages = esma_messages(company, item, transactions);
+                let lang = item.lang.clone().unwrap_or_default();
+                parsed.push((item, lang, messages));
+            }
+            Err(e) => {
+                match e {
+                    MarParseError::FormNotInText => stats.form_not_in_text += 1,
+                    MarParseError::UnsupportedForm => stats.unsupported_form += 1,
+                    MarParseError::SuspiciousZeroPrice { .. } => stats.suspicious_zero_price += 1,
+                    _ => stats.parse_errors += 1,
+                }
+                let quiet = matches!(
+                    e,
+                    MarParseError::FormNotInText | MarParseError::UnsupportedForm
+                );
+                if quiet {
+                    debug!(ticker = %company.ticker, news_id = %item.news_id, error = %e,
+                           "managers' transaction without a parsable form in the text, skipped");
+                } else {
+                    warn!(ticker = %company.ticker, news_id = %item.news_id,
+                          url = item.url.as_deref().unwrap_or(""), error = %e,
+                          "managers' transaction not parsed, skipped");
+                }
+            }
+        }
+    }
+    // English copies first, so a local copy is compared with every English copy
+    // of its release.
+    let (mut english_copies, local): (Vec<_>, Vec<_>) =
+        parsed.into_iter().partition(|(_, lang, _)| lang == english);
+    let mut seen: HashMap<String, Vec<(SeenCopy, usize)>> = HashMap::new();
+    for (k, (item, lang, m)) in english_copies.iter().enumerate() {
+        if let Some(f) = esma_fingerprint(&company.exchange_mic, item, m) {
+            seen.entry(f).or_default().push((SeenCopy::of(lang, m), k));
+        }
+    }
+    let mut chosen_local = Vec::new();
+    for (item, lang, m) in local {
+        let Some(f) = esma_fingerprint(&company.exchange_mic, item, &m) else {
+            chosen_local.push((item, lang, m));
+            continue;
+        };
+        let copies = seen.entry(f).or_default();
+        let copy = SeenCopy::of(&lang, &m);
+        let known: Vec<SeenCopy> = copies.iter().map(|(c, _)| c.clone()).collect();
+        match match_twin(&known, &copy) {
+            TwinMatch::Repeat(i) | TwinMatch::Conflict(i) => {
+                stats.twins_skipped += 1;
+                copies[i].0.paired = true;
+            }
+            TwinMatch::Misspelt(i) => {
+                stats.twins_skipped += 1;
+                copies[i].0.paired = true;
+                let english_index = copies[i].1;
+                mark_replaced(&mut english_copies[english_index].2, &copy);
+            }
+            TwinMatch::New => chosen_local.push((item, lang, m)),
+        }
+    }
+    let mut chosen: Vec<_> = english_copies.into_iter().chain(chosen_local).collect();
+    chosen.sort_by_key(|(item, _, _)| (item.published_at, item.news_id));
+    let messages = chosen
+        .into_iter()
+        .flat_map(|(item, _, m)| m.into_iter().map(move |(_, msg)| (item.published_at, msg)))
+        .collect();
+    Batch { messages, stats }
+}
+
+fn esma_messages(
+    company: &Company,
+    item: &NewsItem,
+    transactions: Vec<ParsedMarTransaction>,
+) -> Vec<(String, UnifiedInsiderTransaction)> {
+    let published_date = model::exchange::local_date(&company.exchange_mic, item.published_at)
+        .unwrap_or_else(|| item.published_at.date_naive())
+        .format("%Y-%m-%d")
+        .to_string();
+    let news_id = item.news_id.to_string();
+    transactions
+        .into_iter()
+        .map(|t| {
+            let amended = t.is_amendment.then(|| {
+                transaction_id(
+                    DK_KEY_SOURCE,
+                    &company.ticker,
+                    &t.person_name,
+                    &t.transaction_date.format("%Y-%m-%d").to_string(),
+                )
+            });
+            let msg = t.into_unified_as(
+                ReleaseContext {
+                    ticker: &company.ticker,
+                    exchange_mic: &company.exchange_mic,
+                    published_date: &published_date,
+                    mfn_news_id: &news_id,
+                    url: item.url.as_deref().unwrap_or(""),
+                },
+                SourceRegistry::DkMar,
+                amended.unwrap_or_default(),
+            );
+            (insider_key(&msg), msg)
+        })
+        .collect()
+}
+
+/// What identifies one release across its language copies: the MAR reference
+/// number (Finnish dialect), or for the ESMA template, which has none, the
+/// release's local publish date with each trade's date, volume, price and
+/// currency (names and nature texts are left out: they are translated, and an
+/// issuer's typo in one copy must not split the pair). `None` when there is
+/// nothing to identify.
+pub fn release_reference(
+    exchange_mic: &str,
+    item: &NewsItem,
+    messages: &[(String, UnifiedInsiderTransaction)],
+) -> Option<String> {
+    match InsiderDialect::for_mic(exchange_mic)? {
+        InsiderDialect::Finnish => messages.first().and_then(|(_, m)| match &m.source_detail {
+            Some(model::generated::unified_insider_transaction::SourceDetail::Mar(d))
+                if !d.reference_number.is_empty() =>
+            {
+                Some(d.reference_number.clone())
+            }
+            _ => None,
+        }),
+        InsiderDialect::Esma => esma_fingerprint(exchange_mic, item, messages),
+    }
+}
+
+fn esma_fingerprint(
+    exchange_mic: &str,
+    item: &NewsItem,
+    messages: &[(String, UnifiedInsiderTransaction)],
+) -> Option<String> {
+    if messages.is_empty() {
+        return None;
+    }
+    let day = model::exchange::local_date(exchange_mic, item.published_at)
+        .unwrap_or_else(|| item.published_at.date_naive());
+    let mut trades: Vec<String> = messages
+        .iter()
+        .map(|(_, m)| {
+            format!(
+                "{}|{}|{}|{}",
+                m.transaction_date, m.volume, m.price_per_unit, m.currency
+            )
+        })
+        .collect();
+    trades.sort();
+    Some(format!(
+        "{DK_KEY_SOURCE}:{}:{day}#{}",
+        item_ticker(messages),
+        trades.join(";")
+    ))
+}
+
+fn item_ticker(messages: &[(String, UnifiedInsiderTransaction)]) -> &str {
+    messages.first().map_or("", |(_, m)| m.ticker.as_str())
+}
+
+/// One copy of a release already sent (live) or chosen (poll), for
+/// [`match_twin`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeenCopy {
+    /// The copy's language.
+    pub lang: String,
+    /// Each trade's person, in order.
+    pub names: Vec<String>,
+    /// [`trades_identity`] of the copy.
+    pub identity: Vec<String>,
+    /// Already matched with a copy in the other language.
+    pub paired: bool,
+}
+
+impl SeenCopy {
+    /// The copy of `messages`, in `lang`.
+    pub fn of(lang: &str, messages: &[(String, UnifiedInsiderTransaction)]) -> Self {
+        Self {
+            lang: lang.to_string(),
+            names: messages
+                .iter()
+                .map(|(_, m)| m.person_name.clone())
+                .collect(),
+            identity: trades_identity(messages),
+            paired: false,
+        }
+    }
+}
+
+/// How a copy relates to the copies seen of releases with its fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TwinMatch {
+    /// The same trades as copy `i`: a repeat or a twin that agrees.
+    Repeat(usize),
+    /// Copy `i` in the other language has the same persons but other trades
+    /// (a nature translated into another type): a twin that disagrees.
+    Conflict(usize),
+    /// Copy `i` in the other language is this copy's twin with persons spelt
+    /// differently: no seen copy has this copy's names, every name is a
+    /// variant of copy `i`'s ([`similar_names`]), and copy `i` is the only
+    /// unpaired copy in the other language that fits.
+    Misspelt(usize),
+    /// Another release (other persons with identical trades).
+    New,
+}
+
+/// Matches `copy` against `seen`, the copies of releases with the same ESMA
+/// fingerprint. Twins are recognised by their persons, never by equal trades
+/// alone: two persons with identical trades on one day are two releases.
+pub fn match_twin(seen: &[SeenCopy], copy: &SeenCopy) -> TwinMatch {
+    if let Some(i) = seen.iter().position(|c| c.identity == copy.identity) {
+        return TwinMatch::Repeat(i);
+    }
+    if let Some(i) = seen.iter().position(|c| c.names == copy.names) {
+        return if seen[i].lang != copy.lang && !seen[i].paired {
+            TwinMatch::Conflict(i)
+        } else {
+            TwinMatch::New
+        };
+    }
+    let candidates: Vec<usize> = seen
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            c.lang != copy.lang
+                && !c.paired
+                && c.names.len() == copy.names.len()
+                && c.names
+                    .iter()
+                    .zip(&copy.names)
+                    .all(|(a, b)| similar_names(a, b))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    match candidates.as_slice() {
+        [i] => TwinMatch::Misspelt(*i),
+        _ => TwinMatch::New,
+    }
+}
+
+/// True if two spellings can name one person: equal after folding case and
+/// diacritics (`Wagnér` / `Wagner`), or three or more words with the same first
+/// word and exactly one other word different (`Sisse Fjelsted Rasmussen` /
+/// `Sisse Fjelsted Jacobsen`). Two-word names differing in a word are two
+/// persons (`Anders Hansen` / `Anders Jensen`).
+pub fn similar_names(a: &str, b: &str) -> bool {
+    let fold = |s: &str| -> Vec<String> {
+        s.split_whitespace()
+            .map(|w| {
+                w.to_lowercase()
+                    .chars()
+                    .map(|c| match c {
+                        'á' | 'à' | 'â' | 'ä' | 'å' | 'ã' => "a".to_string(),
+                        'é' | 'è' | 'ê' | 'ë' => "e".to_string(),
+                        'í' | 'ì' | 'î' | 'ï' => "i".to_string(),
+                        'ó' | 'ò' | 'ô' | 'ö' | 'ø' | 'õ' => "o".to_string(),
+                        'ú' | 'ù' | 'û' | 'ü' => "u".to_string(),
+                        'æ' => "ae".to_string(),
+                        'ñ' => "n".to_string(),
+                        'ç' => "c".to_string(),
+                        c => c.to_string(),
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let (x, y) = (fold(a), fold(b));
+    if x == y {
+        return true;
+    }
+    x.len() >= 3
+        && x.len() == y.len()
+        && x[0] == y[0]
+        && x.iter().zip(&y).filter(|(p, q)| p != q).count() == 1
+}
+
+/// Sets `replaced_person_name` on each of `messages` whose person `earlier`
+/// (the twin copy, in order) wrote differently.
+pub fn mark_replaced(messages: &mut [(String, UnifiedInsiderTransaction)], earlier: &SeenCopy) {
+    for ((_, m), name) in messages.iter_mut().zip(&earlier.names) {
+        if m.person_name != *name {
+            if let Some(model::generated::unified_insider_transaction::SourceDetail::Mar(d)) =
+                m.source_detail.as_mut()
+            {
+                d.replaced_person_name = name.clone();
+            }
+        }
+    }
+}
+
+/// The trade fields that must agree between two copies of one release: the
+/// Kafka key (person and transaction date), volume, price, type and currency,
+/// one entry per trade in order.
+pub fn trades_identity(messages: &[(String, UnifiedInsiderTransaction)]) -> Vec<String> {
+    messages
+        .iter()
+        .map(|(key, m)| {
+            format!(
+                "{key}|{}|{}|{}|{}|{}",
+                m.transaction_date, m.volume, m.price_per_unit, m.transaction_type, m.currency
+            )
+        })
+        .collect()
+}
+
 /// The Kafka key of a message, the convention of `pdmr.rs`:
-/// `{SOURCE}:{TICKER}:{PERSON}:{DATE}`.
+/// `{SOURCE}:{TICKER}:{PERSON}:{DATE}`, the source from the message's registry.
 pub fn insider_key(txn: &UnifiedInsiderTransaction) -> String {
-    transaction_id(
-        KEY_SOURCE,
-        &txn.ticker,
-        &txn.person_name,
-        &txn.transaction_date,
-    )
+    let source = if txn.source_registry == SourceRegistry::DkMar as i32 {
+        DK_KEY_SOURCE
+    } else {
+        KEY_SOURCE
+    };
+    transaction_id(source, &txn.ticker, &txn.person_name, &txn.transaction_date)
 }
 
 /// Where insider messages go: Kafka in production, a vector in tests.

@@ -10,6 +10,7 @@ pub mod sector;
 pub mod session;
 pub mod stockholm;
 
+#[allow(clippy::large_enum_variant)]
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/nexus.rs"));
 }

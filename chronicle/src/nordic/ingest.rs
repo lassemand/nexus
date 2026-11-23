@@ -122,9 +122,9 @@ pub async fn ingest_company(
     let mut checked_tickers = false;
     let mut checked_isin = false;
     let mut url = first_page_url(&feed.base()?, slug)?;
-    // Managers' transactions of a Finnish company, parsed after the paging so a
-    // release and its twin are seen together.
-    let finnish = insiders::uses_mar_releases(&company.exchange_mic);
+    // Managers' transactions of a Finnish or Danish company, parsed after the
+    // paging so a release and its twin are seen together.
+    let insider_releases = insiders::takes_releases(&company.exchange_mic);
     let mut insider_items: Vec<NewsItem> = Vec::new();
 
     loop {
@@ -156,7 +156,7 @@ pub async fn ingest_company(
                 outcome.calendar_releases += 1;
                 newest_published = newest_published.max(Some(item.published_at));
             }
-            let managers = finnish && insiders::is_managers_transaction(item);
+            let managers = insider_releases && insiders::selects(&company.exchange_mic, item);
             if managers {
                 insider_items.push(item.clone());
             }
@@ -242,15 +242,25 @@ fn count_company(outcome: &'static str) {
     metrics::counter!("nordic_reports_companies_total", "outcome" => outcome).increment(1);
 }
 
-/// Counters for the managers' transaction releases of one company.
+/// Counters for the managers' transaction releases of one company, labelled
+/// with its MIC and country (`FI`, `DK`).
 fn count_insider_metrics(company: &Company, stats: &InsiderStats, published: usize) {
     let mic = company.exchange_mic.clone();
-    metrics::counter!("nordic_mar_parse_errors_total", "exchange_mic" => mic.clone())
-        .increment(stats.parse_errors as u64);
-    metrics::counter!("nordic_mar_suspicious_zero_price_total", "exchange_mic" => mic.clone())
-        .increment(stats.suspicious_zero_price as u64);
-    metrics::counter!("nordic_mar_transactions_published_total", "exchange_mic" => mic)
-        .increment(published as u64);
+    let country = model::nordic::country_for_mic(&mic).map_or("", |c| c.code);
+    let counts = [
+        ("nordic_mar_parse_errors_total", stats.parse_errors),
+        (
+            "nordic_mar_suspicious_zero_price_total",
+            stats.suspicious_zero_price,
+        ),
+        ("nordic_mar_form_not_in_text_total", stats.form_not_in_text),
+        ("nordic_mar_unsupported_form_total", stats.unsupported_form),
+        ("nordic_mar_transactions_published_total", published),
+    ];
+    for (name, n) in counts {
+        metrics::counter!(name, "exchange_mic" => mic.clone(), "country" => country)
+            .increment(n as u64);
+    }
     if stats.before_mar > 0 {
         info!(ticker = %company.ticker, before_mar = stats.before_mar,
               "managers' transactions before MAR (2016-07-03) ignored");
@@ -266,7 +276,7 @@ pub async fn collect_insider_items(
     from: DateTime<Utc>,
 ) -> anyhow::Result<(Vec<NewsItem>, usize)> {
     anyhow::ensure!(
-        insiders::uses_mar_releases(&company.exchange_mic),
+        insiders::takes_releases(&company.exchange_mic),
         "{}:{} does not take its insiders from MFN releases",
         company.exchange_mic,
         company.ticker
@@ -287,7 +297,7 @@ pub async fn collect_insider_items(
                 checked = true;
                 refuse_wrong_company(company, slug, item)?;
             }
-            if item.published_at >= from && insiders::is_managers_transaction(item) {
+            if item.published_at >= from && insiders::selects(&company.exchange_mic, item) {
                 items.push(item.clone());
             }
         }
@@ -329,7 +339,8 @@ pub async fn ingest_insiders_only(
     Ok(outcome)
 }
 
-/// [`ingest_insiders_only`] for every Finnish company with an `mfn_slug`.
+/// [`ingest_insiders_only`] for every Finnish and Danish company with an
+/// `mfn_slug`.
 pub async fn process_insiders_only(
     feed: &mut MfnClient,
     insider_sink: &dyn InsiderSink,
@@ -341,7 +352,7 @@ pub async fn process_insiders_only(
         let Some(slug) = c.mfn_slug.as_deref() else {
             continue;
         };
-        if !insiders::uses_mar_releases(&c.exchange_mic) {
+        if !insiders::takes_releases(&c.exchange_mic) {
             continue;
         }
         summary.attempted += 1;

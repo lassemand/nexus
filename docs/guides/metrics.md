@@ -110,7 +110,7 @@ failure (some companies failed, exit code non-zero) still updates `last_success`
 |---|---|
 | `chronicle`, `market`, `earnings`, `filings` | `<job>_items_fetched_total`, `<job>_events_published_total`, `<job>_api_errors_total{status_class}` (`4xx`, `5xx`, `network`, `other`). Units: filings found (8-K), bars, earnings records, Form 4 filings; published `EarningsEvent`s, bars, `UnifiedInsiderTransaction`s |
 | `pdmr` | `pdmr_rows_fetched_total`, `pdmr_transactions_published_total`, `pdmr_parse_errors_total`, gauge `pdmr_companies_without_issuer` |
-| `nordic-reports` | `nordic_reports_companies_total{outcome}`, `nordic_reports_items_seen_total`, `nordic_reports_events_published_total{event_type}`, `nordic_reports_calendar_refreshes_total{outcome}`, `nordic_mar_*` |
+| `nordic-reports` | `nordic_reports_companies_total{outcome}`, `nordic_reports_items_seen_total`, `nordic_reports_events_published_total{event_type}`, `nordic_reports_calendar_refreshes_total{outcome}`, `nordic_mar_*{exchange_mic,country}` (managers' transaction releases of Finnish and Danish companies: `nordic_mar_transactions_published_total`, `nordic_mar_parse_errors_total`, `nordic_mar_suspicious_zero_price_total`, `nordic_mar_form_not_in_text_total` (the form is only in a PDF attachment), `nordic_mar_unsupported_form_total` (the older Danish short form without a unit price); `country` is `FI` or `DK`) |
 | `nordic-calendar` | `nordic_calendar_companies_total{outcome}` (`published`, `unchanged`, `no_slug`, `failed`), `nordic_calendar_upcoming_reports` |
 
 `nordic-reports --backfill` and `--insiders-only` are manual runs and push as job
@@ -121,14 +121,15 @@ staleness alert. Dashboard `Chronicle Jobs`; alerts group `nexus.chronicle-jobs`
 `ChronicleJobPartialFailure`, `NordicMarParseErrors`. `ChronicleJobFailed` (Kubernetes Job failed)
 is kept next to `NexusJobLastRunFailed`: only the former sees a job that died before it could push.
 
-### nordic-live: Finnish insider transactions
+### nordic-live: Finnish and Danish insider transactions
 
-The live path of Finnish managers' transactions (NEX-279, `chronicle_lib::nordic::live_insiders`),
+The live path of Finnish (NEX-279) and Danish (NEX-282) managers' transactions
+(`chronicle_lib::nordic::live_insiders`),
 on nordic-live's `/metrics` and the `Nordic Live` dashboard:
 
 | Metric | Meaning |
 |---|---|
-| `nordic_live_insider_transactions_total{outcome}` | `published`: one per message acknowledged on `insider.transactions`. Per release: `parse_error` (no transaction parsed), `skipped` (before MAR, another language, or a zero price on a buy or sell), `conflict` (a release with this MAR reference number was already sent with other trades: the other language copy parsed differently, or a correction reused the reference; not published), `dropped` (the queue was full or closed), `failed` (a message given up on after 5 minutes of retries). Dropped and failed ones are recovered by the 22:00 `nordic-reports` poll. Live sees one copy at a time, so a copy that does not parse counts as `parse_error` even when its twin in the other language was published; the poll does not count that case. `parse_error` therefore reads higher live than `nordic_mar_parse_errors_total` |
+| `nordic_live_insider_transactions_total{outcome,country}` | `country` is `FI` or `DK` (NEX-282). `published`: one per message acknowledged on `insider.transactions`. Per release: `parse_error` (no transaction parsed), `form_not_in_text` (the form is only in a PDF attachment), `unsupported_form` (the older Danish short form), `skipped` (before MAR, another language, or a zero price on a buy or sell), `conflict` (a release with this reference was already sent with other trades: the other language copy parsed differently, or a correction reused the reference; the reference is the MAR reference number in Finland and a fingerprint of the release's trades in Denmark, whose template has none; not published), `dropped` (the queue was full or closed), `failed` (a message given up on after 5 minutes of retries). Dropped and failed ones are recovered by the 22:00 `nordic-reports` poll. Live sees one copy at a time, so a copy that does not parse counts as `parse_error` even when its twin in the other language was published; the poll does not count that case. `parse_error` therefore reads higher live than `nordic_mar_parse_errors_total` |
 | `nordic_live_insider_latency_seconds` | Receive time to Kafka acknowledgement per published message (buckets 5 ms to 30 s) |
 | `nordic_live_insider_queue_depth` | Releases waiting in the insider queue (capacity 1 000) |
 

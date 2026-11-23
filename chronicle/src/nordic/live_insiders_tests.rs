@@ -303,8 +303,8 @@ async fn a_buy_by_a_close_associate_is_identical_in_both_languages() {
 }
 
 #[tokio::test]
-async fn swedish_and_danish_companies_get_no_insider_message() {
-    for mic in ["XSTO", "FNSE", "XCSE", "FNDK"] {
+async fn swedish_companies_get_no_insider_message() {
+    for mic in ["XSTO", "FNSE"] {
         let (queue, mut jobs) = InsiderQueue::channel(4);
         let handling = Handling {
             insiders: Some(&queue),
@@ -395,7 +395,7 @@ async fn an_unparsable_release_is_counted_and_the_stream_goes_on() {
     let series = |o: &str| {
         value(
             &text,
-            &format!("nordic_live_insider_transactions_total{{outcome=\"{o}\"}}"),
+            &format!("nordic_live_insider_transactions_total{{outcome=\"{o}\",country=\"FI\"}}"),
         )
     };
     assert_eq!(series("parse_error"), 1.0);
@@ -442,7 +442,7 @@ async fn a_full_queue_drops_and_counts_without_blocking_the_reader() {
     assert_eq!(
         value(
             &text,
-            "nordic_live_insider_transactions_total{outcome=\"dropped\"}"
+            "nordic_live_insider_transactions_total{outcome=\"dropped\",country=\"FI\"}"
         ),
         1.0
     );
@@ -542,7 +542,7 @@ async fn a_twin_that_parses_differently_is_not_published_in_either_order() {
     assert_eq!(
         value(
             &text,
-            "nordic_live_insider_transactions_total{outcome=\"conflict\"}"
+            "nordic_live_insider_transactions_total{outcome=\"conflict\",country=\"FI\"}"
         ),
         1.0
     );

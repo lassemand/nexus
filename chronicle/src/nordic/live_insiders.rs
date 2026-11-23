@@ -53,27 +53,21 @@ pub const OUTCOMES: &[&str] = &[
     "parse_error",
     "dropped",
     "skipped",
+    "form_not_in_text",
+    "unsupported_form",
     "conflict",
     "failed",
 ];
 
+/// The `country` label of a company's insider counters (`FI`, `DK`).
+pub fn country_label(exchange_mic: &str) -> &'static str {
+    model::nordic::country_for_mic(exchange_mic).map_or("", |c| c.code)
+}
+
 /// How many reference numbers [`SentReferences`] remembers.
 pub const SENT_REFERENCES_CAPACITY: usize = 10_000;
 
-/// The trade fields that must agree between two releases with one reference
-/// number: the Kafka key (person and transaction date), volume, price, type and
-/// currency, one entry per trade in order.
-pub fn trades_identity(messages: &[(String, UnifiedInsiderTransaction)]) -> Vec<String> {
-    messages
-        .iter()
-        .map(|(key, m)| {
-            format!(
-                "{key}|{}|{}|{}|{}|{}",
-                m.transaction_date, m.volume, m.price_per_unit, m.transaction_type, m.currency
-            )
-        })
-        .collect()
-}
+pub use super::insiders::trades_identity;
 
 fn reference_number(messages: &[(String, UnifiedInsiderTransaction)]) -> Option<&str> {
     messages.first().and_then(|(_, m)| match &m.source_detail {
@@ -91,7 +85,8 @@ fn reference_number(messages: &[(String, UnifiedInsiderTransaction)]) -> Option<
 /// a restart the poll covers any difference.
 #[derive(Debug)]
 pub struct SentReferences {
-    sent: std::collections::HashMap<String, Vec<String>>,
+    /// Per reference: every copy sent (a MAR reference keeps only the first).
+    sent: std::collections::HashMap<String, Vec<insiders::SeenCopy>>,
     order: std::collections::VecDeque<String>,
     capacity: usize,
 }
@@ -106,6 +101,9 @@ pub enum Admission {
     Repeat,
     /// Sent before with different trades: not published.
     Conflict,
+    /// The English twin of a copy sent earlier that wrote a person
+    /// differently: published, its messages marked with the replaced name.
+    Replaces,
 }
 
 impl SentReferences {
@@ -121,32 +119,86 @@ impl SentReferences {
     /// Decides on a parsed release and remembers it when it is the first with
     /// its reference. A release without a reference number is always `First`.
     pub fn admit(&mut self, messages: &[(String, UnifiedInsiderTransaction)]) -> Admission {
-        let Some(reference) = reference_number(messages) else {
+        let reference = reference_number(messages).map(str::to_string);
+        self.admit_as(reference.as_deref(), "", false, &mut messages.to_vec())
+    }
+
+    /// [`Self::admit`] under a given release reference (the MAR reference
+    /// number, or [`insiders::release_reference`] where the form has none).
+    ///
+    /// Without `twins_only` (a MAR reference number, unique per release) any
+    /// second release with that reference is compared with the first.
+    ///
+    /// With `twins_only` (the ESMA fingerprint, which has no person in it) the
+    /// copy is matched with every copy sent under the fingerprint
+    /// ([`insiders::match_twin`]): twins are recognised by their persons, so a
+    /// release of another person with identical trades is `First`. An English
+    /// twin of a copy that wrote a person differently is `Replaces`, with
+    /// `replaced_person_name` set on `messages`; the local copy after an English
+    /// one that spells differently is a `Conflict` (the English copy is kept).
+    pub fn admit_as(
+        &mut self,
+        reference: Option<&str>,
+        lang: &str,
+        twins_only: bool,
+        messages: &mut [(String, UnifiedInsiderTransaction)],
+    ) -> Admission {
+        let Some(reference) = reference else {
             return Admission::First;
         };
-        let identity = trades_identity(messages);
-        match self.sent.get(reference) {
-            Some(sent) if *sent == identity => Admission::Repeat,
-            Some(_) => Admission::Conflict,
-            None => {
-                self.sent.insert(reference.to_string(), identity);
-                self.order.push_back(reference.to_string());
-                if self.order.len() > self.capacity {
-                    if let Some(old) = self.order.pop_front() {
-                        self.sent.remove(&old);
-                    }
+        let copy = insiders::SeenCopy::of(lang, messages);
+        let Some(copies) = self.sent.get_mut(reference) else {
+            self.sent.insert(reference.to_string(), vec![copy]);
+            self.order.push_back(reference.to_string());
+            if self.order.len() > self.capacity {
+                if let Some(old) = self.order.pop_front() {
+                    self.sent.remove(&old);
                 }
-                Admission::First
             }
+            return Admission::First;
+        };
+        if !twins_only {
+            return if copies[0].identity == copy.identity {
+                Admission::Repeat
+            } else {
+                Admission::Conflict
+            };
         }
+        let english = model::nordic::Lang::En.code();
+        let admission = match insiders::match_twin(copies, &copy) {
+            insiders::TwinMatch::Repeat(i) => {
+                if copies[i].lang != lang {
+                    copies[i].paired = true;
+                }
+                Admission::Repeat
+            }
+            insiders::TwinMatch::Conflict(i) => {
+                copies[i].paired = true;
+                Admission::Conflict
+            }
+            insiders::TwinMatch::Misspelt(i) => {
+                copies[i].paired = true;
+                if lang == english {
+                    insiders::mark_replaced(messages, &copies[i]);
+                    Admission::Replaces
+                } else {
+                    Admission::Conflict
+                }
+            }
+            insiders::TwinMatch::New => Admission::First,
+        };
+        let mut copy = copy;
+        copy.paired = admission != Admission::First;
+        copies.push(copy);
+        admission
     }
 }
 
 /// True if `item`, authored by a company listed on `exchange_mic`, goes the
-/// insider path: its country takes insiders from MAR releases and the item is a
-/// managers' transaction.
+/// insider path: its country takes insiders from issuers' releases (Finland,
+/// Denmark) and the item is a managers' transaction in that country's dialect.
 pub fn is_insider_release(exchange_mic: &str, item: &NewsItem) -> bool {
-    insiders::uses_mar_releases(exchange_mic) && insiders::is_managers_transaction(item)
+    insiders::selects(exchange_mic, item)
 }
 
 /// One release to parse and publish.
@@ -202,6 +254,7 @@ impl InsiderQueue {
     pub fn offer(&self, job: InsiderJob) -> &'static str {
         let news_id = job.item.news_id;
         let ticker = job.company.ticker.clone();
+        let country = country_label(&job.company.exchange_mic);
         match self.tx.try_send(job) {
             Ok(()) => {
                 gauge!("nordic_live_insider_queue_depth")
@@ -209,7 +262,7 @@ impl InsiderQueue {
                 "queued"
             }
             Err(e) => {
-                counter!("nordic_live_insider_transactions_total", "outcome" => "dropped")
+                counter!("nordic_live_insider_transactions_total", "outcome" => "dropped", "country" => country)
                     .increment(1);
                 warn!(%news_id, %ticker, error = %e,
                       "insider queue unavailable, managers' transaction dropped; the poll will publish it");
@@ -232,11 +285,17 @@ pub struct ParsedRelease {
 impl ParsedRelease {
     /// `published` when there is something to send (the producer may still
     /// turn it into `conflict`, see [`SentReferences`]), `parse_error` when the
-    /// release did not parse, `skipped` for a release that is never published
-    /// (before MAR, another language, a zero price on a buy or sell).
+    /// release did not parse, `form_not_in_text` when its form is only in an
+    /// attachment, `unsupported_form` for the older short form, `skipped` for a
+    /// release that is never published (before MAR, another language, a zero
+    /// price on a buy or sell).
     pub fn outcome(&self) -> &'static str {
         if !self.messages.is_empty() {
             "published"
+        } else if self.stats.form_not_in_text > 0 {
+            "form_not_in_text"
+        } else if self.stats.unsupported_form > 0 {
+            "unsupported_form"
         } else if self.stats.parse_errors > 0 {
             "parse_error"
         } else {
@@ -259,11 +318,17 @@ pub fn parse_release(company: &Company, item: &NewsItem) -> ParsedRelease {
     }
 }
 
-/// Sets every `nordic_live_insider_transactions_total` outcome and the queue
-/// gauge to 0.
+/// Sets every `nordic_live_insider_transactions_total` outcome of every country
+/// that takes insiders from releases, and the queue gauge, to 0.
 pub fn describe_insider_metrics() {
-    for outcome in OUTCOMES {
-        counter!("nordic_live_insider_transactions_total", "outcome" => *outcome).absolute(0);
+    let countries = model::nordic::COUNTRIES
+        .iter()
+        .filter(|c| c.venues.iter().any(|v| insiders::takes_releases(v.mic)));
+    for country in countries {
+        for outcome in OUTCOMES {
+            counter!("nordic_live_insider_transactions_total", "outcome" => *outcome, "country" => country.code)
+                .absolute(0);
+        }
     }
     gauge!("nordic_live_insider_queue_depth").set(0.0);
 }
@@ -295,13 +360,23 @@ pub async fn run_insider_producer(
             nordic_live.insider_outcome = tracing::field::Empty,
             nordic_live.insider_messages = tracing::field::Empty,
         );
-        let release = step.in_scope(|| parse_release(&job.company, &job.item));
+        let mut release = step.in_scope(|| parse_release(&job.company, &job.item));
         let mut outcome = release.outcome();
-        if outcome == "published" && sent.admit(&release.messages) == Admission::Conflict {
+        let reference =
+            insiders::release_reference(&job.company.exchange_mic, &job.item, &release.messages);
+        if outcome == "published"
+            && sent.admit_as(
+                reference.as_deref(),
+                job.item.lang.as_deref().unwrap_or(""),
+                insiders::InsiderDialect::for_mic(&job.company.exchange_mic)
+                    == Some(insiders::InsiderDialect::Esma),
+                &mut release.messages,
+            ) == Admission::Conflict
+        {
             outcome = "conflict";
             warn!(news_id = %job.item.news_id, ticker = %job.company.ticker,
                   lang = job.item.lang.as_deref().unwrap_or(""),
-                  reference = reference_number(&release.messages).unwrap_or(""),
+                  reference = reference.as_deref().unwrap_or(""),
                   trades = ?trades_identity(&release.messages),
                   "a release with this reference number was already sent with other trades; not published");
         }
@@ -312,7 +387,9 @@ pub async fn run_insider_producer(
         );
         drop(step);
         if outcome != "published" {
-            counter!("nordic_live_insider_transactions_total", "outcome" => outcome).increment(1);
+            counter!("nordic_live_insider_transactions_total", "outcome" => outcome,
+                     "country" => country_label(&job.company.exchange_mic))
+            .increment(1);
             info!(news_id = %job.item.news_id, ticker = %job.company.ticker, outcome,
                   stats = ?release.stats, "managers' transaction not published");
             continue;
@@ -348,12 +425,15 @@ async fn send_one(
         Ok(()) => {
             let latency = (Utc::now() - job.received_at).num_milliseconds().max(0) as f64 / 1000.0;
             histogram!("nordic_live_insider_latency_seconds").record(latency);
-            counter!("nordic_live_insider_transactions_total", "outcome" => "published")
-                .increment(1);
+            counter!("nordic_live_insider_transactions_total", "outcome" => "published",
+                     "country" => country_label(&job.company.exchange_mic))
+            .increment(1);
             info!(key, news_id = %job.item.news_id, "published to insider.transactions");
         }
         Err(e) => {
-            counter!("nordic_live_insider_transactions_total", "outcome" => "failed").increment(1);
+            counter!("nordic_live_insider_transactions_total", "outcome" => "failed",
+                     "country" => country_label(&job.company.exchange_mic))
+            .increment(1);
             job.span.fail(&format!("{e:#}"));
             error!(key, news_id = %job.item.news_id, error = format!("{e:#}"),
                    "insider transaction not produced after retrying; the poll will publish it");
