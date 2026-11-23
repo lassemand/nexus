@@ -215,9 +215,10 @@ async fn the_burst_and_the_ceo_release_publish_ten_transactions_once_each() {
 }
 
 /// The same releases under a Swedish and a Danish company publish nothing:
-/// Swedish insiders come from FI's register, Danish ones are out of scope.
+/// Swedish insiders come from FI's register, and a Danish company reads ESMA's
+/// template (NEX-282), which these Finnish-layout releases are not.
 #[tokio::test]
-async fn swedish_and_danish_companies_publish_no_insiders_from_mfn() {
+async fn finnish_layout_releases_publish_nothing_for_swedish_and_danish_companies() {
     let Some(db) = TestDb::create().await else {
         return;
     };
@@ -260,8 +261,14 @@ async fn swedish_and_danish_companies_publish_no_insiders_from_mfn() {
         mar_start().and_hms_opt(0, 0, 0).unwrap().and_utc(),
     )
     .await;
-    assert_eq!(summary.attempted, 0, "no Finnish company registered");
-    assert!(only.take().is_empty());
+    assert_eq!(
+        summary.attempted, 1,
+        "the Danish company is read (ESMA template), the Swedish one is not"
+    );
+    assert!(
+        only.take().is_empty(),
+        "no Finnish layout parses as an ESMA form"
+    );
     db.drop_db().await;
 }
 
