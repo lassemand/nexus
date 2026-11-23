@@ -117,15 +117,16 @@ tasks:
       - '/signal/migrations/**/*'
 ```
 
-Today: `analyst` and `chronicle` tests read `signal/migrations/`; `signal`
+Today: `analyst`, `chronicle` and `insight` tests read `signal/migrations/`
+(insight through `#[sqlx::test(migrations = "../signal/migrations")]`); `signal`
 compiles in `chronicle/tests/fixtures/mfn/e2e/*.pb`; `verdict-sdk`'s
 `tests/wasm_abi.rs` builds `verdict/kernels/sample`; `conductor`'s tests read
 `conductor/deploy/reviewer-settings.json` and `conductor/deploy/review-bin/`.
 
 `scripts/ci/check-cross-crate-inputs.py` scans every Rust project for
 `include_str!`/`include_bytes!` and `#[path]` (relative to the file),
-`sqlx::migrate!("...")` and `CARGO_MANIFEST_DIR` joined with a path (relative
-to the package), and fails when one resolves outside the project and is not
+`sqlx::migrate!("...")`, `#[sqlx::test(migrations = "...")]` and
+`CARGO_MANIFEST_DIR` joined with a path (relative to the package), and fails when one resolves outside the project and is not
 covered by its inputs. A read that names a wider folder than it uses (the
 workspace root, in `wasm_abi.rs`) is narrowed in the script's `NARROWED` table.
 Reads it cannot see (a path built at run time, a `cargo build -p` of another

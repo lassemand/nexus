@@ -8,7 +8,8 @@ them in its moon.yml (docs/guides/ci.md). This scans the tracked `*.rs` files
 (build.rs included) of every Rust project for:
 
   * `include_str!` / `include_bytes!` and `#[path = ...]`, relative to the file;
-  * `sqlx::migrate!("...")`, relative to the package (CARGO_MANIFEST_DIR);
+  * `sqlx::migrate!("...")` and `#[sqlx::test(migrations = "...")]`, relative
+    to the package (CARGO_MANIFEST_DIR);
   * `env!("CARGO_MANIFEST_DIR")` followed, in the same statement, by
     `.join("...")` or `concat!` literals;
 
@@ -36,6 +37,8 @@ NARROWED = {
 INCLUDE = re.compile(r'\binclude_(?:str|bytes)!\s*\(\s*"([^"]+)"', re.S)
 PATH_ATTR = re.compile(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]')
 MIGRATE = re.compile(r'\bmigrate!\s*\(\s*"([^"]+)"', re.S)
+SQLX_TEST = re.compile(r'#\[\s*(?:sqlx::)?test\s*\(([^\]]*)\)\s*\]', re.S)
+MIGRATIONS_ARG = re.compile(r'\bmigrations\s*=\s*"([^"]+)"')
 MANIFEST_DIR = re.compile(r'env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)')
 JOIN_OR_CONCAT = re.compile(r'\.join\(\s*"([^"]*)"\s*\)|^\s*,\s*"([^"]*)"|\)\s*,\s*"([^"]*)"')
 
@@ -130,6 +133,9 @@ def main():
             yield m.start(), norm(os.path.join(here, m.group(1))), True
         for m in MIGRATE.finditer(text):
             yield m.start(), norm(os.path.join(pkg, m.group(1))), False
+        for m in SQLX_TEST.finditer(text):
+            for arg in MIGRATIONS_ARG.finditer(m.group(1)):
+                yield m.start(), norm(os.path.join(pkg, arg.group(1))), False
         for m in MANIFEST_DIR.finditer(text):
             statement = text[m.end() : text.find(";", m.end()) % (len(text) + 1)]
             resolved = pkg

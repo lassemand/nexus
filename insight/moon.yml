@@ -1,0 +1,7 @@
+$schema: '../.moon/cache/schemas/project.json'
+
+tasks:
+  test:
+    inputs:
+      # src/analyst.rs: #[sqlx::test(migrations = "../signal/migrations")].
+      - '/signal/migrations/**/*'

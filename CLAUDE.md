@@ -100,7 +100,7 @@ Without `--include-relations --downstream deep`, `moon run --affected` and
 
 Plain `cargo` still works; moon only runs cargo per crate. When a crate reads a
 file from another project's folder (`include_str!`/`include_bytes!`, `#[path]`,
-`sqlx::migrate!("../...")`, `CARGO_MANIFEST_DIR` joined with `..`), declare it
+`sqlx::migrate!("../...")` or `#[sqlx::test(migrations = "../...")]`, `CARGO_MANIFEST_DIR` joined with `..`), declare it
 as an input in that crate's `moon.yml` (`/<path>/**/*` under `tasks.test.inputs`,
 and `tasks.lint.inputs` if it is compiled in); `scripts/ci/check-cross-crate-inputs.py` fails otherwise.
 
