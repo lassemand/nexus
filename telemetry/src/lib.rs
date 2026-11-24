@@ -1,3 +1,4 @@
+//! Shared telemetry (proof run).
 //! Shared metrics setup for nexus services.
 //!
 //! Long-running services call [`serve`] once at startup; their `metrics::counter!`
