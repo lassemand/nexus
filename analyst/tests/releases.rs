@@ -380,7 +380,7 @@ async fn the_latency_of_a_decision_stays_far_under_the_budget(pool: PgPool) {
         );
         warm.published_at = at(7, 0, 0) + ChronoDuration::days(i64::from(i));
         rig.clock.set(warm.published_at.max(at(7, 0, 5)));
-        let _ = rig.process(warm).await;
+        assert!(matches!(rig.process(warm).await, Processed::Decided { .. }));
     }
     let mut times = Vec::new();
     let mut n = 0;

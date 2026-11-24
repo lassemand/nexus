@@ -150,18 +150,19 @@ jobs:
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: v1-moon
+          prefix-key: v1-moon-cold-1
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install moon
         uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
 
       # One task at a time: parallel cargo processes oversubscribe the runner
-      # and break wall-clock tests (analyst's decision latency p99 < 10 ms);
+      # and break wall-clock tests (analyst's decision latency test, p50 < 10 ms and p99 < 100 ms under CI);
       # cargo parallelises each build itself.
       - name: moon ci
         env:
           MOON_CONCURRENCY: '1'
+          RUST_TEST_NOCAPTURE: '1'
         run: scripts/ci/moon-ci.sh
 
       - name: Summary
