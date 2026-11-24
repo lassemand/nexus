@@ -26,7 +26,7 @@ env:
   TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
   # A pull request is compared with its base branch; push and manual runs run
   # everything (scripts/ci/moon-ci.sh).
-  MOON_BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'origin/main' }}
+  MOON_BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}-base', github.head_ref) || 'origin/main' }}
   MOON_CI_ALL: ${{ github.event_name == 'push' && format('push to {0}', github.ref_name) || github.event_name == 'workflow_dispatch' && 'manual run (workflow_dispatch)' || '' }}
 
 jobs:
@@ -151,7 +151,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v1-moon
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
 
       - name: Install moon
         uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
