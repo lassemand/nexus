@@ -1,0 +1,123 @@
+{
+  "country": "FI",
+  "sector": "industrial",
+  "company": {
+    "ticker": "KNEBV",
+    "exchange_mic": "XHEL",
+    "name": "Kone",
+    "mfn_slug": "kone"
+  },
+  "release": {
+    "news_id": "ae569e6f-c386-5952-86e6-bcc3e9773a87",
+    "lang": "fi",
+    "title": "KONE Oyj:n osavuosikatsaus tammi-syyskuulta 2026",
+    "published_at": "2026-10-28T06:30:00Z",
+    "url": "https://mfn.se/cis/a/kone/kone-oyj-n-osavuosikatsaus-tammi-syyskuulta-2026-ae569e6f",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "b081a7c8-4f01-58da-99ff-216c7c6f7a11",
+      "lang": "en",
+      "title": "KONE Oyj: Half-year financial report of KONE Corporation for January-June 2026",
+      "published_at": "2026-07-22T05:30:00Z",
+      "url": "https://mfn.se/cis/a/kone/kone-oyj-half-year-financial-report-of-kone-corporation-for-january-june-2026-b081a7c8"
+    },
+    {
+      "news_id": "62a72f95-76ad-5997-8c3d-60ee5351a3d2",
+      "lang": "fi",
+      "title": "KONE Oyj:n puolivuosikatsaus tammi-kesäkuulta 2026",
+      "published_at": "2026-07-22T05:30:00Z",
+      "url": "https://mfn.se/cis/a/kone/kone-oyj-n-puolivuosikatsaus-tammi-kesakuulta-2026-62a72f95"
+    },
+    {
+      "news_id": "cb7204da-be51-5511-9ccb-758533c418d0",
+      "lang": "en",
+      "title": "KONE Oyj: Interim report of KONE Corporation for January-March 2026",
+      "published_at": "2026-04-29T05:30:00Z",
+      "url": "https://mfn.se/cis/a/kone/kone-oyj-interim-report-of-kone-corporation-for-january-march-2026-cb7204da"
+    },
+    {
+      "news_id": "40807260-0152-53a3-ab5f-4f430e71c70f",
+      "lang": "fi",
+      "title": "KONE Oyj:n osavuosikatsaus tammi-maaliskuulta 2026",
+      "published_at": "2026-04-29T05:30:00Z",
+      "url": "https://mfn.se/cis/a/kone/kone-oyj-n-osavuosikatsaus-tammi-maaliskuulta-2026-40807260"
+    },
+    {
+      "news_id": "ae2e7c99-c33a-5754-bacb-cec07e539cdc",
+      "lang": "fi",
+      "title": "KONE Oyj:n osavuosikatsaus tammi-syyskuulta 2025",
+      "published_at": "2025-10-23T05:30:00Z",
+      "url": "https://mfn.se/cis/a/kone/kone-oyj-n-osavuosikatsaus-tammi-syyskuulta-2025-ae2e7c99"
+    },
+    {
+      "news_id": "74099446-6c11-572c-94f0-013df06579a0",
+      "lang": "en",
+      "title": "KONE Oyj: Interim Report of KONE Corporation for January-September 2025",
+      "published_at": "2025-10-23T05:30:00Z",
+      "url": "https://mfn.se/cis/a/kone/kone-oyj-interim-report-of-kone-corporation-for-january-september-2025-74099446"
+    },
+    {
+      "news_id": "ffdc9f48-7625-55e6-bfe6-bb13947f9d81",
+      "lang": "fi",
+      "title": "KONE Oyj:n puolivuosikatsaus tammi-kesäkuulta 2025",
+      "published_at": "2025-07-18T05:30:00Z",
+      "url": "https://mfn.se/cis/a/kone/kone-oyj-n-puolivuosikatsaus-tammi-kesakuulta-2025-ffdc9f48"
+    },
+    {
+      "news_id": "db01487a-927f-57d4-8683-c6457409d718",
+      "lang": "en",
+      "title": "KONE Oyj: Half-year Financial Report of KONE Corporation for January-June 2025",
+      "published_at": "2025-07-18T05:30:00Z",
+      "url": "https://mfn.se/cis/a/kone/kone-oyj-half-year-financial-report-of-kone-corporation-for-january-june-2025-db01487a"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "order_intake",
+      "label": "Saadut tilaukset",
+      "unit": "miljoonaa euroa",
+      "current": "2292.9",
+      "prior": "2139.5",
+      "current_line": "Saadut tilaukset kasvoivat 7,2 % 2 292,9 (7-9/2025: 2 139,5) miljoonaan",
+      "prior_line": "Saadut tilaukset kasvoivat 7,2 % 2 292,9 (7-9/2025: 2 139,5) miljoonaan"
+    },
+    {
+      "key": "net_sales",
+      "label": "Liikevaihto",
+      "unit": "miljoonaa euroa",
+      "current": "2906.0",
+      "prior": "2762.0",
+      "current_line": "Liikevaihto kasvoi 5,2 % 2 906,0 (2 762,0) miljoonaan euroon.",
+      "prior_line": "Liikevaihto kasvoi 5,2 % 2 906,0 (2 762,0) miljoonaan euroon."
+    },
+    {
+      "key": "operating_income",
+      "label": "Liikevoitto (EBIT)",
+      "unit": "miljoonaa euroa",
+      "current": "339.0",
+      "prior": "334.4",
+      "current_line": "Liikevoitto (EBIT) oli 339,0 (334,4) miljoonaa euroa",
+      "prior_line": "Liikevoitto (EBIT) oli 339,0 (334,4) miljoonaa euroa"
+    },
+    {
+      "key": "adjusted_operating_income",
+      "label": "Oikaistu liikevoitto (adjusted EBIT)",
+      "unit": "miljoonaa euroa",
+      "current": "369.0",
+      "prior": "340.7",
+      "current_line": "Oikaistu liikevoitto (adjusted EBIT) oli 369,0 (340,7)",
+      "prior_line": "Oikaistu liikevoitto (adjusted EBIT) oli 369,0 (340,7)"
+    },
+    {
+      "key": "operating_cash_flow",
+      "label": "Liiketoiminnan rahavirta (ennen rahoituseriä ja veroja)",
+      "unit": "miljoonaa euroa",
+      "current": "347.9",
+      "prior": "444.4",
+      "current_line": "Liiketoiminnan rahavirta (ennen rahoituseriä ja veroja) oli 347,9 (444,4)",
+      "prior_line": "Liiketoiminnan rahavirta (ennen rahoituseriä ja veroja) oli 347,9 (444,4)"
+    }
+  ]
+}

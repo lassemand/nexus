@@ -1,0 +1,123 @@
+{
+  "country": "FI",
+  "sector": "biotech",
+  "company": {
+    "ticker": "REG1V",
+    "exchange_mic": "XHEL",
+    "name": "Revenio Group",
+    "mfn_slug": "revenio-group"
+  },
+  "release": {
+    "news_id": "e6887eae-85ba-449e-9102-caef7fb2e591",
+    "lang": "fi",
+    "title": "Revenio Group Oyj: Osavuosiraportti 1.1.-30.9.2026",
+    "published_at": "2026-11-12T07:00:00Z",
+    "url": "https://mfn.se/a/revenio-group/revenio-group-oyj-osavuosiraportti-1-1-30-9-2026",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "f79cf235-1c9b-4a58-a99a-b07c8a78c226",
+      "lang": "fi",
+      "title": "Revenio Group Oyj: Puolivuosikatsaus 1.1.-30.6.2026",
+      "published_at": "2026-09-08T06:00:00Z",
+      "url": "https://mfn.se/a/revenio-group/revenio-group-oyj-puolivuosikatsaus-1-1-30-6-2026"
+    },
+    {
+      "news_id": "4ffe58fe-1703-4ca9-b1df-3ca60de9beea",
+      "lang": "en",
+      "title": "Revenio Group Corporation: Half-Year Report January 1 – June 30, 2026",
+      "published_at": "2026-09-08T06:00:00Z",
+      "url": "https://mfn.se/a/revenio-group/revenio-group-corporation-half-year-report-january-1-june-30-2026"
+    },
+    {
+      "news_id": "3257d38a-b19e-4e31-9f56-1a236f4f80b0",
+      "lang": "en",
+      "title": "Revenio Group Corporation: Interim Report January 1 – March 31, 2026",
+      "published_at": "2026-04-28T06:00:00Z",
+      "url": "https://mfn.se/a/revenio-group/revenio-group-corporation-interim-report-january-1-march-31-2026"
+    },
+    {
+      "news_id": "29e6215e-1f96-4f2f-b43e-2da85004ee99",
+      "lang": "fi",
+      "title": "Revenio Group Oyj: Osavuosiraportti 1.1.-31.3.2026",
+      "published_at": "2026-04-28T06:00:00Z",
+      "url": "https://mfn.se/a/revenio-group/revenio-group-oyj-osavuosiraportti-1-1-31-3-2026"
+    },
+    {
+      "news_id": "7fe4771b-dda1-429f-9a54-71fe1f38ec38",
+      "lang": "en",
+      "title": "Revenio Group Corporation’s Annual reporting package 2025 has been published",
+      "published_at": "2026-03-23T09:00:00Z",
+      "url": "https://mfn.se/a/revenio-group/revenio-group-corporations-annual-reporting-package-2025-has-been-published"
+    },
+    {
+      "news_id": "29ccb30f-ab04-452e-ae46-59b86f1ad03c",
+      "lang": "fi",
+      "title": "Revenio Group Oyj:n vuoden 2025 raportointikokonaisuus on julkaistu",
+      "published_at": "2026-03-23T09:00:00Z",
+      "url": "https://mfn.se/a/revenio-group/revenio-group-oyj-n-vuoden-2025-raportointikokonaisuus-on-julkaistu"
+    },
+    {
+      "news_id": "a97163be-e708-4de6-93b4-2650d99819b2",
+      "lang": "en",
+      "title": "Revenio Group Corporation: Financial Statements Release January 1 – December 31, 2025",
+      "published_at": "2026-02-11T07:00:00Z",
+      "url": "https://mfn.se/a/revenio-group/revenio-group-corporation-financial-statements-release-january-1-december-31-2025"
+    },
+    {
+      "news_id": "17c6ea84-c7c8-4b15-8826-83f1cb2b7fbf",
+      "lang": "fi",
+      "title": "Revenio Group Oyj: Tilinpäätöstiedote 1.1.-31.12.2025",
+      "published_at": "2026-02-11T07:00:00Z",
+      "url": "https://mfn.se/a/revenio-group/revenio-group-oyj-tilinpaatostiedote-1-1-31-12-2025"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "net_sales",
+      "label": "Liikevaihto",
+      "unit": "miljoonaa euroa",
+      "current": "58.8",
+      "prior": "25.9",
+      "current_line": "Liikevaihto oli 58,8 (25,9) miljoonaa euroa, kasvua 127,5 %",
+      "prior_line": "Liikevaihto oli 58,8 (25,9) miljoonaa euroa, kasvua 127,5 %"
+    },
+    {
+      "key": "ebitda",
+      "label": "Käyttökate, EBITDA",
+      "unit": "miljoonaa euroa",
+      "current": "7.3",
+      "prior": "7.2",
+      "current_line": "Käyttökate, EBITDA oli 7,3 (7,2) miljoonaa euroa",
+      "prior_line": "Käyttökate, EBITDA oli 7,3 (7,2) miljoonaa euroa"
+    },
+    {
+      "key": "ebita",
+      "label": "EBITA",
+      "unit": "miljoonaa euroa",
+      "current": "5.7",
+      "prior": "6.4",
+      "current_line": "EBITA oli 5,7 (6,4) miljoonaa euroa",
+      "prior_line": "EBITA oli 5,7 (6,4) miljoonaa euroa"
+    },
+    {
+      "key": "operating_cash_flow",
+      "label": "Liiketoiminnan rahavirta",
+      "unit": "miljoonaa euroa",
+      "current": "5.5",
+      "prior": "3.0",
+      "current_line": "Liiketoiminnan rahavirta oli 5,5 (3,0) miljoonaa euroa",
+      "prior_line": "Liiketoiminnan rahavirta oli 5,5 (3,0) miljoonaa euroa"
+    },
+    {
+      "key": "eps",
+      "label": "Osakekohtainen tulos",
+      "unit": "euroa",
+      "current": "0.116",
+      "prior": "0.173",
+      "current_line": "Osakekohtainen tulos oli 0,116 (0,173) euroa",
+      "prior_line": "Osakekohtainen tulos oli 0,116 (0,173) euroa"
+    }
+  ]
+}

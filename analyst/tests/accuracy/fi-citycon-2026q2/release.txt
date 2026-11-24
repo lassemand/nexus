@@ -1,0 +1,259 @@
+Citycon Oyj: Citycon presents outstanding operational results for H1/2026
+
+CITYCON OYJ Half-Year Financial Report 12 August 2026 at 18:45 hrs
+
+Strong operational performance in H1/2026
+
+* Like-for-like net rental income increased by 5.6%¹ in Q1-Q2/2026.
+* Retail average rent per sq.m. increased by +1.8% with comparable FX to EUR
+  28.5 per sq.m (vs. Q2/2025).
+* Retail occupancy rate (sq.m.) 94.4% (vs. 95.3% in Q2/2025).
+* Like-for-like footfall increased 3.1%.
+* Like-for-like tenant sales increased 2.6%.
+* Fair value net gain of investment properties in Q1-Q2/2026 was EUR 2.7
+  million.
+
+Balance sheet management
+
+* Citycon signed a new EUR 520 million facility in January of which EUR 270
+  million was drawn in February and EUR 250 million remains available under an
+  accordion option.
+* In January Citycon paid a EUR 0.20 per share equity repayment, in total
+  approximately EUR 36.7 million.
+* In March Citycon completed a EUR 5 million open market repurchase of its 2029
+  Notes.
+* In March Citycon paid a EUR 0.90 per share equity repayment, in total
+  approximately EUR 165.2 million. The funds were paid to the shareholders on 1
+  April 2026.
+* In April Citycon completed an early redemption of its 2026 Notes. The entire
+  remaining outstanding amount of around EUR 123.5 million was redeemed.
+* In April Citycon also continued strengthening liquidity by signing an
+  additional EUR 214 million secured loan ².
+* In May Citycon completed an early redemption of its 2027 Notes. The entire
+  remaining outstanding amount of around EUR 128.6 million was redeemed.
+* In May Citycon signed a EUR 200 million maximum mutual on-call related-party
+  loan facility agreement with G City Ltd.
+
+Events post H1/2026
+
+* The voluntary public cash tender offer announced by G City Ltd for all
+  remaining shares in Citycon commenced on 6 July 2026 and ended on 3 August
+  2026. The Tender Offer Shares, together with the current holdings of G City
+  and G City's fully owned subsidiary Gazit Europe Netherlands, represent in
+  aggregate a holding of 164,631,860 Shares, corresponding to approximately
+  89.68 percent of all the Shares and voting rights in Citycon. On 5 August 2026
+  G City also announced that it commences a subsequent offer period which starts
+  on 6 August 2026 and ends on 27 August 2026.
+
+^{1} Includes a one-time adjustment to Q1/2025 NRI.
+² Calculated with Q2/2026 end exchange rates. The loan is drawn in SEK and NOK.
+
+KEY FIGURES
+
+───────────────────────────────┬───┬─────┬─────┬───┬────────────┬─────────┬─────
+Citycon Group⁶                 │   │Q2/20│Q2/20│%  │FX Adjusted │FX       │     
+                               │   │26   │25   │   │Q2/2025     │Adjusted │     
+                               │   │     │     │   │            │% 1)     │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Net rental income              │MEU│57.5 │53.3 │7.8│54.3        │5.9%     │     
+                               │R  │     │     │%  │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Like-for-like net rental income│%  │6.5% │6.8% │-  │-           │-        │     
+development⁸                   │   │     │     │   │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Direct operating profit²       │MEU│50.8 │47.7 │6.5│48.6        │4.6%     │     
+                               │R  │     │     │%  │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+IFRS Earnings per share        │EUR│0.05 │0.21 │-78│0.22        │-78.8%   │     
+(basic)³                       │   │     │     │.1%│            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Fair value of investment       │MEU│3,026│3,766│-19│-           │-        │     
+properties⁷                    │R  │.0   │.0   │.7%│            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Loan to Value (LTV)²           │%  │51.4 │46.4 │10.│-           │-        │     
+                               │   │     │     │7% │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA based key figures²        │   │     │     │   │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA Earnings⁴                 │MEU│17.6 │17.5 │0.7│18.3        │-4.1%    │     
+                               │R  │     │     │%  │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA Earnings excl. hybrid bond│MEU│25.7 │26.3 │-2.│27.2        │-5.4%    │     
+interests⁵                     │R  │     │     │2% │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA Earnings per share        │EUR│0.10 │0.09 │1.0│0.10        │-3.8%    │     
+(basic)⁴                       │   │     │     │%  │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA Earnings per share excl.  │EUR│0.14 │0.14 │-1.│0.15        │-5.0%    │     
+hybrid bond interests (basic)⁵ │   │     │     │9% │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA NRV per share             │EUR│7.64 │8.29 │-7.│-           │-        │     
+                               │   │     │     │9% │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Citycon Group⁶                 │   │Q1-Q2│Q1-Q2│%  │FX Adjusted │FX       │Q1-Q4
+                               │   │/2026│/2025│   │Q1-Q2/2025  │Adjusted │/2025
+                               │   │     │     │   │            │% 1)     │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Net rental income              │MEU│109.3│103.4│5.7│105.3       │3.9%     │209.2
+                               │R  │     │     │%  │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Like-for-like net rental income│%  │5.6% │5.2% │-  │-           │-        │5.4% 
+development⁸                   │   │     │     │   │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Direct operating profit²       │MEU│96.6 │90.4 │6.8│92.1        │4.9%     │183.3
+                               │R  │     │     │%  │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+IFRS Earnings per share        │EUR│0.12 │0.18 │-32│0.19        │-35.8%   │0.29 
+(basic)³                       │   │     │     │.4%│            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Fair value of investment       │MEU│3,026│3,766│-19│-           │-        │3,265
+properties⁷                    │R  │.0   │.0   │.7%│            │         │.9   
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+Loan to Value (LTV)²           │%  │51.4 │46.4 │10.│-           │-        │44.9 
+                               │   │     │     │7% │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA based key figures²        │   │     │     │   │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA Earnings⁴                 │MEU│36.6 │36.9 │-0.│38.4        │-4.6%    │79.0 
+                               │R  │     │     │8% │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA Earnings excl. hybrid bond│MEU│52.8 │54.3 │-2.│55.8        │-5.5%    │113.3
+interests⁵                     │R  │     │     │9% │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA Earnings per share        │EUR│0.20 │0.20 │-0.│0.21        │-4.3%    │0.43 
+(basic)⁴                       │   │     │     │4% │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA Earnings per share excl.  │EUR│0.29 │0.29 │-2.│0.30        │-5.2%    │0.62 
+hybrid bond interests (basic)⁵ │   │     │     │5% │            │         │     
+───────────────────────────────┼───┼─────┼─────┼───┼────────────┼─────────┼─────
+EPRA NRV per share             │EUR│7.64 │8.29 │-7.│-           │-        │8.45 
+                               │   │     │     │9% │            │         │     
+───────────────────────────────┴───┴─────┴─────┴───┴────────────┴─────────┴─────
+
+────────────────────────────────────────────────────────────────────────────────
+^{1} Change from previous year (comparable exchange rates). Change-% is         
+calculated from exact figures.                                                  
+────────────────────────────────────────────────────────────────────────────────
+^{2} Citycon presents alternative performance measures according to the European
+Securities and Markets Authority (ESMA) guidelines. Citycon follows updated EPRA
+Best Practices Recommendations (BPR) in its reporting starting from the         
+beginning of 2025. More information is presented in section EPRA performance    
+measures.                                                                       
+────────────────────────────────────────────────────────────────────────────────
+^{3} The key figure includes hybrid bond interests, amortized fees and          
+gains/losses and expenses on hybrid bond repayments.                            
+────────────────────────────────────────────────────────────────────────────────
+^{4} From the beginning of 2025 the key figure includes hybrid bond interests   
+and excludes reorganisation and one-time costs.                                 
+────────────────────────────────────────────────────────────────────────────────
+^{5} A new key figure introduced at the beginning of 2025. The key figure       
+excludes hybrid bond interests and reorganisation and one-time costs.           
+────────────────────────────────────────────────────────────────────────────────
+^{6} The numbers include the impact of divestments executed during 2025.        
+────────────────────────────────────────────────────────────────────────────────
+^{7} Excludes properties classified as held sale.                               
+────────────────────────────────────────────────────────────────────────────────
+^{8} Net rental income growth of like-for-like assets calculated with comparable
+FX. Like-for-like net rental income development Q1-Q2/2026 includes a one-time  
+adjustment to Q1/2025 NRI.                                                      
+────────────────────────────────────────────────────────────────────────────────
+
+
+CEO ESHEL PESTI:
+
+The first half of 2026 represented an outstanding period for Citycon. Our
+portfolio continued to perform well, supported by very good leasing activity,
+healthy customer demand and proactive financial management.
+
+In H1/2026 like-for-like net rental income increased by 5.6% year-on-year¹,
+beating the average European LFL NRI growth second year in a row. This strong
+growth was driven by extraordinary growth in the general mall leasing, strong
+leasing spreads (7.6%) and indexation of rents. Customer activity across our
+centres remained positive throughout the period. Like-for-like footfall grew by
+3.1%, while like-for-like tenant sales increased by 2.6%, reflecting the
+continued relevance of our urban, grocery-anchored centres as destinations for
+everyday needs.
+
+Retail occupancy rate stood at 94.4% at the end of the period. Demand from
+tenants continues to be healthy across our portfolio. Our leasing strategy
+remains focused on strengthening the tenant mix, maintaining the attractiveness
+of our centres and creating conditions for sustainable rental growth.
+
+Alongside our operational achievements, we continued to actively manage our debt
+financing. During the second quarter, we extended our debt maturity profile by
+signing and drawing a new five-year secured loan of EUR 214 million². At the
+same time, we repaid bonds totaling EUR 252 million that were due in 2026 and
+2027. These transactions further enhance our financial flexibility, extend debt
+maturities and support the long-term stability of our capital structure. Our
+next debt maturity is now in March 2028.
+
+We are in advanced negotiations regarding divestment of three assets in Finland.
+While we are in discussion with potential buyers for a few assets in Sweden and
+Norway.
+
+Our business continues to demonstrate resilience. The strong performance
+delivered in the first half of the year highlights the strength of our strategy,
+which is focused on serving the daily needs of customers in our high-quality
+urban assets in some of the most attractive catchment areas across the Nordics.
+
+I would like to thank our employees for another period of hard work and
+commitment. We enter the second half of 2026 with confidence, supported by
+strong operational momentum and focus on creating value for all our
+stakeholders.
+
+^{1} Includes a one-time adjustment to Q1/2025 NRI.
+² Calculated with Q2/2026 end exchange rates. The loan is drawn in SEK and NOK.
+
+OUTLOOK (unchanged)
+
+Like-for-like net rental income will grow compared to the previous year.
+
+The outlook assumes that there are no major changes in macroeconomic factors.
+These estimates are based on comparable EUR-SEK and EUR-NOK exchange rates
+
+AUDIOCAST
+
+Citycon's live results presentation will be held on Thursday, 13 August 2026 at
+10:00 a.m. EEST. The link to the results presentation Zoom call is available on
+our website:
+https://www.citycon.com/investors/financial-reports/financial-reports-2026.
+
+Questions for the management can be submitted during the call using Zoom's Q&A
+function. Please note that when joining on a mobile device, the Zoom application
+is required to access the Q&A function.
+
+The results presentation will be recorded and it will be available afterwards on
+Citycon's website.
+
+CITYCON OYJ
+
+For further information, please contact:
+Hilik Attias
+Chief Financial Officer
+Tel. +358 40 688 8580
+hilik.attias@citycon.com
+
+
+Anni Torkko
+Director, Group Corporate Analysis & IR
+Tel. +358 45 358 0570
+anni.torkko@citycon.com
+
+
+Citycon is a leading owner, manager and developer of mixed-use real estate
+featuring modern, necessity-based retail with residential, office and municipal
+service spaces that enhance the communities in which they operate. Citycon is
+committed to sustainable property management in the Nordic region with assets
+that total approximately EUR 3.8 billion. Our centres are located in urban hubs
+in the heart of vibrant communities with direct connections to public transport
+and anchored by grocery, healthcare and other services that cater to the
+everyday needs of customers.
+
+Citycon's shares are listed on Nasdaq Helsinki Ltd.
+
+www.citycon.com
+
+
+[1]: https://www.citycon.com/investors/financial-reports/financial-reports-2026
+[2]: mailto:hilik.attias@citycon.com
+[3]: mailto:anni.torkko@citycon.com

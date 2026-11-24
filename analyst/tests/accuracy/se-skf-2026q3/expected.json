@@ -1,0 +1,123 @@
+{
+  "country": "SE",
+  "sector": "industrial",
+  "company": {
+    "ticker": "SKF B",
+    "exchange_mic": "XSTO",
+    "name": "SKF",
+    "mfn_slug": "skf"
+  },
+  "release": {
+    "news_id": "af3453b9-ec16-55ee-8484-21fece219032",
+    "lang": "sv",
+    "title": "SKF Kv3 2026: Förbättrad marginal och ökad efterfrågan i vissa segment",
+    "published_at": "2026-10-21T05:30:00Z",
+    "url": "https://mfn.se/cis/a/skf/skf-kv3-2026-forbattrad-marginal-och-okad-efterfragan-i-vissa-segment-af3453b9",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "a3ebc41b-a69d-5619-9b15-088dd8bf829d",
+      "lang": "en",
+      "title": "SKF Q2 2026: Continued margin improvement",
+      "published_at": "2026-07-17T05:30:00Z",
+      "url": "https://mfn.se/cis/a/skf/skf-q2-2026-continued-margin-improvement-a3ebc41b"
+    },
+    {
+      "news_id": "4445dcf1-3718-553c-b9f7-ae43453a5c3b",
+      "lang": "sv",
+      "title": "SKF Kv2 2026: Fortsatt förbättrad marginal",
+      "published_at": "2026-07-17T05:30:00Z",
+      "url": "https://mfn.se/cis/a/skf/skf-kv2-2026-fortsatt-forbattrad-marginal-4445dcf1"
+    },
+    {
+      "news_id": "ca455595-f54b-559a-9d2f-76fe31149169",
+      "lang": "sv",
+      "title": "SKF Kv1 2026: Stark marginal trots volatila marknadsförhållanden",
+      "published_at": "2026-04-21T05:30:00Z",
+      "url": "https://mfn.se/cis/a/skf/skf-kv1-2026-stark-marginal-trots-volatila-marknadsforhallanden-ca455595"
+    },
+    {
+      "news_id": "afb4d126-a5de-55a2-ac93-0b13212e7cd8",
+      "lang": "en",
+      "title": "SKF Q1 2026: Strong margin despite volatile market conditions",
+      "published_at": "2026-04-21T05:30:00Z",
+      "url": "https://mfn.se/cis/a/skf/skf-q1-2026-strong-margin-despite-volatile-market-conditions-afb4d126"
+    },
+    {
+      "news_id": "ed4b0586-c21b-5683-ab2e-1f0826990f72",
+      "lang": "sv",
+      "title": "SKF publicerar årsredovisning och hållbarhetsrapport för 2025",
+      "published_at": "2026-03-06T12:00:00Z",
+      "url": "https://mfn.se/cis/a/skf/skf-publicerar-arsredovisning-och-hallbarhetsrapport-for-2025-ed4b0586"
+    },
+    {
+      "news_id": "b67f3ebc-9b33-5d03-b444-109444300abe",
+      "lang": "en",
+      "title": "SKF publishes Annual and Sustainability Report 2025",
+      "published_at": "2026-03-06T12:00:00Z",
+      "url": "https://mfn.se/cis/a/skf/skf-publishes-annual-and-sustainability-report-2025-b67f3ebc"
+    },
+    {
+      "news_id": "bb3e3565-debf-5eda-a3c4-36e1528ed654",
+      "lang": "sv",
+      "title": "SKF Kv4 2025: Lägger grunden för långsiktigt värdeskapande",
+      "published_at": "2026-01-30T06:30:00Z",
+      "url": "https://mfn.se/cis/a/skf/skf-kv4-2025-lagger-grunden-for-langsiktigt-vardeskapande-bb3e3565"
+    },
+    {
+      "news_id": "b1f9b7e5-3df3-5da1-baf1-52c4999edf39",
+      "lang": "en",
+      "title": "SKF Q4 2025: Laying the foundation for long-term value creation",
+      "published_at": "2026-01-30T06:30:00Z",
+      "url": "https://mfn.se/cis/a/skf/skf-q4-2025-laying-the-foundation-for-long-term-value-creation-b1f9b7e5"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "net_sales",
+      "label": "Nettoomsättning",
+      "unit": "mkr",
+      "current": "17467",
+      "prior": "16562",
+      "current_line": "Nettoomsättning: 17 467 mkr (16 562)",
+      "prior_line": "Nettoomsättning: 17 467 mkr (16 562)"
+    },
+    {
+      "key": "organic_growth",
+      "label": "Organisk tillväxt",
+      "unit": "%",
+      "current": "4.3",
+      "prior": "3.7",
+      "current_line": "Organisk tillväxt: 4,3% (3,7%)",
+      "prior_line": "Organisk tillväxt: 4,3% (3,7%)"
+    },
+    {
+      "key": "adjusted_operating_income",
+      "label": "Justerat rörelseresultat",
+      "unit": "mkr",
+      "current": "2845",
+      "prior": "2553",
+      "current_line": "Justerat rörelseresultat: 2 845 mkr (2 553)",
+      "prior_line": "Justerat rörelseresultat: 2 845 mkr (2 553)"
+    },
+    {
+      "key": "adjusted_operating_margin",
+      "label": "Justerad rörelsemarginal",
+      "unit": "%",
+      "current": "16.3",
+      "prior": "15.4",
+      "current_line": "Justerad rörelsemarginal: 16,3% (15,4%)",
+      "prior_line": "Justerad rörelsemarginal: 16,3% (15,4%)"
+    },
+    {
+      "key": "net_cash_flow",
+      "label": "Nettokassaflöde",
+      "unit": "mkr",
+      "current": "2076",
+      "prior": "1780",
+      "current_line": "Nettokassaflöde: 2 076 mkr (1 780)",
+      "prior_line": "Nettokassaflöde: 2 076 mkr (1 780)"
+    }
+  ]
+}

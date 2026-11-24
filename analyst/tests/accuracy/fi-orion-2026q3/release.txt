@@ -1,0 +1,399 @@
+Orion Group Interim report January–September 2026: Strong financial performance and positive developments in the R&D pipeline 
+
+ORION CORPORATION
+INTERIM REPORT 1–9/2026
+28 OCTOBER 2026 at 12:00 EET
+
+Orion Group Interim report January–September 2026: Strong financial performance
+and positive developments in the R&D pipeline
+
+July–September 2026 Highlights
+
+* Net sales totalled EUR 542.2 (July–September 2025: 423.2) million
+* Operating profit was EUR 209.9 (121.0) million
+* Basic earnings per share were EUR 1.19 (0.68)
+* Cash flow from operating activities per share was EUR 0.68 (0.55)
+* Phase 1 initiated with ODM-216, Orion's first biologic clinical development
+  asset
+* Interim results from the DASL-HiCaP Phase 3 trial were announced at the ESMO
+  2026 congress
+* Changes in the Orion Executive Team as of 1 January 2027
+
+January–September 2026 Highlights
+
+* Net sales totalled EUR 1,481.5 (January–September 2025: 1,194.2) million
+* Operating profit was EUR 501.2 (303.5) million
+* Basic earnings per share were EUR 2.83 (1.71)
+* Cash flow from operating activities per share was EUR 2.89 (1.67)
+* The outlook for 2026 was upgraded after the review period in October: Net
+  sales are estimated to be EUR 2,070 million to EUR 2,140 million. Operating
+  profit is estimated to be EUR 730 million to EUR 790 million.
+  
+
+Key figures
+
+─────────────────────────────────────────────┬───┬───┬─────┬────┬────┬─────┬────
+                                             │7–9│7–9│Chang│1–9/│1–9/│Chang│1–12
+                                             │/26│/25│e %  │26  │25  │e %  │/25 
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Net sales, EUR million                       │542│423│+28.1│1,48│1,19│+24.1│1,88
+                                             │.2 │.2 │%    │1.5 │4.2 │%    │9.5 
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+EBITDA, EUR million                          │225│135│+66.8│547.│345.│+58.6│688.
+                                             │.5 │.1 │%    │8   │3   │%    │3   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+% of net sales                               │41.│31.│     │37.0│28.9│     │36.4
+                                             │6% │9% │     │%   │%   │     │%   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Operating profit, EUR million                │209│121│+73.5│501.│303.│+65.2│631.
+                                             │.9 │.0 │%    │2   │5   │%    │6   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+% of net sales                               │38.│28.│     │33.8│25.4│     │33.4
+                                             │7% │6% │     │%   │%   │     │%   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Profit before taxes, EUR million             │210│120│+74.5│499.│300.│+66.1│627.
+                                             │.2 │.4 │%    │4   │7   │%    │8   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+% of net sales                               │38.│28.│     │33.7│25.2│     │33.2
+                                             │8% │5% │     │%   │%   │     │%   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Profit for the period, EUR million           │167│96.│+74.5│398.│239.│+66.0│500.
+                                             │.6 │0  │%    │2   │8   │%    │3   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+% of net sales                               │30.│22.│     │26.9│20.1│     │26.5
+                                             │9% │7% │     │%   │%   │     │%   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Research and development expenses, EUR       │57.│49.│+16.1│168.│139.│+20.3│210.
+million                                      │8  │8  │%    │2   │8   │%    │4   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+% of net sales                               │10.│11.│     │11.4│11.7│     │11.1
+                                             │7% │8% │     │%   │%   │     │%   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Capital expenditure excluding acquired in    │37.│30.│+24.9│78.1│84.6│-7.7%│112.
+business combination, EUR million            │6  │1  │%    │    │    │     │9   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+% of net sales                               │6.9│7.1│     │5.3%│7.1%│     │6.0%
+                                             │%  │%  │     │    │    │     │    
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Acquired in business combination, net of     │   │   │     │    │4.0 │     │4.0 
+cash, EUR million                            │   │   │     │    │    │     │    
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Interest-bearing net liabilities, EUR million│   │   │     │-18.│87.1│<    │144.
+                                             │   │   │     │8   │    │-100%│4   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Basic earnings per share, EUR                │1.1│0.6│+74.4│2.83│1.71│+65.9│3.56
+                                             │9  │8  │%    │    │    │%    │    
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Cash flow from operating activities per      │0.6│0.5│+22.7│2.89│1.67│73.4%│2.25
+share, EUR                                   │8  │5  │%    │    │    │     │    
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Equity ratio, %                              │   │   │     │68.9│58.5│     │64.1
+                                             │   │   │     │%   │%   │     │%   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Gearing, %                                   │   │   │     │-1.3│8.5%│     │11.2
+                                             │   │   │     │%   │    │     │%   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Return on capital employed (before taxes), % │   │   │     │43.3│31.0│     │43.8
+                                             │   │   │     │%   │%   │     │%   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Return on equity (after taxes), %            │   │   │     │39.6│31.6│     │43.7
+                                             │   │   │     │%   │%   │     │%   
+─────────────────────────────────────────────┼───┼───┼─────┼────┼────┼─────┼────
+Average number of personnel during the period│   │   │     │4,17│3,98│+4.6%│4,00
+                                             │   │   │     │4   │9   │     │3   
+─────────────────────────────────────────────┴───┴───┴─────┴────┴────┴─────┴────
+
+President and CEO Liisa Hurme:
+Strong financial performance and positive developments in the R&D pipeline
+
+"We delivered a strong third quarter, with revenue growth driven by the
+Innovative Medicines and Branded Products business divisions. Profitability
+improved mostly due to an increase in royalty income. We achieved important
+milestones in our long-term growth strategy, with expansion of our clinical
+pipeline and continued strengthening of our licensing portfolio.
+
+Nubeqa® maintained its strong growth trajectory and was the main driver of the
+increase in net sales. Performance was also supported by the Easyhaler® product
+portfolio and the Women’s Health portfolio, where sales benefited from strong
+demand. In the CNS therapy area, the growth mainly came from other products than
+entacapone.
+
+During the quarter, we advanced our pipeline by initiating a Phase 1 clinical
+trial with our first large molecule asset. Advancing the bispecific antibody
+ODM-216 into clinical development is a significant milestone for Orion and
+demonstrates the breadth of our R&D capabilities. Our sustained investment in
+early-stage research is translating into one of the broadest clinical pipelines
+in Orion's history. We are excited about this progress and expect to advance
+further assets into clinical development in the coming months. After the review
+period, interim results from the DASL-HiCaP Phase 3 trial were announced at the
+ESMO 2026 congress. These interim results indicate that darolutamide could be a
+potential treatment option in earlier prostate cancer disease setting.
+
+We have signed two important Europe-wide licensing agreements during the year,
+most recently in early October. The biosimilars covered by these agreements are
+still under development, but they have the potential to support the future
+growth of our business in the 2030s.
+
+After the review period, we announced adjustments to the composition and
+responsibilities of the Orion Executive Team. The renewed structure brings our
+organisation more closely in line with our strategic priorities. We will be
+better focused on innovative medicines and branded products, stronger in
+commercial execution in our current markets, and building the capabilities
+needed to drive future growth.
+
+Due to the strong growth of Nubeqa® royalties, we have upgraded our financial
+outlook for 2026. I would like to thank all our employees for their excellent
+work and contribution during the quarter. We have positive momentum going into
+the final quarter of the year, and I look forward to continuing this work
+together.”
+
+Outlook for 2026 (provided on 20 October 2026)
+
+Net sales are estimated to be EUR 2,070 million to EUR 2,140 million.
+
+Operating profit is estimated to be EUR 730 million to EUR 790 million.
+
+Previous outlook for 2026 (specified on 17 July 2026)
+
+Net sales are estimated to be EUR 2,000 million to EUR 2,100 million.
+
+Operating profit is estimated to be EUR 650 million to EUR 750 million.
+
+Basis for outlook
+
+Collaboration agreements with other pharmaceutical companies are an integral
+part of Orion’s business model. Agreements often include payments recorded in
+net sales and operating profit that vary greatly from year to year. Forecasting
+the timing and amount of these payments is difficult. In some cases, they are
+conditional on terms such as R&D outcomes which are not known until studies have
+been completed, the progress of R&D projects or the attainment of specified
+sales levels. Regarding possible new contracts under negotiation, neither the
+outcome nor the schedule of contract negotiations is generally known before the
+final signing of the agreement.
+
+In 2025, Orion booked one material milestone of EUR 180 million. The outlook for
+2026 does not include any material milestone payments.
+
+Milestone payments received by Orion in 2021–2025
+
+───────────┬────┬────┬────┬────┬────
+Year       │2021│2022│2023│2024│2025
+───────────┼────┼────┼────┼────┼────
+EUR million│3   │234 │32  │134 │183 
+───────────┴────┴────┴────┴────┴────
+
+The outlook does not include income, expenses or other impacts related to any
+future material product or company acquisition or divestment.
+
+Net sales
+
+The outlook assumes that the Nubeqa® royalties and product sales booked by Orion
+will increase clearly in 2026. Orion’s assumption is based on forecasts received
+from its partner Bayer. However, it is difficult to predict the exact level of
+product sales and royalties of a strongly growing product for the whole year. In
+addition, some tariff impact in the US is included in the outlook range.
+
+The Branded Products business division is estimated to grow in 2026. Growth is
+anticipated to be driven by the Respiratory therapy area and the Easyhaler®
+product portfolio, but also other therapy areas are expected to grow. The Animal
+Health business division is anticipated to grow slightly, with growth coming
+from various products. The net sales of the Generics and Consumer Health
+business division are estimated to be at a similar level or slightly higher than
+in 2025.
+
+Operating profit
+
+The underlying operating profit growth, i.e. excluding material milestones, is
+expected to be driven by increasing net sales and especially Nubeqa® royalties.
+However, it is difficult to predict the exact level of royalties of a strongly
+growing product for the whole year. Any variance from the predicted level can
+have a notable impact on Orion’s operating profit. Also, the mechanism by which
+each quarter’s product deliveries are always fully deducted from the next
+quarter’s royalty payments causes fluctuation in operating profit. Even though
+this impact on operating profit is only temporary, the timing of product
+deliveries may have notable impact on Orion’s operating profit in one calendar
+year. Significant part of Orion’s Nubeqa® income is coming from the United
+States and thus changes in the US dollar exchange rate cause fluctuations in
+Orion’s operating profit.
+
+Research and development costs, and in particular their timing, can also cause
+fluctuations in operating profit. Although the future costs of research and
+development projects are known quite well in advance, there are uncertainties
+about their timing. The start of projects may be delayed, and projects may
+progress faster or slower than expected. Projects may also have to be
+terminated, in which case the anticipated costs will not be fully realised.
+Orion estimates that R&D costs in 2026 will increase from 2025.
+
+Sales and marketing expenses are expected to increase in 2026. Expenses are
+increased by additional investments in the sale of the current product
+portfolio, and Nubeqa® royalty payable as per an agreement with Endo
+Pharmaceuticals.
+
+Capital expenditure
+
+The Group’s total capital expenditure in 2026 is not expected to have any
+significant changes compared to 2025. The estimate of capital expenditure does
+not include any investments related to any future material product or company
+acquisition.
+
+Near-term risks and uncertainties
+
+Orion is exposed to risks that may arise from its operations or changes in the
+operating environment. The most significant risk factors described below can
+potentially have an adverse effect on Orion’s business operations, financial
+position or financial results. Other risks, which are currently either unknown
+or considered immaterial to Orion may, however, become material in the future.
+
+Orion’s own production and other operations are exposed to risks that may
+materially disrupt their operations or even interrupt them at least temporarily.
+Such risks include, for example, accidents, damages, natural disasters, strikes,
+employee illness, conflicts, terrorism, cyber-attacks, hybrid influence,
+disruption of information or communication systems, disruption of energy supply,
+and disruption of supply and logistics chains. Orion’s production and business
+operations are dependent on global supply and logistics chains, the inaction of
+which may lead to low availability of finished products and raw materials,
+starting materials, semi-finished products, supplies, equipment and spare parts
+needed in production.
+
+Sales of individual products and also Orion’s sales in individual markets may
+vary, for example depending on the extent to which the ever-tougher price and
+other competition prevailing in pharmaceutical markets in recent years will
+specifically focus on Orion’s products. Changes in pharmaceutical or other
+regulation in individual markets or more broadly, for example at EU level, may
+affect the sales and profitability of Orion’s products. Changes in overall
+market demand may also have negative impact on sales. New tariffs or other
+possible customs duties on Orion’s products may negatively affect the sales and
+profitability of Orion’s products. The details of the US pharmaceutical tariffs,
+their implementation and their impact on Orion still remain unclear.
+
+Product deliveries to key partners are based on timetables that are jointly
+agreed in advance. Nevertheless, they can change, for example as a consequence
+of decisions concerning adjustments of stock levels. In addition, changes in
+market prices and exchange rates affect the value of deliveries.
+
+Key currencies that carry an exchange rate risk for Orion are the US dollar, the
+Swedish krona and the Polish zloty. Other significant currencies are the Danish
+krone and the Norwegian krone. However, the overall effect of the risk arising
+from currencies of European countries will be abated by the fact that Orion has
+organisations of its own in most European countries, which means that in
+addition to sales income there are also costs in these currencies.
+
+The current geopolitical conflicts and unrest, and other challenges in the
+global supply and logistics chains of pharmaceuticals have increased the already
+elevated risk of supply disruptions. The possible rise of raw material prices
+and other supply chain costs deteriorates the profitability of Orion’s products,
+since in the pharmaceutical industry it is very difficult to pass on cost
+increases to the prices of own products, especially prescription medicines,
+particularly in Europe. If high cost inflation occurs, it will pose a risk to
+Orion’s profitability.
+
+Authorities and key customers in different countries carry out regular and
+detailed inspections of drug development and manufacturing at Orion’s sites. Any
+remedial actions that may be required may at least temporarily have effects that
+decrease delivery reliability and increase costs. Orion’s product range also
+contains products manufactured by other pharmaceutical companies and products
+that Orion manufactures on its own but for which other companies supply active
+pharmaceutical or other ingredients and components or parts (among these the
+Easyhaler® products). Possible problems related to the delivery reliability or
+quality of the products of those manufacturers may cause a risk to Orion’s
+delivery reliability. The single-channel system used for pharmaceuticals
+distribution in Finland, in which Orion’s products have been delivered to
+customers through only one wholesaler, may also cause risks to delivery
+reliability.
+
+Research projects always entail uncertainty factors that may either increase or
+decrease estimated costs. Although the future costs of research and development
+projects are known quite well in advance, there are uncertainties about their
+timing. The start of projects may be delayed, and projects may progress faster
+or slower than expected having an impact on predicted costs within an individual
+year. Projects may also have to be terminated, in which case the anticipated
+costs will not be fully realised.
+
+Collaboration arrangements are an important component of Orion’s business model.
+Possible collaboration and licensing agreements related to these arrangements
+also often include payments to be recorded in net sales that may materially
+affect Orion’s financial results. The payments may be subject to conditions
+relating to the progress of research projects or sales or to new contracts to be
+signed, and whether these conditions or contracts materialise and what their
+timing is, will always entail uncertainties. The upfront and milestone payments
+paid by Orion to its collaborators, which are recorded as investments in
+intangible assets in balance sheet, include write-down risk that may be realised
+if, for example, a collaborative research project fails or otherwise has to be
+discontinued.
+
+Webcast and Conference Call
+
+A webcast and a conference call for analysts, investors and media
+representatives will be held on Wednesday, 28 October 2026 at 14.00 EET.
+
+A link to the live webcast is available on Orion's website at
+www.orionpharma.com/investors. A recording of the event will be available on the
+website later the same day.
+
+Conference call can be joined by registering through the following link:
+https://events.inderes.com/orion/q3-2026/dial-in.
+
+Phone numbers and the conference ID to access the conference will be provided
+after the registration. In case you would like to ask a question during the
+conference, please dial *5 on your telephone keypad to enter the question queue.
+
+Questions can also be presented in writing through the question form of the
+webcast.
+
+Upcoming events
+
+─────────────────────────────────────┬──────────────────────────
+Financial Statement Release 2026     │Wednesday 17 February 2027
+─────────────────────────────────────┼──────────────────────────
+AGM planned to be held               │Tuesday 23 March 2027     
+─────────────────────────────────────┼──────────────────────────
+Interim Report January–March 2027    │Thursday 22 April 2027    
+─────────────────────────────────────┼──────────────────────────
+Half–Year Financial Report 2027      │Tuesday 20 July 2027      
+─────────────────────────────────────┼──────────────────────────
+Interim Report January–September 2027│Wednesday 27 October 2027 
+─────────────────────────────────────┴──────────────────────────
+
+The Financial Statements and the Report by the Board of Directors for 2026 will
+be published at the latest in week 9/2027.
+
+Espoo, 28 October 2026
+
+Board of Directors of Orion Corporation
+
+For additional information about the report:
+
+Tuukka Hirvonen, Head of Investor Relations, tel. +358 10 426 2721 or +358 50
+966 2721
+
+Publisher:
+
+Orion Corporation
+
+https://www.orionpharma.com
+
+Orion is a globally operating Nordic pharmaceutical company – a builder of
+well-being for over a hundred years. We develop, manufacture and market human
+and veterinary pharmaceuticals and active pharmaceutical ingredients. Orion has
+an extensive portfolio of proprietary and generic medicines and consumer health
+products. The core therapy areas of our pharmaceutical R&D are oncology and
+pain. Proprietary products developed by Orion are used to treat cancer,
+neurological diseases and respiratory diseases, among others. In 2025 Orion’s
+net sales amounted to EUR 1,890 million and the company employs about 4,000
+professionals worldwide, dedicated to building well-being.
+
+Attachments
+
+Orion Interim Report Q3 2026
+
+[1]: https://www.globenewswire.com/Tracker?data=M_vsjXuCfLA1nMo1euZ-Y_YCtZCV5EP1
+5JS0ZiIjZ5NmGcTX3H_ZzEjFnewDLO_12esdeK0XRfmLxgyTDgo3kS_gNblGkW15nLxhCszMmxBXo8YC
+BeW8y1T38hZ7EeWU
+[2]: https://www.globenewswire.com/Tracker?data=Cyxj4uPS3yDRRcg69ziJaK2Owq7H2uRg
+ogXKzpONUdApk7m0JTznR-nxSVnN7Grr6EgINqhwVZhzAAYtQfoWTyM2XrKbwyT-nUGFe5rjpNZqfEDj
+oDczPIZY2s03UJofwkfHn-ES1arlNDOXFFH8FdKHtA7d85lvYtwxXJMHgsI=
+[3]: https://www.globenewswire.com/Tracker?data=Cyxj4uPS3yDRRcg69ziJaO6Jlk-0BlLl
+JidJjCpuKn1Jd3roJJZOAeGvcP44k58gyFEfzMqXOo0O_rEeL4WhjvGZuhZYvUQN3yi0thiU8rbDdPi5
+g7bJWQeTA1X_Zoqz
+[4]: https://ml-eu.globenewswire.com/Resource/Download/8d7e2fa5-33b2-4f59-8d3d-5
+8797c528bd1

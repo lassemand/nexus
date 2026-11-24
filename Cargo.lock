@@ -59,6 +59,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "chrono-tz",
+ "clap",
  "futures-util",
  "hex",
  "humantime",

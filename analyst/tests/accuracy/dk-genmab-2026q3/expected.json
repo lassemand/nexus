@@ -1,0 +1,114 @@
+{
+  "country": "DK",
+  "sector": "biotech",
+  "company": {
+    "ticker": "GMAB",
+    "exchange_mic": "XCSE",
+    "name": "Genmab",
+    "mfn_slug": "genmab"
+  },
+  "release": {
+    "news_id": "497abef3-2d11-4118-8340-d9952f06390f",
+    "lang": "en",
+    "title": "Genmab Announces Financial Results for the Nine Months of 2026",
+    "published_at": "2026-11-05T16:02:07Z",
+    "url": "https://mfn.se/one/a/genmab/genmab-announces-financial-results-for-the-nine-months-of-2026-497abef3",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "47723220-950a-4bfa-bb62-8109d8614e1c",
+      "lang": "en",
+      "title": "Genmab Announces Financial Results for the First Half of 2026",
+      "published_at": "2026-08-06T15:02:05Z",
+      "url": "https://mfn.se/one/a/genmab/genmab-announces-financial-results-for-the-first-half-of-2026-47723220"
+    },
+    {
+      "news_id": "2b286cbe-05c3-409d-b405-7503c1209271",
+      "lang": "en",
+      "title": "Genmab Announces Financial Results for the First Quarter of 2026",
+      "published_at": "2026-05-07T15:02:12Z",
+      "url": "https://mfn.se/one/a/genmab/genmab-announces-financial-results-for-the-first-quarter-of-2026-2b286cbe"
+    },
+    {
+      "news_id": "36064ad3-e53b-4cb1-93ea-8cc8cb9dabbc",
+      "lang": "en",
+      "title": "Genmab Publishes 2025 Annual Report",
+      "published_at": "2026-02-17T16:01:38Z",
+      "url": "https://mfn.se/one/a/genmab/genmab-publishes-2025-annual-report-36064ad3"
+    },
+    {
+      "news_id": "86bebbba-f65f-47d9-bbb5-c7f6a3beed68",
+      "lang": "en",
+      "title": "Genmab Announces Financial Results for the Nine Months of 2025",
+      "published_at": "2025-11-06T16:02:22Z",
+      "url": "https://mfn.se/one/a/genmab/genmab-announces-financial-results-for-the-nine-months-of-2025-86bebbba"
+    },
+    {
+      "news_id": "3940a0d9-3e2e-4ace-ba42-150fb8c77709",
+      "lang": "en",
+      "title": "Genmab Announces Financial Results for the First Half of 2025",
+      "published_at": "2025-08-07T15:08:56Z",
+      "url": "https://mfn.se/one/a/genmab/genmab-announces-financial-results-for-the-first-half-of-2025-3940a0d9"
+    },
+    {
+      "news_id": "ba7c5ed9-4abe-4520-a987-e4b79bcaa193",
+      "lang": "en",
+      "title": "Genmab Announces Financial Results for the First Quarter of 2024",
+      "published_at": "2025-05-08T15:01:00Z",
+      "url": "https://mfn.se/one/a/genmab/genmab-announces-financial-results-for-the-first-quarter-of-2024-ba7c5ed9"
+    },
+    {
+      "news_id": "365eb610-11e7-496c-900e-d135e65783f6",
+      "lang": "en",
+      "title": "Genmab Publishes 2024 Annual Report",
+      "published_at": "2025-02-12T16:01:52Z",
+      "url": "https://mfn.se/one/a/genmab/genmab-publishes-2024-annual-report-365eb610"
+    },
+    {
+      "news_id": "feb08d17-9ca3-41b9-b539-adb52196198e",
+      "lang": "en",
+      "title": "Genmab Announces Financial Results for the First Nine Months of 2024",
+      "published_at": "2024-11-06T16:02:11Z",
+      "url": "https://mfn.se/one/a/genmab/genmab-announces-financial-results-for-the-first-nine-months-of-2024-feb08d17"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "revenue",
+      "label": "Revenue (first nine months)",
+      "unit": "USD million",
+      "current": "3238",
+      "prior": "2662",
+      "current_line": "Revenue was $3,238 million for the first nine months of 2026 compared to\n  $2,662 million",
+      "prior_line": "Revenue was $3,238 million for the first nine months of 2026 compared to\n  $2,662 million"
+    },
+    {
+      "key": "royalty_revenue",
+      "label": "Royalty revenue (first nine months)",
+      "unit": "USD million",
+      "current": "2699",
+      "prior": "2219",
+      "current_line": "Royalty revenue was $2,699 million in the first nine months of 2026 compared\n  to $2,219 million",
+      "prior_line": "Royalty revenue was $2,699 million in the first nine months of 2026 compared\n  to $2,219 million"
+    },
+    {
+      "key": "operating_income",
+      "label": "Operating profit (first nine months)",
+      "unit": "USD million",
+      "current": "986",
+      "prior": "1007",
+      "current_line": "Operating profit was $986 million in the first nine months of 2026 compared to\n  $1,007 million",
+      "prior_line": "Operating profit was $986 million in the first nine months of 2026 compared to\n  $1,007 million"
+    },
+    {
+      "key": "adjusted_operating_income",
+      "label": "Adjusted operating profit (first nine months)",
+      "unit": "USD million",
+      "current": "1108",
+      "prior": "1016",
+      "current_line": "Adjusted operating profit,\n  which excludes Acquisition and integration related charges and Amortization of\n  acquired intangible assets, was $1,108 million in the first nine months of\n  2026 compared to $1,016 million",
+      "prior_line": "Adjusted operating profit,\n  which excludes Acquisition and integration related charges and Amortization of\n  acquired intangible assets, was $1,108 million in the first nine months of\n  2026 compared to $1,016 million"
+    }
+  ]
+}

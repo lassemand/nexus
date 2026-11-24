@@ -1,0 +1,198 @@
+SKF Kv3 2026: Förbättrad marginal och ökad efterfrågan i vissa segment
+
+Göteborg, 21 oktober 2026
+
+Kommentarer och siffror i denna rapport avser SKF-koncernens kvarvarande
+verksamheter om inget annat anges. Automotive-segmentet redovisas som avvecklade
+verksamheter samt som tillgångar och skulder som innehas för utdelning.
+Resultaträkningen och kassaflödesanalysen har justerats för
+jämförelseperioderna, medan balansräkningen endast har justerats per september.
+Relaterade nyckeltal har justerats i enlighet med detta.
+
+Kv3 2026
+
+* Nettoomsättning: 17 467 mkr (16 562).
+* Organisk tillväxt: 4,3% (3,7%). Drivet av både positiv efterfrågan och ett
+  stabilt bidrag från pris/mix.
+* Justerat rörelseresultat: 2 845 mkr (2 553). Drivet av ett starkt kommersiellt
+  genomförande, särskilt inom Specialized Industrial Solutions.
+* Justerad rörelsemarginal: 16,3% (15,4%).
+* Nettokassaflöde: 2 076 mkr (1 780). Främst till följd av ett förbättrat
+  rörelseresultat, delvis motverkat av ökad kapitalbindning i rörelsekapital.
+
+──────────────────────────────────────────────────┬─────┬─────┬────────┬────────
+Finansiell översikt, Mkr där annat ej anges       │Kv3  │Kv3  │Jan-sep │Jan-sep 
+                                                  │2026 │2025 │2026    │2025    
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Nettoomsättning                                   │17   │16   │51 215  │51 491  
+                                                  │467  │562  │        │        
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Organisk tillväxt, %                              │4,3  │3,7  │3,5     │1,2     
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Justerat rörelseresultat                          │2 845│2 553│8 383   │8 137   
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Justerad rörelsemarginal, %                       │16,3 │15,4 │16,4    │15,8    
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Rörelseresultat                                   │2 778│2 166│8 108   │6 357   
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Rörelsemarginal, %                                │15,9 │13,1 │15,8    │12,3    
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Periodens justerat resultat                       │1 844│1 674│5 806   │5 707   
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Justerat resultat i kronor per aktie              │3,88 │3,52 │12,28   │11,90   
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Periodens resultat                                │1 777│1 287│5 531   │3 927   
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Resultat i kronor per aktie                       │3,74 │2,67 │11,68   │8,00    
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Nettoskuldsättning/Justerad EBITDA, ggr           │1,1  │0,9^{│1,1     │0,9^{1)}
+                                                  │     │1)}  │        │        
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Justerad avkastning på sysselsatt kapital, %      │15,3^│14,0^│15,3^{2)│14,0^{1)
+                                                  │{2)} │{1)} │}       │}       
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Nettokassaflöde från operativa aktiviteter        │2 076│1 780│4 513   │5 336   
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Periodens resultat, SKF-koncernen inklusive       │1 428│1 127│4 495   │3 658   
+avvecklade verksamheter                           │     │     │        │        
+──────────────────────────────────────────────────┼─────┼─────┼────────┼────────
+Resultat i kronor per aktie, SKF-koncernen        │2,91 │2,30 │9,26    │7,38    
+inklusive avvecklade verksamheter                 │     │     │        │        
+──────────────────────────────────────────────────┴─────┴─────┴────────┴────────
+
+1) SKF-koncernen inklusive avvecklade verksamheter.
+2) Baserat på balansräkningen vid periodens slut och inte på ett rullande
+12-månadersgenomsnitt.
+
+Rickard Gustafson, Vd och koncernchef:
+
+"Vi levererade en organisk tillväxt på 4,3% och förbättrade den justerade
+rörelsemarginalen med 0,9 procentenheter till 16,3% jämfört med föregående år,
+med stöd av ett starkt kommersiellt genomförande. Vi tidigarelägger också målet
+om årliga besparingar på 2 mdkr med sex månader till mitten av 2027.
+Aktieägarnas godkännande av utdelningen av SKF Vertevo vid den extra
+bolagsstämman utgjorde en viktig milstolpe.
+
+Tillväxt på vissa marknader bidrar till förbättrad marginal
+
+Inför den planerade noteringen av SKF Vertevo på Nasdaq Stockholm den 1 december
+2026 redovisas Automotive-verksamheten från och med kv3 som avvecklade
+verksamheter. I vår kvarvarande verksamhet, det vill säga vår
+industriverksamhet, uppgick den organiska försäljningstillväxten till 4,3%,
+driven av både volym och en stabil pris/mix. Vi såg en ökad efterfrågan på vissa
+OEM-marknader, däribland drivsystem kopplade till datacenter, infrastruktur samt
+säkerhet och försvar.
+
+Bearing Solutions ökade med 2,8% med fortsatt tillväxt i Indien och Sydostasien
+samt ytterligare förbättringar på OEM-marknaden i Nord- och Sydamerika.
+Utvecklingen var i stort sett oförändrad i Europa, Mellanöstern och Afrika samt
+i Kina och Nordostasien. Specialized Industrial Solutions (SIS) fortsatte sin
+starka utveckling, där den organiska försäljningen ökade med 8,3%, med tillväxt
+inom alla affärsområden och särskilt inom Aerospace och Magnetic Solutions. Det
+är värt att notera att vi fortsätter stärka vår position inom Magnetic Solutions
+genom att utöka produktionskapaciteten samt ökad automatisering för att dra
+nytta av den strukturella tillväxten.
+
+Det gläder mig att industriverksamheten har förbättrat den justerade
+rörelsemarginalen till 16,3% jämfört med samma kvartal förra året, vilket är ett
+tecken på fortsatt stabilt kommersiellt genomförande, särskilt inom SIS.
+Besparingarna från anpassningsåtgärderna på cirka 350 mkr, vilket motsvarar en
+årlig takt på cirka 1,7 mdkr, kompenserar mer än väl för de negativa synergierna
+i samband med separationen. Effektiviseringsprogrammet fortskrider väl och vi
+räknar nu med att komma upp i de planerade årliga besparingarna på cirka 2 mdkr
+redan i mitten av 2027 i stället för slutet av 2027 som tidigare kommunicerats.
+
+Vi fortsätter att aktivt arbeta med våra kostnader och kommersiella genomförande
+för att dämpa den fortsatta kostnadsinflationen. Tullkostnader kompenserades
+återigen i hög grad. Investeringarna i våra initiativ för att harmonisera och
+modernisera vår IT-miljö fortsatte enligt plan. Stödproduktion för
+Automotive-verksamheten var under kv3 obetydligt. Valutaeffekterna gav en viss
+medvind under tredje kvartalet.
+
+Kassaflödet från den löpande verksamheten ökade till 2,1 mdkr jämfört med
+föregående år, tack vare det förbättrade rörelseresultatet som delvis
+motverkades av ökade lager av komponenter och material, främst inom SIS, för att
+stödja fortsatt tillväxt.
+
+Förbereder för två fokuserade bolag
+
+Aktieägarnas godkännande av utdelningen av aktierna i SKF Vertevo utgjorde en
+viktig milstolpe inför den planerade börsnoteringen den 1 december 2026. En
+annan milstolpe är SKF Vertevos kapitalmarknadsdag den 17 november. Under tredje
+kvartalet uppvisade de trots utmanande marknadsförhållanden ett stabilt resultat
+med en förbättrad justerad rörelsemarginal på 4,6%, trots att den organiska
+försäljningen minskade med -4,0%.
+
+I takt med att separationen fortskrider har vi uppdaterat klassificeringen av
+vissa jämförelsestörande poster mellan separationen och åtgärder för att
+optimera tillverkningen. De jämförelsestörande kostnadernas totala förväntade
+nivå är oförändrad jämfört med vad vi kommunicerade på vår kapitalmarknadsdag
+2025 och påverkar inte vår målsättning att nå våra långsiktiga marginalmål för
+industriverksamheten. Ytterligare produktionslinjer som överförs till
+Automotive-verksamheten kommer minska behovet av att optimera tillverkningen för
+industriverksamheten med 0,5 mdkr, medan jämförelsestörande kostnader i samband
+med separationen kommer öka med samma belopp, till totalt cirka 3 mdkr.
+
+Sett till SKF Vertevos totala produktion återstår några produktionslinjer att
+flytta till SKF Vertevos fabriker under 2027. Detta innebär att
+kontraktstillverkningen till SKF kommer att börja minska från och med kv2 2027.
+På medellång sikt förväntas den sedan minska avsevärt.
+
+Marknadsutsikter
+
+Vi förväntar oss att den organiska försäljningen för SKF-koncernens kvarvarande
+verksamheter ökar något under kv4 jämfört med föregående år. Detta eftersom vi
+ser en liknande marknadssituation som under kv3. Marknadsvolatiliteten är dock
+fortsatt hög, vilket förstärker den allmänna oförutsägbarheten."
+
+Marknadsutsikter och prognos
+
+Informationen nedan avser SKF-koncernens kvarvarande verksamheter, om inte annat
+anges.
+
+Marknadsutsikter kv4 2026
+
+* Vi förväntar oss att den organiska försäljningen för SKF-koncernens
+  kvarvarande verksamheter ökar något under kv4 jämfört med föregående år. Detta
+  eftersom vi ser en liknande marknadssituation som under kv3.
+  Marknadsvolatiliteten är dock fortsatt hög, vilket förstärker den allmänna
+  oförutsägbarheten.
+
+Prognos kv4 2026
+
+* Valutapåverkan på rörelseresultatet: Cirka 150 mkr jämfört med föregående år,
+  baserat på valutakurser per den 30 september 2026.
+
+Prognos för helåret 2026
+
+* Skattesats exklusive effekter av avyttrade verksamheter och separation av
+  Automotive-verksamheten: cirka 27%.
+* Investeringar i materiella anläggningstillgångar: ca 2,5 mdkr, vilket
+  motsvarar en minskning på cirka 0,5 mdkr till följd av optimering av de
+  planerade investeringarna inom SKF-koncernens kvarvarande verksamhet.
+* Jämförelsestörande poster hänförliga till separationen av
+  Automotive-verksamheten och optimering av tillverkning: -2,5 till -3 mdkr.
+  Detta är inom ramen för det som kommunicerades på CMD 2025^{1)}.
+
+1) SKF-koncernen inklusive avvecklade verksamheter.
+
+En webcast kommer att hållas den 21 oktober 2026 kl. 08:30:
+Tel: 08 5051 0031
+
+https://www.skf.com/se/investors
+
+Aktiebolaget SKF
+(publ)
+
+Den finansiella informationen i detta pressmeddelande innehåller
+insiderinformation som AB SKF är skyldigt att offentliggöra enligt EU:s
+marknadsmissbruksförordning. Informationen lämnades, genom nedanstående
+kontaktpersoner, för offentliggörande den 21 oktober 2026 kl. 07.30 CEST.
+
+För ytterligare information vänligen kontakta:
+Press Relations: Carl Bjernstam, +46 31-337 2517; +46 722 201 893;
+carl.bjernstam@skf.com
+Investor Relations: Sophie Arnius, +46 31-337 8072; +46 705 908 072;
+sophie.arnius@skf.com
+
+[1]: https://www.skf.com/se/investors

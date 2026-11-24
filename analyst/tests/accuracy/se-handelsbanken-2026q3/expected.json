@@ -1,0 +1,123 @@
+{
+  "country": "SE",
+  "sector": "bank",
+  "company": {
+    "ticker": "SHB A",
+    "exchange_mic": "XSTO",
+    "name": "Handelsbanken",
+    "mfn_slug": "handelsbanken"
+  },
+  "release": {
+    "news_id": "aceb196d-1450-583e-a823-c49e70723695",
+    "lang": "sv",
+    "title": "Handelsbankens delårsrapport Januari - september 2026",
+    "published_at": "2026-10-21T05:00:00Z",
+    "url": "https://mfn.se/cis/a/handelsbanken/handelsbankens-delarsrapport-januari-september-2026-aceb196d",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "4c2eb229-9bfd-56fe-8ab2-47d7e693561f",
+      "lang": "en",
+      "title": "Handelsbanken's Interim Report January - June 2026",
+      "published_at": "2026-07-15T05:00:00Z",
+      "url": "https://mfn.se/cis/a/handelsbanken/handelsbankens-interim-report-january-june-2026-4c2eb229"
+    },
+    {
+      "news_id": "20a74219-bd1d-5fd0-b4d4-b36303f2dbc2",
+      "lang": "sv",
+      "title": "Handelsbankens delårsrapport Januari - juni 2026",
+      "published_at": "2026-07-15T05:00:00Z",
+      "url": "https://mfn.se/cis/a/handelsbanken/handelsbankens-delarsrapport-januari-juni-2026-20a74219"
+    },
+    {
+      "news_id": "df016f69-470c-4dc4-be77-8d128dbbb714",
+      "lang": "sv",
+      "title": "Handelsbankens delårsrapport Januari – mars 2026",
+      "published_at": "2026-04-22T05:00:00Z",
+      "url": "https://mfn.se/cis/a/handelsbanken/handelsbankens-delarsrapport-januari-mars-2026-df016f69"
+    },
+    {
+      "news_id": "13f87e74-ce4e-40d8-9ffa-7b77ffc81aa3",
+      "lang": "en",
+      "title": "Handelsbanken’s Interim Report January – March 2026",
+      "published_at": "2026-04-22T05:00:00Z",
+      "url": "https://mfn.se/cis/a/handelsbanken/handelsbankens-interim-report-january-march-2026-13f87e74"
+    },
+    {
+      "news_id": "8aa44a1a-6ff0-4993-b7e3-77f2274b54ac",
+      "lang": "sv",
+      "title": "Handelsbanken publicerar Årsredovisning samt övriga årsrapporter för 2025",
+      "published_at": "2026-02-26T13:00:00Z",
+      "url": "https://mfn.se/cis/a/handelsbanken/handelsbanken-publicerar-arsredovisning-samt-ovriga-arsrapporter-for-2025-8aa44a1a"
+    },
+    {
+      "news_id": "5baf9a3e-206a-43be-83b8-68a9576c6206",
+      "lang": "en",
+      "title": "Handelsbanken publishes its Annual Report, as well as other annual reports for 2025",
+      "published_at": "2026-02-26T13:00:00Z",
+      "url": "https://mfn.se/cis/a/handelsbanken/handelsbanken-publishes-its-annual-report-as-well-as-other-annual-reports-for-2025-5baf9a3e"
+    },
+    {
+      "news_id": "592941c8-1f33-430e-b85c-80fc7e5f8b22",
+      "lang": "en",
+      "title": "Highlights of Handelsbanken’s Annual Report January – December 2025",
+      "published_at": "2026-02-04T06:00:00Z",
+      "url": "https://mfn.se/cis/a/handelsbanken/highlights-of-handelsbankens-annual-report-january-december-2025-592941c8"
+    },
+    {
+      "news_id": "45174594-f83d-4458-bc68-cda86a9a528d",
+      "lang": "sv",
+      "title": "Handelsbankens bokslutskommuniké Januari – december 2025",
+      "published_at": "2026-02-04T06:00:00Z",
+      "url": "https://mfn.se/cis/a/handelsbanken/handelsbankens-bokslutskommunike-januari-december-2025-45174594"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "operating_profit",
+      "label": "Rörelseresultat (Q3 2026; prior: Q2 2026, in parentheses)",
+      "unit": "mkr",
+      "current": "7353",
+      "prior": "6678",
+      "current_line": "Rörelseresultatet ökade till 7 353 mkr (6 678)",
+      "prior_line": "Rörelseresultatet ökade till 7 353 mkr (6 678)"
+    },
+    {
+      "key": "return_on_equity",
+      "label": "Räntabilitet på eget kapital (Q3 2026; prior: Q2 2026, in parentheses)",
+      "unit": "%",
+      "current": "13.5",
+      "prior": "12.8",
+      "current_line": "Räntabiliteten på eget kapital ökade till\n  13,5% (12,8)",
+      "prior_line": "Räntabiliteten på eget kapital ökade till\n  13,5% (12,8)"
+    },
+    {
+      "key": "eps",
+      "label": "Resultat per aktie (Q3 2026; prior: Q2 2026, in parentheses)",
+      "unit": "kr",
+      "current": "2.87",
+      "prior": "2.60",
+      "current_line": "Resultat per aktie ökade till 2,87 kr (2,60)",
+      "prior_line": "Resultat per aktie ökade till 2,87 kr (2,60)"
+    },
+    {
+      "key": "cost_income_ratio",
+      "label": "K/I-tal (Q3 2026; prior: Q2 2026, in parentheses)",
+      "unit": "%",
+      "current": "42.3",
+      "prior": "44.3",
+      "current_line": "K/I-talet förbättrades till 42,3% (44,3)",
+      "prior_line": "K/I-talet förbättrades till 42,3% (44,3)"
+    },
+    {
+      "key": "cet1_ratio",
+      "label": "Kärnprimärkapitalrelation (Q3 2026; prior: Q2 2026, in parentheses)",
+      "unit": "%",
+      "current": "17.0",
+      "prior": "17.2",
+      "current_line": "Kärnprimärkapitalrelationen uppgick till 17,0% (17,2)",
+      "prior_line": "Kärnprimärkapitalrelationen uppgick till 17,0% (17,2)"
+    }
+  ]
+}

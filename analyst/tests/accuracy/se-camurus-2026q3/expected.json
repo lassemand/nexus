@@ -1,0 +1,123 @@
+{
+  "country": "SE",
+  "sector": "biotech",
+  "company": {
+    "ticker": "CAMX",
+    "exchange_mic": "XSTO",
+    "name": "Camurus",
+    "mfn_slug": "camurus"
+  },
+  "release": {
+    "news_id": "bdb7ac61-f120-5eac-9ef9-d2f77ae480a8",
+    "lang": "en",
+    "title": "Camurus AB: Camurus' Interim Report Third Quarter 2026",
+    "published_at": "2026-11-05T06:00:00Z",
+    "url": "https://mfn.se/cis/a/camurus/camurus-ab-camurus-interim-report-third-quarter-2026-bdb7ac61",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "ded3ebd2-c504-5a48-86db-d563390bbd5a",
+      "lang": "en",
+      "title": "Camurus AB: Camurus' Interim Report Second Quarter 2026",
+      "published_at": "2026-07-15T05:00:00Z",
+      "url": "https://mfn.se/cis/a/camurus/camurus-ab-camurus-interim-report-second-quarter-2026-ded3ebd2"
+    },
+    {
+      "news_id": "9e62f4a8-47f0-5871-8b39-f420f20686b0",
+      "lang": "sv",
+      "title": "Camurus AB: Camurus delårsrapport andra kvartalet 2026",
+      "published_at": "2026-07-15T05:00:00Z",
+      "url": "https://mfn.se/cis/a/camurus/camurus-ab-camurus-delarsrapport-andra-kvartalet-2026-9e62f4a8"
+    },
+    {
+      "news_id": "7e3b2873-167d-57b2-9d77-d634a2c2b068",
+      "lang": "en",
+      "title": "Camurus AB: Camurus' Interim Report January-March 2026",
+      "published_at": "2026-05-12T05:00:00Z",
+      "url": "https://mfn.se/cis/a/camurus/camurus-ab-camurus-interim-report-january-march-2026-7e3b2873"
+    },
+    {
+      "news_id": "7a9d4c24-c68f-57a5-9a20-8651c7cb39af",
+      "lang": "sv",
+      "title": "Camurus AB: Camurus delårsrapport januari-mars 2026",
+      "published_at": "2026-05-12T05:00:00Z",
+      "url": "https://mfn.se/cis/a/camurus/camurus-ab-camurus-delarsrapport-januari-mars-2026-7a9d4c24"
+    },
+    {
+      "news_id": "c7c3913a-2f63-58b7-91fd-cb33c539e49e",
+      "lang": "en",
+      "title": "Camurus AB: Camurus Annual Report for 2025",
+      "published_at": "2026-04-29T08:00:00Z",
+      "url": "https://mfn.se/cis/a/camurus/camurus-ab-camurus-annual-report-for-2025-c7c3913a"
+    },
+    {
+      "news_id": "8742e684-43db-5cd0-96b4-cde8843406f3",
+      "lang": "sv",
+      "title": "Camurus AB: Camurus årsredovisning för 2025",
+      "published_at": "2026-04-29T08:00:00Z",
+      "url": "https://mfn.se/cis/a/camurus/camurus-ab-camurus-arsredovisning-for-2025-8742e684"
+    },
+    {
+      "news_id": "702130f2-0b22-58b2-b365-d70dcc159709",
+      "lang": "sv",
+      "title": "Camurus AB: Camurus Bokslutskommuniké 2025",
+      "published_at": "2026-02-12T06:00:00Z",
+      "url": "https://mfn.se/cis/a/camurus/camurus-ab-camurus-bokslutskommunike-2025-702130f2"
+    },
+    {
+      "news_id": "0c0ef011-d8c3-5e9d-975a-f160c6dacdb7",
+      "lang": "en",
+      "title": "Camurus AB: Camurus' Full Year Report 2025",
+      "published_at": "2026-02-12T06:00:00Z",
+      "url": "https://mfn.se/cis/a/camurus/camurus-ab-camurus-full-year-report-2025-0c0ef011"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "revenue",
+      "label": "Total revenues",
+      "unit": "MSEK",
+      "current": "724",
+      "prior": "567",
+      "current_line": "to MSEK 724 (567)",
+      "prior_line": "to MSEK 724 (567)"
+    },
+    {
+      "key": "product_sales",
+      "label": "Product sales",
+      "unit": "MSEK",
+      "current": "582",
+      "prior": "455",
+      "current_line": "to MSEK 582 (455)",
+      "prior_line": "to MSEK 582 (455)"
+    },
+    {
+      "key": "royalty_revenue",
+      "label": "Brixadi royalty revenue",
+      "unit": "MSEK",
+      "current": "137",
+      "prior": "111",
+      "current_line": "to MSEK 137 (111)",
+      "prior_line": "to MSEK 137 (111)"
+    },
+    {
+      "key": "operating_income",
+      "label": "Operating result",
+      "unit": "MSEK",
+      "current": "322",
+      "prior": "230",
+      "current_line": "Operating result increased 40% to MSEK 322 (230)",
+      "prior_line": "Operating result increased 40% to MSEK 322 (230)"
+    },
+    {
+      "key": "cash_position",
+      "label": "Cash position at the end of the period",
+      "unit": "BNSEK",
+      "current": "4.4",
+      "prior": "3.5",
+      "current_line": "Cash position at the end of the period BNSEK 4.4 (3.5)",
+      "prior_line": "Cash position at the end of the period BNSEK 4.4 (3.5)"
+    }
+  ]
+}

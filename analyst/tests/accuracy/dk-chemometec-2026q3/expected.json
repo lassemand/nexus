@@ -1,0 +1,114 @@
+{
+  "country": "DK",
+  "sector": "biotech",
+  "company": {
+    "ticker": "CHEMM",
+    "exchange_mic": "XCSE",
+    "name": "ChemoMetec",
+    "mfn_slug": "chemometec"
+  },
+  "release": {
+    "news_id": "c0490aae-866a-4ffa-a5e3-9e1d3a2b5eed",
+    "lang": "da",
+    "title": "Betydelig fremgang i både omsætning og driftsresultat ",
+    "published_at": "2026-11-05T16:42:00Z",
+    "url": "https://mfn.se/one/a/chemometec/betydelig-fremgang-i-bade-omsaetning-og-driftsresultat-c0490aae",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "914bf807-73df-4f47-acab-7eafe0ca870c",
+      "lang": "en",
+      "title": "Positioning ChemoMetec for future growth ",
+      "published_at": "2026-09-10T18:39:23Z",
+      "url": "https://mfn.se/one/a/chemometec/positioning-chemometec-for-future-growth-914bf807"
+    },
+    {
+      "news_id": "5f5b14c5-d602-4578-ae6c-f0d14606672e",
+      "lang": "da",
+      "title": "Positionering til fremtidig vækst ",
+      "published_at": "2026-09-10T18:39:23Z",
+      "url": "https://mfn.se/one/a/chemometec/positionering-til-fremtidig-vaekst-5f5b14c5"
+    },
+    {
+      "news_id": "8a7c83d7-9609-4930-905d-9757f22bbc14",
+      "lang": "da",
+      "title": "Vækst i omsætning og driftsresultat",
+      "published_at": "2026-05-06T16:52:29Z",
+      "url": "https://mfn.se/one/a/chemometec/vaekst-i-omsaetning-og-driftsresultat-8a7c83d7"
+    },
+    {
+      "news_id": "53c92528-8958-4133-9bec-dffea31f5c26",
+      "lang": "en",
+      "title": "Growth in revenue and operating profit",
+      "published_at": "2026-05-06T16:52:29Z",
+      "url": "https://mfn.se/one/a/chemometec/growth-in-revenue-and-operating-profit-53c92528"
+    },
+    {
+      "news_id": "c6ca6b4b-2b2f-4f89-b958-20605a7d8814",
+      "lang": "en",
+      "title": "Interim report 2025/26 - Organic growth despite challenges in the North American market",
+      "published_at": "2026-02-04T17:10:02Z",
+      "url": "https://mfn.se/one/a/chemometec/interim-report-2025-26-organic-growth-despite-challenges-in-the-north-american-market-c6ca6b4b"
+    },
+    {
+      "news_id": "6ea8b7b1-212a-4213-83bd-d8316187531a",
+      "lang": "da",
+      "title": "1. halvår 2025/26 - Organisk vækst trods udfordringer på det nordamerikanske marked",
+      "published_at": "2026-02-04T17:10:02Z",
+      "url": "https://mfn.se/one/a/chemometec/1-halvar-2025-26-organisk-vaekst-trods-udfordringer-pa-det-nordamerikanske-marked-6ea8b7b1"
+    },
+    {
+      "news_id": "84f0e9d3-c8a6-4780-92b1-6d407fa9c408",
+      "lang": "da",
+      "title": "Vækst i omsætning og driftsresultat",
+      "published_at": "2025-11-06T16:12:03Z",
+      "url": "https://mfn.se/one/a/chemometec/vaekst-i-omsaetning-og-driftsresultat-84f0e9d3"
+    },
+    {
+      "news_id": "2632792f-a65b-4a00-9240-d9d53189037e",
+      "lang": "en",
+      "title": "Growth in revenue and operating profit",
+      "published_at": "2025-11-06T16:12:03Z",
+      "url": "https://mfn.se/one/a/chemometec/growth-in-revenue-and-operating-profit-2632792f"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "revenue",
+      "label": "Omsætning (1. kvartal 2026/27)",
+      "unit": "DKK mio.",
+      "current": "160.0",
+      "prior": "124.6",
+      "current_line": "Omsætningen steg i 1. kvartal 2026/27 med 28% til DKK 160,0 mio. fra DKK 124,6",
+      "prior_line": "Omsætningen steg i 1. kvartal 2026/27 med 28% til DKK 160,0 mio. fra DKK 124,6"
+    },
+    {
+      "key": "ebitda",
+      "label": "EBITDA (1. kvartal 2026/27)",
+      "unit": "DKK mio.",
+      "current": "100.3",
+      "prior": "68.8",
+      "current_line": "EBITDA, DKK mio.   │         │100,3    │ │         │68,8",
+      "prior_line": "EBITDA, DKK mio.   │         │100,3    │ │         │68,8"
+    },
+    {
+      "key": "ebitda_margin",
+      "label": "EBITDA-margin (1. kvartal 2026/27)",
+      "unit": "%",
+      "current": "63",
+      "prior": "55",
+      "current_line": "EBITDA-margin, %   │         │63       │ │         │55",
+      "prior_line": "EBITDA-margin, %   │         │63       │ │         │55"
+    },
+    {
+      "key": "instrument_sales",
+      "label": "Salget af instrumenter (1. kvartal 2026/27)",
+      "unit": "DKK mio.",
+      "current": "65.6",
+      "prior": "40.7",
+      "current_line": "Salget af instrumenter steg i 1. kvartal med 61% til DKK 65,6 mio. fra DKK\n  40,7 mio.",
+      "prior_line": "Salget af instrumenter steg i 1. kvartal med 61% til DKK 65,6 mio. fra DKK\n  40,7 mio."
+    }
+  ]
+}

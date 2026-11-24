@@ -10,6 +10,7 @@ uploads is `analyst` (`analyst/`).
 | `entrypoint.sh` | The Job's entrypoint: sets up `/work`, downloads the reports, runs Claude Code, builds, uploads. |
 | `workspace.sh` | The workspace and cargo setup, shared with `smoke.sh`. |
 | `PROMPT.md` | The task Claude Code is given. Its system prompt is the analyst agent guide (`infra/agents/analyst.md`, installed as agent `analyst`). |
+| `DRY_RUN.md` | Appended to the prompt in a dry run (`PREP_DRY_RUN=true`, below). |
 | `smoke.sh` | Checks the image from the inside, no API key needed. |
 | `test_entrypoint.sh` | Tests `entrypoint.sh` with a fake `claude` and a local MFN/upload server. Runs in CI. |
 
@@ -76,6 +77,26 @@ claude -p "$(cat PROMPT.md)" --agent analyst --model opus --output-format json \
 ```
 
 or `{"abort": "already_released"}`. The analyst accepts or rejects it (acceptance, in a later PR).
+
+## Dry run (`PREP_DRY_RUN=true`)
+
+For the extraction accuracy check (`docs/validation/analyst-accuracy.md`): the report in
+`PREP_INPUT` is a past one, prepared as if it were the next, with only the earlier reports in
+`previous_reports`. `analyst-accuracy inputs` writes these inputs from the fixtures in
+`analyst/tests/accuracy/`. In a dry run the entrypoint:
+
+* requires `dry_run.metrics` in `PREP_INPUT` (`[{"key", "label", "unit"}]`, the metrics the kernel
+  must report under exactly these keys) and fails before Claude Code without it;
+* appends `DRY_RUN.md` to the prompt: no `already_released` abort, do not read the target report,
+  report every `dry_run.metrics` key, missing is acceptable and wrong is not;
+* reads up to 30 feed pages (`FEED_PAGES`) instead of 6, since the earlier reports of an older
+  release lie deeper in the feed;
+* adds `"dry_run": true` to the upload body, and also writes the body to `PREP_OUTPUT` when that is
+  set. With `PREP_OUTPUT` set, `PREP_UPLOAD_URL` and `PREP_UPLOAD_TOKEN` may be left out, and
+  nothing is POSTed.
+
+A dry-run kernel is only scored, by `analyst-accuracy score`. It is never attached to a target, so
+it never decides on a release or opens a trade.
 
 ## Checks
 

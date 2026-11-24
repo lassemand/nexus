@@ -9,6 +9,12 @@
 #   PREP_INPUT          the JSON document described in verdict/prep/README.md
 # Optional: PREP_MAX_TURNS (80), PREP_MAX_BUDGET_USD (15), PREP_MODEL (opus),
 # MFN_BASE (https://mfn.se), CLAUDE_BIN (claude).
+#
+# Dry run (PREP_DRY_RUN=true, docs/validation/analyst-accuracy.md): the report in
+# PREP_INPUT is a past one, prepared as if it were the next; PREP_INPUT must have
+# dry_run.metrics, the prompt gets DRY_RUN.md, the upload is marked
+# "dry_run": true, and PREP_OUTPUT (a file path) also receives the upload body.
+# With PREP_OUTPUT set, PREP_UPLOAD_URL and PREP_UPLOAD_TOKEN may be left out.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,17 +26,34 @@ MFN_BASE="${MFN_BASE:-https://mfn.se}"
 PREP_MODEL="${PREP_MODEL:-opus}"
 PREP_MAX_TURNS="${PREP_MAX_TURNS:-80}"
 PREP_MAX_BUDGET_USD="${PREP_MAX_BUDGET_USD:-15}"
-FEED_PAGES="${FEED_PAGES:-6}"
+PREP_DRY_RUN="${PREP_DRY_RUN:-false}"
+PREP_OUTPUT="${PREP_OUTPUT:-}"
+case "$PREP_DRY_RUN" in
+  true) FEED_PAGES="${FEED_PAGES:-30}" ;;
+  false) FEED_PAGES="${FEED_PAGES:-6}" ;;
+  *) echo "PREP_DRY_RUN must be true or false, not '$PREP_DRY_RUN'" >&2; exit 1 ;;
+esac
 
 log() { printf '%s prep: %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
 die() { log "error: $*"; exit 1; }
 
-: "${PREP_UPLOAD_URL:?PREP_UPLOAD_URL is required}"
-: "${PREP_UPLOAD_TOKEN:?PREP_UPLOAD_TOKEN is required}"
 : "${PREP_INPUT:?PREP_INPUT is required}"
+if [[ "$PREP_DRY_RUN" == true && -n "$PREP_OUTPUT" && -z "${PREP_UPLOAD_URL:-}" ]]; then
+  PREP_UPLOAD_TOKEN="${PREP_UPLOAD_TOKEN:-}"
+else
+  : "${PREP_UPLOAD_URL:?PREP_UPLOAD_URL is required}"
+  : "${PREP_UPLOAD_TOKEN:?PREP_UPLOAD_TOKEN is required}"
+fi
 
 prepare_workspace
 printf '%s' "$PREP_INPUT" | jq -e . > "$WORK/input.json" || die "PREP_INPUT is not valid JSON"
+prompt="$(cat "$VERDICT_DIR/prep/PROMPT.md")"
+if [[ "$PREP_DRY_RUN" == true ]]; then
+  jq -e '(.dry_run.metrics | type == "array" and length > 0) and all(.dry_run.metrics[]; (.key | type == "string" and length > 0))' \
+    "$WORK/input.json" >/dev/null || die "a dry run needs dry_run.metrics in PREP_INPUT, each with a key"
+  prompt="$prompt"$'\n\n'"$(cat "$VERDICT_DIR/prep/DRY_RUN.md")"
+  log "dry run: $(jq -r '[.dry_run.metrics[].key] | join(", ")' "$WORK/input.json")"
+fi
 fixtures="$WORK/kernel/tests/fixtures"
 mkdir -p "$fixtures"
 
@@ -82,7 +105,7 @@ fi
 log "starting Claude Code (model $PREP_MODEL, max turns $PREP_MAX_TURNS, budget $PREP_MAX_BUDGET_USD USD)"
 cd "$WORK/kernel"
 set +e
-"$CLAUDE_BIN" -p "$(cat "$VERDICT_DIR/prep/PROMPT.md")" \
+"$CLAUDE_BIN" -p "$prompt" \
   --agent analyst \
   --model "$PREP_MODEL" \
   --output-format json \
@@ -101,6 +124,14 @@ log "Claude Code exited with $claude_status; $(jq -r '"cost \(.total_cost_usd //
 
 upload() {
   local body="$1" code
+  if [[ "$PREP_DRY_RUN" == true ]]; then
+    jq '. + {dry_run: true}' "$body" > "$body.dry" && mv "$body.dry" "$body"
+  fi
+  if [[ -n "$PREP_OUTPUT" ]]; then
+    cp "$body" "$PREP_OUTPUT" || die "cannot write $PREP_OUTPUT"
+    log "wrote the upload body to $PREP_OUTPUT"
+  fi
+  [[ -n "${PREP_UPLOAD_URL:-}" ]] || return 0
   code="$(curl -sS --max-time 300 -o "$WORK/upload-response.txt" -w '%{http_code}' \
     -X POST -H "Authorization: Bearer ${PREP_UPLOAD_TOKEN}" -H 'Content-Type: application/json' \
     --data-binary "@${body}" "$PREP_UPLOAD_URL")" || die "the upload failed"

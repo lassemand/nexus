@@ -1,0 +1,270 @@
+Betydelig fremgang i både omsætning og driftsresultat 
+
+MEDDELELSE NR. 325
+5. november 2026
+
+Periodemeddelelse for 1. kvartal 2026/27 (1. juli - 30. september 2026)
+
+Betydelig fremgang i både omsætning og driftsresultat
+
+Omsætningen steg i 1. kvartal 2026/27 med 28% til DKK 160,0 mio. fra DKK 124,6
+mio. i samme periode sidste år. Udviklingen afspejler fremgang inden for alle
+produktsegmenter, men især instrumentsalget bidrager til den stigende vækst.
+Salget af NC-203 har overrasket positivt og er cirka firdoblet i forhold til 4.
+kvartal 2025/26, mens salget af de øvrige produkter i XcytoMatic-familien stort
+set udvikler sig som forventet og udgør godt 30% af instrumentsalget.
+
+Fra såvel kunder som potentielle samarbejdspartnere oplever ChemoMetec en
+stadigt stigende interesse for vores nye produkter og teknologi. Det forventes,
+at denne udvikling vil fortsætte i takt med udbredelsen af automatiseringsbølgen
+og påvirke salg og indtjening positivt i de kommende år.
+
+Resultatet af primær drift (EBITDA) steg i 1. kvartal med 46% til DKK 100,3
+mio., og EBITDA-marginen var 63%. Stigningen i EBITDA kan tilskrives den højere
+omsætning og en stram omkostningsstyring kombineret med en forbedret
+bruttomargin på de nye XcytoMatic-produkter. En stigende dollarkurs har også
+understøttet denne udvikling.
+
+───────────────────┬───────────────────┬─┬───────────────────┬─┬──────────
+                   │2026/27            │ │2025/26            │ │Ændring, %
+                   │1. kvartal         │ │1. kvartal         │ │          
+───────────────────┼─────────┬─────────┼─┼─────────┬─────────┼─┼──────────
+Omsætning, DKK mio.│         │160,0    │ │         │124,6    │ │+28       
+───────────────────┼─────────┼─────────┼─┼─────────┼─────────┼─┼──────────
+EBITDA, DKK mio.   │         │100,3    │ │         │68,8     │ │+46       
+───────────────────┼─────────┼─────────┼─┼─────────┼─────────┼─┼──────────
+EBITDA-margin, %   │         │63       │ │         │55       │ │          
+───────────────────┴─────────┴─────────┴─┴─────────┴─────────┴─┴──────────
+
+
+
+Hovedpunkter
+
+* Omsætningen steg i 1. kvartal 2026/27 med 28% til DKK 160,0 mio. fra DKK 124,6
+  mio. i samme periode sidste år. Stigningen var på 27% ved faste valutakurser.
+* Salget af instrumenter steg i 1. kvartal med 61% til DKK 65,6 mio. fra DKK
+  40,7 mio., og salget af instrumenter tilhørende XcytoMatic-platformen udgjorde
+  66% af omsætningen mod cirka halvdelen i samme periode sidste år.
+* Salget af forbrugsvarer og serviceydelser steg i 1. kvartal med henholdsvis 8%
+  og 22%.
+* Omsætningen inden for ChemoMetecs vigtigste forretningsområde, LCB (Life
+  science research, Celle- og genterapi og Bioprocessing), steg i 1. kvartal med
+  31% i forhold til samme periode sidste år. Omsætningen på LCB-markedet
+  udgjorde i 1. kvartal 96% af den samlede omsætning.
+* Driftsresultatet (EBITDA) var i 1. kvartal på DKK 100,3 mio., og
+  EBITDA-marginen var på 63% mod 55% i samme periode sidste år.
+
+* Forventningerne til omsætning og EBITDA i 2026/27 er uændrede i forhold til de
+  senest offentliggjorte forventninger (3. november 2026). Der forventes således
+  en omsætning i 2026/27 på DKK 570-605 mio., mens driftsresultatet (EBITDA)
+  forventes at blive i niveauet DKK 335-360 mio.
+
+Produktudvikling
+I det forløbne kvartal har der som planlagt været fokus på at sikre en
+succesfuld lancering af NC-203, og det har krævet mange ressourcer fra såvel
+udviklingsafdelingen som den øvrige organisation.
+
+Udviklingen af softwareplatformen XM Octopus er fortsat, og de første
+brugertests forventes at blive påbegyndt i første halvår 2027.
+
+Arbejdet med udviklingen af XM50/Sample Management System er samtidig fortsat i
+kvartalet, og systemet forventes stadig at kunne frigives til salg i begyndelsen
+af regnskabsåret 2027/28.
+
+Reagensmodulet R1 til XM30 er blevet videreudviklet, så kunderne nu kan
+registrere reagenser og deres batch-nr. ved hjælp af en indbygget
+stregkodelæser.
+
+Som led i udviklingen af samarbejdet med ChemoMetecs partnere er der behov for
+at udvikle løsninger, der giver mulighed for at fjernstyre XM30-instrumentet
+samt at modtage relevante informationer som data og eventuelle fejltilstande.
+Derfor udvikler ChemoMetec løbende såkaldte API’er, som skal installeres sammen
+med XM-View og facilitere fjernstyringen.
+
+Markedsforhold og omsætning
+Der er fortsat god aktivitet inden for udvikling og produktion af lægemidler,
+både inden for bioprocessing samt celle- og genterapi, hvor kundernes fokus er
+på nedbringelse af priserne på de enkelte behandlinger. Dette sker primært ved
+at øge graden af automatisering, hvilket er en stor mulighed for ChemoMetec, da
+vores nyeste instrumenter og de kommende løsninger inden for software og sample
+management netop kan bidrage til den nødvendige automatisering.
+
+Fra såvel kunder som potentielle samarbejdspartnere oplever ChemoMetec en
+stadigt stigende interesse for vores nye produkter og teknologi. Det forventes,
+at denne udvikling vil fortsætte i takt med udbredelsen af automatiseringsbølgen
+og påvirke salg og indtjening positivt i de kommende år.
+
+Parallelt med den p.t. positive udvikling på ChemoMetecs markeder har første
+kvartal af regnskabsåret 2026/27 været præget af en yderligere tilspidsning af
+den geopolitiske situation og fortsat betydelig makroøkonomisk usikkerhed.
+Konflikterne i Mellemøsten og Ukraine, stigende energipriser samt usikkerhed om
+den internationale handelspolitik og udviklingen i renter og valutakurser har
+således bidraget til et mere komplekst globalt markedsbillede. Samtidig udgør
+eventuelle følger af resultatet af det amerikanske midtvejsvalg en selvstændig
+risikofaktor. Disse forhold kan påvirke vores kunders investeringsprioriteter og
+beslutningsprocesser, særligt i forbindelse med større investerings- og
+automatiseringsprojekter.
+
+Omsætning fordelt på produktsegmenter
+Omsætningen steg i 1. kvartal 2026/27 til DKK 160,0 mio. fra DKK 124,6 mio.,
+svarende til en stigning på 28% i forhold til samme periode sidste år. Ved faste
+valutakurser steg omsætningen i 1. kvartal med 27%.
+
+Udviklingen afspejler en fremgang inden for alle produktsegmenter, men især
+instrumentsalget bidrager til den stigende vækst.
+
+INSTRUMENTER
+Salget af instrumenter steg i 1. kvartal med 61% til DKK 65,6 mio. fra DKK 40,7
+mio. i samme periode sidste år. Udviklingen kan primært tilskrives en stigning i
+salget af de nye instrumenter tilhørende XcytoMatic-
+familien (XM 40, XM30, NC-203), som er fordoblet i forhold til samme periode
+sidste år.
+
+Den højeste vækst i instrumentsalget ses for NC-203, hvor salget steg fra DKK 0
+i tilsvarende periode sidste år til mere end DKK 20 mio. i år. I forhold til 4.
+kvartal 2025/26 er salget af NC-203 instrumenter cirka firdoblet. NC-203, som
+bygger på XcytoMatic-platformen, er den naturlige afløser for NC-200, og den
+stigende efterspørgsel efter NC-203 skal ses i lyset af den tidligere
+annoncerede udfasning af NC-200. Markeds-penetreringen af NC-203 er sket i et
+hurtigere tempo end forventet.
+
+Salget af de øvrige produkter i XcytoMatic-familien udvikler sig stort set som
+forventet og udgør godt 30% af instrumentsalget.
+
+Antallet af solgte enheder af NC-200/NC-202 er faldet med næsten 20%, men som
+følge af prisstigninger på produkterne er omsætningen af disse instrumenter
+steget med 11%.
+
+Det skal i øvrigt bemærkes, at flere forsinkede eller udskudte ordrer på
+instrumenter også er blevet realiseret i løbet af kvartalet.
+
+FORBRUGSVARER
+Salget af forbrugsvarer steg i 1. kvartal med 8% til DKK 58,9 mio. fra DKK 54,7
+mio. og udgjorde 37% af den samlede omsætning mod 44% i samme periode sidste år.
+Den faldende andel kan primært tilskrives den store stigning i salget af
+instrumenter i dette kvartal.
+
+SERVICEYDELSER
+Salget af serviceydelser steg i 1. kvartal til DKK 33,9 mio. fra DKK 27,7 mio.,
+svarende til en vækst på 22% i forhold til samme periode sidste år. Salg af
+serviceydelser udgjorde 21% af den samlede omsætning mod 22% i samme periode
+sidste år.
+
+Geografi
+Omsætningen i USA/Canada steg med 25% (22% ved faste valutakurser) i 1. kvartal
+til DKK 88,6 mio. fra DKK 71,1 mio. i samme periode sidste år. Udviklingen kan
+tilskrives en stigning i omsætningen af instrumenter på 41%, en stigning i
+salget af forbrugsvarer på 11% og en stigning i salget af serviceydelser på 25%.
+Omsætningen i USA/Canada udgjorde i 1. kvartal 55% af den samlede omsætning mod
+57% året før.
+
+Omsætningen i Europa steg i 1. kvartal med 24% til DKK 53,3 mio. fra DKK 42,9
+mio. Udviklingen er særligt drevet af en stigning i salget af instrumenter på
+67%, men også af en stigning i salget af forbrugsvarer og serviceydelser på
+henholdsvis 3% og 14%. Omsætningen i Europa udgjorde i 1. kvartal 33% af den
+samlede omsætning.
+
+I resten af verden (”Øvrige lande”) steg omsætningen i 1. kvartal med 71% til
+DKK 18,1 mio., hvilket primært kan tilskrives en lageropbygning af instrumenter
+hos ChemoMetecs distributører. Omsætningen i resten af verden udgjorde i 1.
+kvartal 11% af den samlede omsætning.
+
+Omsætning fordelt på produktsegmenter og geografi i 1. kvartal 2026/27:
+
+─────────┬────────┬─────┬──────────┬───────────────┬─┬───────────────┬─┬────────
+         │        │     │          │2026/27        │ │2025/26        │ │        
+DKK mio. │USA/Cana│Europ│Øvrige    │1. kvartal     │ │1. kvartal     │ │Ændring 
+         │da      │a    │lande     │i alt          │ │i alt          │ │%       
+─────────┼────────┼─────┼──────────┼───────────────┼─┼───────────────┼─┼────────
+Instrumen│34,3    │21,1 │10,2      │65,6           │ │40,7           │ │+61%    
+ter      │        │     │          │               │ │               │ │        
+─────────┼────────┼─────┼──────────┼───────────────┼─┼───────────────┼─┼────────
+Forbrugsv│30,0    │21,6 │7,3       │58,9           │ │54,7           │ │+8%     
+arer     │        │     │          │               │ │               │ │        
+─────────┼────────┼─────┼──────────┼───────────────┼─┼───────────────┼─┼────────
+Service  │23,1    │10,2 │0,6       │33,9           │ │27,7           │ │+22%    
+─────────┼────────┼─────┼──────────┼───────────────┼─┼───────────────┼─┼────────
+Andet    │1,2     │0,4  │0,1       │1,7            │ │1,5            │ │+15%    
+─────────┼────────┼─────┼──────────┼───────────────┼─┼───────────────┼─┼────────
+I alt    │88,6    │53,3 │18,1      │160,0          │ │124,6          │ │+28%    
+─────────┴────────┴─────┴──────────┴───────────────┴─┴───────────────┴─┴────────
+
+
+Omsætning fordelt på produktsegmenter og forretningsområder
+Omsætningen inden for det største forretningsområde, LCB, steg med 31% i 1.
+kvartal, hvilket primært kan tilskrives en stigning i omsætningen af
+instrumenter.
+
+Omsætningen inden for dyresæd, øl og mælk faldt med 11%.
+
+Forretningsområdet LCB udgjorde i kvartalet 96% af den samlede omsætning, og
+dyresæd, øl og mælk udgjorde tilsammen 4%.
+
+Omsætning fordelt på produktsegmenter og forretningsområder i 1. kvartal
+2026/27:
+
+─────────┬──────────┬──────────────┬───────────────┬─┬───────────────┬─┬────────
+         │          │              │2026/27        │ │2025/26        │ │        
+DKK mio. │LCB-marked│Dyresæd, øl og│1. kvartal     │ │1. kvartal     │ │Ændring 
+         │et        │mælk*         │i alt          │ │i alt          │ │%       
+─────────┼──────────┼──────────────┼───────────────┼─┼───────────────┼─┼────────
+Instrumen│64,5      │1,1           │65,6           │ │40,7           │ │+61%    
+ter      │          │              │               │ │               │ │        
+─────────┼──────────┼──────────────┼───────────────┼─┼───────────────┼─┼────────
+Forbrugsv│53,3      │5,6           │58,9           │ │54,7           │ │+8%     
+arer     │          │              │               │ │               │ │        
+─────────┼──────────┼──────────────┼───────────────┼─┼───────────────┼─┼────────
+Service  │33,9      │-             │33,9           │ │27,7           │ │+22%    
+─────────┼──────────┼──────────────┼───────────────┼─┼───────────────┼─┼────────
+Andet    │1,7       │-             │1,7            │ │1,5            │ │+15%    
+─────────┼──────────┼──────────────┼───────────────┼─┼───────────────┼─┼────────
+I alt    │153,4     │6,6           │160,0          │ │124,6          │ │+28%    
+─────────┴──────────┴──────────────┴───────────────┴─┴───────────────┴─┴────────
+
+* Produktions- og kvalitetskontrol af dyresæd, øl og mælk
+
+EBITDA
+Resultatet af primær drift, EBITDA, steg i 1. kvartal til DKK 100,3 mio. fra DKK
+68,8 mio. i samme periode sidste år, svarende til en stigning på 46%. Den høje
+procentvise stigning i EBITDA kan tilskrives den øgede omsætning og en stram
+omkostningsstyring kombineret med en forbedret bruttomargin på de nye
+Xcyto-Matic-produkter. En stigende dollarkurs har endvidere understøttet denne
+udvikling.
+
+Forventninger til 2026/27
+Den positive udvikling i 1. kvartal 2026/27 er fortsat ind i begyndelsen af 2.
+kvartal, især understøttet af en større end forventet efterspørgsel efter vores
+instrumenter, især NC-203, samt et lavere omkostningsniveau.
+
+På baggrund heraf blev forventningerne til omsætning og resultat senest
+opjusteret den 3. november 2026. Der forventes således en omsætning i
+regnskabsåret 2026/27 på DKK 570-605 mio., mens EBITDA forventes at ligge i
+intervallet DKK 335-360 mio.
+
+Yderligere oplysninger
+Martin Helbo Behrens, CEO
+Tel.: (+45) 81 10 06 80
+
+Phillip Massie Price, CFO
+Tel.: (+45) 81 10 06 80
+
+Om ChemoMetec A/S
+ChemoMetec udvikler, producerer og markedsfører instrumenter til celletælling og
+en lang række andre målinger. ChemoMetecs instrumenter markedsføres globalt
+inden for blandt andet farma, biotek og landbrug. ChemoMetec har nogle af
+verdens førende medicinalvirksomheder blandt sine kunder.
+
+ChemoMetec blev etableret i 1997 og er børsnoteret på Nasdaq Copenhagen. Se også
+www.chemometec.com
+
+Attachments
+
+Meddelelse 325 - Periodemeddelelse for 1. kvartal 2026-27
+
+[1]: https://www.globenewswire.com/Tracker?data=N18us7astgUbcY_4MTBXmSXP0dR0cXhH
+91B2SbEnQQ4b3qgksHltFE-uW8KHmDzsMxia2x0AtEcwgY7xa9xED5758yNRCDN_sA5VmAWFg49Gd6Rv
+lSURBUF4o4PjkNnjNzB5ymumRHIpbhO9uwu34FE3YG1Gsj5vV5h8lrqjy4RpfZ6ECJi_fXw8sypl9KAo
+ZOLwN1IF6LQTjhATt18HOtRcYVT16ACuabhAKsIZHJjJSgYN38DtFQIGkb5ftpoQmgYXnnGwl-kXTVSb
+YcHopw==
+[2]: https://ml-eu.globenewswire.com/Resource/Download/32839f5a-2a2f-4412-b5ca-5
+b934cb3ade6

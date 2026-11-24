@@ -1,0 +1,123 @@
+{
+  "country": "DK",
+  "sector": "bank",
+  "company": {
+    "ticker": "RILBA",
+    "exchange_mic": "XCSE",
+    "name": "Ringkjøbing Landbobank",
+    "mfn_slug": "ringkjobing-landbobank"
+  },
+  "release": {
+    "news_id": "cb490288-1961-4a69-9b45-7832b7c70a2a",
+    "lang": "da",
+    "title": "Ringkjøbing Landbobanks kvartalsrapport for 1.-3. kvartal 2026",
+    "published_at": "2026-10-21T05:30:50Z",
+    "url": "https://mfn.se/one/a/ringkjobing-landbobank/ringkjobing-landbobanks-kvartalsrapport-for-1-3-kvartal-2026-cb490288",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "ba5fe5e3-69b2-4f86-8289-5f126dca9177",
+      "lang": "en",
+      "title": "Ringkjøbing Landbobank’s interim report for the first half of 2026",
+      "published_at": "2026-08-05T05:31:27Z",
+      "url": "https://mfn.se/one/a/ringkjobing-landbobank/ringkjobing-landbobanks-interim-report-for-the-first-half-of-2026-ba5fe5e3"
+    },
+    {
+      "news_id": "355b4451-d9f6-4b69-bca3-034eb9ff7eba",
+      "lang": "da",
+      "title": "Ringkjøbing Landbobanks halvårsrapport 2026",
+      "published_at": "2026-08-05T05:31:27Z",
+      "url": "https://mfn.se/one/a/ringkjobing-landbobank/ringkjobing-landbobanks-halvarsrapport-2026-355b4451"
+    },
+    {
+      "news_id": "96fcf93e-2bed-4c9e-b318-8cc48356159a",
+      "lang": "en",
+      "title": "Ringkjøbing Landbobank’s quarterly report for the first quarter of 2026",
+      "published_at": "2026-04-29T05:22:50Z",
+      "url": "https://mfn.se/one/a/ringkjobing-landbobank/ringkjobing-landbobanks-quarterly-report-for-the-first-quarter-of-2026-96fcf93e"
+    },
+    {
+      "news_id": "32eb02d9-cff8-4557-94d1-ccc4aafbcecd",
+      "lang": "da",
+      "title": "Ringkjøbing Landbobanks kvartalsrapport for 1. kvartal 2026",
+      "published_at": "2026-04-29T05:22:50Z",
+      "url": "https://mfn.se/one/a/ringkjobing-landbobank/ringkjobing-landbobanks-kvartalsrapport-for-1-kvartal-2026-32eb02d9"
+    },
+    {
+      "news_id": "d32d5d7a-e50c-4134-a448-c1269cef1dc7",
+      "lang": "da",
+      "title": "Ringkjøbing Landbobanks årsrapport for 2025",
+      "published_at": "2026-02-04T06:11:01Z",
+      "url": "https://mfn.se/one/a/ringkjobing-landbobank/ringkjobing-landbobanks-arsrapport-for-2025-d32d5d7a"
+    },
+    {
+      "news_id": "9aa57023-abb5-42b3-8a35-022e61318f0c",
+      "lang": "en",
+      "title": "Ringkjøbing Landbobank’s annual report for 2025",
+      "published_at": "2026-02-04T06:11:01Z",
+      "url": "https://mfn.se/one/a/ringkjobing-landbobank/ringkjobing-landbobanks-annual-report-for-2025-9aa57023"
+    },
+    {
+      "news_id": "c60a23a8-859b-4822-b5b2-e10ecf100d77",
+      "lang": "da",
+      "title": "Correction: Ringkjøbing Landbobanks kvartalsrapport for 3. kvartal 2025",
+      "published_at": "2025-10-22T07:03:11Z",
+      "url": "https://mfn.se/one/a/ringkjobing-landbobank/correction-ringkjobing-landbobanks-kvartalsrapport-for-3-kvartal-2025-c60a23a8"
+    },
+    {
+      "news_id": "796a6e0e-f8e2-4a0b-bb15-1e436c0ae32b",
+      "lang": "en",
+      "title": "Correction: Ringkjøbing Landbobank’s quarterly report for the three quarters of 2025",
+      "published_at": "2025-10-22T07:03:11Z",
+      "url": "https://mfn.se/one/a/ringkjobing-landbobank/correction-ringkjobing-landbobanks-quarterly-report-for-the-three-quarters-of-2025-796a6e0e"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "total_income",
+      "label": "Basisindtjening i alt (1.-3. kvt.)",
+      "unit": "mio. kroner",
+      "current": "3219",
+      "prior": "3073",
+      "current_line": "Basisindtjening i alt   │1.099   │983     │3.219     │3.073",
+      "prior_line": "Basisindtjening i alt   │1.099   │983     │3.219     │3.073"
+    },
+    {
+      "key": "costs",
+      "label": "Samlede udgifter og afskrivninger (1.-3. kvt.)",
+      "unit": "mio. kroner",
+      "current": "818",
+      "prior": "787",
+      "current_line": "Samlede udgifter og     │262     │253     │818       │787",
+      "prior_line": "Samlede udgifter og     │262     │253     │818       │787"
+    },
+    {
+      "key": "operating_profit_before_impairments",
+      "label": "Basisresultat før nedskrivninger (1.-3. kvt.)",
+      "unit": "mio. kroner",
+      "current": "2401",
+      "prior": "2286",
+      "current_line": "Basisresultat før       │837     │730     │2.401     │2.286",
+      "prior_line": "Basisresultat før       │837     │730     │2.401     │2.286"
+    },
+    {
+      "key": "operating_profit",
+      "label": "Basisresultat (1.-3. kvt.)",
+      "unit": "mio. kroner",
+      "current": "2434",
+      "prior": "2321",
+      "current_line": "Basisresultat           │839     │741     │2.434     │2.321",
+      "prior_line": "Basisresultat           │839     │741     │2.434     │2.321"
+    },
+    {
+      "key": "net_income",
+      "label": "Resultat efter skat (1.-3. kvt.)",
+      "unit": "mio. kroner",
+      "current": "1811",
+      "prior": "1753",
+      "current_line": "Resultat efter skat     │617     │562     │1.811     │1.753",
+      "prior_line": "Resultat efter skat     │617     │562     │1.811     │1.753"
+    }
+  ]
+}

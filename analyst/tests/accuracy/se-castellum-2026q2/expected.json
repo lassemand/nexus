@@ -1,0 +1,132 @@
+{
+  "country": "SE",
+  "sector": "property",
+  "company": {
+    "ticker": "CAST",
+    "exchange_mic": "XSTO",
+    "name": "Castellum",
+    "mfn_slug": "castellum"
+  },
+  "release": {
+    "news_id": "ee2ced14-19e7-48f0-8a54-f1fdea28fb2a",
+    "lang": "sv",
+    "title": "Delårsrapport januari-juni 2026: Försäljningar om 24 miljarder kronor",
+    "published_at": "2026-07-15T06:00:00Z",
+    "url": "https://mfn.se/a/castellum/delarsrapport-januari-juni-2026-forsaljningar-om-24-miljarder-kronor",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "db938e3c-cf59-4db2-b782-9d57dd49a840",
+      "lang": "en",
+      "title": "Interim report January-March 2026",
+      "published_at": "2026-04-24T06:00:00Z",
+      "url": "https://mfn.se/a/castellum/interim-report-january-march-2026"
+    },
+    {
+      "news_id": "ae0e62d1-5557-40f0-94ff-7fe8378074c1",
+      "lang": "sv",
+      "title": "Delårsrapport januari-mars 2026",
+      "published_at": "2026-04-24T06:00:00Z",
+      "url": "https://mfn.se/a/castellum/delarsrapport-januari-mars-2026"
+    },
+    {
+      "news_id": "a4511a35-fe13-48d1-8d03-54efad48823f",
+      "lang": "en",
+      "title": "Castellum publishes Annual Report for 2025",
+      "published_at": "2026-03-31T06:00:00Z",
+      "url": "https://mfn.se/a/castellum/castellum-publishes-annual-report-for-2025"
+    },
+    {
+      "news_id": "8ca977f0-54d3-4f44-b95e-266b84117396",
+      "lang": "sv",
+      "title": "Castellum publicerar årsredovisning för 2025",
+      "published_at": "2026-03-31T06:00:00Z",
+      "url": "https://mfn.se/a/castellum/castellum-publicerar-arsredovisning-for-2025"
+    },
+    {
+      "news_id": "a2d2114d-88b9-49ac-893e-19a722cf431a",
+      "lang": "en",
+      "title": "Year-end report 2025",
+      "published_at": "2026-02-18T07:00:00Z",
+      "url": "https://mfn.se/a/castellum/year-end-report-2025"
+    },
+    {
+      "news_id": "1b06f8d0-e019-4dfa-96e3-38cfaad43ac6",
+      "lang": "sv",
+      "title": "Bokslutskommuniké 2025",
+      "published_at": "2026-02-18T07:00:00Z",
+      "url": "https://mfn.se/a/castellum/bokslutskommunike-2025"
+    },
+    {
+      "news_id": "5f86cd43-dd10-4e4b-91d7-38042b62df82",
+      "lang": "en",
+      "title": "Interim report January-September 2025",
+      "published_at": "2025-10-23T06:00:00Z",
+      "url": "https://mfn.se/a/castellum/interim-report-january-september-2025"
+    },
+    {
+      "news_id": "22d92bba-4715-4449-b36e-32c06efca5ba",
+      "lang": "sv",
+      "title": "Delårsrapport januari-september 2025",
+      "published_at": "2025-10-23T06:00:00Z",
+      "url": "https://mfn.se/a/castellum/delarsrapport-januari-september-2025"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "revenue",
+      "label": "Intäkter",
+      "unit": "mkr",
+      "current": "2420",
+      "prior": "2403",
+      "current_line": "Intäkterna uppgick till 2 420 mkr (2 403)",
+      "prior_line": "Intäkterna uppgick till 2 420 mkr (2 403)"
+    },
+    {
+      "key": "net_operating_income",
+      "label": "Driftöverskott",
+      "unit": "mkr",
+      "current": "1696",
+      "prior": "1634",
+      "current_line": "Driftöverskottet uppgick till 1 696 mkr (1 634)",
+      "prior_line": "Driftöverskottet uppgick till 1 696 mkr (1 634)"
+    },
+    {
+      "key": "income_from_property_management",
+      "label": "Förvaltningsresultat",
+      "unit": "mkr",
+      "current": "1222",
+      "prior": "1158",
+      "current_line": "Förvaltningsresultatet uppgick till 1 222 mkr (1 158)",
+      "prior_line": "Förvaltningsresultatet uppgick till 1 222 mkr (1 158)"
+    },
+    {
+      "key": "net_income",
+      "label": "Periodens resultat efter skatt",
+      "unit": "mkr",
+      "current": "634",
+      "prior": "189",
+      "current_line": "Periodens resultat efter skatt uppgick till 634 mkr (189)",
+      "prior_line": "Periodens resultat efter skatt uppgick till 634 mkr (189)"
+    },
+    {
+      "key": "eps",
+      "label": "Resultat per aktie före och efter utspädning",
+      "unit": "kronor",
+      "current": "1.37",
+      "prior": "0.38",
+      "current_line": "motsvarande 1,37\n  kronor per aktie före och efter utspädning (0,38)",
+      "prior_line": "motsvarande 1,37\n  kronor per aktie före och efter utspädning (0,38)"
+    },
+    {
+      "key": "loan_to_value",
+      "label": "Belåningsgrad",
+      "unit": "procent",
+      "current": "37.3",
+      "prior": "36.5",
+      "current_line": "Belåningsgraden uppgick till 37,3 procent (36,5)",
+      "prior_line": "Belåningsgraden uppgick till 37,3 procent (36,5)"
+    }
+  ]
+}

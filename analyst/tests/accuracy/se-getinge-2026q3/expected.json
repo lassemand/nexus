@@ -1,0 +1,123 @@
+{
+  "country": "SE",
+  "sector": "biotech",
+  "company": {
+    "ticker": "GETI B",
+    "exchange_mic": "XSTO",
+    "name": "Getinge",
+    "mfn_slug": "getinge"
+  },
+  "release": {
+    "news_id": "bfc5b4a1-7ac7-564c-ba79-e9e646bec232",
+    "lang": "en",
+    "title": "Getinge Interim Report July-September 2026: Increased profitability, strong cash flow and higher customer satisfaction",
+    "published_at": "2026-10-21T06:00:00Z",
+    "url": "https://mfn.se/cis/a/getinge/getinge-interim-report-july-september-2026-increased-profitability-strong-cash-flow-and-higher-customer-satisfaction-bfc5b4a1",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "f56a69ac-2ca5-5e72-ad46-8f982fb74cd9",
+      "lang": "en",
+      "title": "Getinge Interim Report April-June 2026: Good organic growth, high profitability and strong cash flow",
+      "published_at": "2026-07-17T06:00:00Z",
+      "url": "https://mfn.se/cis/a/getinge/getinge-interim-report-april-june-2026-good-organic-growth-high-profitability-and-strong-cash-flow-f56a69ac"
+    },
+    {
+      "news_id": "a57a9aec-7d3d-5a6e-8874-be342ebc8b6d",
+      "lang": "sv",
+      "title": "Getinges delårsrapport april-juni 2026: God organisk tillväxt, hög lönsamhet och starkt kassaflöde",
+      "published_at": "2026-07-17T06:00:00Z",
+      "url": "https://mfn.se/cis/a/getinge/getinges-delarsrapport-april-juni-2026-god-organisk-tillvaxt-hog-lonsamhet-och-starkt-kassaflode-a57a9aec"
+    },
+    {
+      "news_id": "ea19b590-1e2c-52ee-9298-d41e7061cb31",
+      "lang": "sv",
+      "title": "Getinges delårsrapport januari-mars 2026: Organisk tillväxt, starkt kassaflöde och regulatorisk milstolpe",
+      "published_at": "2026-04-21T10:00:00Z",
+      "url": "https://mfn.se/cis/a/getinge/getinges-delarsrapport-januari-mars-2026-organisk-tillvaxt-starkt-kassaflode-och-regulatorisk-milstolpe-ea19b590"
+    },
+    {
+      "news_id": "9e0ea7aa-65a2-5cb4-8171-21a4a7e9927c",
+      "lang": "en",
+      "title": "Getinge Interim Report January-March 2026: Organic growth, strong cash flow and regulatory milestone",
+      "published_at": "2026-04-21T10:00:00Z",
+      "url": "https://mfn.se/cis/a/getinge/getinge-interim-report-january-march-2026-organic-growth-strong-cash-flow-and-regulatory-milestone-9e0ea7aa"
+    },
+    {
+      "news_id": "cfa22f77-a9bb-5a81-8288-926b869487ed",
+      "lang": "en",
+      "title": "Getinge publishes Annual Report for 2025",
+      "published_at": "2026-03-26T09:00:00Z",
+      "url": "https://mfn.se/cis/a/getinge/getinge-publishes-annual-report-for-2025-cfa22f77"
+    },
+    {
+      "news_id": "975e84ea-ffb6-56ee-82ca-0f05a2a8b690",
+      "lang": "sv",
+      "title": "Getinge publicerar årsredovisning för 2025",
+      "published_at": "2026-03-26T09:00:00Z",
+      "url": "https://mfn.se/cis/a/getinge/getinge-publicerar-arsredovisning-for-2025-975e84ea"
+    },
+    {
+      "news_id": "58eaa987-bacb-53d3-865e-8b5d44e53f5f",
+      "lang": "en",
+      "title": "Getinge Q4 and Full-Year Report 2025: Organic growth and solid cash flow to end the year",
+      "published_at": "2026-01-27T07:00:00Z",
+      "url": "https://mfn.se/cis/a/getinge/getinge-q4-and-full-year-report-2025-organic-growth-and-solid-cash-flow-to-end-the-year-58eaa987"
+    },
+    {
+      "news_id": "54b03dce-bf9f-50bc-87ef-778833aff9ce",
+      "lang": "sv",
+      "title": "Getinges Q4 och helårsrapport 2025: Organisk tillväxt och robust kassaflöde avslutade året",
+      "published_at": "2026-01-27T07:00:00Z",
+      "url": "https://mfn.se/cis/a/getinge/getinges-q4-och-helarsrapport-2025-organisk-tillvaxt-och-robust-kassaflode-avslutade-aret-54b03dce"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "organic_growth",
+      "label": "Organic net sales growth",
+      "unit": "%",
+      "current": "2.1",
+      "prior": "9.5",
+      "current_line": "Net sales increased organically by 2.1% (9.5)",
+      "prior_line": "Net sales increased organically by 2.1% (9.5)"
+    },
+    {
+      "key": "adjusted_ebita",
+      "label": "Adjusted EBITA",
+      "unit": "SEK M",
+      "current": "1278",
+      "prior": "1079",
+      "current_line": "Adjusted EBITA was SEK 1,278 M (1,079)",
+      "prior_line": "Adjusted EBITA was SEK 1,278 M (1,079)"
+    },
+    {
+      "key": "adjusted_ebita_margin",
+      "label": "Adjusted EBITA margin",
+      "unit": "%",
+      "current": "15.1",
+      "prior": "13.1",
+      "current_line": "Adjusted EBITA was SEK 1,278 M (1,079) and the margin 15.1% (13.1)",
+      "prior_line": "Adjusted EBITA was SEK 1,278 M (1,079) and the margin 15.1% (13.1)"
+    },
+    {
+      "key": "adjusted_eps",
+      "label": "Adjusted earnings per share",
+      "unit": "SEK",
+      "current": "3.10",
+      "prior": "2.42",
+      "current_line": "Adjusted earnings per share amounted to SEK 3.10 (2.42)",
+      "prior_line": "Adjusted earnings per share amounted to SEK 3.10 (2.42)"
+    },
+    {
+      "key": "free_cash_flow",
+      "label": "Free cash flow",
+      "unit": "SEK M",
+      "current": "1302",
+      "prior": "793",
+      "current_line": "Free cash flow amounted to SEK 1,302 M (793)",
+      "prior_line": "Free cash flow amounted to SEK 1,302 M (793)"
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "country": "DK",
+  "sector": "bank",
+  "company": {
+    "ticker": "DJUR",
+    "exchange_mic": "XCSE",
+    "name": "Djurslands Bank",
+    "mfn_slug": "djurslands-bank"
+  },
+  "release": {
+    "news_id": "5f1040d7-d2f8-417f-91bf-34a0d7b63cbd",
+    "lang": "da",
+    "title": "1.-3. kvartalsrapport 2026 for Djurslands Bank",
+    "published_at": "2026-11-06T11:02:58Z",
+    "url": "https://mfn.se/one/a/djurslands-bank/1-3-kvartalsrapport-2026-for-djurslands-bank-5f1040d7",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "59fdb3ad-444a-429f-a928-9ca0f539b105",
+      "lang": "da",
+      "title": "Halvårsrapport 2026",
+      "published_at": "2026-08-21T10:15:32Z",
+      "url": "https://mfn.se/one/a/djurslands-bank/halvarsrapport-2026-59fdb3ad"
+    },
+    {
+      "news_id": "4c9140c8-9b90-49b4-911e-ec221a82637d",
+      "lang": "da",
+      "title": "1. kvartalsrapport 2026 for Djurslands Bank",
+      "published_at": "2026-05-22T09:51:51Z",
+      "url": "https://mfn.se/one/a/djurslands-bank/1-kvartalsrapport-2026-for-djurslands-bank-4c9140c8"
+    },
+    {
+      "news_id": "585616b5-257a-416a-b324-7e04ed873314",
+      "lang": "da",
+      "title": "Årsrapport 2025 for Djurslands Bank",
+      "published_at": "2026-02-04T10:52:09Z",
+      "url": "https://mfn.se/one/a/djurslands-bank/arsrapport-2025-for-djurslands-bank-585616b5"
+    },
+    {
+      "news_id": "33c123fe-f6c1-4005-961b-4cba6c4767e6",
+      "lang": "da",
+      "title": "1-3. kvartalsrapport 2025 for Djurslands Bank",
+      "published_at": "2025-11-07T11:14:50Z",
+      "url": "https://mfn.se/one/a/djurslands-bank/1-3-kvartalsrapport-2025-for-djurslands-bank-33c123fe"
+    },
+    {
+      "news_id": "34654fb6-6bbc-42e2-aab8-a03c3b7ecb8e",
+      "lang": "da",
+      "title": "Halvårsrapport 2025",
+      "published_at": "2025-08-15T10:18:51Z",
+      "url": "https://mfn.se/one/a/djurslands-bank/halvarsrapport-2025-34654fb6"
+    },
+    {
+      "news_id": "1951206b-eac9-4bac-ae91-ca1bec58343f",
+      "lang": "da",
+      "title": "1. kvartalsrapport 2025 for Djurslands Bank",
+      "published_at": "2025-05-14T09:48:02Z",
+      "url": "https://mfn.se/one/a/djurslands-bank/1-kvartalsrapport-2025-for-djurslands-bank-1951206b"
+    },
+    {
+      "news_id": "c38388f2-4920-498f-9ab6-78bce2742f02",
+      "lang": "da",
+      "title": "Årsrapport 2024 for Djurslands Bank",
+      "published_at": "2025-02-05T11:25:38Z",
+      "url": "https://mfn.se/one/a/djurslands-bank/arsrapport-2024-for-djurslands-bank-c38388f2"
+    },
+    {
+      "news_id": "bf552698-38c2-490a-8c51-a4f4a246bea4",
+      "lang": "da",
+      "title": "3. Kvartalsrapport 2022 for Djurslands Bank",
+      "published_at": "2024-11-11T15:22:58Z",
+      "url": "https://mfn.se/one/a/djurslands-bank/3-kvartalsrapport-2022-for-djurslands-bank-bf552698"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "net_interest_income",
+      "label": "Netto renteindtægter (1.-3. kvt.)",
+      "unit": "mio. kr.",
+      "current": "302",
+      "prior": "276",
+      "current_line": "Netto renteindtægter                                  │302 │276",
+      "prior_line": "Netto renteindtægter                                  │302 │276"
+    },
+    {
+      "key": "net_fee_income",
+      "label": "Netto gebyr- og provisionsindtægter (1.-3. kvt.)",
+      "unit": "mio. kr.",
+      "current": "197",
+      "prior": "175",
+      "current_line": "Netto gebyr- og provisionsindtægter                   │197 │175",
+      "prior_line": "Netto gebyr- og provisionsindtægter                   │197 │175"
+    },
+    {
+      "key": "total_income",
+      "label": "Basisindtjening i alt (1.-3. kvt.)",
+      "unit": "mio. kr.",
+      "current": "544",
+      "prior": "501",
+      "current_line": "Basisindtjening i alt                                 │544 │501",
+      "prior_line": "Basisindtjening i alt                                 │544 │501"
+    },
+    {
+      "key": "operating_profit",
+      "label": "Basisresultat (1.-3. kvt.)",
+      "unit": "mio. kr.",
+      "current": "266",
+      "prior": "241",
+      "current_line": "Basisresultat                                         │266 │241",
+      "prior_line": "Basisresultat                                         │266 │241"
+    },
+    {
+      "key": "profit_before_tax",
+      "label": "Resultat før skat (1.-3. kvt.)",
+      "unit": "mio. kr.",
+      "current": "269",
+      "prior": "251",
+      "current_line": "Resultat før skat                                     │269 │251",
+      "prior_line": "Resultat før skat                                     │269 │251"
+    }
+  ]
+}

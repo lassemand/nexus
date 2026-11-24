@@ -1,0 +1,123 @@
+{
+  "country": "FI",
+  "sector": "bank",
+  "company": {
+    "ticker": "OMASP",
+    "exchange_mic": "XHEL",
+    "name": "Oma Säästöpankki",
+    "mfn_slug": "oma-saastopankki"
+  },
+  "release": {
+    "news_id": "240532a2-3724-44cb-a3e1-7780b93e1914",
+    "lang": "fi",
+    "title": "Uusien luottojen määrä kasvoi ja vakavaraisuus vahvistui edelleen – tammi–kesäkuun vertailukelpoinen tulos ennen veroja 23,6 milj. euroa",
+    "published_at": "2026-08-13T06:00:00Z",
+    "url": "https://mfn.se/one/a/oma-saastopankki/uusien-luottojen-maara-kasvoi-ja-vakavaraisuus-vahvistui-edelleen-tammi-kesakuun-vertailukelpoinen-tulos-ennen-veroja-23-6-milj-euroa-240532a2",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "d965914f-4704-47d8-a817-612d1a20a808",
+      "lang": "en",
+      "title": "Oma Savings Bank Plc's Interim Report 1.1.-31.3.2026: The volume of new loans began to increase – capital adequacy continued to strengthen – the comparable profit before tax for the first quarter improved to EUR 13.7 million",
+      "published_at": "2026-05-07T05:45:00Z",
+      "url": "https://mfn.se/one/a/oma-saastopankki/oma-savings-bank-plcs-interim-report-1-1-31-3-2026-the-volume-of-new-loans-began-to-increase-capital-adequacy-continued-to-strengthen-the-comparable-profit-before-tax-for-the-first-quarter-improved-to-eur-13-7-million-d965914f"
+    },
+    {
+      "news_id": "59e32917-2a34-459e-a978-2d65e0755737",
+      "lang": "fi",
+      "title": "Oma Säästöpankki Oyj:n osavuosikatsaus 1.1.-31.3.2026: Uusien luottojen määrä kääntyi kasvuun – vakavaraisuus vahvistui edelleen – ensimmäisen neljänneksen vertailukelpoinen tulos ennen veroja parani 13,7 milj. euroon",
+      "published_at": "2026-05-07T05:45:00Z",
+      "url": "https://mfn.se/one/a/oma-saastopankki/oma-saastopankki-oyj-n-osavuosikatsaus-1-1-31-3-2026-uusien-luottojen-maara-kaantyi-kasvuun-vakavaraisuus-vahvistui-edelleen-ensimmaisen-neljanneksen-vertailukelpoinen-tulos-ennen-veroja-parani-13-7-milj-euroon-59e32917"
+    },
+    {
+      "news_id": "b90bf62c-bbac-4183-b130-48516d6d8512",
+      "lang": "en",
+      "title": "Oma Savings Bank Plc's Annual Report and Financial Statements 2025 published",
+      "published_at": "2026-03-12T07:00:00Z",
+      "url": "https://mfn.se/one/a/oma-saastopankki/oma-savings-bank-plcs-annual-report-and-financial-statements-2025-published-b90bf62c"
+    },
+    {
+      "news_id": "91eaa2af-142b-4e8b-aa68-931329ead3f8",
+      "lang": "fi",
+      "title": "Oma Säästöpankki Oyj:n vuosikertomus ja tilinpäätös 2025 on julkaistu",
+      "published_at": "2026-03-12T07:00:00Z",
+      "url": "https://mfn.se/one/a/oma-saastopankki/oma-saastopankki-oyj-n-vuosikertomus-ja-tilinpaatos-2025-on-julkaistu-91eaa2af"
+    },
+    {
+      "news_id": "4d481dba-3ed1-4e33-b803-60a546e68b3a",
+      "lang": "fi",
+      "title": "Oma Säästöpankki Oyj:n tilinpäätöstiedote 1.1.–31.12.2025: Palkkiotuotot kasvussa, kulujen kasvu taittunut – viimeisen neljänneksen vertailukelpoinen tulos ennen veroja 17,2 miljoonaa euroa ",
+      "published_at": "2026-02-12T07:00:00Z",
+      "url": "https://mfn.se/one/a/oma-saastopankki/oma-saastopankki-oyj-n-tilinpaatostiedote-1-1-31-12-2025-palkkiotuotot-kasvussa-kulujen-kasvu-taittunut-viimeisen-neljanneksen-vertailukelpoinen-tulos-ennen-veroja-17-2-miljoonaa-euroa-4d481dba"
+    },
+    {
+      "news_id": "095ffd2e-8dd3-4910-a75e-b7f86d52e255",
+      "lang": "en",
+      "title": "Oma Savings Bank Plc’s Financial Statements Release 1 January – 31 December 2025: Commission income increasing, cost growth halted – Q4 comparable profit before taxes EUR 17.2 million",
+      "published_at": "2026-02-12T07:00:00Z",
+      "url": "https://mfn.se/one/a/oma-saastopankki/oma-savings-bank-plcs-financial-statements-release-1-january-31-december-2025-commission-income-increasing-cost-growth-halted-q4-comparable-profit-before-taxes-eur-17-2-million-095ffd2e"
+    },
+    {
+      "news_id": "af56c8c1-0912-428f-bb13-bbbe11f0eb68",
+      "lang": "en",
+      "title": "Oma Savings Bank Plc’s Interim Report January-September 2025: Moderate result in challenging operating environment – solvency strengthened further",
+      "published_at": "2025-11-03T07:30:00Z",
+      "url": "https://mfn.se/one/a/oma-saastopankki/oma-savings-bank-plcs-interim-report-january-september-2025-moderate-result-in-challenging-operating-environment-solvency-strengthened-further-af56c8c1"
+    },
+    {
+      "news_id": "01bfc14f-98ae-4850-b77e-b767f78ff2b0",
+      "lang": "fi",
+      "title": "Oma Säästöpankki Oyj:n osavuosikatsaus 1.1.-30.9.2025: Maltillinen tulos haastavassa toimintaympäristössä – vakavaraisuus vahvistui entisestään",
+      "published_at": "2025-11-03T07:30:00Z",
+      "url": "https://mfn.se/one/a/oma-saastopankki/oma-saastopankki-oyj-n-osavuosikatsaus-1-1-30-9-2025-maltillinen-tulos-haastavassa-toimintaymparistossa-vakavaraisuus-vahvistui-entisestaan-01bfc14f"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "profit_before_tax",
+      "label": "Tulos ennen veroja",
+      "unit": "milj. euroa",
+      "current": "22.1",
+      "prior": "21.7",
+      "current_line": "Tammi-kesäkuun tulos ennen veroja oli 22,1 (21,7) milj. euroa",
+      "prior_line": "Tammi-kesäkuun tulos ennen veroja oli 22,1 (21,7) milj. euroa"
+    },
+    {
+      "key": "net_interest_income",
+      "label": "Korkokate",
+      "unit": "milj. euroa",
+      "current": "72.1",
+      "prior": "90.9",
+      "current_line": "20,7 prosenttia 72,1 (90,9) milj. euroon",
+      "prior_line": "20,7 prosenttia 72,1 (90,9) milj. euroon"
+    },
+    {
+      "key": "net_fee_income",
+      "label": "Nettomääräiset palkkiotuotot",
+      "unit": "milj. euroa",
+      "current": "26.6",
+      "prior": "24.9",
+      "current_line": "tammi-kesäkuussa 6,9 prosenttia 26,6 (24,9) milj. euroon",
+      "prior_line": "tammi-kesäkuussa 6,9 prosenttia 26,6 (24,9) milj. euroon"
+    },
+    {
+      "key": "cost_income_ratio",
+      "label": "Kulu-tuottosuhde",
+      "unit": "%",
+      "current": "63.7",
+      "prior": "55.1",
+      "current_line": "Tammi-kesäkuun kulu-tuottosuhde oli 63,7 (55,1) %",
+      "prior_line": "Tammi-kesäkuun kulu-tuottosuhde oli 63,7 (55,1) %"
+    },
+    {
+      "key": "cet1_ratio",
+      "label": "Ydinpääomasuhde (CET1)",
+      "unit": "%",
+      "current": "18.7",
+      "prior": "17.6",
+      "current_line": "Ydinpääomasuhde (CET1), %     │18,7 % │17,6 %",
+      "prior_line": "Ydinpääomasuhde (CET1), %     │18,7 % │17,6 %"
+    }
+  ]
+}
