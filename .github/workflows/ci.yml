@@ -53,6 +53,8 @@ jobs:
 
       - name: Install moon
         uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
+        with:
+          auto-install: true
 
       - name: Plan
         id: plan
@@ -91,6 +93,8 @@ jobs:
 
       - name: Install moon
         uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
+        with:
+          auto-install: true
 
       - name: Project graph matches cargo metadata
         run: scripts/ci/check-moon-graph.py
@@ -155,6 +159,8 @@ jobs:
 
       - name: Install moon
         uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
+        with:
+          auto-install: true
 
       # One task at a time: parallel cargo processes oversubscribe the runner
       # and break wall-clock tests (analyst's decision latency p99 < 10 ms);
@@ -218,6 +224,8 @@ jobs:
 
       - name: Install moon
         uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
+        with:
+          auto-install: true
 
       - name: Review session isolation
         env:
