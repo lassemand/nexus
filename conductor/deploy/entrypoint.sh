@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #
+# proof run for NEX-290 (throwaway)
 # Builds the environment the agents need, then hands over to `conductor serve`.
 #
 # A fresh container has none of what a developer's Mac provides: no logged-in
