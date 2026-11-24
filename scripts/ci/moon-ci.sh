@@ -75,9 +75,10 @@ run_everything() {
   [[ -n "${MOON_CI_DECIDE_ONLY:-}" ]] && exit 0
   shift
   rm -f .moon/cache/ciReport.json .moon/cache/runReport.json "$state/report.json"
-  # --stdin with no input: moon must not ask git for changed files, which in
-  # a shallow clone on GitHub Actions fails even with --force.
-  env -u MOON_BASE -u MOON_HEAD "${base_cmd[@]}" "${affected[@]}" --force --stdin "$@" < /dev/null
+  # moon loads changed files even with --force. On GitHub Actions it takes the
+  # base from the pull request (or MOON_BASE), and in a shallow clone that git
+  # call fails; HEAD against itself always works.
+  env -u MOON_BASE -u MOON_HEAD "${base_cmd[@]}" "${affected[@]}" --force --base HEAD --head HEAD "$@"
   local status=$?
   keep_report
   exit "$status"

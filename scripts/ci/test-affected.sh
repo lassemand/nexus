@@ -169,8 +169,15 @@ check_git "empty diff: every task" "$copy" "$all" MOON_BASE=docs-change
 # runner: no merge base.
 git clone -q --depth 1 --branch docs-change "file://$copy" "$work/shallow"
 git -C "$work/shallow" fetch -q --depth 1 origin main:refs/remotes/origin/main
+# The pull request event as GitHub Actions gives it: moon reads its base from
+# it, and in a shallow clone a diff against that base fails.
+cat > "$work/event.json" <<'JSON'
+{"pull_request": {"number": 1, "base": {"ref": "main"}, "head": {"ref": "docs-change"}}}
+JSON
 check_git "shallow clone without a merge base: every task" "$work/shallow" "$all" \
-  GITHUB_ACTIONS=true GITHUB_BASE_REF=main GITHUB_HEAD_REF=docs-change
+  CI=true GITHUB_ACTIONS=true GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$work/event.json" \
+  GITHUB_BASE_REF=main GITHUB_HEAD_REF=docs-change GITHUB_REF=refs/pull/1/merge \
+  GITHUB_SHA="$(git -C "$work/shallow" rev-parse HEAD)" GITHUB_REPOSITORY=lassemand/nexus
 
 if [[ $failures -ne 0 ]]; then
   echo "$failures case(s) failed" >&2
