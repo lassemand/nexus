@@ -1,0 +1,26 @@
+$schema: '../../.moon/cache/schemas/project.json'
+
+# The conductor image's shell scripts. `isolation` needs the switch helper
+# built and installed with sudo and setcap first (the review-isolation job in
+# .github/workflows/ci.yml), so `moon ci` leaves it out; run it explicitly.
+taskOptions:
+  cache: false
+
+tasks:
+  shellcheck:
+    description: 'shellcheck of the deploy scripts and review wrappers'
+    script: 'shellcheck -S warning *.sh review-bin/*'
+    inputs:
+      - '**/*'
+  test:
+    description: 'entrypoint tests'
+    command: 'bash entrypoint-test.sh'
+    inputs:
+      - '**/*'
+  isolation:
+    description: 'review session isolation; needs the installed switch helper (sudo, setcap)'
+    command: 'bash review-isolation-test.sh'
+    inputs:
+      - '**/*'
+    options:
+      runInCI: false

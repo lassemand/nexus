@@ -1,0 +1,12 @@
+$schema: '../.moon/cache/schemas/project.json'
+
+# conductor/deploy is its own project (shell scripts). The Rust tests read
+# deploy/reviewer-settings.json and run the wrappers in deploy/review-bin/.
+tasks:
+  lint:
+    inputs:
+      - '!deploy/**/*'
+  test:
+    inputs:
+      - '!deploy/*'
+      - 'deploy/reviewer-settings.json'

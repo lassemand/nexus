@@ -86,7 +86,23 @@ cargo test                   # run all tests
 cargo test -p <crate>        # test a single crate
 cargo clippy                 # lint
 cargo fmt                    # format
+
+# moon (version pinned in .prototools) runs only what a change affects; docs/guides/ci.md
+moon run :test --affected --include-relations --downstream deep --upstream none   # tests of uncommitted changes
+moon run :test :lint --affected --base origin/main --include-relations --downstream deep --upstream none  # the branch
+moon ci --include-relations --downstream deep --upstream none   # CI mode, every task type
+scripts/ci/moon-ci.sh        # what CI runs: that moon ci on the diff to origin/main; every task when in doubt
+scripts/ci/test-affected.sh  # proves the selection (also check-moon-graph.py, check-cross-crate-inputs.py)
 ```
+
+Without `--include-relations --downstream deep`, `moon run --affected` and
+`moon ci` miss the crates that depend on a changed crate.
+
+Plain `cargo` still works; moon only runs cargo per crate. When a crate reads a
+file from another project's folder (`include_str!`/`include_bytes!`, `#[path]`,
+`sqlx::migrate!("../...")` or `#[sqlx::test(migrations = "../...")]`, `CARGO_MANIFEST_DIR` joined with `..`), declare it
+as an input in that crate's `moon.yml` (`/<path>/**/*` under `tasks.test.inputs`,
+and `tasks.lint.inputs` if it is compiled in); `scripts/ci/check-cross-crate-inputs.py` fails otherwise.
 
 ## Infrastructure
 

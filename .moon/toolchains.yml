@@ -1,0 +1,9 @@
+$schema: './cache/schemas/toolchains.json'
+
+# No `version`: rustup reads rust-toolchain.toml, which stays the source of
+# truth, and moon never writes it (syncToolchainConfig off).
+# The plugin is pinned because it is what reads Cargo.toml into the project
+# graph (scripts/ci/check-moon-graph.py); the version is moon 2.6.5's default.
+rust:
+  plugin: 'https://github.com/moonrepo/plugins/releases/download/rust_toolchain-v1.0.12/rust_toolchain.wasm'
+  syncToolchainConfig: false

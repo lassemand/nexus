@@ -1,0 +1,16 @@
+$schema: '../.moon/cache/schemas/project.json'
+
+# The extra runs CI made after `cargo test --all`; same inputs as `test`.
+tasks:
+  test-kafka:
+    description: 'Kafka trace context tests (feature kafka)'
+    extends: 'test'
+    command: 'cargo test -p telemetry --features kafka --lib kafka::'
+    options:
+      mergeArgs: 'replace'
+  test-collector-down:
+    description: 'collector-down timing, in release'
+    extends: 'test'
+    command: 'cargo test -p telemetry --release --lib trace::tests::collector_down_never_blocks'
+    options:
+      mergeArgs: 'replace'

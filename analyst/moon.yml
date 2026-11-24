@@ -1,0 +1,7 @@
+$schema: '../.moon/cache/schemas/project.json'
+
+tasks:
+  test:
+    inputs:
+      # tests/common/mod.rs applies signal's migrations.
+      - '/signal/migrations/**/*'

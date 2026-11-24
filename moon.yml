@@ -1,0 +1,16 @@
+$schema: '.moon/cache/schemas/project.json'
+
+# The workspace root: only the formatting check of the root Cargo workspace,
+# which runs on every change.
+workspace:
+  inheritedTasks:
+    include: []
+
+tasks:
+  fmt:
+    description: 'rustfmt check of the root Cargo workspace'
+    command: 'cargo fmt --all -- --check'
+    inputs:
+      - '/**/*'
+    options:
+      cache: false

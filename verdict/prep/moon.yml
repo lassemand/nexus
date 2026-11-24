@@ -1,0 +1,25 @@
+$schema: '../../.moon/cache/schemas/project.json'
+
+# The preparation Job's scripts. test_entrypoint.sh copies verdict/sdk,
+# verdict/template and infra/agents/analyst.md, and builds the kernel.
+taskOptions:
+  cache: false
+
+tasks:
+  syntax:
+    description: 'bash -n on the prep scripts'
+    script: 'for script in entrypoint workspace smoke test_entrypoint; do bash -n "$script.sh"; done'
+    inputs:
+      - '*.sh'
+  test:
+    description: 'entrypoint test with a fake claude and a local feed'
+    # The test builds the kernel --offline from the registry of
+    # PREP_CARGO_HOME (default: the cargo home), so the template's crates are
+    # fetched first, as CI's template steps used to before it.
+    script: 'cargo fetch --manifest-path ../template/Cargo.toml && PREP_CARGO_HOME="${PREP_CARGO_HOME:-${CARGO_HOME:-$HOME/.cargo}}" bash test_entrypoint.sh'
+    inputs:
+      - '**/*'
+      - '/verdict/sdk/**/*'
+      - '/verdict/template/**/*'
+      - '/infra/agents/analyst.md'
+      - 'group://globals'

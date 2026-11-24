@@ -1,0 +1,29 @@
+$schema: '../../.moon/cache/schemas/project.json'
+
+# The kernel template, its own Cargo workspace; the same steps CI ran.
+taskOptions:
+  cache: false
+
+tasks:
+  fmt:
+    description: 'rustfmt check of the template'
+    command: 'cargo fmt -- --check'
+    inputs:
+      - '**/*'
+      - 'group://globals'
+  lint:
+    description: 'clippy on the template, all targets'
+    command: 'cargo clippy --all-targets -- -D warnings'
+    options:
+      mergeArgs: 'replace'
+  test:
+    description: 'tests of the template'
+    command: 'cargo test'
+    options:
+      mergeArgs: 'replace'
+  build-wasm:
+    description: 'release build of the template for wasm32'
+    extends: 'lint'
+    command: 'cargo build --release --target wasm32-unknown-unknown'
+    options:
+      mergeArgs: 'replace'

@@ -1,0 +1,20 @@
+$schema: '../.moon/cache/schemas/workspace.json'
+
+# Every Cargo package below is a project, found by its Cargo.toml; the Rust
+# toolchain plugin turns `path = ...` dependencies into project dependencies.
+# The other projects are checks that are not Cargo packages.
+projects:
+  globFormat: 'source-path'
+  globs:
+    - '*/Cargo.toml'
+    - 'verdict/*/Cargo.toml'
+    - 'verdict/kernels/*/Cargo.toml'
+  sources:
+    root: '.'
+    conductor/deploy: 'conductor/deploy'
+    verdict/prep: 'verdict/prep'
+    infra/charts/nexus/prometheus: 'infra/charts/nexus/prometheus'
+
+vcs:
+  client: 'git'
+  defaultBranch: 'main'

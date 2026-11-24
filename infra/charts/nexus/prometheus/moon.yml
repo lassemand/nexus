@@ -1,0 +1,15 @@
+$schema: '../../../../.moon/cache/schemas/project.json'
+
+tasks:
+  rules:
+    description: 'promtool check and test of the nexus alert rules'
+    script: >-
+      docker run --rm --entrypoint promtool -v "$PWD/rules:/rules:ro" -w /rules "$PROMETHEUS_IMAGE" check rules nexus.rules.yml &&
+      docker run --rm --entrypoint promtool -v "$PWD/rules:/rules:ro" -w /rules "$PROMETHEUS_IMAGE" test rules nexus.rules.test.yml
+    inputs:
+      - 'rules/**/*'
+    env:
+      # The Prometheus of kube-prometheus-stack; keep in step with the chart.
+      PROMETHEUS_IMAGE: 'prom/prometheus:v3.15.0'
+    options:
+      cache: false

@@ -1,0 +1,44 @@
+$schema: '../../.moon/cache/schemas/project.json'
+
+# Its own Cargo workspace (with the bench kernels); the same steps CI ran.
+# `lint` and `test` replace the inherited per-crate commands; the other cargo
+# tasks extend `lint`, so they keep its inputs and its deps on the crates the
+# bench depends on (analyst, verdict-sdk).
+taskOptions:
+  cache: false
+
+tasks:
+  fmt:
+    description: 'rustfmt check of the bench workspace'
+    command: 'cargo fmt --all -- --check'
+    inputs:
+      - '**/*'
+      - 'group://globals'
+  lint:
+    description: 'clippy on the bench workspace, all targets'
+    command: 'cargo clippy --workspace --all-targets -- -D warnings'
+    options:
+      mergeArgs: 'replace'
+  lint-wasm:
+    description: 'clippy on the bench kernels for wasm32'
+    extends: 'lint'
+    command: 'cargo clippy -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho --target wasm32-unknown-unknown -- -D warnings'
+    options:
+      mergeArgs: 'replace'
+  build:
+    description: 'build of the bench workspace, all targets'
+    extends: 'lint'
+    command: 'cargo build --workspace --all-targets'
+    options:
+      mergeArgs: 'replace'
+  build-wasm:
+    description: 'release build of the bench kernels for wasm32'
+    extends: 'lint'
+    command: 'cargo build --release --target wasm32-unknown-unknown -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho'
+    options:
+      mergeArgs: 'replace'
+  test:
+    description: 'tests of the bench workspace'
+    command: 'cargo test --workspace'
+    options:
+      mergeArgs: 'replace'
