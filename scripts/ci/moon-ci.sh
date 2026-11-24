@@ -8,22 +8,41 @@
 #
 #   moon ci --stdin --include-relations --downstream deep --upstream none
 #
-# When in doubt, every task runs (`moon ci --force`), never none:
+# MOON_CI_ALL=<reason> runs every task (CI sets it on main and for a manual
+# run). When in doubt, every task runs too (`moon ci --force`), never none:
 #   * the base or head cannot be resolved, or has no merge base (a shallow
 #     clone, a missing fetch);
 #   * the diff is empty (a push to main compared with itself);
 #   * moon fails before it starts any task.
 #
 # Usage: scripts/ci/moon-ci.sh [moon ci targets or options...]
-# CHANGED_FILES=<file> replaces the git diff with that list (used by
-# scripts/ci/test-affected.sh). MOON overrides the moon binary.
+#
+# MOON_CI_IGNORE_CI_CHECKS=1 also runs tasks with `runInCI: false` (the review
+# isolation job's `conductor/deploy:isolation`): `moon ci` has no such option,
+# so it runs `moon exec --ci --on-failure continue --ignore-ci-checks` with the
+# same flags. MOON_CI_DECIDE_ONLY=1 stops after choosing, without running moon
+# (scripts/ci/moon-plan.sh). CHANGED_FILES=<file> replaces the git diff with
+# that list (scripts/ci/test-affected.sh). MOON overrides the moon binary.
+#
+# It leaves, in .moon/cache/moon-ci/: `mode` ("affected", or "everything:
+# <reason>"), `touched` (the touched files) and `report.json` (moon's report of
+# the run), read by scripts/ci/moon-summary.py.
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 2
 moon="${MOON:-moon}"
-report=.moon/cache/ciReport.json
-changed="$(mktemp)"
-trap 'rm -f "$changed"' EXIT
+state=.moon/cache/moon-ci
+mkdir -p "$state"
+changed="$state/touched"
+rm -f "$changed" "$state/mode" "$state/report.json" .moon/cache/ciReport.json .moon/cache/runReport.json
+
+if [[ -n "${MOON_CI_IGNORE_CI_CHECKS:-}" ]]; then
+  base_cmd=("$moon" exec --ci --on-failure continue --summary detailed --ignore-ci-checks)
+  affected=(--affected)
+else
+  base_cmd=("$moon" ci)
+  affected=()
+fi
 
 log() { echo "moon-ci: $*" >&2; }
 
@@ -39,31 +58,46 @@ touched_files() {
   git diff --name-only --no-renames "$merge_base" "$head"
 }
 
-run_everything() {
-  log "running every task: $1"
-  shift
-  env -u MOON_BASE -u MOON_HEAD "$moon" ci --force "$@"
+keep_report() {
+  local r
+  for r in .moon/cache/ciReport.json .moon/cache/runReport.json; do
+    [[ -s "$r" ]] && cp "$r" "$state/report.json"
+  done
 }
 
 ran_a_task() {
-  [[ -s "$report" ]] && grep -q '"run-task"\|"RunTask"' "$report"
+  [[ -s "$state/report.json" ]] && grep -q '"run-task"' "$state/report.json"
 }
 
+run_everything() {
+  log "running every task: $1"
+  echo "everything: $1" > "$state/mode"
+  [[ -n "${MOON_CI_DECIDE_ONLY:-}" ]] && exit 0
+  shift
+  rm -f .moon/cache/ciReport.json .moon/cache/runReport.json "$state/report.json"
+  env -u MOON_BASE -u MOON_HEAD "${base_cmd[@]}" --force "$@"
+  local status=$?
+  keep_report
+  exit "$status"
+}
+
+if [[ -n "${MOON_CI_ALL:-}" ]]; then
+  run_everything "$MOON_CI_ALL" "$@"
+fi
 if ! touched_files > "$changed"; then
   run_everything "the touched files are unknown" "$@"
-  exit
 fi
 if ! grep -q . "$changed"; then
   run_everything "no touched files" "$@"
-  exit
 fi
 
 log "$(grep -c . "$changed") touched files"
-rm -f "$report"
-"$moon" ci --stdin --include-relations --downstream deep --upstream none "$@" < "$changed"
+echo "affected" > "$state/mode"
+[[ -n "${MOON_CI_DECIDE_ONLY:-}" ]] && exit 0
+"${base_cmd[@]}" "${affected[@]}" --stdin --include-relations --downstream deep --upstream none "$@" < "$changed"
 status=$?
+keep_report
 if [[ $status -ne 0 ]] && ! ran_a_task; then
   run_everything "moon failed (exit $status) before running a task" "$@"
-  exit
 fi
 exit "$status"

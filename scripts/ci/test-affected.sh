@@ -3,11 +3,12 @@
 #
 # For each case it runs scripts/ci/moon-ci.sh (the command CI runs) with a
 # fixed list of touched files (CHANGED_FILES, given to `moon ci --stdin`), then
-# reads the tasks moon actually ran from .moon/cache/ciReport.json and compares
+# reads the tasks moon actually ran from its report (kept by moon-ci.sh in
+# .moon/cache/moon-ci/report.json) and compares
 # them with the exact expected set. Nothing is committed, nothing is built: it
-# works in a scratch copy of the repository where the moon configuration, every
-# Cargo.toml and Cargo.lock are real, every other tracked file is empty, and
-# cargo, docker and shellcheck are stubs that succeed.
+# works in the scratch copy of scripts/ci/stub-workspace.sh, where the moon
+# configuration, every Cargo.toml and Cargo.lock are real, every other file is
+# empty, and cargo, docker and shellcheck are stubs that succeed.
 #
 # Usage: scripts/ci/test-affected.sh   (needs moon at the version in .prototools)
 set -euo pipefail
@@ -25,40 +26,19 @@ fi
 work="$(mktemp -d)"
 [[ -n "${KEEP:-}" ]] || trap 'rm -rf "$work"' EXIT; echo "work: $work" >&2
 copy="$work/repo"
-mkdir -p "$copy" "$work/cargo-home/bin" "$work/bin"
-
-(cd "$repo" && git ls-files -z --cached --others --exclude-standard) |
-  while IFS= read -r -d '' f; do
-    [[ -e "$repo/$f" ]] || continue
-    mkdir -p "$copy/$(dirname "$f")"
-    case "$f" in
-      .gitignore | .prototools | rust-toolchain.toml | .moon/* | moon.yml | */moon.yml | Cargo.toml | */Cargo.toml | Cargo.lock | scripts/ci/*)
-        cp -p "$repo/$f" "$copy/$f" ;;
-      *) : > "$copy/$f" ;;
-    esac
-  done
-
-# moon puts $CARGO_HOME/bin first on the PATH of Rust tasks.
-for tool in "$work/cargo-home/bin/cargo" "$work/bin/cargo" "$work/bin/docker" "$work/bin/shellcheck"; do
-  printf '#!/bin/sh\nexit 0\n' > "$tool"
-  chmod +x "$tool"
-done
-
-git -C "$copy" init -q -b main
-git -C "$copy" add -A
-git -C "$copy" -c user.name=test -c user.email=test@example.invalid commit -q -m base
+bash "$repo/scripts/ci/stub-workspace.sh" "$work"
 
 export CARGO_HOME="$work/cargo-home"
 export PATH="$work/bin:$PATH"
 export MOON_COLOR=0 NO_COLOR=1
-unset MOON_BASE MOON_HEAD GITHUB_BASE_REF GITHUB_HEAD_REF
+unset MOON_BASE MOON_HEAD MOON_CI_ALL MOON_CI_DECIDE_ONLY GITHUB_BASE_REF GITHUB_HEAD_REF
 
 failures=0
 
 # ran <touched file>... : the sorted targets moon ci ran.
 ran() {
   printf '%s\n' "$@" > "$work/changed"
-  rm -f "$copy/.moon/cache/ciReport.json"
+  rm -f "$copy/.moon/cache/moon-ci/report.json"
   if ! (cd "$copy" && CHANGED_FILES="$work/changed" MOON="$moon" bash scripts/ci/moon-ci.sh) > "$work/out" 2>&1; then
     echo "moon-ci.sh failed for: $*" >&2
     cat "$work/out" >&2
@@ -68,7 +48,7 @@ ran() {
 }
 
 report_targets() {
-  python3 - "$copy/.moon/cache/ciReport.json" <<'PY'
+  python3 - "$copy/.moon/cache/moon-ci/report.json" <<'PY'
 import json, sys
 report = json.load(open(sys.argv[1]))
 targets = sorted(
@@ -156,7 +136,7 @@ git -C "$copy" -c user.name=test -c user.email=test@example.invalid commit -q -m
 check_git() {
   local name="$1" dir="$2" expected="$3" got want
   shift 3
-  rm -f "$dir/.moon/cache/ciReport.json"
+  rm -f "$dir/.moon/cache/moon-ci/report.json"
   if ! (cd "$dir" && env "$@" MOON="$moon" bash scripts/ci/moon-ci.sh) > "$work/out" 2>&1; then
     echo "FAIL $name: moon-ci.sh failed"
     cat "$work/out"
