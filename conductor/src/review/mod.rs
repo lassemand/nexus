@@ -105,6 +105,11 @@ pub struct ReviewArgs {
     #[arg(long, env = "CONDUCTOR_AUTHOR_BOT_LOGIN")]
     pub author_bot_login: Option<String>,
 
+    /// Name of the pull request label that asks for a manual review, as
+    /// `/review` does; conductor removes it once handled. Empty turns it off.
+    #[arg(long, env = "CONDUCTOR_REVIEW_LABEL", default_value = "review")]
+    pub review_label: String,
+
     /// `owner/name` of the repository reviews cover; defaults to the `origin`
     /// remote of the repository the worktrees come from.
     #[arg(long, env = "CONDUCTOR_REVIEW_REPO")]
@@ -138,6 +143,7 @@ impl ReviewArgs {
             max_sessions: usize::from(self.max_review_sessions),
             timeout: self.review_timeout,
             bot_login: self.review_bot_login.filter(|l| !l.is_empty()),
+            label: self.review_label.trim().to_string(),
             repo: self.review_repo.filter(|r| !r.is_empty()),
             ci_poll_interval: self.ci_poll_interval,
             ci_max_wait: self.ci_max_wait,
@@ -201,6 +207,8 @@ pub struct ReviewConfig {
     pub timeout: Duration,
     /// The reviewer app's GitHub login.
     pub bot_login: Option<String>,
+    /// Pull request label that asks for a manual review; empty is off.
+    pub label: String,
     /// `owner/name` of the repository the worktrees come from. Only its pull
     /// requests are reviewed; `None` reviews whatever the issue lists.
     pub repo: Option<String>,
@@ -228,6 +236,7 @@ impl Default for ReviewConfig {
             max_sessions: 1,
             timeout: Duration::from_secs(45 * 60),
             bot_login: None,
+            label: "review".into(),
             repo: None,
             ci_poll_interval: Duration::from_secs(60),
             ci_max_wait: Duration::from_secs(2 * 3600),
@@ -868,6 +877,20 @@ impl Reviews {
         if !self.first_delivery(delivery_id.as_deref()).await {
             return;
         }
+        self.run_command(&command).await;
+        if let Some(label) = command.label.as_deref() {
+            if let Err(e) = self
+                .github
+                .remove_label(&command.repo, command.pr_number, label)
+                .await
+            {
+                tracing::warn!(repo = %command.repo, pr = command.pr_number, %label, error = %e, "cannot remove the review label");
+                metrics::counter!("conductor_review_label_remove_failures_total").increment(1);
+            }
+        }
+    }
+
+    async fn run_command(&self, command: &ReviewCommand) {
         let pr = match self
             .github
             .pull_request(&command.repo, command.pr_number)

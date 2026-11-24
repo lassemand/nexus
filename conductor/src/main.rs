@@ -230,6 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let shutting_down = Arc::new(AtomicBool::new(false));
             let runtime: Arc<dyn SessionRuntime> = Arc::new(TmuxRuntime::from_env());
             let review_bot_login = config.review.bot_login.clone();
+            let review_label = config.review.label.clone();
             let (dispatcher, sink, rx) = Dispatcher::new_with_reviews(
                 registry,
                 config,
@@ -263,6 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 watched_github_users: watched_users_from_env(),
                 shutting_down,
                 review_bot_login,
+                review_label,
             };
 
             let stopping = Arc::clone(&dispatcher);

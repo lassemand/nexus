@@ -440,6 +440,7 @@ async fn a_manual_review_at_the_limit_runs_and_is_not_dispatched_to_the_author(p
             repo: REPO.into(),
             pr_number: 316,
             comment_id: Some(42),
+            label: None,
             login: "lassemand".into(),
         },
         delivery_id: Some("gh-1".into()),
@@ -475,6 +476,7 @@ async fn a_review_comment_router_path_and_the_bot_filter(pool: PgPool) {
         watched_github_users: vec!["lassemand".into(), "annette-review[bot]".into()],
         shutting_down: Arc::clone(&s.h.shutting_down),
         review_bot_login: Some("annette-review[bot]".into()),
+        review_label: "review".into(),
     });
     let post = |login: &str, body: &str, delivery: &str| {
         let payload = serde_json::json!({
@@ -522,7 +524,7 @@ async fn a_review_comment_router_path_and_the_bot_filter(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn re_requesting_the_reviewer_app_queues_a_manual_review(pool: PgPool) {
+async fn adding_the_review_label_queues_a_manual_review_and_removes_the_label(pool: PgPool) {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
@@ -536,12 +538,13 @@ async fn re_requesting_the_reviewer_app_queues_a_manual_review(pool: PgPool) {
         watched_github_users: vec!["lassemand".into()],
         shutting_down: Arc::clone(&s.h.shutting_down),
         review_bot_login: Some("annette-review[bot]".into()),
+        review_label: "review".into(),
     });
-    let post = |reviewer: &str, sender: &str, delivery: &str| {
+    let post = |sender: &str, delivery: &str| {
         let payload = serde_json::json!({
-            "action": "review_requested",
+            "action": "labeled",
             "number": 316,
-            "requested_reviewer": { "login": reviewer, "type": "Bot" },
+            "label": { "name": "review" },
             "sender": { "login": sender },
             "repository": { "full_name": REPO }
         });
@@ -556,12 +559,7 @@ async fn re_requesting_the_reviewer_app_queues_a_manual_review(pool: PgPool) {
 
     router
         .clone()
-        .oneshot(post("someone-else", "lassemand", "p1"))
-        .await
-        .unwrap();
-    router
-        .clone()
-        .oneshot(post("annette-review[bot]", "stranger", "p2"))
+        .oneshot(post("stranger", "p1"))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -569,10 +567,14 @@ async fn re_requesting_the_reviewer_app_queues_a_manual_review(pool: PgPool) {
         s.h.registry.snapshot().await.unwrap().is_empty(),
         "nothing queued"
     );
+    assert!(
+        s.github.removed.lock().unwrap().is_empty(),
+        "a stranger's label is left alone"
+    );
 
     router
         .clone()
-        .oneshot(post("annette-review[bot]", "lassemand", "p3"))
+        .oneshot(post("lassemand", "p2"))
         .await
         .unwrap();
     assert!(wait_for_closed(&s.h).await);
@@ -581,6 +583,68 @@ async fn re_requesting_the_reviewer_app_queues_a_manual_review(pool: PgPool) {
     assert!(
         s.github.reactions.lock().unwrap().is_empty(),
         "no comment to react to"
+    );
+    assert!(wait_until(|| !s.github.removed.lock().unwrap().is_empty()).await);
+    let removed = s.github.removed.lock().unwrap().clone();
+    assert_eq!(
+        removed
+            .iter()
+            .filter(|(_, label)| label == "review")
+            .count(),
+        1,
+        "exactly one removal of the review label: {removed:?}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_second_label_while_a_review_runs_starts_nothing_but_is_removed(pool: PgPool) {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let s = setup(Harness::new(pool).with_fake(50, 0, None, false));
+    s.h.fake
+        .set_turn(3000, Some(&verdict_cmd("approve", &s.sha)));
+    let (_d, sink) = s.h.start_with_reviews(s.linear.clone(), s.github.clone());
+    let router = conductor::http::router(conductor::http::AppState {
+        sink: Arc::new(sink),
+        github_webhook_secret: None,
+        watched_github_users: vec!["lassemand".into()],
+        shutting_down: Arc::clone(&s.h.shutting_down),
+        review_bot_login: Some("annette-review[bot]".into()),
+        review_label: "review".into(),
+    });
+    let post = |delivery: &str| {
+        let payload = serde_json::json!({
+            "action": "labeled",
+            "number": 316,
+            "label": { "name": "Review" },
+            "sender": { "login": "lassemand" },
+            "repository": { "full_name": REPO }
+        });
+        Request::builder()
+            .method("POST")
+            .uri("/webhook/github")
+            .header("X-GitHub-Event", "pull_request")
+            .header("X-GitHub-Delivery", delivery)
+            .body(Body::from(payload.to_string()))
+            .unwrap()
+    };
+
+    router.clone().oneshot(post("p1")).await.unwrap();
+    assert!(wait_until(|| s.github.removed.lock().unwrap().len() == 1).await);
+    assert!(wait_until(|| !s.h.fake.started.lock().unwrap().is_empty()).await);
+    router.clone().oneshot(post("p2")).await.unwrap();
+    assert!(wait_until(|| s.github.removed.lock().unwrap().len() == 2).await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        *s.h.fake.started.lock().unwrap(),
+        vec!["review-nex-1".to_string()],
+        "only one review started"
+    );
+    assert_eq!(
+        *s.github.removed.lock().unwrap(),
+        vec![(316, "Review".to_string()), (316, "Review".to_string())]
     );
 }
 
@@ -715,6 +779,7 @@ async fn two_triggers_for_one_issue_make_one_review(pool: PgPool) {
             repo: REPO.into(),
             pr_number: 316,
             comment_id: Some(1),
+            label: None,
             login: "lassemand".into(),
         },
         delivery_id: Some("g1".into()),
@@ -1372,6 +1437,7 @@ async fn a_manual_review_skips_the_gate_even_with_ci_red(pool: PgPool) {
             repo: REPO.into(),
             pr_number: 316,
             comment_id: Some(42),
+            label: None,
             login: "lassemand".into(),
         },
         delivery_id: Some("gh-1".into()),
@@ -1393,6 +1459,7 @@ fn manual(login: &str, delivery: &str) -> InboundEvent {
             repo: REPO.into(),
             pr_number: 316,
             comment_id: Some(9),
+            label: None,
             login: login.into(),
         },
         delivery_id: Some(delivery.into()),

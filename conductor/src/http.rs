@@ -13,7 +13,7 @@ use axum::{
 use crate::{
     github::{
         checks_completed, dispatchable_issue_comment, dispatchable_review_comment, is_review_bot,
-        is_review_command, pr_push, review_command, review_request, verify_github_signature,
+        is_review_command, pr_push, review_command, review_label, verify_github_signature,
         CheckEventPayload, IssueCommentPayload, PrCommentKind, PullRequestEventPayload,
         ReviewCommentPayload,
     },
@@ -48,6 +48,8 @@ pub struct AppState {
     pub shutting_down: Arc<AtomicBool>,
     /// The reviewer app's login; its comments are never dispatched.
     pub review_bot_login: Option<String>,
+    /// Name of the label that asks for a review; empty turns the trigger off.
+    pub review_label: String,
 }
 
 impl AppState {
@@ -306,10 +308,10 @@ async fn handle_github(
                 );
                 return StatusCode::OK;
             }
-            let command = review_request(
+            let command = review_label(
                 &payload,
                 &state.watched_github_users,
-                state.review_bot_login.as_deref(),
+                &state.review_label,
             );
             metrics::counter!("conductor_webhooks_total", "source" => "github", "outcome" => outcome_label(command.is_some())).increment(1);
             if let Some(command) = command {

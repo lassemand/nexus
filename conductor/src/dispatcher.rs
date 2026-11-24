@@ -644,7 +644,7 @@ impl Dispatcher {
                 (None, InboundEvent::ReviewCommand { command, .. }) => tracing::info!(
                     repo = %command.repo,
                     pr = command.pr_number,
-                    "reviews are disabled; /review ignored"
+                    "reviews are disabled; /review and the review label ignored"
                 ),
                 (None, _) => {}
             }
@@ -2640,6 +2640,7 @@ mod config_tests {
                 max_review_sessions: 1,
                 review_timeout: Duration::from_secs(45 * 60),
                 review_bot_login: None,
+                review_label: "review".into(),
                 author_bot_login: None,
                 review_repo: None,
                 ci_poll_interval: Duration::from_secs(60),

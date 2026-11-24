@@ -108,6 +108,12 @@ review:
   # author through the move to Todo. Leave empty: the entrypoint reads it from
   # the reviewer app (`GET /app`) at startup. Set it only to override that.
   botLogin: ""
+  # Pull request label that asks for a manual review, exactly like a `/review`
+  # comment. Only a githubWebhookUsers login adding it counts; conductor removes
+  # it once handled so it can be added again. GitHub cannot request a review
+  # from an app, so this is the click. Create the label once in the repository.
+  # Empty turns the label trigger off.
+  label: "review"
   # CI gate (NEX-275): an issue enters review only with every check run on its
   # pull requests green. Otherwise it is bounced and watched.
   ci:

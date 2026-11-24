@@ -225,15 +225,18 @@ pub fn dispatchable_review_comment(
     })
 }
 
-/// A manual request for a review: a `/review` comment, or the reviewer app
-/// (re-)requested as a reviewer on the pull request.
+/// A manual request for a review: a `/review` comment, or the review label
+/// added to the pull request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReviewCommand {
     pub repo: String,
     pub pr_number: u64,
-    /// The `/review` comment to react to; `None` for a review request.
+    /// The `/review` comment to react to; `None` for a label.
     #[serde(default)]
     pub comment_id: Option<u64>,
+    /// The label that was added, to remove once handled; `None` for a comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Who asked.
     pub login: String,
 }
@@ -268,8 +271,15 @@ pub fn review_command(payload: &IssueCommentPayload, watched: &[String]) -> Opti
             .unwrap_or_default(),
         pr_number: issue.number,
         comment_id: Some(comment.id),
+        label: None,
         login: comment.user.login.clone(),
     })
+}
+
+/// A label named in a `pull_request` `labeled` or `unlabeled` payload.
+#[derive(Debug, Deserialize)]
+pub struct GithubLabel {
+    pub name: String,
 }
 
 /// Payload for the `pull_request` event; only what a review request needs.
@@ -277,8 +287,8 @@ pub fn review_command(payload: &IssueCommentPayload, watched: &[String]) -> Opti
 pub struct PullRequestEventPayload {
     pub action: Option<String>,
     pub number: Option<u64>,
-    /// Present on `review_requested` for a single reviewer (absent for a team).
-    pub requested_reviewer: Option<GithubUser>,
+    /// The label added or removed on `labeled` and `unlabeled`.
+    pub label: Option<GithubLabel>,
     pub sender: Option<GithubUser>,
     pub repository: Option<GithubRepository>,
     pub pull_request: Option<PullRequestHead>,
@@ -345,22 +355,23 @@ pub fn checks_completed(payload: &CheckEventPayload) -> Option<(String, String)>
     ))
 }
 
-/// Reduces a `pull_request` event to a review request when a watched user
-/// requested (or re-requested) the reviewer app as a reviewer.
+/// Reduces a `pull_request` event to a manual review when a watched user added
+/// the review label.
 ///
-/// GitHub only offers an app in the reviewer list once it has reviewed the
-/// pull request, so this is the "Re-request review" button next to the
-/// reviewer after its first, automatic review.
-pub fn review_request(
+/// GitHub cannot request a review from an app, so a label added from the pull
+/// request sidebar is the click that starts one. An empty `label` turns the
+/// trigger off. Any other action, label or sender, or a payload missing the
+/// label, sender, number or repository, is ignored.
+pub fn review_label(
     payload: &PullRequestEventPayload,
     watched: &[String],
-    bot_login: Option<&str>,
+    label: &str,
 ) -> Option<ReviewCommand> {
-    if payload.action.as_deref() != Some("review_requested") {
+    if label.is_empty() || payload.action.as_deref() != Some("labeled") {
         return None;
     }
-    let reviewer = payload.requested_reviewer.as_ref()?;
-    if !is_review_bot(bot_login, &reviewer.login) {
+    let added = payload.label.as_ref()?;
+    if !added.name.eq_ignore_ascii_case(label) {
         return None;
     }
     let sender = payload.sender.as_ref()?;
@@ -368,13 +379,10 @@ pub fn review_request(
         return None;
     }
     Some(ReviewCommand {
-        repo: payload
-            .repository
-            .as_ref()
-            .map(|r| r.full_name.clone())
-            .unwrap_or_default(),
+        repo: payload.repository.as_ref()?.full_name.clone(),
         pr_number: payload.number?,
         comment_id: None,
+        label: Some(added.name.clone()),
         login: sender.login.clone(),
     })
 }
@@ -551,11 +559,11 @@ mod tests {
         assert!(!is_review_bot(Some(""), ""));
     }
 
-    fn pr_event(action: &str, reviewer: &str, sender: &str) -> PullRequestEventPayload {
+    fn label_event(action: &str, label: &str, sender: &str) -> PullRequestEventPayload {
         serde_json::from_value(json!({
             "action": action,
             "number": 318,
-            "requested_reviewer": { "login": reviewer, "type": "Bot" },
+            "label": { "name": label },
             "sender": { "login": sender },
             "repository": { "full_name": "lassemand/nexus" }
         }))
@@ -563,41 +571,97 @@ mod tests {
     }
 
     #[test]
-    fn requesting_the_reviewer_app_is_a_review_request() {
-        let bot = Some("annette-review[bot]");
-        let got = review_request(
-            &pr_event("review_requested", "annette-review[bot]", "lassemand"),
+    fn a_watched_user_adding_the_label_is_a_review_command() {
+        let got = review_label(
+            &label_event("labeled", "review", "lassemand"),
             &watched(),
-            bot,
+            "review",
         )
-        .expect("a review request");
+        .expect("a review command");
         assert_eq!(got.pr_number, 318);
+        assert_eq!(got.repo, "lassemand/nexus");
         assert_eq!(got.comment_id, None);
+        assert_eq!(got.label.as_deref(), Some("review"));
         assert_eq!(got.login, "lassemand");
-        assert!(review_request(
-            &pr_event("review_requested", "someone", "lassemand"),
+    }
+
+    #[test]
+    fn the_label_matches_ignoring_case() {
+        let got = review_label(
+            &label_event("labeled", "Review", "LassemAnd"),
             &watched(),
-            bot
+            "review",
+        )
+        .expect("a review command");
+        assert_eq!(got.label.as_deref(), Some("Review"));
+    }
+
+    #[test]
+    fn anything_but_a_watched_user_adding_the_label_is_ignored() {
+        let w = watched();
+        for (action, label, sender) in [
+            ("labeled", "needs-human", "lassemand"),
+            ("unlabeled", "review", "lassemand"),
+            ("opened", "review", "lassemand"),
+            ("edited", "review", "lassemand"),
+            ("synchronize", "review", "lassemand"),
+            ("labeled", "review", "stranger"),
+            ("labeled", "review", "nexus-mcp[bot]"),
+            ("labeled", "review", "annette-review[bot]"),
+        ] {
+            assert!(
+                review_label(&label_event(action, label, sender), &w, "review").is_none(),
+                "{action} {label} {sender}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_configured_label_turns_the_trigger_off() {
+        assert!(review_label(
+            &label_event("labeled", "review", "lassemand"),
+            &watched(),
+            ""
         )
         .is_none());
-        assert!(review_request(
-            &pr_event("review_requested", "annette-review[bot]", "stranger"),
+        assert!(review_label(&label_event("labeled", "", "lassemand"), &watched(), "").is_none());
+    }
+
+    #[test]
+    fn a_label_event_missing_a_field_is_ignored() {
+        let full = json!({
+            "action": "labeled",
+            "number": 318,
+            "label": { "name": "review" },
+            "sender": { "login": "lassemand" },
+            "repository": { "full_name": "lassemand/nexus" }
+        });
+        assert!(review_label(
+            &serde_json::from_value(full.clone()).unwrap(),
             &watched(),
-            bot
+            "review"
         )
-        .is_none());
-        assert!(review_request(
-            &pr_event("review_request_removed", "annette-review[bot]", "lassemand"),
-            &watched(),
-            bot
-        )
-        .is_none());
-        assert!(review_request(
-            &pr_event("review_requested", "annette-review[bot]", "lassemand"),
-            &watched(),
-            None
-        )
-        .is_none());
+        .is_some());
+        for field in ["label", "sender", "number", "repository"] {
+            let mut value = full.clone();
+            value.as_object_mut().unwrap().remove(field);
+            let payload: PullRequestEventPayload = serde_json::from_value(value).unwrap();
+            assert!(
+                review_label(&payload, &watched(), "review").is_none(),
+                "missing {field}"
+            );
+        }
+        let malformed: Result<PullRequestEventPayload, _> =
+            serde_json::from_value(json!({ "action": "labeled", "label": "review" }));
+        assert!(malformed.is_err());
+    }
+
+    #[test]
+    fn a_queued_command_from_before_the_label_still_loads() {
+        let old = r#"{"repo":"o/r","pr_number":3,"comment_id":9,"login":"lassemand"}"#;
+        let got: ReviewCommand = serde_json::from_str(old).unwrap();
+        assert_eq!(got.label, None);
+        assert_eq!(got.comment_id, Some(9));
     }
 
     #[test]
