@@ -3,7 +3,9 @@
 CI runs only the checks a change can affect. The selection is made by
 [moon](https://moonrepo.dev) (moonrepo), a task runner with affected
 detection; the version is pinned in `.prototools` (`moon = "..."`, install with
-`proto install moon` or the release binary of that version). Plain `cargo`
+`proto install moon` or the release binary of that version). CI installs that
+version too: every `setup-toolchain` step sets `auto-install: true`, which
+installs moon through `proto install` instead of downloading the latest. Plain `cargo`
 still works for everything; moon only decides which `cargo` (and shell)
 commands to run.
 
