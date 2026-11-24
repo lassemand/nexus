@@ -493,7 +493,7 @@ dashboards are switched off because they can never show data here.
 The nexus alert rules live in one file,
 `infra/charts/nexus/prometheus/rules/nexus.rules.yml` (plain Prometheus rule
 format; the chart loads it into the `PrometheusRule`). Unit tests for them are in
-`rules/nexus.rules.test.yml`, and CI (`.github/workflows/alert-rules.yml`) runs them on every change under that
+`rules/nexus.rules.test.yml`, and CI (the moon task `infra/charts/nexus/prometheus:rules`, docs/guides/ci.md) runs them on every change under that
 directory with Prometheus v3.15.0, the version kube-prometheus-stack deploys.
 
 Run them locally with `promtool`, or with Docker if it is not installed:

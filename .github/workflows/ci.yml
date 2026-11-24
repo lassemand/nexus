@@ -1,10 +1,21 @@
 name: CI
 
+# A pull request runs only the tasks its changes can affect; main and a manual
+# run run every task. Selection is moon's (docs/guides/ci.md). There is no
+# `paths:` filter on purpose: conductor's CI gate needs finished check runs on
+# every pull request, and `ci-ok` always gives one.
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  # "Run workflow" on a branch runs every task, for a full run of a PR's head.
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,10 +24,87 @@ env:
   # chronicle's integration tests (tests/common::TestDb, smoke_test) create their
   # own databases from this; without it they skip, and under CI that is a failure.
   TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+  # A pull request is compared with its base branch; push and manual runs run
+  # everything (scripts/ci/moon-ci.sh).
+  MOON_BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'origin/main' }}
+  MOON_CI_ALL: ${{ github.event_name == 'push' && format('push to {0}', github.ref_name) || github.event_name == 'workflow_dispatch' && 'manual run (workflow_dispatch)' || '' }}
 
 jobs:
+  # Light: no Postgres, no system packages, no Rust cache. Learns from moon what
+  # will run (scripts/ci/moon-plan.sh); when that is only fmt, runs it here
+  # and the jobs below are skipped.
+  plan:
+    name: plan / fmt
+    runs-on: ubuntu-latest
+    outputs:
+      heavy: ${{ steps.plan.outputs.heavy }}
+      isolation: ${{ steps.plan.outputs.isolation }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Install moon
+        uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
+
+      - name: Plan
+        id: plan
+        run: scripts/ci/moon-plan.sh
+
+      - name: moon ci (fmt only)
+        if: steps.plan.outputs.heavy == 'false'
+        run: scripts/ci/moon-ci.sh
+
+      - name: Summary
+        if: always() && steps.plan.outputs.heavy == 'false'
+        run: python3 scripts/ci/moon-summary.py "moon ci (fmt only)"
+
+      - name: Plan summary
+        if: always() && steps.plan.outputs.heavy != 'false'
+        run: |
+          {
+            echo "## plan"
+            echo
+            echo "- mode: ${{ steps.plan.outputs.mode }}"
+            echo "- tasks beyond fmt: ${{ steps.plan.outputs.heavy }} (job \`moon ci\`)"
+            echo "- review isolation: ${{ steps.plan.outputs.isolation }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The moon setup's own checks: graph against cargo metadata, declared
+  # cross-crate inputs, and the selection test (docs/guides/ci.md).
+  moon-config:
+    name: moon config checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install moon
+        uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
+
+      - name: Project graph matches cargo metadata
+        run: scripts/ci/check-moon-graph.py
+
+      - name: Cross-crate reads are declared inputs
+        run: scripts/ci/check-cross-crate-inputs.py
+
+      - name: Affected selection
+        run: bash scripts/ci/test-affected.sh
+
   ci:
-    name: fmt / clippy / test
+    name: moon ci
+    needs: plan
+    if: needs.plan.outputs.heavy == 'true'
     runs-on: ubuntu-latest
 
     services:
@@ -35,6 +123,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install system dependencies
         run: |
@@ -53,76 +143,53 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
+      # moon runs cargo per crate, which builds dependencies in other feature
+      # sets than `cargo test --all` did, so the cache has its own prefix. It is
+      # saved only by main (which runs every task, so it holds every crate's
+      # dependencies) and stays valid until Cargo.lock changes.
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-moon
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Install moon
+        uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
 
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      # One task at a time: parallel cargo processes oversubscribe the runner
+      # and break wall-clock tests (analyst's decision latency p99 < 10 ms);
+      # cargo parallelises each build itself.
+      - name: moon ci
+        env:
+          MOON_CONCURRENCY: '1'
+        run: scripts/ci/moon-ci.sh
 
-      - name: Tests
-        run: cargo test --all
-
-      - name: Telemetry Kafka trace context and collector-down timing
-        run: |
-          cargo test -p telemetry --features kafka --lib kafka::
-          cargo test -p telemetry --release --lib trace::tests::collector_down_never_blocks
-
-      - name: Verdict kernel for WASM
-        run: |
-          cargo clippy -p verdict-sdk -p verdict-sample --target wasm32-unknown-unknown -- -D warnings
-          cargo build --release --target wasm32-unknown-unknown -p verdict-sample
-          cargo clippy --manifest-path verdict/bench/Cargo.toml -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho --target wasm32-unknown-unknown -- -D warnings
-          cargo build --manifest-path verdict/bench/Cargo.toml --release --target wasm32-unknown-unknown -p verdict-bench-anchored -p verdict-bench-memmem -p verdict-bench-aho
-
-      - name: Verdict bench workspace
-        run: |
-          cargo fmt --manifest-path verdict/bench/Cargo.toml --all -- --check
-          cargo clippy --manifest-path verdict/bench/Cargo.toml --workspace --all-targets -- -D warnings
-          cargo build --manifest-path verdict/bench/Cargo.toml --workspace --all-targets
-          cargo test --manifest-path verdict/bench/Cargo.toml --workspace
-
-      - name: Verdict template
-        working-directory: verdict/template
-        run: |
-          cargo fmt -- --check
-          cargo clippy --all-targets -- -D warnings
-          cargo test
-          cargo build --release --target wasm32-unknown-unknown
-
-      - name: Verdict prep entrypoint
-        run: |
-          export PREP_CARGO_HOME="$HOME/.cargo"
-          for script in entrypoint workspace smoke test_entrypoint; do
-            bash -n "verdict/prep/$script.sh"
-          done
-          bash verdict/prep/test_entrypoint.sh
+      - name: Summary
+        if: always()
+        run: python3 scripts/ci/moon-summary.py "moon ci"
 
   # The review session's boundary (NEX-285), with the real mechanism: the
   # uid-switch helper is built with this runner's uids, given its file
   # capabilities, and conductor/deploy/review-isolation-test.sh then starts
   # sessions through tmux as the reviewer user and checks what that user can
-  # and cannot reach. No network access to GitHub or Linear is needed.
+  # and cannot reach. No network access to GitHub or Linear is needed. Runs
+  # when moon finds `conductor/deploy:isolation` affected, and on main.
   review-isolation:
     name: review session isolation
+    needs: plan
+    if: needs.plan.outputs.isolation == 'true'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install tools
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y tmux libcap2-bin jq shellcheck python3
-
-      - name: shellcheck the deploy scripts
-        run: shellcheck -S warning conductor/deploy/*.sh conductor/deploy/review-bin/*
-
-      - name: Entrypoint tests
-        run: bash conductor/deploy/entrypoint-test.sh
+          sudo apt-get install -y tmux libcap2-bin jq python3
 
       - name: Build and install the switch and the wrappers
         run: |
@@ -149,8 +216,39 @@ jobs:
           echo "REVIEW_TEST_DATA=$data" >> "$GITHUB_ENV"
           echo "CONDUCTOR_REVIEW_UID=$reviewer_uid" >> "$GITHUB_ENV"
 
+      - name: Install moon
+        uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
+
       - name: Review session isolation
+        env:
+          MOON_CI_IGNORE_CI_CHECKS: '1'
         run: |
           grep -E 'Cap(Bnd|Eff)|NoNewPrivs' /proc/self/status
           /usr/local/libexec/conductor-review-switch --probe || true
-          bash conductor/deploy/review-isolation-test.sh
+          scripts/ci/moon-ci.sh conductor/deploy:isolation
+
+      - name: Summary
+        if: always()
+        run: python3 scripts/ci/moon-summary.py "review session isolation" conductor/deploy:isolation
+
+  # The one result to look at (and to require, if main gets branch
+  # protection): succeeds only when every job above succeeded or was skipped.
+  ci-ok:
+    name: ci-ok
+    needs: [plan, moon-config, ci, review-isolation]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job succeeded or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | python3 -c '
+          import json, sys
+          needs = json.load(sys.stdin)
+          bad = {job: n["result"] for job, n in needs.items() if n["result"] not in ("success", "skipped")}
+          for job, n in needs.items():
+              print(job + ": " + n["result"])
+          if bad:
+              sys.exit(f"not passing: {bad}")
+          '

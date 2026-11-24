@@ -13,6 +13,7 @@ commands to run.
 |---|---|---|
 | every Cargo package at `*/`, `verdict/*/`, `verdict/kernels/*/` | its `Cargo.toml` (`.moon/workspace.yml` globs) | `lint` (`cargo clippy -p <crate> --all-targets --all-features -- -D warnings`), `test` (`cargo test -p <crate>`), from `.moon/tasks/rust.yml` |
 | `telemetry` | as above | also `test-kafka`, `test-collector-down` |
+| `analyst` | as above | `test` skips `the_latency_of_a_decision_stays_far_under_the_budget`, which runs alone in `test-latency`, the only task retried once (`retryCount: 1`): its p99 < 10 ms on real Postgres writes can miss on a runner still flushing a cold build |
 | `verdict/kernels/sample` | as above | also `wasm`: clippy and release build of `verdict-sdk`/`verdict-sample` for `wasm32-unknown-unknown`; inputs `verdict/sdk/**`, `verdict/kernels/**` |
 | `verdict/bench` (own Cargo workspace) | as above | `fmt`, `lint`, `lint-wasm`, `build`, `build-wasm`, `test` |
 | `verdict/template` (own Cargo workspace) | as above | `fmt`, `lint`, `test`, `build-wasm` |
@@ -58,6 +59,9 @@ git diff --name-only --no-renames $(git merge-base origin/main HEAD) HEAD |
 `moon ci` runs every affected task with `runInCI` (all but
 `conductor/deploy:isolation`). `MOON_BASE`/`MOON_HEAD` change the range; extra
 arguments go to `moon ci` (targets such as `:test`, `--job`/`--job-total`).
+`MOON_CI_ALL=<reason>` runs every task. `MOON_CI_IGNORE_CI_CHECKS=1` also runs
+tasks with `runInCI: false` (through `moon exec --ci --ignore-ci-checks` with
+the same flags, as `moon ci` has no such option); the isolation job uses it.
 
 **When in doubt, everything.** The script runs `moon ci --force` (every task)
 when the base or head is missing, they have no merge base (a shallow clone or
@@ -66,7 +70,52 @@ starts a task. It never runs nothing.
 
 Do not decide what runs from `moon query tasks --affected`: it can disagree
 with what `moon run --affected` executes in CI (moon issue 2706). The tests
-below read what `moon ci` actually ran from `.moon/cache/ciReport.json`.
+and the workflow's plan read what moon actually ran from its report, which
+`moon-ci.sh` keeps in `.moon/cache/moon-ci/report.json` with `mode` and
+`touched`.
+
+## The workflow
+
+`.github/workflows/ci.yml`, on every pull request, every push to main and a
+manual run:
+
+| Job | What it does |
+|---|---|
+| `plan / fmt` | Light (no Postgres, no system packages, no Rust cache). `scripts/ci/moon-plan.sh` lets `moon-ci.sh` choose as the real run will, then runs it in the stubbed copy (`scripts/ci/stub-workspace.sh`, the selection test's copy) and reads moon's report: does anything beyond `root:fmt` run (`heavy`), does `conductor/deploy:isolation` (`isolation`)? When only fmt runs, it runs it here and the jobs below are skipped. Any error means both are true. |
+| `moon config checks` | `check-moon-graph.py`, `check-cross-crate-inputs.py`, `test-affected.sh`. |
+| `moon ci` | When `heavy`: Postgres, system packages, toolchain, `Swatinem/rust-cache`, then `scripts/ci/moon-ci.sh`. |
+| `review session isolation` | When `isolation`: builds and installs the uid-switch helper (sudo, setcap), then `MOON_CI_IGNORE_CI_CHECKS=1 scripts/ci/moon-ci.sh conductor/deploy:isolation`. |
+| `ci-ok` | `needs:` all of the above, `if: always()`; passes only when each is `success` or `skipped`. The one check to look at, and the one to require if main gets branch protection. |
+
+- **Pull request:** `MOON_BASE=origin/<base branch>` (checkout with
+  `fetch-depth: 0`), so only the affected tasks run, with deep dependents.
+- **Push to main and manual runs:** `MOON_CI_ALL` is set, so every task runs
+  (`moon ci --force`), main stays fully verified and the Rust cache warm.
+- **A full run of a pull request:** Actions → CI → "Run workflow" on the PR's
+  branch (`workflow_dispatch`). Its check runs land on the same commit, so
+  conductor's CI gate sees them.
+- `moon ci` runs one task at a time (`MOON_CONCURRENCY=1`): parallel cargo
+  processes oversubscribe the 4-vCPU runner and break wall-clock tests, and
+  cargo parallelises each build itself.
+- The Rust cache (`Swatinem/rust-cache`, prefix `v1-moon`) is saved only by
+  main. Per-crate `cargo test -p` builds dependencies in other feature sets
+  than `cargo test --all`, so the cache must come from a moon run; main runs
+  every task, so its cache holds every crate's dependencies, and it stays
+  valid until `Cargo.lock` changes (workspace crates are not cached).
+- Each job's summary lists the mode (affected, or everything and why), the
+  touched files, the tasks moon ran with result and time, and the tasks it did
+  not run (`scripts/ci/moon-summary.py`).
+
+**No `paths:` filter.** Conductor's CI gate (`conductor/src/review/ci_gate.rs`)
+treats a pull request with no check runs as pending and waits up to 2 h for
+them. A workflow-level `paths:` filter would leave a docs-only PR with none.
+Without it, every PR ends with finished check runs: at least `plan / fmt` and
+`ci-ok`, and skipped jobs count as passing.
+
+The old `smoke-test.yml` (chronicle's `smoke_test`, `nordic`, `daily_bars`
+and `nordic_live` test targets) and `alert-rules.yml` are gone: those targets
+run in `chronicle:test` (`cargo test -p chronicle`, with `TEST_DATABASE_URL`),
+and the alert rules in `infra/charts/nexus/prometheus:rules`.
 
 Locally:
 
@@ -89,6 +138,11 @@ other workspaces, the WASM task and the prep test:
 - `.cargo/**`
 - `.moon/**`
 - `.github/workflows/ci.yml`
+
+`.github/workflows/ci.yml` is also an input of every other task
+(`implicitInputs` in `.moon/tasks/all.yml`): the workflow installs what the
+non-Rust tasks need too (the review isolation helper, packages, Docker), so a
+change to it runs everything, `conductor/deploy:isolation` included.
 
 A `Cargo.lock` change is not narrowed to the crates whose dependencies changed.
 
@@ -140,7 +194,8 @@ crate) still have to be declared by hand.
 | `scripts/ci/check-cross-crate-inputs.py` | a file read from another project's folder is not a declared input |
 | `scripts/ci/test-affected.sh` | `moon ci`, through `moon-ci.sh`, runs other tasks than expected for a fixed list of touched files (given on stdin, no commits), or does not run everything when the base is unknown, the diff is empty or the clone is shallow |
 
-`test-affected.sh` works in a scratch copy where the moon configuration,
-`Cargo.toml`s and `Cargo.lock` are real, every other file is empty, and
-`cargo`, `docker` and `shellcheck` are stubs, so it builds nothing (about 10 s).
+`test-affected.sh` works in the scratch copy of `stub-workspace.sh`, where the
+moon configuration, `Cargo.toml`s and `Cargo.lock` are real, every other file
+is empty, and `cargo`, `docker` and `shellcheck` are stubs, so it builds
+nothing (about 10 s). CI runs all three in the `moon config checks` job.
 Update its expected sets when a project or a dependency changes on purpose.
