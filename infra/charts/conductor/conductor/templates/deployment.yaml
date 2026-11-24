@@ -181,6 +181,8 @@ spec:
               value: {{ .Values.review.maxSessions | quote }}
             - name: CONDUCTOR_REVIEW_TIMEOUT
               value: {{ .Values.review.timeout | quote }}
+            - name: CONDUCTOR_REVIEW_LABEL
+              value: {{ .Values.review.label | quote }}
             - name: CONDUCTOR_REVIEW_BOT_LOGIN
               value: {{ .Values.review.botLogin | quote }}
             - name: CONDUCTOR_CI_POLL_INTERVAL

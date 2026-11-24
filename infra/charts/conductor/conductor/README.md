@@ -242,7 +242,7 @@ off every trading path.
   set, only `githubWebhookUsers` are reviewed and a warning names the override.
   The bot is **not** added to `githubWebhookUsers`: that would send the agent's
   own pull request comments back into its session. The check applies to every
-  trigger (entering review, `/review`, a review request) and runs before the CI
+  trigger (entering review, `/review`, the `review` label) and runs before the CI
   gate and before any side effect. Other pull requests of the issue are listed
   in a Linear comment as skipped; with none left, no session starts, the issue
   stays in review and the comment is `Review not started: no pull request by an
@@ -262,14 +262,21 @@ off every trading path.
   whatever the limit. Conductor reacts with 👀 when it is queued; the comment is
   not sent to the author's set. At most one review per issue is queued or
   running at a time; further triggers are dropped and logged.
-- **Re-request review.** The same manual review starts when a
-  `githubWebhookUsers` login requests a review from the reviewer app in the
-  pull request's **Reviewers** box, as with Copilot (a `pull_request`
-  `review_requested` event naming the reviewer bot). GitHub only lists a
-  third-party app there once it has reviewed the pull request, so this is the
-  **Re-request review** button next to Annette after her first, automatic
-  review; before that, or for a pull request she never reviewed, use
-  `/review`. Needs the GitHub webhook to send `pull_request` events (below).
+- **`review` label.** Adding the label `review` (`review.label`,
+  `CONDUCTOR_REVIEW_LABEL`; empty turns it off, matched case-insensitively) to a
+  pull request from the sidebar starts the same manual review as `/review`: a
+  `pull_request` `labeled` event from a `githubWebhookUsers` login, then
+  everything `/review` does (author filter, `review.repo`, the owning issue, one
+  review per issue, no CI gate, no send-back limit). Conductor then removes the
+  label, whatever the outcome (queued, dropped, author not allowed, no issue),
+  so it can be added again and its disappearance shows the click was accepted;
+  a failed removal is logged and counted in
+  `conductor_review_label_remove_failures_total`, never retried. A label added
+  by anyone else is left alone, as is any other label, and with reviews
+  disabled. GitHub cannot request a review from an app (the Reviewers box never
+  offers Annette), which is why the label exists. Create it once:
+  `gh label create review --repo <owner>/<repo> --description "Ask Annette for a review" --color 5319e7`.
+  Needs the GitHub webhook to send `pull_request` events (below).
 - **The reviewer bot.** Comments by the reviewer app's bot login are never
   dispatched to a session; a send-back reaches the author only through the
   move to Todo. The login is read from the app at startup (see "The reviewer's
@@ -287,7 +294,7 @@ Settings (`values.yaml` `review`, environment in brackets): `enabled`
 (`CONDUCTOR_REVIEW_STATE`), `maxIterations` (`CONDUCTOR_REVIEW_MAX_ITERATIONS`),
 `model` (`CONDUCTOR_REVIEW_MODEL`), `maxSessions`
 (`CONDUCTOR_MAX_REVIEW_SESSIONS`), `timeout` (`CONDUCTOR_REVIEW_TIMEOUT`,
-`45m`, `2700s` or `1h`), `botLogin` (`CONDUCTOR_REVIEW_BOT_LOGIN`), `repo` (`CONDUCTOR_REVIEW_REPO`).
+`45m`, `2700s` or `1h`), `botLogin` (`CONDUCTOR_REVIEW_BOT_LOGIN`), `label` (`CONDUCTOR_REVIEW_LABEL`), `repo` (`CONDUCTOR_REVIEW_REPO`).
 `enabled` is `true` in the chart since the review session's boundary
 (NEX-285, "The review session's boundary" below) closed the gaps found in the
 review of PR 325. Conductor keeps reviews off, with an error in its log, when
@@ -296,6 +303,7 @@ ready starts no session (below). Metrics
 `conductor_reviews_total{trigger,verdict}`,
 `conductor_review_failures_total{reason}` (`identity_not_ready`),
 `conductor_review_skipped_total{reason}` (`author_not_allowed`),
+`conductor_review_label_remove_failures_total`,
 `conductor_review_duration_seconds`, `conductor_review_limit_reached_total`,
 `conductor_review_sessions{kind}`, `conductor_review_linear_identity{kind}`,
 `conductor_review_linear_auth_failures_total`; alert
@@ -385,7 +393,7 @@ if one were attempted. One-time setup:
    the pod (`kubectl -n conductor rollout restart deploy/conductor`).
 5. **Subscribe the repository webhook to `pull_request` events** (repository
    → Settings → Webhooks → the Hookdeck one → "Let me select individual
-   events" → add **Pull requests**). Only needed for **Re-request review**.
+   events" → add **Pull requests**). Needed for the `review` label and, for the CI gate, `synchronize`.
 
 At every start the entrypoint (`configure_review_identity`) prepares
 `/data/review` (`CONDUCTOR_REVIEW_IDENTITY_DIR` is `/data/review/identity`):
@@ -538,8 +546,8 @@ scope.
 Without the three `REVIEW_GITHUB_APP_*` properties, a Linear key, or a working
 switch, the identity is not ready and reviews start nothing.
 
-Known limit: GitHub does not let an app be picked as a reviewer before it has
-reviewed (see **Re-request review**).
+Known limit: GitHub does not let anyone request a review from an app (see the
+**`review` label**).
 
 ### The reviewer's own name in Linear (Annette)
 

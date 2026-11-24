@@ -720,6 +720,7 @@ async fn a_webhook_posted_to_the_router_reaches_a_run(pool: PgPool) {
         watched_github_users: vec!["lassemand".into()],
         shutting_down: Arc::clone(&h.shutting_down),
         review_bot_login: None,
+        review_label: "review".into(),
     });
 
     // A real transition into Todo, as Linear would send it.
