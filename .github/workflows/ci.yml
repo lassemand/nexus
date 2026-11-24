@@ -143,13 +143,25 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
+      # moon runs cargo per crate, which builds dependencies in other feature
+      # sets than `cargo test --all` did, so the cache has its own prefix. It is
+      # saved only by main (which runs every task, so it holds every crate's
+      # dependencies) and stays valid until Cargo.lock changes.
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-moon
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install moon
         uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
 
+      # One task at a time: parallel cargo processes oversubscribe the runner
+      # and break wall-clock tests (analyst's decision latency p99 < 10 ms);
+      # cargo parallelises each build itself.
       - name: moon ci
+        env:
+          MOON_CONCURRENCY: '1'
         run: scripts/ci/moon-ci.sh
 
       - name: Summary

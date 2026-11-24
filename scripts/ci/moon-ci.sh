@@ -75,7 +75,9 @@ run_everything() {
   [[ -n "${MOON_CI_DECIDE_ONLY:-}" ]] && exit 0
   shift
   rm -f .moon/cache/ciReport.json .moon/cache/runReport.json "$state/report.json"
-  env -u MOON_BASE -u MOON_HEAD "${base_cmd[@]}" --force "$@"
+  # --stdin with no input: moon must not ask git for changed files, which in
+  # a shallow clone on GitHub Actions fails even with --force.
+  env -u MOON_BASE -u MOON_HEAD "${base_cmd[@]}" "${affected[@]}" --force --stdin "$@" < /dev/null
   local status=$?
   keep_report
   exit "$status"
