@@ -7,7 +7,7 @@ use common::rig::{at, trapping_kernel, Rig};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use analyst::{
     classify, preload, with_retry, Classified, DecisionKind, KernelRegistry, KernelRuntime,
