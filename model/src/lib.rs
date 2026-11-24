@@ -1,3 +1,4 @@
+//! Common types shared across the workspace (proof run).
 pub mod asset;
 pub mod bar;
 pub mod calendar;
