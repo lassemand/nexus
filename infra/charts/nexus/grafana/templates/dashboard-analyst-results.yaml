@@ -558,7 +558,7 @@ data:
         {
           "type": "stat",
           "title": "Excluded trades",
-          "description": "Trades of any decision (shadow included) whose status is not `closed`, or whose pnl_pct is missing or <= -100. Never counted as 0 %. Click for the breakdown by status in the Coverage row.",
+          "description": "Trades of any decision (shadow included) whose status is not `closed`, or whose pnl_pct is missing or <= -100. Never counted as 0 %. Filtered on the decision time like the table it links to (the publish time when the decision has not arrived). Click for the breakdown by status in the Coverage row.",
           "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "nexus-postgres"
@@ -583,7 +583,7 @@ data:
               "format": "table",
               "rawQuery": true,
               "editorMode": "code",
-              "rawSql": "SELECT count(*) AS excluded FROM simulated_trades WHERE (status <> 'closed' OR pnl_pct IS NULL OR pnl_pct <= -100) AND $__timeFilter(coalesce(exit_at, entry_at, published_at)) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))"
+              "rawSql": "SELECT count(*) AS excluded FROM simulated_trades t LEFT JOIN analyst_decisions d ON d.news_id = t.news_id WHERE (t.status <> 'closed' OR t.pnl_pct IS NULL OR t.pnl_pct <= -100) AND $__timeFilter(coalesce(d.decided_at, t.published_at)) AND (t.ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (t.exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))"
             }
           ],
           "id": 10,
@@ -709,7 +709,7 @@ data:
           },
           "options": {
             "xField": "report",
-            "stacking": "none",
+            "stacking": "normal",
             "showValue": "never",
             "xTickLabelRotation": -45,
             "legend": {
