@@ -5,3 +5,5 @@ tasks:
     inputs:
       # tests/common/mod.rs applies signal's migrations.
       - '/signal/migrations/**/*'
+    options:
+      priority: 'critical'
