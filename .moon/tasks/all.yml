@@ -9,3 +9,8 @@ fileGroups:
     - '/.cargo/**/*'
     - '/.moon/**/*'
     - '/.github/workflows/ci.yml'
+
+# A change to the workflow runs every task, Rust or not: its jobs install what
+# the tasks need (the isolation job's helper, packages, Docker images).
+implicitInputs:
+  - '/.github/workflows/ci.yml'

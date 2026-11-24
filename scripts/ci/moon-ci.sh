@@ -75,10 +75,11 @@ run_everything() {
   [[ -n "${MOON_CI_DECIDE_ONLY:-}" ]] && exit 0
   shift
   rm -f .moon/cache/ciReport.json .moon/cache/runReport.json "$state/report.json"
-  # moon loads changed files even with --force. On GitHub Actions it takes the
-  # base from the pull request (or MOON_BASE), and in a shallow clone that git
-  # call fails; HEAD against itself always works.
-  env -u MOON_BASE -u MOON_HEAD "${base_cmd[@]}" "${affected[@]}" --force --base HEAD --head HEAD "$@"
+  # No --affected (moon exec), so nothing can narrow the run. moon loads
+  # changed files even with --force; on GitHub Actions it takes the base from
+  # the pull request (or MOON_BASE), and in a shallow clone that git call
+  # fails, so it is given HEAD against itself, which always works.
+  env -u MOON_BASE -u MOON_HEAD "${base_cmd[@]}" --force --base HEAD --head HEAD "$@"
   local status=$?
   keep_report
   exit "$status"

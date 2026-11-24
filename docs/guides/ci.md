@@ -13,6 +13,7 @@ commands to run.
 |---|---|---|
 | every Cargo package at `*/`, `verdict/*/`, `verdict/kernels/*/` | its `Cargo.toml` (`.moon/workspace.yml` globs) | `lint` (`cargo clippy -p <crate> --all-targets --all-features -- -D warnings`), `test` (`cargo test -p <crate>`), from `.moon/tasks/rust.yml` |
 | `telemetry` | as above | also `test-kafka`, `test-collector-down` |
+| `analyst` | as above | `test` skips `the_latency_of_a_decision_stays_far_under_the_budget`, which runs alone in `test-latency`, the only task retried once (`retryCount: 1`): its p99 < 10 ms on real Postgres writes can miss on a runner still flushing a cold build |
 | `verdict/kernels/sample` | as above | also `wasm`: clippy and release build of `verdict-sdk`/`verdict-sample` for `wasm32-unknown-unknown`; inputs `verdict/sdk/**`, `verdict/kernels/**` |
 | `verdict/bench` (own Cargo workspace) | as above | `fmt`, `lint`, `lint-wasm`, `build`, `build-wasm`, `test` |
 | `verdict/template` (own Cargo workspace) | as above | `fmt`, `lint`, `test`, `build-wasm` |
@@ -137,6 +138,11 @@ other workspaces, the WASM task and the prep test:
 - `.cargo/**`
 - `.moon/**`
 - `.github/workflows/ci.yml`
+
+`.github/workflows/ci.yml` is also an input of every other task
+(`implicitInputs` in `.moon/tasks/all.yml`): the workflow installs what the
+non-Rust tasks need too (the review isolation helper, packages, Docker), so a
+change to it runs everything, `conductor/deploy:isolation` included.
 
 A `Cargo.lock` change is not narrowed to the crates whose dependencies changed.
 

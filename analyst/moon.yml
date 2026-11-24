@@ -5,8 +5,17 @@ tasks:
     inputs:
       # tests/common/mod.rs applies signal's migrations.
       - '/signal/migrations/**/*'
+    # The latency test runs in test-latency, the one task that is retried.
+    args: ['--', '--skip', 'the_latency_of_a_decision_stays_far_under_the_budget']
+  test-latency:
+    description: 'the decision latency test of tests/releases.rs, retried once'
+    extends: 'test'
+    command: ['cargo', 'test', '-p', 'analyst', '--test', 'releases', 'the_latency_of_a_decision_stays_far_under_the_budget', '--', '--exact']
     options:
-      # tests/releases.rs asserts a p99 under 10 ms on real Postgres writes;
-      # on a CI runner still flushing a cold build to disk it can miss (seen at
-      # 10 and 47 ms). One retry; a real regression fails both runs.
+      mergeArgs: 'replace'
+      # It asserts a p99 under 10 ms on real Postgres writes; on a CI runner
+      # still flushing a cold build to disk it can miss (seen at 10 and 47 ms).
+      # One retry; a real regression fails both runs. Every other analyst test
+      # runs in `test`, without a retry. NEX-293 makes the test robust and
+      # removes this task.
       retryCount: 1

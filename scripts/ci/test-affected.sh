@@ -75,7 +75,14 @@ check() {
   fi
 }
 
-crate() { local c; for c in "$@"; do printf '%s:lint %s:test ' "$c" "$c"; done; }
+crate() {
+  local c
+  for c in "$@"; do
+    printf '%s:lint %s:test ' "$c" "$c"
+    [[ "$c" == analyst ]] && printf 'analyst:test-latency '
+  done
+  return 0
+}
 
 fmt="root:fmt"
 bench="verdict/bench:fmt verdict/bench:lint verdict/bench:lint-wasm verdict/bench:build verdict/bench:build-wasm verdict/bench:test"
@@ -95,7 +102,7 @@ check "chronicle: chronicle and its dependents only" \
   "$fmt $(crate chronicle)" -- chronicle/src/nordic/live.rs
 
 check "signal migration: signal, and analyst's, chronicle's and insight's tests" \
-  "$fmt $(crate signal) analyst:test chronicle:test insight:test" -- signal/migrations/20990101000000_x.sql
+  "$fmt $(crate signal) analyst:test analyst:test-latency chronicle:test insight:test" -- signal/migrations/20990101000000_x.sql
 
 check "recorded e2e events: chronicle and signal" \
   "$fmt $(crate chronicle signal)" -- chronicle/tests/fixtures/mfn/e2e/x.pb
@@ -105,7 +112,7 @@ check "docs: only fmt" "$fmt" -- docs/guides/x.md
 check "Cargo.lock: every Rust task" \
   "$fmt $(crate $rust_crates) $telemetry_extra $bench $template $wasm verdict/prep:test" -- Cargo.lock
 
-for global in Cargo.toml rust-toolchain.toml .cargo/config.toml .moon/workspace.yml .github/workflows/ci.yml; do
+for global in Cargo.toml rust-toolchain.toml .cargo/config.toml .moon/workspace.yml; do
   check "$global: every Rust task" \
     "$fmt $(crate $rust_crates) $telemetry_extra $bench $template $wasm verdict/prep:test" -- "$global"
 done
@@ -161,6 +168,8 @@ check_git "git diff against main, on GitHub Actions: only fmt" "$copy" "$fmt" \
 # When in doubt, everything (`moon ci --force`), never nothing.
 all="$fmt $(crate $rust_crates) $telemetry_extra $bench $template $wasm $deploy $prep $promtool"
 
+check ".github/workflows/ci.yml: every task" "$all" -- .github/workflows/ci.yml
+
 check_git "unknown base: every task" "$copy" "$all" MOON_BASE=does-not-exist
 
 check_git "empty diff: every task" "$copy" "$all" MOON_BASE=docs-change
@@ -178,6 +187,23 @@ check_git "shallow clone without a merge base: every task" "$work/shallow" "$all
   CI=true GITHUB_ACTIONS=true GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$work/event.json" \
   GITHUB_BASE_REF=main GITHUB_HEAD_REF=docs-change GITHUB_REF=refs/pull/1/merge \
   GITHUB_SHA="$(git -C "$work/shallow" rev-parse HEAD)" GITHUB_REPOSITORY=lassemand/nexus
+
+# Main's review isolation job: every task with the runInCI: false ones
+# included (moon exec, which must run without --affected), in the same
+# shallow GitHub environment.
+rm -f "$work/shallow/.moon/cache/moon-ci/report.json"
+if (cd "$work/shallow" && env CI=true GITHUB_ACTIONS=true GITHUB_EVENT_NAME=pull_request \
+  GITHUB_EVENT_PATH="$work/event.json" GITHUB_BASE_REF=main GITHUB_HEAD_REF=docs-change \
+  GITHUB_REF=refs/pull/1/merge GITHUB_SHA="$(git -C "$work/shallow" rev-parse HEAD)" \
+  MOON_CI_ALL="push to main" MOON_CI_IGNORE_CI_CHECKS=1 MOON="$moon" \
+  bash scripts/ci/moon-ci.sh conductor/deploy:isolation) > "$work/out" 2>&1 &&
+  [[ "$(copy="$work/shallow" report_targets)" == "conductor/deploy:isolation" ]]; then
+  echo "ok   main's isolation job: conductor/deploy:isolation runs"
+else
+  echo "FAIL main's isolation job: conductor/deploy:isolation did not run"
+  cat "$work/out"
+  failures=$((failures + 1))
+fi
 
 if [[ $failures -ne 0 ]]; then
   echo "$failures case(s) failed" >&2
