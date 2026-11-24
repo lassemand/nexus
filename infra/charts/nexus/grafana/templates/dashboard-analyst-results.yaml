@@ -1,0 +1,1381 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-analyst-results
+  namespace: nexus
+  annotations:
+    grafana_folder: Nexus
+  labels:
+    grafana_dashboard: "1"
+data:
+  analyst-results.json: |
+    {
+      "uid": "nexus-analyst-results",
+      "title": "Analyst results",
+      "description": "Simulated results of the analyst: gain per report, compounded gain, gain by holding time, processing time and coverage. Simulated, forward-only, per share, no fees, spread included, pre-open entries at the open, only closed trades count.",
+      "tags": [
+        "nexus",
+        "analyst"
+      ],
+      "timezone": "browser",
+      "time": {
+        "from": "now-90d",
+        "to": "now"
+      },
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "templating": {
+        "list": [
+          {
+            "name": "ticker",
+            "label": "Ticker",
+            "type": "query",
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "nexus-postgres"
+            },
+            "query": "SELECT DISTINCT ticker FROM simulated_trades ORDER BY 1",
+            "definition": "SELECT DISTINCT ticker FROM simulated_trades ORDER BY 1",
+            "refresh": 2,
+            "sort": 1,
+            "multi": true,
+            "includeAll": true,
+            "allValue": "'__all__'",
+            "current": {
+              "selected": true,
+              "text": [
+                "All"
+              ],
+              "value": [
+                "$__all"
+              ]
+            },
+            "options": []
+          },
+          {
+            "name": "exchange_mic",
+            "label": "Exchange MIC",
+            "type": "query",
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "nexus-postgres"
+            },
+            "query": "SELECT DISTINCT exchange_mic FROM simulated_trades ORDER BY 1",
+            "definition": "SELECT DISTINCT exchange_mic FROM simulated_trades ORDER BY 1",
+            "refresh": 2,
+            "sort": 1,
+            "multi": true,
+            "includeAll": true,
+            "allValue": "'__all__'",
+            "current": {
+              "selected": true,
+              "text": [
+                "All"
+              ],
+              "value": [
+                "$__all"
+              ]
+            },
+            "options": []
+          },
+          {
+            "name": "include_shadow",
+            "label": "Include shadow trades in gain per report",
+            "type": "custom",
+            "query": "false,true",
+            "multi": false,
+            "includeAll": false,
+            "current": {
+              "selected": true,
+              "text": "false",
+              "value": "false"
+            },
+            "options": [
+              {
+                "selected": true,
+                "text": "false",
+                "value": "false"
+              },
+              {
+                "selected": false,
+                "text": "true",
+                "value": "true"
+              }
+            ]
+          }
+        ]
+      },
+      "links": [
+        {
+          "title": "Analyst (operations)",
+          "type": "link",
+          "url": "/d/nexus-analyst",
+          "icon": "dashboard",
+          "targetBlank": false
+        }
+      ],
+      "panels": [
+        {
+          "type": "text",
+          "title": "About these results",
+          "description": "Read this first.",
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "targets": [],
+          "id": 1,
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 5
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "**Simulated results of the analyst, per share.**\n- Simulated and forward-only: every row exists because the analyst decided live; nothing is backfilled.\n- Per share: a gain is `pnl_pct = (exit bid - entry ask) / entry ask * 100`; no fees, no position sizing.\n- The bid/ask spread is included: buy at the ask, sell at the bid.\n- Pre-open releases are bought at the open, so the gain is the move after the open.\n- Only `closed` trades count toward any gain; every other status is excluded and counted, never shown as 0 %.\n- Shadow trades (`no_buy`, `abstain`, `skipped_no_kernel`) were simulated but not bought: they are the comparison baseline.\n- Percentages in different currencies are comparable; the compounded curve assumes all money is reinvested in every trade, so overlapping trades make it optimistic.\n"
+          }
+        },
+        {
+          "type": "row",
+          "title": "Results",
+          "collapsed": false,
+          "id": 2,
+          "gridPos": {
+            "x": 0,
+            "y": 5,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "type": "stat",
+          "title": "Trades (closed, bought)",
+          "description": "Closed `buy` trades with exit in the time range.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT count(*) AS trades FROM simulated_trades WHERE decision = 'buy' AND status = 'closed' AND pnl_pct > -100 AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))"
+            }
+          ],
+          "id": 3,
+          "gridPos": {
+            "x": 0,
+            "y": 6,
+            "w": 3,
+            "h": 4
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Hit rate",
+          "description": "Share of closed `buy` trades with pnl_pct > 0.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT round(coalesce(avg((pnl_pct > 0)::int), 0) * 100, 1) AS hit_rate FROM simulated_trades WHERE decision = 'buy' AND status = 'closed' AND pnl_pct > -100 AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))"
+            }
+          ],
+          "id": 4,
+          "gridPos": {
+            "x": 3,
+            "y": 6,
+            "w": 3,
+            "h": 4
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Mean gain",
+          "description": "Mean pnl_pct of closed `buy` trades, per share, spread included.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT round(avg(pnl_pct), 4) AS mean_pnl_pct FROM simulated_trades WHERE decision = 'buy' AND status = 'closed' AND pnl_pct > -100 AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))"
+            }
+          ],
+          "id": 5,
+          "gridPos": {
+            "x": 6,
+            "y": 6,
+            "w": 3,
+            "h": 4
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Median gain",
+          "description": "Median pnl_pct of closed `buy` trades.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT round((percentile_cont(0.5) WITHIN GROUP (ORDER BY pnl_pct))::numeric, 4) AS median_pnl_pct FROM simulated_trades WHERE decision = 'buy' AND status = 'closed' AND pnl_pct > -100 AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))"
+            }
+          ],
+          "id": 6,
+          "gridPos": {
+            "x": 9,
+            "y": 6,
+            "w": 3,
+            "h": 4
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Accumulated gain (compounded)",
+          "description": "Compounded, as if all money were reinvested in each trade; overlapping trades make this optimistic. Closed `buy` trades.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT round((exp(sum(ln(1 + pnl_pct / 100))) - 1) * 100, 4) AS compounded_pct FROM simulated_trades WHERE decision = 'buy' AND status = 'closed' AND pnl_pct > -100 AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))"
+            }
+          ],
+          "id": 7,
+          "gridPos": {
+            "x": 12,
+            "y": 6,
+            "w": 4,
+            "h": 4
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Best trade",
+          "description": "Highest pnl_pct of a closed `buy` trade.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT max(pnl_pct) AS best_pct FROM simulated_trades WHERE decision = 'buy' AND status = 'closed' AND pnl_pct > -100 AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))"
+            }
+          ],
+          "id": 8,
+          "gridPos": {
+            "x": 16,
+            "y": 6,
+            "w": 2,
+            "h": 4
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Worst trade",
+          "description": "Lowest pnl_pct of a closed `buy` trade.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT min(pnl_pct) AS worst_pct FROM simulated_trades WHERE decision = 'buy' AND status = 'closed' AND pnl_pct > -100 AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))"
+            }
+          ],
+          "id": 9,
+          "gridPos": {
+            "x": 18,
+            "y": 6,
+            "w": 2,
+            "h": 4
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Excluded trades",
+          "description": "Trades of any decision (shadow included) whose status is not `closed`, or whose pnl_pct is missing or <= -100. Never counted as 0 %. Filtered on the decision time like the table it links to (the publish time when the decision has not arrived). Click for the breakdown by status in the Coverage row.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "orange"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT count(*) AS excluded FROM simulated_trades t LEFT JOIN analyst_decisions d ON d.news_id = t.news_id WHERE (t.status <> 'closed' OR t.pnl_pct IS NULL OR t.pnl_pct <= -100) AND $__timeFilter(coalesce(d.decided_at, t.published_at)) AND (t.ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (t.exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))"
+            }
+          ],
+          "id": 10,
+          "gridPos": {
+            "x": 20,
+            "y": 6,
+            "w": 4,
+            "h": 4
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          },
+          "links": [
+            {
+              "title": "Excluded trades by status",
+              "url": "/d/nexus-analyst-results?viewPanel=21&${__url_time_range}&${ticker:queryparam}&${exchange_mic:queryparam}"
+            }
+          ]
+        },
+        {
+          "type": "barchart",
+          "title": "Gain per report (%)",
+          "description": "One bar per closed trade, labelled `<ticker> <report date>`, coloured by decision. pnl_pct per share, spread included. Shadow trades (decisions that were not bought) show only when the variable include_shadow is true.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 2
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "buy"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "green"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "no_buy"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "orange"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "abstain"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "blue"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "skipped_no_kernel"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "purple"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT ticker || ' ' || (published_at AT TIME ZONE 'UTC')::date AS report, CASE WHEN decision = 'buy' THEN pnl_pct END AS buy, CASE WHEN decision = 'no_buy' THEN pnl_pct END AS no_buy, CASE WHEN decision = 'abstain' THEN pnl_pct END AS abstain, CASE WHEN decision = 'skipped_no_kernel' THEN pnl_pct END AS skipped_no_kernel FROM simulated_trades WHERE status = 'closed' AND pnl_pct > -100 AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic)) AND (shadow = false OR $include_shadow) ORDER BY exit_at, trade_id"
+            }
+          ],
+          "id": 11,
+          "gridPos": {
+            "x": 0,
+            "y": 10,
+            "w": 24,
+            "h": 9
+          },
+          "options": {
+            "xField": "report",
+            "stacking": "normal",
+            "showValue": "never",
+            "xTickLabelRotation": -45,
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          }
+        },
+        {
+          "type": "table",
+          "title": "Closed trades",
+          "description": "One row per closed trade (excluded trades are listed in the Coverage row). Time held is shown in seconds. pnl_pct per share. Open trace links to Tempo.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "trace_id"
+                },
+                "properties": [
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open trace",
+                        "url": "/explore?left=%7B%22datasource%22:%22nexus-tempo%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22queryType%22:%22traceql%22,%22query%22:%22${__value.raw}%22%7D%5D%7D"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "time_held"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "pnl_pct"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "percent"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 2
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT exit_at AS time, ticker, exchange_mic AS mic, decision, shadow, entry_at, entry_ask, exit_at, exit_bid, extract(epoch FROM (exit_at - entry_at)) AS time_held, pnl_pct, status, trace_id FROM simulated_trades WHERE status = 'closed' AND pnl_pct > -100 AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic)) AND (shadow = false OR $include_shadow) ORDER BY exit_at DESC, trade_id DESC LIMIT 500"
+            }
+          ],
+          "id": 12,
+          "gridPos": {
+            "x": 0,
+            "y": 19,
+            "w": 24,
+            "h": 9
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Accumulated relative gain (compounded)",
+          "description": "Compounded, as if all money were reinvested in each trade; overlapping trades make this optimistic. Each line chains closed trades in exit order, starting from the first trade in the time range: exp(sum(ln(1 + pnl_pct/100))) - 1, in %. Strategy = closed buy trades; Buy every report = all closed trades, shadow and not; Not bought = closed no_buy shadow trades.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 2,
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "stepAfter",
+                "spanNulls": true,
+                "showPoints": "auto"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Strategy"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "green"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Buy every report"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "blue"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Not bought"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "orange"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "time_series",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT exit_at AS time, round((exp(sum(ln(1 + pnl_pct / 100)) OVER (ORDER BY exit_at, trade_id)) - 1) * 100, 4) AS \"Strategy\" FROM simulated_trades WHERE status = 'closed' AND pnl_pct > -100 AND decision = 'buy' AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic)) ORDER BY exit_at, trade_id"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "time_series",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT exit_at AS time, round((exp(sum(ln(1 + pnl_pct / 100)) OVER (ORDER BY exit_at, trade_id)) - 1) * 100, 4) AS \"Buy every report\" FROM simulated_trades WHERE status = 'closed' AND pnl_pct > -100 AND true AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic)) ORDER BY exit_at, trade_id"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "time_series",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT exit_at AS time, round((exp(sum(ln(1 + pnl_pct / 100)) OVER (ORDER BY exit_at, trade_id)) - 1) * 100, 4) AS \"Not bought\" FROM simulated_trades WHERE status = 'closed' AND pnl_pct > -100 AND decision = 'no_buy' AND shadow AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic)) ORDER BY exit_at, trade_id"
+            }
+          ],
+          "id": 13,
+          "gridPos": {
+            "x": 0,
+            "y": 28,
+            "w": 24,
+            "h": 9
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "type": "barchart",
+          "title": "Gain by holding time (mean %)",
+          "description": "Mean gain if sold at each horizon after entry: (observation bid - entry ask) / entry ask * 100, per share, from observations with status ok of closed trades. buy = bought; no_buy = declined (shadow). n = observations averaged. Horizons are ordered by duration.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 2
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "buy"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "green"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "no_buy"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "orange"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "WITH t AS (SELECT trade_id, decision, entry_ask FROM simulated_trades WHERE status = 'closed' AND entry_ask > 0 AND decision IN ('buy','no_buy') AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))) SELECT o.horizon, round(avg((o.bid - t.entry_ask) / t.entry_ask * 100) FILTER (WHERE t.decision = 'buy'), 4) AS buy, count(*) FILTER (WHERE t.decision = 'buy') AS n_buy, round(avg((o.bid - t.entry_ask) / t.entry_ask * 100) FILTER (WHERE t.decision = 'no_buy'), 4) AS no_buy, count(*) FILTER (WHERE t.decision = 'no_buy') AS n_no_buy FROM t JOIN simulated_trade_observations o ON o.trade_id = t.trade_id WHERE o.status = 'ok' AND o.bid IS NOT NULL GROUP BY o.horizon ORDER BY coalesce(array_position(ARRAY['1m','5m','15m','30m','60m','hold','close'], o.horizon), 99), o.horizon"
+            }
+          ],
+          "id": 14,
+          "gridPos": {
+            "x": 0,
+            "y": 37,
+            "w": 12,
+            "h": 9
+          },
+          "options": {
+            "xField": "horizon",
+            "stacking": "none",
+            "showValue": "auto",
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "transformations": [
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "horizon",
+                    "buy",
+                    "no_buy"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "table",
+          "title": "Gain by holding time: n per horizon and decision",
+          "description": "Mean gain if sold at each horizon after entry: (observation bid - entry ask) / entry ask * 100, per share, from observations with status ok of closed trades. buy = bought; no_buy = declined (shadow). n = observations averaged. Horizons are ordered by duration.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "buy"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "percent"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "no_buy"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "percent"
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "WITH t AS (SELECT trade_id, decision, entry_ask FROM simulated_trades WHERE status = 'closed' AND entry_ask > 0 AND decision IN ('buy','no_buy') AND $__timeFilter(exit_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic))) SELECT o.horizon, round(avg((o.bid - t.entry_ask) / t.entry_ask * 100) FILTER (WHERE t.decision = 'buy'), 4) AS buy, count(*) FILTER (WHERE t.decision = 'buy') AS n_buy, round(avg((o.bid - t.entry_ask) / t.entry_ask * 100) FILTER (WHERE t.decision = 'no_buy'), 4) AS no_buy, count(*) FILTER (WHERE t.decision = 'no_buy') AS n_no_buy FROM t JOIN simulated_trade_observations o ON o.trade_id = t.trade_id WHERE o.status = 'ok' AND o.bid IS NOT NULL GROUP BY o.horizon ORDER BY coalesce(array_position(ARRAY['1m','5m','15m','30m','60m','hold','close'], o.horizon), 99), o.horizon"
+            }
+          ],
+          "id": 15,
+          "gridPos": {
+            "x": 12,
+            "y": 37,
+            "w": 12,
+            "h": 9
+          }
+        },
+        {
+          "type": "row",
+          "title": "Speed per report",
+          "collapsed": false,
+          "id": 16,
+          "gridPos": {
+            "x": 0,
+            "y": 46,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "type": "table",
+          "title": "Processing time per report",
+          "description": "One row per decision, newest first. MFN to analyst = received - published; analyst to decision = decided - received; decision to entry is empty when there is no trade or no entry. analyst to decision is green below 50 ms, yellow below 500 ms, red otherwise. Times in ms.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "trace_id"
+                },
+                "properties": [
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open trace",
+                        "url": "/explore?left=%7B%22datasource%22:%22nexus-tempo%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22queryType%22:%22traceql%22,%22query%22:%22${__value.raw}%22%7D%5D%7D"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "mfn_to_analyst_ms"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "ms"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "kernel_ms"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "ms"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "decision_to_entry_ms"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "ms"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "publish_to_entry_ms"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "ms"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "price_age_ms"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "ms"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "analyst_to_decision_ms"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "ms"
+                  },
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "yellow",
+                          "value": 50
+                        },
+                        {
+                          "color": "red",
+                          "value": 500
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-background"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT d.decided_at AS time, d.ticker, d.exchange_mic AS mic, d.decision, d.published_at AS published, round(extract(epoch FROM (d.received_at - d.published_at)) * 1000) AS mfn_to_analyst_ms, round(extract(epoch FROM (d.decided_at - d.received_at)) * 1000) AS analyst_to_decision_ms, round(d.kernel_micros / 1000.0, 3) AS kernel_ms, round(extract(epoch FROM (t.entry_at - d.decided_at)) * 1000) AS decision_to_entry_ms, t.release_to_entry_ms AS publish_to_entry_ms, t.entry_quote_source AS price_source, t.entry_quote_age_ms AS price_age_ms, d.trace_id FROM analyst_decisions d LEFT JOIN simulated_trades t ON t.news_id = d.news_id WHERE $__timeFilter(d.decided_at) AND (d.ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (d.exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic)) ORDER BY d.decided_at DESC, d.news_id LIMIT 500"
+            }
+          ],
+          "id": 17,
+          "gridPos": {
+            "x": 0,
+            "y": 47,
+            "w": 24,
+            "h": 10
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "MFN publish \u2192 decision per report (ms, log scale)",
+          "description": "One point per decision: decided_at - published_at in ms, log scale. A decision with decided_at <= published_at (clock skew) cannot be drawn on a log scale and is left out here; it is still in the table above.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "custom": {
+                "drawStyle": "points",
+                "lineWidth": 0,
+                "pointSize": 6,
+                "showPoints": "always",
+                "scaleDistribution": {
+                  "type": "log",
+                  "log": 10
+                }
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "time_series",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT decided_at AS time, extract(epoch FROM (decided_at - published_at)) * 1000 AS publish_to_decision_ms FROM analyst_decisions WHERE decided_at > published_at AND $__timeFilter(decided_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic)) ORDER BY decided_at"
+            }
+          ],
+          "id": 18,
+          "gridPos": {
+            "x": 0,
+            "y": 57,
+            "w": 24,
+            "h": 8
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          }
+        },
+        {
+          "type": "row",
+          "title": "Coverage",
+          "collapsed": false,
+          "id": 19,
+          "gridPos": {
+            "x": 0,
+            "y": 65,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "type": "timeseries",
+          "title": "Reports per week by outcome",
+          "description": "Decisions per ISO week (Monday, UTC) by outcome: buy, no_buy, abstain, skipped_no_kernel, kernel_error, stale and twin_ignored when present.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "custom": {
+                "drawStyle": "bars",
+                "fillOpacity": 80,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                },
+                "lineWidth": 1,
+                "barAlignment": 0
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "time_series",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT date_trunc('week', decided_at) AS time, decision AS metric, count(*) AS reports FROM analyst_decisions WHERE $__timeFilter(decided_at) AND (ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic)) GROUP BY 1, 2 ORDER BY 1"
+            }
+          ],
+          "id": 20,
+          "gridPos": {
+            "x": 0,
+            "y": 66,
+            "w": 14,
+            "h": 9
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "type": "table",
+          "title": "Excluded trades by status",
+          "description": "Simulated trades (shadow included) whose status is not closed, by status; they never count toward a gain. Filtered on the decision time (the publish time when the decision has not arrived).",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "nexus-postgres"
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "nexus-postgres"
+              },
+              "format": "table",
+              "rawQuery": true,
+              "editorMode": "code",
+              "rawSql": "SELECT CASE WHEN t.status = 'closed' THEN 'closed_pnl_missing_or_out_of_range' ELSE t.status END AS status, count(*) AS trades FROM simulated_trades t LEFT JOIN analyst_decisions d ON d.news_id = t.news_id WHERE (t.status <> 'closed' OR t.pnl_pct IS NULL OR t.pnl_pct <= -100) AND $__timeFilter(coalesce(d.decided_at, t.published_at)) AND (t.ticker IN ($ticker) OR '__all__' IN ($ticker)) AND (t.exchange_mic IN ($exchange_mic) OR '__all__' IN ($exchange_mic)) GROUP BY 1 ORDER BY 2 DESC, 1"
+            }
+          ],
+          "id": 21,
+          "gridPos": {
+            "x": 14,
+            "y": 66,
+            "w": 10,
+            "h": 9
+          }
+        }
+      ]
+    }
