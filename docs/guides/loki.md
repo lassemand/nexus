@@ -74,3 +74,5 @@ Metric names were checked against Loki 3.6.11 and Alloy v1.21.2 run locally. Lok
 ## Cost
 
 B2 is free under 10 GB, then about $6.95 per TB per month. API calls are free.
+
+Proof run for NEX-290 (throwaway).
