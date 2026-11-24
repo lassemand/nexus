@@ -93,6 +93,14 @@ manual run:
 - **A full run of a pull request:** Actions → CI → "Run workflow" on the PR's
   branch (`workflow_dispatch`). Its check runs land on the same commit, so
   conductor's CI gate sees them.
+- `moon ci` runs one task at a time (`MOON_CONCURRENCY=1`): parallel cargo
+  processes oversubscribe the 4-vCPU runner and break wall-clock tests, and
+  cargo parallelises each build itself.
+- The Rust cache (`Swatinem/rust-cache`, prefix `v1-moon`) is saved only by
+  main. Per-crate `cargo test -p` builds dependencies in other feature sets
+  than `cargo test --all`, so the cache must come from a moon run; main runs
+  every task, so its cache holds every crate's dependencies, and it stays
+  valid until `Cargo.lock` changes (workspace crates are not cached).
 - Each job's summary lists the mode (affected, or everything and why), the
   touched files, the tasks moon ran with result and time, and the tasks it did
   not run (`scripts/ci/moon-summary.py`).

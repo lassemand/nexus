@@ -5,3 +5,8 @@ tasks:
     inputs:
       # tests/common/mod.rs applies signal's migrations.
       - '/signal/migrations/**/*'
+    options:
+      # tests/releases.rs asserts a p99 under 10 ms on real Postgres writes;
+      # on a CI runner still flushing a cold build to disk it can miss (seen at
+      # 10 and 47 ms). One retry; a real regression fails both runs.
+      retryCount: 1
