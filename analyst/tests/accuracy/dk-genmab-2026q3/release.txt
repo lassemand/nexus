@@ -1,0 +1,237 @@
+Genmab Announces Financial Results for the Nine Months of 2026
+
+November 5, 2026 Copenhagen, Denmark;
+Interim Report for the Nine Months Ended September 30, 2026
+
+Highlights
+
+* Epcoritamab approved in Europe (as TEPKINLY^{®}) and Japan (as EPKINLY^{®}) in
+  combination with R² for the treatment of adult patients with relapsed or
+  refractory FL
+* Initiation of two new Phase 3 trials for petosemtamab in first- and
+  second-line CRC
+* Genmab revenue increased 22% compared to the first nine months of 2025, to
+  $3,238 million
+  
+
+“The third quarter of 2026 reinforced the breadth of our late-stage portfolio.
+TEPKINLY plus R² became the first bispecific-based therapy approved in Europe
+for second-line FL, extending epcoritamab's reach as a core therapy across
+B-cell malignancies. We also broadened our petosemtamab program with new Phase 3
+studies in CRC, underscoring our confidence in this asset beyond head and neck
+cancer. As anticipated, we are now in our data-rich fourth quarter, where we
+have delivered pivotal readouts across our three late-stage assets, epcoritamab,
+Rina-S^{®} (rinatabart sesutecan) and petosemtamab, supporting multiple
+regulatory submissions and potential launches in 2027,” said Jan van de Winkel,
+Ph.D., Chief Executive Officer of Genmab.
+
+Financial Performance First Nine Months of 2026
+
+* Revenue was $3,238 million for the first nine months of 2026 compared to
+  $2,662 million for the first nine months of 2025. The increase of $576
+  million, or 22%, was primarily driven by higher DARZALEX^{®} and Kesimpta^{®}
+  royalties and higher EPKINLY^{®} net product sales.
+* Royalty revenue was $2,699 million in the first nine months of 2026 compared
+  to $2,219 million in the first nine months of 2025, an increase of $480
+  million, or 22%. The increase in royalties was driven by higher net sales of
+  DARZALEX and Kesimpta.
+* Net sales of DARZALEX by J&J were $12,410 million in the first nine months of
+  2026 compared to $10,448 million in the first nine months of 2025, an increase
+  of $1,962 million or 19%.
+* Global net sales of EPKINLY/TEPKINLY^{®} were $491 million in the first nine
+  months of 2026 compared to $333 million in the first nine months of 2025, an
+  increase of $158 million or 47%.
+* Cost of product sales were $234 million for the first nine months of 2026
+  compared to $157 million for the first nine months of 2025. The increase of
+  $77 million, or 49%, was primarily driven by the profit-sharing amounts
+  payable to AbbVie related to EPKINLY sales.
+* Acquisition and integration related charges related to the integration of
+  Merus were $87 million in the first nine months of 2026.
+* Amortization of acquired intangible assets was $35 million for the first nine
+  months of 2026 compared to $9 million for the first nine months of 2025. The
+  increase of $26 million, was primarily driven by the amortization of the Merus
+  technology platform.
+* Operating expenses were $2,018 million in the first nine months of 2026
+  compared to $1,498 million in the first nine months of 2025, an increase of
+  $520 million or 35%.
+* Adjusted operating expenses, which exclude Acquisition and integration related
+  charges and Amortization of acquired intangible assets, were $1,896 million
+  for the first nine months of 2026 compared to $1,489 million for the first
+  nine months of 2025. The increase of $407 million, or 27%, was primarily
+  driven by investment in our product pipeline, including the advancement of
+  Rina-S and petosemtamab, and our global commercialization capabilities in
+  preparation for their anticipated launches.
+* Operating profit was $986 million in the first nine months of 2026 compared to
+  $1,007 million in the first nine months of 2025. Adjusted operating profit,
+  which excludes Acquisition and integration related charges and Amortization of
+  acquired intangible assets, was $1,108 million in the first nine months of
+  2026 compared to $1,016 million in the first nine months of 2025.
+
+Non-IFRS Financial Measures
+Our Adjusted operating expenses and adjusted operating profit excludes
+acquisition and integration related charges and amortization of acquired
+intangible assets. These charges were recognized in current as well as prior
+periods and will likely reoccur in future periods. These items are excluded from
+operating expenses and operating profit because the Company believes they
+neither relate to the ordinary course of the Company's business nor reflect the
+Company's underlying business performance.
+
+Non-IFRS information is intended to portray the results of our baseline
+performance, supplement or enhance management's, analysts' and investors’
+overall understanding of our underlying financial performance and facilitate
+comparisons among current, past and future periods. This information is not
+intended to be considered in isolation or as a substitute for the related
+financial measures prepared in accordance with IFRS and may not be the same as
+or comparable to similarly titled measures presented by other companies due to
+possible differences in method and in the items being adjusted. We encourage
+investors to review our financial statements and publicly-filed reports in their
+entirety and not to rely on any single financial measure.
+
+The reconciliations of financial performance from IFRS to Non-IFRS for the first
+nine months of 2026 and 2025 were as follows:
+
+────────────────────────────┬───────┬────────┬────────┬───────┬────────┬────────
+                            │2026   │Exclude │2026    │2025   │Exclude │2025    
+                            │Actual │        │Adjusted│Actual │        │Adjusted
+────────────────────────────┼───────┼───┬────┼────────┼───────┼───┬────┼────────
+(USD million)               │IFRS   │A&I│Amor│Non-IFRS│IFRS   │A&I│Amor│Non-IFRS
+                            │       │*  │t** │        │       │*  │t** │        
+────────────────────────────┼───────┼───┼────┼────────┼───────┼───┼────┼────────
+Operating Expenses / Adj.   │$      │87 │35  │$       │$      │—  │9   │$       
+Operating Expenses***       │(2,018)│   │    │(1,896) │(1,498)│   │    │(1,489) 
+────────────────────────────┼───────┼───┼────┼────────┼───────┼───┼────┼────────
+Operating Profit / Adj.     │$ 986  │87 │35  │$ 1,108 │$ 1,007│—  │9   │$ 1,016 
+Operating Profit            │       │   │    │        │       │   │    │        
+────────────────────────────┴───────┴───┴────┴────────┴───────┴───┴────┴────────
+
+* Acquisition and integration related charges​
+** Amortization of intangible assets acquired through acquisitions​
+***Includes all expenses presented within Total costs and operating expenses,
+less cost of product sales.
+
+Key Company Events Post-Quarter End
+
+* October: Positive topline results from the Phase 3 EPCORE^{®} DLBCL-2 trial
+  evaluating fixed treatment duration epcoritamab in combination with standard
+  of care rituximab, cyclophosphamide, doxorubicin hydrochloride, vincristine,
+  and prednisone (R-CHOP), compared to R-CHOP alone, in newly diagnosed patients
+  with diffuse large B-cell lymphoma (DLBCL) with an International Prognostic
+  Index (IPI) score of 2 to 5. Data will be submitted for presentation at a
+  future medical meeting. Genmab and AbbVie Inc. (AbbVie) will engage global
+  regulatory authorities to determine next steps.
+* October: Positive topline results from the global Phase 3 RAINFOL™-02 trial of
+  Rina-S in patients with platinum-resistant ovarian cancer (PROC) regardless of
+  Folate Receptor Alpha (FRα) expression level or prior treatment with
+  mirvetuximab. The trial met its primary endpoint of progression-free survival
+  (PFS), with Rina-S demonstrating a statistically significant and clinically
+  meaningful improvement compared with investigator’s choice chemotherapy in the
+  intent-to-treat (ITT) and in the primary analysis set (PAS) populations. Based
+  on these results, Genmab plans to engage with regulatory authorities worldwide
+  regarding potential next steps. The data will also be submitted for
+  presentation at a future medical meeting.
+* October: Positive topline results from the global Phase 3 LiGeR-HN1 trial
+  (NCT06525220) evaluating petosemtamab in combination with pembrolizumab versus
+  pembrolizumab in patients with first-line (1L) PD-L1 positive
+  recurrent/metastatic head and neck squamous cell carcinoma (HNSCC). The trial
+  met both of its primary endpoints of overall survival (OS) and objective
+  response rate (ORR), regardless of HPV status. Based on these positive topline
+  results, Genmab plans to engage global regulatory authorities and will submit
+  the full results from LiGeR-HN1 for presentation at a future medical meeting.
+  
+
+Outlook
+Genmab is maintaining its 2026 financial guidance published August 6, 2026.
+
+Conference Call
+Genmab will hold a conference call to discuss the results for the first nine
+months of 2026 today, Thursday, November 5, at 6:00 pm CET, 5:00 pm GMT or 12:00
+pm EST. To join the call please use the below registration link. Registered
+participants will receive an email with a link to access dial-in information as
+well as a unique personal PIN:
+https://register-conf.media-server.com/register/BId05659f072f84d939ad27a26fc9fa0
+a9. A live and archived webcast of the call and relevant slides will be
+available at www.genmab.com/investor-relations.
+
+Contact
+Marisol Peron, Senior Vice President, Global Communications & Corporate Affairs
+T: +1 609 524 0065; E: mmp@genmab.com
+
+Andrew Carlsen, Vice President, Head of Investor Relations
+T: +45 3377 9558; E: acn@genmab.com
+
+R² = rituximab and lenalidomide; FL = follicular lymphoma; CRC = colorectal
+cancer
+
+The Interim Report contains forward looking statements. The words “believe,”
+“expect,” “anticipate,” “intend” and “plan” and similar expressions identify
+forward looking statements. Actual results or performance may differ materially
+from any future results or performance expressed or implied by such statements.
+The important factors that could cause our actual results or performance to
+differ materially include, among others, risks associated with preclinical and
+clinical development of products, uncertainties related to the outcome and
+conduct of clinical trials including unforeseen safety issues, uncertainties
+related to product manufacturing, the lack of market acceptance of our products,
+our inability to manage growth, the competitive environment in relation to our
+business area and markets, our inability to attract and retain suitably
+qualified personnel, the unenforceability or lack of protection of our patents
+and proprietary rights, our relationships with affiliated entities, changes and
+developments in technology which may render our products or technologies
+obsolete, and other factors. For a further discussion of these risks, please
+refer to the risk management sections in Genmab’s most recent financial reports,
+which are available on www.genmab.com and the risk factors included in Genmab’s
+most recent Annual Report on Form 20-F and other filings with the U.S.
+Securities and Exchange Commission (SEC), which are available at www.sec.gov.
+Genmab does not undertake any obligation to update or revise forward looking
+statements in the Interim Report nor to confirm such statements to reflect
+subsequent events or circumstances after the date made or in relation to actual
+results, unless required by law.
+
+Genmab A/S and/or its subsidiaries own the following trademarks: Genmab^{®}; the
+Y-shaped Genmab logo^{®}; Genmab in combination with the Y-shaped Genmab
+logo^{®}; HuMax^{®}; DuoBody^{®}; HexaBody^{®}; DuoHexaBody^{®}; HexElect^{®};
+KYSO^{®}, ABBIL1TY™, RAINFOL™; ProfoundBio™ and Rina-S^{® }are trademarks of
+ProfoundBio, U.S., Co. and Genmab (Suzhou) Co., Ltd. Tivdak^{®} is a trademark
+of Seagen Inc.; EPCORE^{®}, EPKINLY^{®}, TEPKINLY^{®} and their designs are
+trademarks of AbbVie Biotechnology Ltd.; Biclonics^{®} and BIZENGRI^{®} are
+registered trademarks of Merus N.V. Kesimpta^{®} and Sensoready^{®} are
+trademarks of Novartis AG or its affiliates; DARZALEX^{®}, DARZALEX FASPRO^{®},
+RYBREVANT^{®}, RYBREVANT FASPRO™, TECVAYLI^{®} and TALVEY^{®} are trademarks of
+Johnson & Johnson; TEPEZZA^{®} is a trademark of Horizon Therapeutics Ireland
+DAC.
+
+Download the full Interim Report for the First Nine Months of 2026 on attachment
+or at www.genmab.com/investor-relations.
+
+CVR no. 2102 3884
+LEI Code 529900MTJPDPE4MHJ122
+
+Genmab A/S
+Carl Jacobsens Vej 30
+2500 Valby
+Denmark
+
+Attachments
+
+20261105_CA45_Genmab Interim Report Q3 2026
+
+[1]: https://www.globenewswire.com/Tracker?data=h2aunMtTN7ZI4SgWcH7TpCNXP7NpZUuA
+kXhiR4CsO_0n2FkxgMquE5g2QqELcnIuwdsHi1SK5mQL2qYsjZiFkCuNKSX9mOy410F8mP3jhu29_DDe
+RtN1ND4m1OtCHDBnwkiOx_-Kf4vdo5YZ9L0hGZtsKz05fXHPdfCnZgb15wE6NxnLz8qFtaI6eNTAgKax
+34KO8SUD0eONmbh5FtpeSJKlXaB0ZW6NtAo0BQ1GFA1S2Dd41EYH6jnoEu6F4ZGsLyATHHWS_B1mB6P_
+AYE0Pw==
+[2]: https://www.globenewswire.com/Tracker?data=rvoXuw8MTQoiW9mGoegqtfURFVKiU97H
+C19BJW05ovI7FNXogcuXaGFiyldUxE31sWBidEpevbdtYlfdqRBcjmi2ERde6uH2BBJ1uD13kgs8PFWY
+5usHyEu-i4XR_-Yn8R8Ip-z309SgwTwPvJl44w==
+[3]: https://www.globenewswire.com/Tracker?data=LDmLGpHuDH0Orc0Tb6ax1OJZyv8DlH0q
+q3isozbEQCLWedQcHIWQWqZiLj3hHHijnddm2v-PTDM0HMC5kS7S0h5QJS7sfCmwQx--jctjxkI=
+[4]: https://www.globenewswire.com/Tracker?data=xBRXI9f-ky8oLlqj0Ryy2_4rXNpcW62U
+Yp2rNB4sEnkZm-5zewgj9rgNsnCzSXSIY6TWmpd4Nbzpq_RwabzZCEjdvOhZzAb-yiaueggEPO8=
+[5]: https://www.globenewswire.com/Tracker?data=rvoXuw8MTQoiW9mGoegqtZVVKfZYkt_r
+ivynfLEiiBXL8DnD2mZwg3ZfaPU4pSdgGdcOkGH_Fwbi3rbHy2qJHNuPF4q0K-8TOVlX-QKNK58=
+[6]: https://www.globenewswire.com/Tracker?data=rvoXuw8MTQoiW9mGoegqtSVtRR749eH7
+upYK-5K3Yias1-7eTLiavszxZniI9Rl9swXdp8B5N1yeQVX_XWO624il_oseoEwF_JXgII2hqqo=
+[7]: https://www.globenewswire.com/Tracker?data=rvoXuw8MTQoiW9mGoegqtfURFVKiU97H
+C19BJW05ovLBU4-YBZjv0vgesYXqDlodZRk7EFsqEHWYdoMhNiE9hZSsCcv5j8yPZE2zlVaQYjw7pkFC
+wSJgUqAK9SMTlYpoqv8UtzVB_NnoOk5Kv-vnjw==
+[8]: https://ml-eu.globenewswire.com/Resource/Download/5e74328d-12d4-4e8e-9a89-f
+1cc92f8347c

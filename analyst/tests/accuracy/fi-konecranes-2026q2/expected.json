@@ -1,0 +1,123 @@
+{
+  "country": "FI",
+  "sector": "industrial",
+  "company": {
+    "ticker": "KCR",
+    "exchange_mic": "XHEL",
+    "name": "Konecranes",
+    "mfn_slug": "konecranes"
+  },
+  "release": {
+    "news_id": "264a26e9-4cd8-5747-a70b-5d5944d08108",
+    "lang": "en",
+    "title": "Konecranes Plc's Half-year financial report, January-June 2026: Strong orders in the second quarter",
+    "published_at": "2026-07-24T09:30:00Z",
+    "url": "https://mfn.se/cis/a/konecranes/konecranes-plcs-half-year-financial-report-january-june-2026-strong-orders-in-the-second-quarter-264a26e9",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "cc25cc77-e600-5d4c-be24-447718116de3",
+      "lang": "fi",
+      "title": "Konecranes Oyj:n osavuosikatsaus, tammi-maaliskuu 2026: Q1 - Vakaa aloitus vuodelle",
+      "published_at": "2026-04-29T09:30:00Z",
+      "url": "https://mfn.se/cis/a/konecranes/konecranes-oyj-n-osavuosikatsaus-tammi-maaliskuu-2026-q1-vakaa-aloitus-vuodelle-cc25cc77"
+    },
+    {
+      "news_id": "1fd0d830-a7b4-54fb-aa22-7be79336d410",
+      "lang": "en",
+      "title": "Konecranes Oyj: Konecranes Plc's Interim report, January-March 2026: Q1 - A solid start to the year",
+      "published_at": "2026-04-29T09:30:00Z",
+      "url": "https://mfn.se/cis/a/konecranes/konecranes-oyj-konecranes-plcs-interim-report-january-march-2026-q1-a-solid-start-to-the-year-1fd0d830"
+    },
+    {
+      "news_id": "e231c92e-2b1b-5b8a-96a8-f1d2f79f6c5c",
+      "lang": "fi",
+      "title": "Konecranes Oyj:n vuosikertomus 2025 on julkaistu",
+      "published_at": "2026-03-02T10:00:00Z",
+      "url": "https://mfn.se/cis/a/konecranes/konecranes-oyj-n-vuosikertomus-2025-on-julkaistu-e231c92e"
+    },
+    {
+      "news_id": "7cfecab8-38f0-5d6a-8713-baadaf3e1df4",
+      "lang": "en",
+      "title": "Konecranes Oyj: Konecranes Plc's Annual Report 2025 published",
+      "published_at": "2026-03-02T10:00:00Z",
+      "url": "https://mfn.se/cis/a/konecranes/konecranes-oyj-konecranes-plcs-annual-report-2025-published-7cfecab8"
+    },
+    {
+      "news_id": "e4ae819e-d2c8-5892-8288-58fd192ccc45",
+      "lang": "fi",
+      "title": "Konecranes Oyj:n osavuosikatsaus, tammi-syyskuu 2025: Ennätyksellinen vertailukelpoinen EBITA-kateprosentti ja erinomaiset saadut tilaukset",
+      "published_at": "2025-10-23T09:30:00Z",
+      "url": "https://mfn.se/cis/a/konecranes/konecranes-oyj-n-osavuosikatsaus-tammi-syyskuu-2025-ennatyksellinen-vertailukelpoinen-ebita-kateprosentti-ja-erinomaiset-saadut-tilaukset-e4ae819e"
+    },
+    {
+      "news_id": "87696e36-3238-5a40-b1cc-cae9069d1577",
+      "lang": "en",
+      "title": "Konecranes Oyj: Konecranes Plc's Interim report, January-September 2025: Record-high comparable EBITA margin and excellent order intake",
+      "published_at": "2025-10-23T09:30:00Z",
+      "url": "https://mfn.se/cis/a/konecranes/konecranes-oyj-konecranes-plcs-interim-report-january-september-2025-record-high-comparable-ebita-margin-and-excellent-order-intake-87696e36"
+    },
+    {
+      "news_id": "be5d62b7-2460-54ba-a752-44f45f4f2a56",
+      "lang": "en",
+      "title": "Konecranes Oyj: Konecranes Plc's Half-year financial report, January-June 2025: Strong performance continued",
+      "published_at": "2025-07-24T09:30:00Z",
+      "url": "https://mfn.se/cis/a/konecranes/konecranes-oyj-konecranes-plcs-half-year-financial-report-january-june-2025-strong-performance-continued-be5d62b7"
+    },
+    {
+      "news_id": "87e251c9-d579-5be9-b497-bfef2f3506f6",
+      "lang": "fi",
+      "title": "Konecranes Oyj:n puolivuosikatsaus, tammi-kesäkuu 2025: Vahva tuloskunto jatkui",
+      "published_at": "2025-07-24T09:30:00Z",
+      "url": "https://mfn.se/cis/a/konecranes/konecranes-oyj-n-puolivuosikatsaus-tammi-kesakuu-2025-vahva-tuloskunto-jatkui-87e251c9"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "order_intake",
+      "label": "Order intake",
+      "unit": "EUR million",
+      "current": "1241.0",
+      "prior": "1096.8",
+      "current_line": "Order intake increased by 13.2% to EUR 1,241.0 million (1,096.8)",
+      "prior_line": "Order intake increased by 13.2% to EUR 1,241.0 million (1,096.8)"
+    },
+    {
+      "key": "net_sales",
+      "label": "Net sales",
+      "unit": "EUR million",
+      "current": "1019.5",
+      "prior": "1052.4",
+      "current_line": "Net sales decreased by 3.1% to EUR 1,019.5 million (1,052.4)",
+      "prior_line": "Net sales decreased by 3.1% to EUR 1,019.5 million (1,052.4)"
+    },
+    {
+      "key": "comparable_ebita",
+      "label": "Comparable EBITA",
+      "unit": "EUR million",
+      "current": "129.5",
+      "prior": "150.3",
+      "current_line": "Comparable EBITA decreased to EUR 129.5 million (150.3)",
+      "prior_line": "Comparable EBITA decreased to EUR 129.5 million (150.3)"
+    },
+    {
+      "key": "free_cash_flow",
+      "label": "Free cash flow",
+      "unit": "EUR million",
+      "current": "-20.2",
+      "prior": "118.4",
+      "current_line": "Free cash flow was EUR -20.2 million (118.4).",
+      "prior_line": "Free cash flow was EUR -20.2 million (118.4)."
+    },
+    {
+      "key": "eps",
+      "label": "Earnings per share (basic)",
+      "unit": "EUR",
+      "current": "0.38",
+      "prior": "0.42",
+      "current_line": "Earnings per share (basic) was EUR 0.38 (0.42).",
+      "prior_line": "Earnings per share (basic) was EUR 0.38 (0.42)."
+    }
+  ]
+}

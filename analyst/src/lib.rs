@@ -12,6 +12,7 @@
 //! for each upcoming report ([`Scheduler`]) and the consumer of report notes
 //! ([`NoteHandler`]). See the crate README.
 
+pub mod accuracy;
 pub mod calendar;
 pub mod claims;
 pub mod clock;

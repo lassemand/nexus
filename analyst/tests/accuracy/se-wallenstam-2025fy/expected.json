@@ -1,0 +1,132 @@
+{
+  "country": "SE",
+  "sector": "property",
+  "company": {
+    "ticker": "WALL B",
+    "exchange_mic": "XSTO",
+    "name": "Wallenstam",
+    "mfn_slug": "wallenstam"
+  },
+  "release": {
+    "news_id": "7822ea0c-33dc-5b6e-8e3a-8d0e46e244e3",
+    "lang": "sv",
+    "title": "WALLENSTAM: Wallenstams bokslutskommuniké 2025",
+    "published_at": "2026-02-05T07:00:00Z",
+    "url": "https://mfn.se/cis/a/wallenstam/wallenstam-wallenstams-bokslutskommunike-2025-7822ea0c",
+    "kind": "annual"
+  },
+  "previous_reports": [
+    {
+      "news_id": "6563bbc4-729c-54bf-a61e-70ffee24e0db",
+      "lang": "en",
+      "title": "WALLENSTAM: Wallenstam's interim report Jan-Sep 2025",
+      "published_at": "2025-10-21T06:00:00Z",
+      "url": "https://mfn.se/cis/a/wallenstam/wallenstam-wallenstams-interim-report-jan-sep-2025-6563bbc4"
+    },
+    {
+      "news_id": "0e30426d-c753-5ff1-958d-a84d5ebb5fef",
+      "lang": "sv",
+      "title": "WALLENSTAM: Wallenstams delårsrapport jan-sep 2025",
+      "published_at": "2025-10-21T06:00:00Z",
+      "url": "https://mfn.se/cis/a/wallenstam/wallenstam-wallenstams-delarsrapport-jan-sep-2025-0e30426d"
+    },
+    {
+      "news_id": "bac151a1-ab46-518d-883a-325c8777e4e5",
+      "lang": "en",
+      "title": "WALLENSTAM: Wallenstam's interim report Jan-Jun 2025",
+      "published_at": "2025-07-07T10:00:00Z",
+      "url": "https://mfn.se/cis/a/wallenstam/wallenstam-wallenstams-interim-report-jan-jun-2025-bac151a1"
+    },
+    {
+      "news_id": "3f893713-f776-564b-b5f7-c208d724b89a",
+      "lang": "sv",
+      "title": "WALLENSTAM: Wallenstams delårsrapport jan-jun 2025",
+      "published_at": "2025-07-07T10:00:00Z",
+      "url": "https://mfn.se/cis/a/wallenstam/wallenstam-wallenstams-delarsrapport-jan-jun-2025-3f893713"
+    },
+    {
+      "news_id": "5fe640e7-e524-5a48-8c30-c8ff60c9d077",
+      "lang": "en",
+      "title": "WALLENSTAM: Wallenstam's interim report Jan-Mar 2025",
+      "published_at": "2025-04-28T06:00:00Z",
+      "url": "https://mfn.se/cis/a/wallenstam/wallenstam-wallenstams-interim-report-jan-mar-2025-5fe640e7"
+    },
+    {
+      "news_id": "104d5d78-7310-5692-9696-7870fb4d9b3e",
+      "lang": "sv",
+      "title": "WALLENSTAM: Wallenstams delårsrapport jan-mar 2025",
+      "published_at": "2025-04-28T06:00:00Z",
+      "url": "https://mfn.se/cis/a/wallenstam/wallenstam-wallenstams-delarsrapport-jan-mar-2025-104d5d78"
+    },
+    {
+      "news_id": "2568d2d7-f795-577c-b11b-f7a86fe6b1f9",
+      "lang": "en",
+      "title": "WALLENSTAM: Wallenstam publishes Annual Report for 2024",
+      "published_at": "2025-03-20T15:20:00Z",
+      "url": "https://mfn.se/cis/a/wallenstam/wallenstam-wallenstam-publishes-annual-report-for-2024-2568d2d7"
+    },
+    {
+      "news_id": "1f4b350c-7655-54bb-bf45-008219fda51a",
+      "lang": "sv",
+      "title": "WALLENSTAM: Wallenstam publicerar årsredovisning för 2024",
+      "published_at": "2025-03-20T15:20:00Z",
+      "url": "https://mfn.se/cis/a/wallenstam/wallenstam-wallenstam-publicerar-arsredovisning-for-2024-1f4b350c"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "rental_income",
+      "label": "Hyresintäkter",
+      "unit": "Mkr",
+      "current": "3077",
+      "prior": "2922",
+      "current_line": "Hyresintäkterna uppgår till 3 077 Mkr (2 922)",
+      "prior_line": "Hyresintäkterna uppgår till 3 077 Mkr (2 922)"
+    },
+    {
+      "key": "income_from_property_management",
+      "label": "Förvaltningsresultat fastigheter",
+      "unit": "Mkr",
+      "current": "1277",
+      "prior": "1150",
+      "current_line": "Förvaltningsresultat fastigheter uppgår till 1 277 Mkr (1 150)",
+      "prior_line": "Förvaltningsresultat fastigheter uppgår till 1 277 Mkr (1 150)"
+    },
+    {
+      "key": "profit_before_tax",
+      "label": "Resultat före skatt",
+      "unit": "Mkr",
+      "current": "2760",
+      "prior": "1185",
+      "current_line": "Resultat före skatt uppgår till 2 760 Mkr (1 185)",
+      "prior_line": "Resultat före skatt uppgår till 2 760 Mkr (1 185)"
+    },
+    {
+      "key": "net_income",
+      "label": "Resultat efter skatt",
+      "unit": "Mkr",
+      "current": "2564",
+      "prior": "774",
+      "current_line": "resultat efter skatt\n  uppgår till 2 564 Mkr (774)",
+      "prior_line": "resultat efter skatt\n  uppgår till 2 564 Mkr (774)"
+    },
+    {
+      "key": "eps",
+      "label": "Resultat per aktie",
+      "unit": "kr",
+      "current": "4.0",
+      "prior": "1.2",
+      "current_line": "motsvarande 4,0 kr per aktie (1,2)",
+      "prior_line": "motsvarande 4,0 kr per aktie (1,2)"
+    },
+    {
+      "key": "loan_to_value",
+      "label": "Belåningsgrad",
+      "unit": "%",
+      "current": "47",
+      "prior": "46",
+      "current_line": "belåningsgraden till 47 % (46)",
+      "prior_line": "belåningsgraden till 47 % (46)"
+    }
+  ]
+}

@@ -20,6 +20,13 @@ This crate holds:
 Not here yet: the launcher that starts the real preparation Job and accepts kernels
 (the service uses `NoopLauncher`), releases and trades.
 
+The bin **`analyst-accuracy`** scores dry-run kernels for extraction accuracy against the
+hand-checked fixtures in `tests/accuracy/` (`inputs` writes each fixture's dry-run `PREP_INPUT`,
+`score` runs each kernel through `KernelRuntime` and scores it, with no database, Kafka or quote);
+see `docs/validation/analyst-accuracy.md`. When the launcher and the acceptance endpoint land, they
+must pass `PREP_DRY_RUN` through to the Job, and store an upload marked `"dry_run": true` without
+attaching it to a target, so a dry run never decides or trades.
+
 ## Configuration
 
 All settings are environment variables. Durations use the syntax of the `humantime`

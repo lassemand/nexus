@@ -1,0 +1,132 @@
+{
+  "country": "SE",
+  "sector": "industrial",
+  "company": {
+    "ticker": "VOLV B",
+    "exchange_mic": "XSTO",
+    "name": "Volvo",
+    "mfn_slug": "volvo"
+  },
+  "release": {
+    "news_id": "84dc5b2b-4ee5-5e43-a755-d570338896b2",
+    "lang": "en",
+    "title": "Volvo Group - the third quarter 2026",
+    "published_at": "2026-10-23T05:23:36Z",
+    "url": "https://mfn.se/cis/a/volvo/volvo-group-the-third-quarter-2026-84dc5b2b",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "f900d8ad-959d-57c2-91e4-ce4a7e747865",
+      "lang": "sv",
+      "title": "Volvokoncernen - det andra kvartalet 2026",
+      "published_at": "2026-07-17T05:20:00Z",
+      "url": "https://mfn.se/cis/a/volvo/volvokoncernen-det-andra-kvartalet-2026-f900d8ad"
+    },
+    {
+      "news_id": "65c1b68c-875e-578d-acc8-ca05ed0ea99c",
+      "lang": "en",
+      "title": "Volvo Group - the second quarter 2026",
+      "published_at": "2026-07-17T05:20:00Z",
+      "url": "https://mfn.se/cis/a/volvo/volvo-group-the-second-quarter-2026-65c1b68c"
+    },
+    {
+      "news_id": "bd2216dd-ed4e-51ad-8c2e-01d0f738dd89",
+      "lang": "en",
+      "title": "AB Volvo: Volvo Group - the first quarter 2026",
+      "published_at": "2026-04-24T05:20:00Z",
+      "url": "https://mfn.se/cis/a/volvo/ab-volvo-volvo-group-the-first-quarter-2026-bd2216dd"
+    },
+    {
+      "news_id": "4ff73044-94ec-5be2-8556-35decfc6a9ca",
+      "lang": "sv",
+      "title": "AB Volvo: Volvokoncernen - det första kvartalet 2026",
+      "published_at": "2026-04-24T05:20:00Z",
+      "url": "https://mfn.se/cis/a/volvo/ab-volvo-volvokoncernen-det-forsta-kvartalet-2026-4ff73044"
+    },
+    {
+      "news_id": "9ea74002-69b3-5c4c-b109-0ba9e42f6dc9",
+      "lang": "sv",
+      "title": "AB Volvo: Volvokoncernen publicerar årsredovisning för 2025",
+      "published_at": "2026-02-26T14:35:00Z",
+      "url": "https://mfn.se/cis/a/volvo/ab-volvo-volvokoncernen-publicerar-arsredovisning-for-2025-9ea74002"
+    },
+    {
+      "news_id": "0b769ef7-f84c-5e5a-91f3-a8d7fa426526",
+      "lang": "en",
+      "title": "AB Volvo: Volvo Group publishes Annual Report 2025",
+      "published_at": "2026-02-26T14:35:00Z",
+      "url": "https://mfn.se/cis/a/volvo/ab-volvo-volvo-group-publishes-annual-report-2025-0b769ef7"
+    },
+    {
+      "news_id": "d536f041-da4e-50f2-940f-8cde43478518",
+      "lang": "en",
+      "title": "AB Volvo: Volvo Group - the fourth quarter and full year 2025",
+      "published_at": "2026-01-28T06:20:00Z",
+      "url": "https://mfn.se/cis/a/volvo/ab-volvo-volvo-group-the-fourth-quarter-and-full-year-2025-d536f041"
+    },
+    {
+      "news_id": "0164fead-72ba-57fc-9010-33506d612d64",
+      "lang": "sv",
+      "title": "AB Volvo: Volvokoncernen - det fjärde kvartalet och helåret 2025",
+      "published_at": "2026-01-28T06:20:00Z",
+      "url": "https://mfn.se/cis/a/volvo/ab-volvo-volvokoncernen-det-fjarde-kvartalet-och-helaret-2025-0164fead"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "net_sales",
+      "label": "Net sales",
+      "unit": "SEK billion",
+      "current": "119.5",
+      "prior": "110.7",
+      "current_line": "amounted to SEK 119.5 billion\n  (110.7)",
+      "prior_line": "amounted to SEK 119.5 billion\n  (110.7)"
+    },
+    {
+      "key": "adjusted_operating_income",
+      "label": "Adjusted operating income",
+      "unit": "SEK M",
+      "current": "14693",
+      "prior": "11707",
+      "current_line": "Adjusted operating income amounted to SEK 14,693 M (11,707)",
+      "prior_line": "Adjusted operating income amounted to SEK 14,693 M (11,707)"
+    },
+    {
+      "key": "adjusted_operating_margin",
+      "label": "Adjusted operating margin",
+      "unit": "%",
+      "current": "12.3",
+      "prior": "10.6",
+      "current_line": "an adjusted operating margin of 12.3% (10.6). In Q3",
+      "prior_line": "an adjusted operating margin of 12.3% (10.6). In Q3"
+    },
+    {
+      "key": "operating_income",
+      "label": "Reported operating income",
+      "unit": "SEK M",
+      "current": "14354",
+      "prior": "12517",
+      "current_line": "Reported operating income amounted to SEK 14,354 M (12,517)",
+      "prior_line": "Reported operating income amounted to SEK 14,354 M (12,517)"
+    },
+    {
+      "key": "eps",
+      "label": "Earnings per share",
+      "unit": "SEK",
+      "current": "5.29",
+      "prior": "3.71",
+      "current_line": "Earnings per share amounted to SEK 5.29 (3.71)",
+      "prior_line": "Earnings per share amounted to SEK 5.29 (3.71)"
+    },
+    {
+      "key": "operating_cash_flow",
+      "label": "Operating cash flow in the Industrial Operations",
+      "unit": "SEK M",
+      "current": "7195",
+      "prior": "-1739",
+      "current_line": "Operating cash flow in the Industrial Operations amounted to SEK 7,195 M\n  (-1,739)",
+      "prior_line": "Operating cash flow in the Industrial Operations amounted to SEK 7,195 M\n  (-1,739)"
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "country": "FI",
+  "sector": "property",
+  "company": {
+    "ticker": "LUMO",
+    "exchange_mic": "XHEL",
+    "name": "Lumo Kodit",
+    "mfn_slug": "lumo-kodit"
+  },
+  "release": {
+    "news_id": "f57428bc-afd1-5fc7-add2-531baba7b6f4",
+    "lang": "fi",
+    "title": "Lumo Kodit Oyj:n osavuosikatsaus 1.1.-30.9.2026",
+    "published_at": "2026-11-05T06:00:00Z",
+    "url": "https://mfn.se/cis/a/lumo-kodit/lumo-kodit-oyj-n-osavuosikatsaus-1-1-30-9-2026-f57428bc",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "dd2b62e1-5946-5d55-bfb9-45cfd2bbde1c",
+      "lang": "en",
+      "title": "Lumo Homes plc's Half-Year Financial Report 1 January-30 June 2026",
+      "published_at": "2026-08-13T05:00:00Z",
+      "url": "https://mfn.se/cis/a/lumo-kodit/lumo-homes-plcs-half-year-financial-report-1-january-30-june-2026-dd2b62e1"
+    },
+    {
+      "news_id": "be25a451-23a9-4217-bb76-87c9d4dbb54e",
+      "lang": "en",
+      "title": "Lumo Homes Plc: Lumo Homes plc’s Half-Year Financial Report 1 January–30 June 2026",
+      "published_at": "2026-08-13T05:00:00Z",
+      "url": "https://mfn.se/one/a/lumo-kodit/lumo-homes-plc-lumo-homes-plcs-half-year-financial-report-1-january-30-june-2026-be25a451"
+    },
+    {
+      "news_id": "8e778357-5872-52c2-9b43-3c3a0817c923",
+      "lang": "fi",
+      "title": "Lumo Kodit Oyj:n puolivuosikatsaus 1.1.-30.6.2026",
+      "published_at": "2026-08-13T05:00:00Z",
+      "url": "https://mfn.se/cis/a/lumo-kodit/lumo-kodit-oyj-n-puolivuosikatsaus-1-1-30-6-2026-8e778357"
+    },
+    {
+      "news_id": "f4d11876-d1ff-428d-aad8-3aa9f64b23ea",
+      "lang": "en",
+      "title": "Lumo Homes Plc: Lumo Homes plc’s Interim Report 1 January–31 March 2026",
+      "published_at": "2026-05-06T05:00:00Z",
+      "url": "https://mfn.se/one/a/lumo-kodit/lumo-homes-plc-lumo-homes-plcs-interim-report-1-january-31-march-2026-f4d11876"
+    },
+    {
+      "news_id": "6894db47-4d62-51d7-bd2d-78dccc42b7e5",
+      "lang": "en",
+      "title": "Lumo Homes plc's Interim Report 1 January-31 March 2026",
+      "published_at": "2026-05-06T05:00:00Z",
+      "url": "https://mfn.se/cis/a/lumo-kodit/lumo-homes-plcs-interim-report-1-january-31-march-2026-6894db47"
+    },
+    {
+      "news_id": "2bccae4f-9769-58a6-ac5b-6df0f1a0499c",
+      "lang": "fi",
+      "title": "Lumo Homes plc: Lumo Kodit Oyj:n osavuosikatsaus 1.1.-31.3.2026",
+      "published_at": "2026-05-06T05:00:00Z",
+      "url": "https://mfn.se/cis/a/lumo-kodit/lumo-homes-plc-lumo-kodit-oyj-n-osavuosikatsaus-1-1-31-3-2026-2bccae4f"
+    },
+    {
+      "news_id": "d9b3eebf-e4d1-5b17-9cf2-936454a8bce1",
+      "lang": "en",
+      "title": "Kojamo Oyj: Kojamo plc's Financial Statements and Board of Directors' Report 2025 have been published",
+      "published_at": "2026-02-11T06:30:00Z",
+      "url": "https://mfn.se/cis/a/lumo-kodit/kojamo-oyj-kojamo-plcs-financial-statements-and-board-of-directors-report-2025-have-been-published-d9b3eebf"
+    },
+    {
+      "news_id": "8d416131-b280-4be1-a812-e4c8ccd0a6b6",
+      "lang": "en",
+      "title": "Kojamo Plc: Kojamo plc’s Financial Statements and Board of Directors’ Report 2025 have been published",
+      "published_at": "2026-02-11T06:30:00Z",
+      "url": "https://mfn.se/one/a/kojamo/kojamo-plc-kojamo-plcs-financial-statements-and-board-of-directors-report-2025-have-been-published-8d416131"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "revenue",
+      "label": "Liikevaihto",
+      "unit": "miljoonaa euroa",
+      "current": "127.3",
+      "prior": "113.6",
+      "current_line": "Liikevaihto kasvoi 12,0 prosenttia ja oli 127,3 (113,6) miljoonaa euroa.",
+      "prior_line": "Liikevaihto kasvoi 12,0 prosenttia ja oli 127,3 (113,6) miljoonaa euroa."
+    },
+    {
+      "key": "net_operating_income",
+      "label": "Nettovuokratuotto",
+      "unit": "miljoonaa euroa",
+      "current": "95.9",
+      "prior": "86.0",
+      "current_line": "Nettovuokratuotto kasvoi 11,5 prosenttia ja oli 95,9 (86,0) miljoonaa euroa.",
+      "prior_line": "Nettovuokratuotto kasvoi 11,5 prosenttia ja oli 95,9 (86,0) miljoonaa euroa."
+    },
+    {
+      "key": "profit_before_tax",
+      "label": "Tulos ennen veroja",
+      "unit": "miljoonaa euroa",
+      "current": "-87.7",
+      "prior": "32.8",
+      "current_line": "Tulos ennen veroja oli -87,7 (32,8) miljoonaa euroa.",
+      "prior_line": "Tulos ennen veroja oli -87,7 (32,8) miljoonaa euroa."
+    },
+    {
+      "key": "eps",
+      "label": "Osakekohtainen tulos",
+      "unit": "euroa",
+      "current": "-0.27",
+      "prior": "0.11",
+      "current_line": "Osakekohtainen tulos oli -0,27 (0,11) euroa.",
+      "prior_line": "Osakekohtainen tulos oli -0,27 (0,11) euroa."
+    },
+    {
+      "key": "ffo",
+      "label": "Kassavirta ennen käyttöpääoman muutosta (FFO)",
+      "unit": "miljoonaa euroa",
+      "current": "46.1",
+      "prior": "44.1",
+      "current_line": "(FFO) kasvoi 4,7 prosenttia ja oli\n  46,1 (44,1) miljoonaa euroa.",
+      "prior_line": "(FFO) kasvoi 4,7 prosenttia ja oli\n  46,1 (44,1) miljoonaa euroa."
+    }
+  ]
+}

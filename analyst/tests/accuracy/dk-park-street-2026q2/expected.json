@@ -1,0 +1,114 @@
+{
+  "country": "DK",
+  "sector": "property",
+  "company": {
+    "ticker": "PARKST A",
+    "exchange_mic": "XCSE",
+    "name": "Park Street",
+    "mfn_slug": "park-street"
+  },
+  "release": {
+    "news_id": "155ab7d3-a177-448c-9c19-62bd88be9365",
+    "lang": "en",
+    "title": "Park Street A/S – Park Street Interim Report Half Year 2026",
+    "published_at": "2026-08-25T16:47:36Z",
+    "url": "https://mfn.se/one/a/park-street/park-street-a-s-park-street-interim-report-half-year-2026-155ab7d3",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "2275ae1f-379f-466e-a11e-4f33f08be96f",
+      "lang": "en",
+      "title": "Park Street A/S – Annual Report 2025",
+      "published_at": "2026-03-31T11:48:34Z",
+      "url": "https://mfn.se/one/a/park-street/park-street-a-s-annual-report-2025-2275ae1f"
+    },
+    {
+      "news_id": "10af454c-e158-4452-9a4c-bf506c33beab",
+      "lang": "en",
+      "title": "Park Street A/S – Park Street Interim Report Half Year 2025",
+      "published_at": "2025-08-25T10:33:39Z",
+      "url": "https://mfn.se/one/a/park-street/park-street-a-s-park-street-interim-report-half-year-2025-10af454c"
+    },
+    {
+      "news_id": "3651e297-4fbb-4a2b-bdfa-918c2d798021",
+      "lang": "en",
+      "title": "Correction: Park Street A/S – Annual Report 2024",
+      "published_at": "2025-04-04T15:17:57Z",
+      "url": "https://mfn.se/one/a/park-street/correction-park-street-a-s-annual-report-2024-3651e297"
+    },
+    {
+      "news_id": "60d3e959-b0a8-4bf0-ae93-a1fef25c7888",
+      "lang": "en",
+      "title": "Park Street A/S – Annual Report 2024",
+      "published_at": "2025-04-04T10:39:25Z",
+      "url": "https://mfn.se/one/a/park-street/park-street-a-s-annual-report-2024-60d3e959"
+    },
+    {
+      "news_id": "c422dcf5-dd9c-4890-a157-811dc3165a14",
+      "lang": "en",
+      "title": "Park Street A/S – Park Street Interim Report Half Year 2024",
+      "published_at": "2024-08-30T15:45:00Z",
+      "url": "https://mfn.se/one/a/park-street/park-street-a-s-park-street-interim-report-half-year-2024-c422dcf5"
+    },
+    {
+      "news_id": "b74757ab-5280-4252-9b65-a4ad38262a53",
+      "lang": "en",
+      "title": "Park Street A/S – Annual Report 2023",
+      "published_at": "2024-04-04T13:58:33Z",
+      "url": "https://mfn.se/one/a/park-street/park-street-a-s-annual-report-2023-b74757ab"
+    },
+    {
+      "news_id": "7733bade-b8b6-4adc-bd06-3ab307387b4e",
+      "lang": "en",
+      "title": "Park Street A/S - Interim Financial Report, 1st half of 2023 - Corrections",
+      "published_at": "2023-09-22T15:58:20Z",
+      "url": "https://mfn.se/one/a/park-street/park-street-a-s-interim-financial-report-1st-half-of-2023-corrections-7733bade"
+    },
+    {
+      "news_id": "f59c4bef-3740-43d4-bd46-82fb25db17d8",
+      "lang": "en",
+      "title": "Park Street A/S – Interim Financial Report, 1st half of 2023",
+      "published_at": "2023-08-24T17:52:45Z",
+      "url": "https://mfn.se/one/a/park-street/park-street-a-s-interim-financial-report-1st-half-of-2023-f59c4bef"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "net_sales",
+      "label": "Net sales (H1)",
+      "unit": "DKK million",
+      "current": "71.6",
+      "prior": "73.7",
+      "current_line": "Net sales were DKK 71.6 million, compared\nwith DKK 73.7 million",
+      "prior_line": "Net sales were DKK 71.6 million, compared\nwith DKK 73.7 million"
+    },
+    {
+      "key": "ebvat",
+      "label": "EBVAT (H1)",
+      "unit": "DKK million",
+      "current": "19.4",
+      "prior": "13.7",
+      "current_line": "EBVAT in the first half of 2026 was DKK 19.4 million, compared with DKK 13.7",
+      "prior_line": "EBVAT in the first half of 2026 was DKK 19.4 million, compared with DKK 13.7"
+    },
+    {
+      "key": "net_income",
+      "label": "Profit for the period (H1)",
+      "unit": "DKK million",
+      "current": "16.9",
+      "prior": "17.7",
+      "current_line": "Profit for the period was DKK 16.9 million, compared with DKK 17.7 million",
+      "prior_line": "Profit for the period was DKK 16.9 million, compared with DKK 17.7 million"
+    },
+    {
+      "key": "operating_cash_flow",
+      "label": "Cash flows from operating activities (H1)",
+      "unit": "DKK million",
+      "current": "18.9",
+      "prior": "2.7",
+      "current_line": "Cash flows from operating activities for the first half of 2026 were DKK 18.9\n  million (first half of 2025: DKK 2.7 million",
+      "prior_line": "Cash flows from operating activities for the first half of 2026 were DKK 18.9\n  million (first half of 2025: DKK 2.7 million"
+    }
+  ]
+}

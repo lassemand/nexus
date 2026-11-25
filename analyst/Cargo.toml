@@ -12,10 +12,15 @@ path = "src/lib.rs"
 name = "analyst"
 path = "src/bin/analyst.rs"
 
+[[bin]]
+name = "analyst-accuracy"
+path = "src/bin/analyst-accuracy.rs"
+
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 humantime = "2"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid", "json", "migrate", "macros", "rust_decimal"] }

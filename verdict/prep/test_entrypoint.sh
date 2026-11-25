@@ -77,7 +77,12 @@ for tool in Read Write Edit Glob Grep WebSearch WebFetch; do
 done
 [[ "$PWD" == */kernel ]] || { echo "fake claude: started in $PWD, not the kernel crate" >&2; exit 64; }
 [[ -f "$HOME/.claude/agents/analyst.md" ]] || { echo "fake claude: the analyst agent is not installed under HOME" >&2; exit 64; }
-[[ -f /work-test-input-check ]] || true
+if [[ "${FAKE_EXPECT_DRY:-false}" == true ]]; then
+  [[ "$2" == *"## This is a dry run"* ]] || { echo "fake claude: the dry-run section is missing from the prompt" >&2; exit 64; }
+  [[ "$2" == *"You are preparing a kernel"* ]] || { echo "fake claude: the dry run lost the normal prompt" >&2; exit 64; }
+else
+  [[ "$2" != *"## This is a dry run"* ]] || { echo "fake claude: a normal run got the dry-run section" >&2; exit 64; }
+fi
 case "${FAKE_MODE:-ok}" in
   abort) printf '{"abort":"already_released"}' > "$WORK/abort.json" ;;
   fail) echo "boom" >&2; exit 2 ;;
@@ -102,14 +107,15 @@ input="$(jq -n '{company: {ticker: "ACM", exchange_mic: "XSTO", name: "Acme", mf
 
 run_entrypoint() {
   local mode="$1" work="$tmp/work-$1"
+  shift
   rm -rf "$tmp/uploads"/*
-  env -i PATH="$PATH" HOME="$tmp/realhome" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+  env -i "$@" PATH="$PATH" HOME="$tmp/realhome" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
     ${CARGO_HOME:+CARGO_HOME="$CARGO_HOME"} ${PREP_CARGO_HOME:+PREP_CARGO_HOME="$PREP_CARGO_HOME"} \
     VERDICT_DIR="$repo/verdict" WORK="$work" AGENT_SRC="$repo/infra/agents/analyst.md" \
     CARGO_CONFIG_SRC="$tmp/none" PREBUILT_TARGET="$tmp/none" \
     MFN_BASE="http://127.0.0.1:$port" CLAUDE_BIN="$tmp/fake-claude" FAKE_MODE="$mode" \
-    ANTHROPIC_API_KEY=unused PREP_UPLOAD_URL="http://127.0.0.1:$port/upload" PREP_UPLOAD_TOKEN="secret-token" \
-    PREP_INPUT="$input" bash "$repo/verdict/prep/entrypoint.sh" > "$tmp/out-$mode.log" 2>&1
+    ANTHROPIC_API_KEY=unused PREP_UPLOAD_URL="${UPLOAD_URL-http://127.0.0.1:$port/upload}" PREP_UPLOAD_TOKEN="secret-token" \
+    PREP_INPUT="${INPUT:-$input}" bash "$repo/verdict/prep/entrypoint.sh" > "$tmp/out-$mode.log" 2>&1
 }
 
 echo "== a normal run uploads the kernel"
@@ -123,6 +129,7 @@ jq -e '.wasm | length > 1000' "$up" >/dev/null || fail "no wasm"
 jq -e '.kernel.lookup == "skeleton"' "$up" >/dev/null || fail "kernel.json missing"
 jq -e '.transcript_summary.total_cost_usd == 0.42 and .transcript_summary.num_turns == 7' "$up" >/dev/null || fail "no transcript summary"
 jq -e '.tests | has("kernel.rs")' "$up" >/dev/null || fail "tests not uploaded"
+jq -e 'has("dry_run") | not' "$up" >/dev/null || fail "a normal upload is marked dry_run"
 jq -e '[.fixtures[] | select(.foreign == false) | .news_id + ":" + .lang] | sort == ["id-1:en","id-2:en","id-3:sv"]' "$up" >/dev/null || fail "previous reports not uploaded as fixtures: $(jq -c '[.fixtures[]|{news_id,lang,foreign}]' "$up")"
 jq -e '[.fixtures[] | select(.foreign == true)] | length == 1 and .[0].news_id == "other-9" and .[0].lang == "en"' "$up" >/dev/null || fail "foreign fixture wrong"
 jq -e '.fixtures[] | select(.news_id == "id-1") | .text == "Acme: Interim report\n\nNet sales were 5 (4).\n"' "$up" >/dev/null || fail "fixture text is not exact (title, blank line, text)"
@@ -139,6 +146,27 @@ if run_entrypoint fail; then fail "expected a failure"; fi
 echo "== a run with no kernel.json fails the Job"
 if run_entrypoint nokernel; then fail "expected a failure"; fi
 [[ -z "$(ls "$tmp/uploads")" ]] || fail "uploaded without a kernel"
+
+dry_input="$(jq '. + {dry_run: {metrics: [{key: "net_sales", label: "Net sales", unit: "MSEK"}]}}' <<<"$input")"
+
+echo "== a dry run gets the dry-run prompt, marks the upload and writes PREP_OUTPUT"
+INPUT="$dry_input" run_entrypoint ok PREP_DRY_RUN=true PREP_OUTPUT="$tmp/dry-out.json" FAKE_EXPECT_DRY=true \
+  || { cat "$tmp/out-ok.log" >&2; fail "entrypoint failed in the dry run"; }
+[[ "$(ls "$tmp/uploads"/*.json | wc -l)" -eq 1 ]] || fail "expected one dry-run upload"
+jq -e '.dry_run == true and (.wasm | length > 1000)' "$tmp/uploads/0.json" >/dev/null || fail "the dry-run upload is not marked dry_run"
+cmp -s "$tmp/uploads/0.json" "$tmp/dry-out.json" || fail "PREP_OUTPUT differs from the upload"
+
+echo "== a dry run with only PREP_OUTPUT uploads nothing"
+rm -f "$tmp/dry-out.json"
+INPUT="$dry_input" UPLOAD_URL="" run_entrypoint ok PREP_DRY_RUN=true PREP_OUTPUT="$tmp/dry-out.json" FAKE_EXPECT_DRY=true \
+  || { cat "$tmp/out-ok.log" >&2; fail "entrypoint failed in the dry run without an upload URL"; }
+[[ -z "$(ls "$tmp/uploads")" ]] || fail "uploaded without an upload URL"
+jq -e '.dry_run == true' "$tmp/dry-out.json" >/dev/null || fail "PREP_OUTPUT not written"
+
+echo "== a dry run without dry_run.metrics fails before Claude Code"
+if run_entrypoint ok PREP_DRY_RUN=true FAKE_EXPECT_DRY=true; then fail "expected a failure without dry_run.metrics"; fi
+grep -q "a dry run needs dry_run.metrics" "$tmp/out-ok.log" || fail "the missing metrics were not reported"
+[[ -z "$(ls "$tmp/uploads")" ]] || fail "uploaded a dry run without metrics"
 
 echo "== a rejected upload fails the Job"
 echo 422 > "$tmp/status"

@@ -1,0 +1,114 @@
+{
+  "country": "SE",
+  "sector": "bank",
+  "company": {
+    "ticker": "SAVE",
+    "exchange_mic": "XSTO",
+    "name": "Nordnet",
+    "mfn_slug": "nordnet"
+  },
+  "release": {
+    "news_id": "c1f91915-4328-52e2-98c3-fd03cd71a8b9",
+    "lang": "en",
+    "title": "Nordnet AB publishes its third quarter 2026 interim report",
+    "published_at": "2026-10-22T05:00:00Z",
+    "url": "https://mfn.se/cis/a/nordnet/nordnet-ab-publishes-its-third-quarter-2026-interim-report-c1f91915",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "f510ba52-8f1c-5202-9bfd-c4c999e0233a",
+      "lang": "sv",
+      "title": "Nordnet AB (publ) - Delårsrapport januari-juni 2026",
+      "published_at": "2026-07-17T05:00:00Z",
+      "url": "https://mfn.se/cis/a/nordnet/nordnet-ab-publ-delarsrapport-januari-juni-2026-f510ba52"
+    },
+    {
+      "news_id": "5ca9a77c-cd13-5443-92c0-c28e28ab5f32",
+      "lang": "en",
+      "title": "Nordnet AB publishes its second quarter 2026 interim report",
+      "published_at": "2026-07-17T05:00:00Z",
+      "url": "https://mfn.se/cis/a/nordnet/nordnet-ab-publishes-its-second-quarter-2026-interim-report-5ca9a77c"
+    },
+    {
+      "news_id": "e8125437-ba4f-595f-994e-43c8ec1acd82",
+      "lang": "sv",
+      "title": "Nordnet AB (publ) - Delårsrapport januari-mars 2026",
+      "published_at": "2026-04-24T05:00:00Z",
+      "url": "https://mfn.se/cis/a/nordnet/nordnet-ab-publ-delarsrapport-januari-mars-2026-e8125437"
+    },
+    {
+      "news_id": "bf041a5a-ad7a-5d03-bed9-1cd170a7abca",
+      "lang": "en",
+      "title": "Nordnet AB publishes its first quarter 2026 interim report",
+      "published_at": "2026-04-24T05:00:00Z",
+      "url": "https://mfn.se/cis/a/nordnet/nordnet-ab-publishes-its-first-quarter-2026-interim-report-bf041a5a"
+    },
+    {
+      "news_id": "ecf30c99-83d9-50be-acd3-942611e76279",
+      "lang": "en",
+      "title": "Nordnet publishes annual and sustainability report for 2025",
+      "published_at": "2026-03-13T07:00:00Z",
+      "url": "https://mfn.se/cis/a/nordnet/nordnet-publishes-annual-and-sustainability-report-for-2025-ecf30c99"
+    },
+    {
+      "news_id": "78ed401b-131f-5480-a267-4a70dcd28721",
+      "lang": "sv",
+      "title": "Nordnet publicerar års- och hållbarhetsredovisning för 2025",
+      "published_at": "2026-03-13T07:00:00Z",
+      "url": "https://mfn.se/cis/a/nordnet/nordnet-publicerar-ars-och-hallbarhetsredovisning-for-2025-78ed401b"
+    },
+    {
+      "news_id": "f3c4bc33-c1ea-5fcd-b921-27064689e0d9",
+      "lang": "sv",
+      "title": "Nordnet AB (publ) - Bokslutskommuniké för 2025",
+      "published_at": "2026-01-28T07:00:00Z",
+      "url": "https://mfn.se/cis/a/nordnet/nordnet-ab-publ-bokslutskommunike-for-2025-f3c4bc33"
+    },
+    {
+      "news_id": "64322692-5cea-52da-abd1-7005d39f0a6a",
+      "lang": "en",
+      "title": "Nordnet AB publishes its fourth quarter 2025 interim report",
+      "published_at": "2026-01-28T07:00:00Z",
+      "url": "https://mfn.se/cis/a/nordnet/nordnet-ab-publishes-its-fourth-quarter-2025-interim-report-64322692"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "total_income",
+      "label": "Operating income",
+      "unit": "SEK million",
+      "current": "1550",
+      "prior": "1290",
+      "current_line": "Operating income SEK 1,550 (1,290) million",
+      "prior_line": "Operating income SEK 1,550 (1,290) million"
+    },
+    {
+      "key": "operating_expenses",
+      "label": "Operating expenses",
+      "unit": "SEK million",
+      "current": "-450",
+      "prior": "-403",
+      "current_line": "Operating expenses SEK -450 (-403) million",
+      "prior_line": "Operating expenses SEK -450 (-403) million"
+    },
+    {
+      "key": "operating_profit",
+      "label": "Operating profit",
+      "unit": "SEK million",
+      "current": "1096",
+      "prior": "886",
+      "current_line": "Operating profit SEK 1,096 (886) million",
+      "prior_line": "Operating profit SEK 1,096 (886) million"
+    },
+    {
+      "key": "diluted_eps",
+      "label": "Earnings per share after dilution",
+      "unit": "SEK",
+      "current": "3.50",
+      "prior": "2.81",
+      "current_line": "Earnings per share after dilution SEK 3.50 (2.81)",
+      "prior_line": "Earnings per share after dilution SEK 3.50 (2.81)"
+    }
+  ]
+}

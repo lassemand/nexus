@@ -1,0 +1,114 @@
+{
+  "country": "FI",
+  "sector": "biotech",
+  "company": {
+    "ticker": "ORNBV",
+    "exchange_mic": "XHEL",
+    "name": "Orion",
+    "mfn_slug": "orion"
+  },
+  "release": {
+    "news_id": "0e9eef31-9a6f-4ece-ba0e-854cc946e975",
+    "lang": "en",
+    "title": "Orion Group Interim report January–September 2026: Strong financial performance and positive developments in the R&D pipeline ",
+    "published_at": "2026-10-28T10:00:00Z",
+    "url": "https://mfn.se/one/a/orion/orion-group-interim-report-january-september-2026-strong-financial-performance-and-positive-developments-in-the-randd-pipeline-0e9eef31",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "0ecfd93a-3140-4d59-b5bd-88a43de0e86d",
+      "lang": "en",
+      "title": "Orion Group Half-Year Financial Report January–June 2026",
+      "published_at": "2026-07-17T09:00:00Z",
+      "url": "https://mfn.se/one/a/orion/orion-group-half-year-financial-report-january-june-2026-0ecfd93a"
+    },
+    {
+      "news_id": "0661b11d-200a-4ceb-9ab7-68a5369b3520",
+      "lang": "fi",
+      "title": "Orion-konsernin puolivuosikatsaus tammi–kesäkuu 2026",
+      "published_at": "2026-07-17T09:00:00Z",
+      "url": "https://mfn.se/one/a/orion/orion-konsernin-puolivuosikatsaus-tammi-kesakuu-2026-0661b11d"
+    },
+    {
+      "news_id": "ee39ddb0-c1a5-4783-9097-88ff07b3bb0b",
+      "lang": "en",
+      "title": "Orion Group Interim report January–March 2026",
+      "published_at": "2026-04-23T09:00:00Z",
+      "url": "https://mfn.se/one/a/orion/orion-group-interim-report-january-march-2026-ee39ddb0"
+    },
+    {
+      "news_id": "8aec4d91-da67-476c-ab27-f8820be30207",
+      "lang": "fi",
+      "title": "Orion-konsernin osavuosikatsaus tammi–maaliskuu 2026",
+      "published_at": "2026-04-23T09:00:00Z",
+      "url": "https://mfn.se/one/a/orion/orion-konsernin-osavuosikatsaus-tammi-maaliskuu-2026-8aec4d91"
+    },
+    {
+      "news_id": "72648b3a-7763-463c-87f0-50006913e36d",
+      "lang": "en",
+      "title": "Orion Group Financial Statement documents 2025 and Remuneration Report published",
+      "published_at": "2026-02-27T09:05:00Z",
+      "url": "https://mfn.se/one/a/orion/orion-group-financial-statement-documents-2025-and-remuneration-report-published-72648b3a"
+    },
+    {
+      "news_id": "1f208fc8-2323-47fd-9f7c-921fcd40ed91",
+      "lang": "fi",
+      "title": "Orion-konsernin tilinpäätösasiakirjat 2025 sekä palkitsemisraportti julkaistu",
+      "published_at": "2026-02-27T09:05:00Z",
+      "url": "https://mfn.se/one/a/orion/orion-konsernin-tilinpaatosasiakirjat-2025-seka-palkitsemisraportti-julkaistu-1f208fc8"
+    },
+    {
+      "news_id": "ae08e0e0-2ff9-4e5f-bf7f-dd900f48a0e1",
+      "lang": "en",
+      "title": "Orion Group Financial Statement Release January–December 2025",
+      "published_at": "2026-02-12T10:00:00Z",
+      "url": "https://mfn.se/one/a/orion/orion-group-financial-statement-release-january-december-2025-ae08e0e0"
+    },
+    {
+      "news_id": "35bf23cf-96fb-451e-b604-9f405e548e09",
+      "lang": "fi",
+      "title": "Orion-konsernin tilinpäätöstiedote tammi–joulukuu 2025",
+      "published_at": "2026-02-12T10:00:00Z",
+      "url": "https://mfn.se/one/a/orion/orion-konsernin-tilinpaatostiedote-tammi-joulukuu-2025-35bf23cf"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "net_sales",
+      "label": "Net sales",
+      "unit": "EUR million",
+      "current": "542.2",
+      "prior": "423.2",
+      "current_line": "Net sales totalled EUR 542.2 (July–September 2025: 423.2) million",
+      "prior_line": "Net sales totalled EUR 542.2 (July–September 2025: 423.2) million"
+    },
+    {
+      "key": "operating_income",
+      "label": "Operating profit",
+      "unit": "EUR million",
+      "current": "209.9",
+      "prior": "121.0",
+      "current_line": "Operating profit was EUR 209.9 (121.0) million",
+      "prior_line": "Operating profit was EUR 209.9 (121.0) million"
+    },
+    {
+      "key": "eps",
+      "label": "Basic earnings per share",
+      "unit": "EUR",
+      "current": "1.19",
+      "prior": "0.68",
+      "current_line": "Basic earnings per share were EUR 1.19 (0.68)",
+      "prior_line": "Basic earnings per share were EUR 1.19 (0.68)"
+    },
+    {
+      "key": "operating_cash_flow_per_share",
+      "label": "Cash flow from operating activities per share",
+      "unit": "EUR",
+      "current": "0.68",
+      "prior": "0.55",
+      "current_line": "Cash flow from operating activities per share was EUR 0.68 (0.55)",
+      "prior_line": "Cash flow from operating activities per share was EUR 0.68 (0.55)"
+    }
+  ]
+}

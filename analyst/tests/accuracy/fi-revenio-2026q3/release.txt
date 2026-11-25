@@ -1,0 +1,274 @@
+Revenio Group Oyj: Osavuosiraportti 1.1.-30.9.2026
+
+Revenio Group Oyj | Pörssitiedote | 12.11.2026 klo 09:00:00 EET
+
+Q3/2026: Uusi strategia julkistettu, integraatio etenee suunnitellusti
+
+Tämä tiedote on tiivistelmä Revenion tammi-syyskuun 2026 osavuosiraportista.
+Raportti on kokonaisuudessaan tämän tiedotteen liitteenä pdf-tiedostona ja
+yhtiön verkkosivuilla osoitteessa www.reveniogroup.fi
+(http://www.reveniogroup.fi/)
+
+Suluissa esitetyt luvut viittaavat edellisen vuoden vastaavaan ajanjaksoon,
+ellei toisin ilmoiteta. Visionix on yhdistelty osaksi Reveniota kesäkuusta
+2026 alkaen.
+
+Heinäkuu-syyskuu 2026
+
+* Liikevaihto oli 58,8 (25,9) miljoonaa euroa, kasvua 127,5 %
+* Valuuttakurssien vaikutuksella oikaistu liikevaihdon kasvu oli 125,5 %
+* Oikaistu EBITDA oli 10,2 (7,4) miljoonaa euroa, ollen 17,4 % liikevaihdosta,
+  kasvua 38,9 %
+* Oikaistu EBITA oli 8,7 (6,6) miljoonaa euroa, ollen 14,7 % liikevaihdosta,
+  kasvua 30,3 %
+* Käyttökate, EBITDA oli 7,3 (7,2) miljoonaa euroa, ollen 12,3 %
+  liikevaihdosta, kasvua 1,4 %
+* EBITA oli 5,7 (6,4) miljoonaa euroa, ollen 9,7 % liikevaihdosta, laskua 11,7
+  %
+* Liiketoiminnan rahavirta oli 5,5 (3,0) miljoonaa euroa
+* Osakekohtainen tulos oli 0,116 (0,173) euroa
+* Visionixin integraatio on edennyt suunnitellusti, ja tavoitteena on
+  saavuttaa 70 prosenttia arvioiduista 20 miljoonan euron synergioista vuoden
+  2027 loppuun mennessä. Pääasiassa Visionix-yrityskauppaan liittyvät
+  integraatiokustannukset olivat neljänneksen aikana noin 3,0 miljoonaa euroa.
+* Katsauskauden raportoinnin yhteydessä Revenio päivitti ohjeistustaan
+  vuodelle 2026: valuuttakurssioikaistun liikevaihdon arvioidaan olevan
+  190–200 miljoonaa euroa. Kannattavuutta koskeva ohjeistus säilyy ennallaan.
+
+Tammikuu-syyskuu 2026
+
+* Liikevaihto oli 125,4 (78,5) miljoonaa euroa, kasvua 59,8 %
+* Valuuttakurssien vaikutuksella oikaistu liikevaihdon kasvu oli 61,7 %
+* Oikaistu EBITDA oli 24,9 (22,8) miljoonaa euroa, ollen 19,8 %
+  liikevaihdosta, kasvua 9,1 %
+* Oikaistu EBITA oli 21,7 (20,7) miljoonaa euroa, ollen 17,3 % liikevaihdosta,
+  kasvua 4,7 %
+* Käyttökate, EBITDA oli 15,0 (22,1) miljoonaa euroa, ollen 12,0 %
+  liikevaihdosta, laskua 32,1 %
+* EBITA oli 11,8 (20,0) miljoonaa euroa, ollen 9,4 % liikevaihdosta, laskua
+  41,0 %
+* Liiketoiminnan rahavirta oli -0,3 (14,4) miljoonaa euroa
+* Osakekohtainen tulos oli 0,231 (0,446) euroa
+
+Keskeiset tunnusluvut
+
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| MEUR        |        |        |        |        |        |        |        |
+|             | 7-9/2026 | 7-9/2025 | Muutos-% | 1-9/2026 | 1-9/2025 | Muutos-% | 1-12/2025 |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Liikevaihto | 58,8   | 25,9   | 127,5  | 125,4  | 78,5   | 59,8   | 109,7  |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Myyntikate  | 37,2   | 18,5   | 101,1  | 81,3   | 56,7   | 43,3   | 77,8   |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Myyntikate  | 63,2   | 71,5   | -11,6  | 64,8   | 72,2   | -10,3  | 70,9   |
+| - %         |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Käyttökate, | 7,3    | 7,2    | 1,4    | 15,0   | 22,1   | -32,1  | 29,9   |
+| EBITDA      |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Käyttökate, | 12,3   | 27,7   | -55,4  | 12,0   | 28,2   | -57,5  | 27,3   |
+| EBITDA -%   |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| EBITA       | 5,7    | 6,4    | -11,7  | 11,8   | 20,0   | -41,0  | 27,1   |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| EBITA -%    | 9,7    | 24,9   | -61,2  | 9,4    | 25,5   | -63,1  | 24,7   |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| EBIT        | 3,6    | 6,0    | -40,5  | 8,4    | 18,7   | -55,4  | 25,4   |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Oikaistu    | 10,2   | 7,4    | 38,9   | 24,9   | 22,8   | 9,1    | 31,0   |
+| EBITDA      |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Oikaistu    | 17,4   | 28,5   | -38,9  | 19,8   | 29,0   | -31,7  | 28,3   |
+| EBITDA- %   |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Oikaistu    | 8,7    | 6,6    | 30,3   | 21,7   | 20,7   | 4,7    | 28,3   |
+| EBITA       |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Oikaistu    | 14,7   | 25,7   | -42,7  | 17,3   | 26,4   | -34,5  | 25,8   |
+| EBITA -%    |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Sijoitetun  | 1,5    | 5,3    | -72,2  | 4,4    | 14,6   | -70,2  | 20,8   |
+| pääoman     |        |        |        |        |        |        |        |
+| tuotto - %  |        |        |        |        |        |        |        |
+| (ROI)       |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Oman        | 2,2    | 4,2    | -48,1  | 4,7    | 11,0   | -56,7  | 15,7   |
+| pääoman     |        |        |        |        |        |        |        |
+| tuotto - %  |        |        |        |        |        |        |        |
+| (ROE)       |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+|             | 0,116  | 0,173  |        | 0,231  | 0,446  |        | 0,655  |
+| Osakekohtainen |        |        |        |        |        |        |        |
+| tulos       |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+|             |        |        |        |        |        |        |        |
+|             |        |        |        | 30.9.2026 | 30.9.2025 | Muutos, |        |
+|             |        |        |        |        |        | %-:köä |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+|             |        |        |        | 32,3   | 79,6   | -47,3  |        |
+| Omavaraisuusaste, |        |        |        |        |        |        |        |
+| %           |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+|             |        |        |        | 149,3  | -2,8   | 152,1  |        |
+| Nettovelkaantumisaste, |        |        |        |        |        |        |        |
+| %           |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+| Nettovelka/ |        |        |        | 5,1    | -0,1   |        |        |
+| Oikaistu    |        |        |        |        |        |        |        |
+| käyttökate  |        |        |        |        |        |        |        |
+| *           |        |        |        |        |        |        |        |
++-------------+--------+--------+--------+--------+--------+--------+--------+
+
+* Oikaistu käyttökate 30.9.2026 sarakkeessa perustuu vuoden 2025 pro forma
+-lukuihin, ja 30.9.2025 sarakkeessa historiallisiin edeltävän 12 kuukauden
+käyttökatelukuihin.
+
+Taloudellinen ohjeistus vuodelle 2026
+Revenion päivitetty taloudellinen ohjeistus:
+
+• Revenio-konsernin valuuttakurssioikaistun liikevaihdon arvioidaan olevan
+190–200 miljoonaa euroa, ja
+
+• oikaistu EBITA -% arvioidaan säilyvän tyydyttävällä tasolla.
+
+Ohjeistuksen alaraja olettaa markkinakysynnän jatkuvan pehmeänä sekä
+asiakasaktiviteetin pysyvän hitaampana. Ohjeistuksen yläraja olettaa
+markkinaolosuhteiden paranemista yhdistettynä onnistuneeseen kaupalliseen
+toteutukseen.
+
+Revenion aiempi taloudellinen ohjeistus, julkaistu 8.9.2026:
+Revenio-konsernin valuuttakurssioikaistun liikevaihdon arvioidaan olevan
+190–205 miljoonaa euroa, ja EBITA ilman vertailukelpoisuuteen vaikuttavia eriä
+arvioidaan säilyvän tyydyttävällä tasolla.
+
+Toimitusjohtaja Jouni Toijala
+Vuoden kolmas neljännes oli Revenion ensimmäinen kokonainen vuosineljännes
+yhdessä Visionixin kanssa ja tärkeä vaihe yhdistyneen yhtiön rakentamisessa
+toukokuussa toteutetun yritysoston jälkeen. Jatkoimme integraatiotyötä
+määrätietoisesti ja saimme päätökseen yritysoston yhteydessä käynnistämämme
+strategiaprosessin. Syyskuussa järjestetyssä pääomamarkkinapäivässämme
+esittelimme päivitetyn strategiamme ja uudet taloudelliset tavoitteemme
+vuosille 2027–2029. Strategiamme ytimessä on siirtymä näönhuollosta kohti
+kokonaisvaltaista silmäterveyttä. Yritysoston myötä laajentunut tuote- ja
+palvelutarjoomamme vahvistaa kykyämme palvella uusia asiakasryhmiä, kuten
+optista vähittäiskauppaa, sekä jatkaa nykyisten optometrian ja oftalmologian
+asiakkaidemme palvelemista entistä kattavammalla tuoteportfoliolla.
+
+Visionix-integraatio on edennyt suunnitellusti, ja tavoitteenamme on saavuttaa
+70 prosenttia arvioiduista 20 miljoonan euron synergioista vuoden 2027 loppuun
+mennessä. Jatkoimme kolmannella vuosineljänneksellä yhteisen organisaation,
+toimintamallien ja kulttuurin rakentamista sekä keskeisten
+liiketoimintaprosessien yhtenäistämistä. Toteutimme myös organisaatiomuutoksia
+Yhdysvalloissa yhdistämällä myyntitoimintoja ja selkeyttämällä
+toimintamalliamme. Muutosten tavoitteena on vahvistaa kilpailukykyämme ja
+parantaa kykyämme hyödyntää laajentuneen tuoteportfoliomme kaupallista
+potentiaalia. Integraation seuraavissa vaiheissa keskitymme toimintamme
+tehostamiseen, kaupallisten synergioiden toteuttamiseen sekä
+liiketoimintaprosessiemme vahvistamiseen edelleen.
+
+Kolmannen vuosineljänneksen liikevaihtomme oli 58,8 miljoonaa euroa (25,9), ja
+kasvua kertyi 127,5 %. Orgaanisesti liikevaihto oli vertailukauden tasolla.
+Liikevaihto kehittyi vahvasti erityisesti EMEA- ja LATAM-alueella Ranskan,
+Italian ja globaalien asiakkaiden vetämänä. Tätä kehitystä tuki erityisesti
+multimodaalilaitteiden kysyntä. APAC-alueella markkinatilanne säilyi
+haastavana. PohjoisAmerikassa liikevaihto laski orgaanisesti vertailukaudesta
+osittain alueellisten myynti- ja markkinointitiimiemme uudelleenorganisoinnin
+seurauksena. Uskomme toteutettujen muutosten tehostavan myyntiämme ja tukevan
+kaupallisen suorituskyvyn paranemista jatkossa. Yhdysvalloissa elokuussa
+toimintansa aloittanut yhdistetty myyntiorganisaatiomme ja laajentunut
+tuotevalikoimamme luovat vahvan perustan kaupallisen toimintamme
+vahvistamiselle jatkossa.
+
+Kolmannen vuosineljänneksen kannattavuutemme oli odotustemme mukainen. Tästä
+vuosineljänneksestä alkaen Visionixin matalampi kannattavuustaso näkyy
+täysimääräisesti neljännesvuosiluvuissamme. Oikaistu EBITA oli 14,7 % ja
+myyntikate 63,2 % liikevaihdosta. Myyntikatteeseen puolestaan vaikuttivat
+myönteisesti Pohjois-Amerikan liiketoimintaan liittyvät tullimaksujen
+palautukset. Liiketoiminnan rahavirta palautui selvästi positiiviseksi ja oli
+5,5 miljoonaa euroa. Olemme tarkentaneet taloudellisen ohjeistuksemme ylärajan
+200 miljoonaan euroon johtuen markkinakysynnän pehmeämmästä kehityksestä.
+
+Yksi päivitetyn strategiamme kulmakivistä on tukea luotettavaa kliinistä
+päätöksentekoa ja tehostaa hoitoprosesseja integroiduilla tuoteinnovaatioilla.
+Näin autamme asiakkaitamme tarjoamaan entistä parempaa silmänhoitoa.
+Konkreettisena esimerkkinä tästä toimme syyskuussa markkinoille uuden
+sukupolven iCare IC1000 -tonometrit, jossa yhdistyvät luotettava silmänpaineen
+mittaus, edistyksellinen GuideCam-teknologia, käyttö ilman puudutusta ja
+täysin automatisoitu digitaalinen työnkulku. Saavutimme myös merkittävän
+kaupallisen onnistumisen Iso-Britanniassa voittamalla julkisen
+terveydenhuoltopalvelun National Health Servicen (NHS) diabeettisen
+retinopatian seulontaa koskevan kuvantamislaitteiden tarjouskilpailun. Tämä
+avaa meille uusia mahdollisuuksia erityisesti iCare DRSplus -silmänpohjan
+kuvantamislaitteen myynnin kasvattamiseen.
+
+Katsauskauden jälkeen toteutettu noin 80 miljoonan euron merkintäoikeusanti
+vahvisti taloudellista asemaamme ja tukee strategiamme toteuttamista. Anti
+ylimerkittiin selvästi, ja käytimme annin nettovarat Visionix-yritysostoon
+liittyvän siltarahoituksen takaisinmaksuun. Merkintäetuoikeusannin vahva tulos
+on meille tärkeä luottamuksen osoitus, ja haluan vielä kerran kiittää kaikkia
+antiin osallistuneita osakkeenomistajiamme.
+
+Olemme nyt ottaneet merkittäviä askelia yhdistyneen yhtiön rakentamisessa.
+Jatkossa keskitymme erityisesti integraation onnistuneeseen toteuttamiseen,
+laajentuneen tuotevalikoimamme tarjoamien kaupallisten mahdollisuuksien
+hyödyntämiseen ja kannattavuuden vahvistamiseen. Näin luomme perustaa Revenion
+pitkän aikavälin arvonluonnille.
+
+Audiocast ja puhelinkonferenssi
+Revenio järjestää englanninkielisen audiocastin ja puhelinkonferenssin
+sijoittajille, analyytikoille ja medialle torstaina 12.11.2026 klo 15.00
+alkaen. Tilaisuudessa toimitusjohtaja Jouni Toijala ja talousjohtaja Jukka
+Kainulainen esittelevät osavuosiraportin.
+
+Audiocast-lähetystä voi seurata suorana osoitteessa
+revenio.events.inderes.com/q3-2026
+
+Kysymyksiä voi esittää puhelimitse rekisteröitymällä puhelinkonferenssiin
+oheisen linkin kautta: events.inderes.com/revenio/q3-2026/dial-in
+
+Rekisteröidyttyään osallistuja saa puhelinnumeron, henkilökohtaisen tunnuksen
+sekä konferenssitunnuksen, jolla voi osallistua puheluun. Kysymyksen
+esittämiseksi osallistujan tulee painaa puhelimestaan #5 liittyäkseen
+kysymysjonoon.
+
+Tilaisuuden tallenne on saatavilla osoitteessa www.reveniogroup.fi pian
+tilaisuuden päättymisen jälkeen.
+
+Lisätietoja
+Toimitusjohtaja Jouni Toijala
+jouni.toijala@revenio.fi
+
+Talousjohtaja Jukka Kainulainen
+jukka.kainulainen@revenio.fi
+
+ir@revenio.fi
+09 8775 1150
+
+Jakelu
+Nasdaq Helsinki Oy
+Finanssivalvonta
+Keskeiset tiedotusvälineet
+www.reveniogroup.fi (http://www.reveniogroup.fi/)
+
+Revenio-konserni lyhyesti
+Revenio on johtava kokonaisratkaisujen tarjoaja globaaleilla silmien hoidon
+markkinoilla. Konserni tarjoaa nopeita, helppokäyttöisiä ja luotettavia
+työkaluja useiden eri silmäsairauksien diagnosointiin. Revenion ratkaisuihin
+kuuluvat iCare- ja Visionix-brändien alla muun muassa tonometrit, silmänpohjan
+kuvantamislaitteet, optinen koherenssitomografia (OCT), perimetrit,
+multimodaaliset diagnostiikka-alustat, refraktiojärjestelmät ja
+ohjelmistoratkaisut.
+
+Revenio yhdisti toukokuussa 2026 voimansa Visionixin kanssa, luoden
+innovatiivisimman, luovimman ja kattavimman kokonaisuuden palvelemaan silmien
+hoidon ammattilaisia optometrian, optisen vähittäiskaupan ja oftalmologian
+alueilla. Revenio-konsernin liikevaihto vuonna 2025 oli 109,7 miljoonaa euroa
+ja liiketulos 25,4 miljoonaa euroa. Revenio-konsernin pro forma -liikevaihto
+vuonna 2025 oli 252,8 miljoonaa euroa ja pro forma -oikaistu käyttökate
+(EBITDA) 45,3 miljoonaa euroa. Revenio Group Oyj:n osake on listattu Nasdaq
+Helsinki Oy:ssä kaupankäyntitunnuksella REG1V.
+
+Liitteet
+------------------------------------------------------------------------------
+Revenio Group Oyj Osavuosiraportti Q3 2026
+(https://storage.mfn.se/0b6c08f7-fede-4cb1-ae1b-afc01b9cce0d/revenio-group-oyj-osavuosiraportti-q3-2026.pdf)

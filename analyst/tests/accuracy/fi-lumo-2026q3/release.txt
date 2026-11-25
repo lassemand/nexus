@@ -1,0 +1,324 @@
+Lumo Kodit Oyj:n osavuosikatsaus 1.1.-30.9.2026
+
+Lumo Kodit Oyj Pörssitiedote 5.11.2026 klo 8.00
+
+Lumo Kodit Oyj:n osavuosikatsaus 1.1.-30.9.2026
+
+Vahva kasvu jatkui ja vuokrausaste parani kolmannella vuosineljänneksellä
+
+Tämä on tiivistelmä tammi-syyskuu osavuosikatsauksesta, joka on
+kokonaisuudessaan tämän tiedotteen liitteenä sekä ladattavissa yhtiön
+internet-sivuilla osoitteessa https://yritys.lumo.fi/sijoittajat/.
+
+Vertailuluvut suluissa viittaavat edellisvuoden vastaavaan jaksoon, ellei toisin
+ole mainittu. Tässä Osavuosikatsauksessa esitetyt luvut ovat
+tilintarkastamattomia.
+
+Yhteenveto heinä-syyskuusta 2026
+
+* Liikevaihto kasvoi 12,0 prosenttia ja oli 127,3 (113,6) miljoonaa euroa.
+* Nettovuokratuotto kasvoi 11,5 prosenttia ja oli 95,9 (86,0) miljoonaa euroa.
+  Nettovuokratuotto oli 75,3 (75,7) prosenttia liikevaihdosta.
+* Tulos ennen veroja oli -87,7 (32,8) miljoonaa euroa. Tulokseen sisältyy -139,6
+  (-16,4) miljoonan euron nettotulos sijoituskiinteistöjen käypään arvoon
+  arvostamisesta sekä sijoituskiinteistöjen luovutusvoittoja ja -tappioita 0,6
+  (-0,2) miljoonaa euroa. Osakekohtainen tulos oli -0,27 (0,11) euroa.
+* Kassavirta ennen käyttöpääoman muutosta (FFO) kasvoi 4,7 prosenttia ja oli
+  46,1 (44,1) miljoonaa euroa.
+* Bruttoinvestoinnit olivat 10,6 (13,6) miljoonaa euroa eli 8,3 (12,0)
+  prosenttia liikevaihdosta.
+
+ Yhteenveto tammi-syyskuusta 2026
+
+* Liikevaihto kasvoi 5,7 prosenttia ja oli 363,1 (343,6) miljoonaa euroa.
+* Nettovuokratuotto kasvoi 6,8 prosenttia ja oli 247,5 (231,6) miljoonaa euroa.
+  Nettovuokratuotto oli 68,2 (67,4) prosenttia liikevaihdosta.
+* Tulos ennen veroja oli -25,0 (9,1) miljoonaa euroa. Tulokseen sisältyy -148,1
+  (-101,8) miljoonan euron nettotulos sijoituskiinteistöjen käypään arvoon
+  arvostamisesta sekä sijoituskiinteistöjen luovutusvoittoja ja -tappioita -1,0
+  (-0,9) miljoonaa euroa. Osakekohtainen tulos oli -0,08 (0,03) euroa.
+* Kassavirta ennen käyttöpääoman muutosta (FFO) kasvoi 4,6 prosenttia ja oli
+  110,9 (106,1) miljoonaa euroa.
+* Sijoituskiinteistöjen käypä arvo oli katsauskauden lopussa 8,3 (7,6) miljardia
+  euroa sisältäen 35,9 (41,8) miljoonaa euroa Myytävänä olevia
+  sijoituskiinteistöjä.
+* Taloudellinen vuokrausaste oli katsauskaudella 95,5 (94,4) prosenttia.
+* Bruttoinvestoinnit olivat 882,9 (27,7) miljoonaa euroa eli 243,2 (8,1)
+  prosenttia liikevaihdosta.
+* Osakekohtainen oma pääoma oli 14,30 (14,74) euroa ja oman pääoman tuotto oli
+  -0,8 (0,3) prosenttia. Sijoitetun pääoman tuotto oli 1,3 (1,9) prosenttia.
+* Osakekohtainen EPRA NTA (nettovarallisuus) laski 4,3 prosenttia ja oli 17,61
+  (18,40) euroa.
+* Katsauskauden päättyessä rakenteilla oli 32 (119) Lumo-asuntoa.
+
+Lumo Kotien omistuksessa oli katsauskauden lopussa 43 489 (39 001)
+vuokra-asuntoa. Edellisvuoden syyskuun jälkeen valmistui 119 (0) asuntoa,
+ostettiin 4 761 (0) ja myytiin 399 (1 972) asuntoa. Peruskorjausten ja muiden
+käyttötarkoituksen muutosten nettovaikutuksena asuntomäärä kasvoi 7 (0)
+asunnolla.
+
+ Keskeiset tunnusluvut
+
+──────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────────
+          │7-9/2026 │7-9/2025 │Muutos % │1-9/2026 │1-9/2025 │Muutos % │2025     
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Liikevaiht│127,3    │113,6    │12,0     │363,1    │343,6    │5,7      │455,2    
+o, M€     │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Nettovuokr│95,9     │86,0     │11,5     │247,5    │231,6    │6,8      │307,7    
+atuotto,  │         │         │         │         │         │         │         
+M€ *      │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Nettovuokr│75,3     │75,7     │         │68,2     │67,4     │         │67,6     
+atuotto   │         │         │         │         │         │         │         
+liikevaihd│         │         │         │         │         │         │         
+osta, % * │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Voitto/tap│-87,7    │32,8     │-367,3   │-25,0    │9,1      │-375,9   │26,8     
+pio ennen │         │         │         │         │         │         │         
+veroja, M€│         │         │         │         │         │         │         
+*         │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Käyttökate│-52,6    │61,3     │-185,8   │70,4     │102,8    │-31,5    │147,8    
+(EBITDA), │         │         │         │         │         │         │         
+M€ *      │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Käyttökate│-41,3    │54,0     │         │19,4     │29,9     │         │32,5     
+liikevaihd│         │         │         │         │         │         │         
+osta, % * │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Oikaistu  │86,4     │77,7     │11,2     │217,4    │205,3    │5,9      │270,6    
+käyttökate│         │         │         │         │         │         │         
+(Adjusted │         │         │         │         │         │         │         
+EBITDA),  │         │         │         │         │         │         │         
+M€ *      │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Oikaistu  │67,9     │68,4     │         │59,9     │59,8     │         │59,4     
+käyttökate│         │         │         │         │         │         │         
+liikevaihd│         │         │         │         │         │         │         
+osta, % * │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Kassavirta│         │         │         │         │         │         │         
+ennen     │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+käyttöpääo│46,1     │44,1     │4,7      │110,9    │106,1    │4,6      │140,9    
+man       │         │         │         │         │         │         │         
+muutosta  │         │         │         │         │         │         │         
+(FFO), M€ │         │         │         │         │         │         │         
+*         │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+FFO       │36,2     │38,8     │         │30,6     │30,9     │         │31,0     
+liikevaihd│         │         │         │         │         │         │         
+osta, % * │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+FFO ilman │46,1     │44,1     │4,7      │110,9    │106,1    │4,6      │140,9    
+kertaluont│         │         │         │         │         │         │         
+eisia     │         │         │         │         │         │         │         
+kuluja, M€│         │         │         │         │         │         │         
+*         │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Sijoituski│         │         │         │8 339,2  │7 637,2  │9,2      │7 620,7  
+inteistöt,│         │         │         │         │         │         │         
+M€ ¹⁾     │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Taloudelli│         │         │         │95,5     │94,4     │         │94,8     
+nen       │         │         │         │         │         │         │         
+vuokrausas│         │         │         │         │         │         │         
+te, %     │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Korollinen│         │         │         │3 851,7  │3 393,1  │13,5     │3 391,3  
+vieras    │         │         │         │         │         │         │         
+pääoma, M€│         │         │         │         │         │         │         
+* ²⁾      │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Oman      │         │         │         │-0,8     │0,3      │         │0,6      
+pääoman   │         │         │         │         │         │         │         
+tuotto-%  │         │         │         │         │         │         │         
+(ROE) *   │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Sijoitetun│         │         │         │1,3      │1,9      │         │2,1      
+pääoman   │         │         │         │         │         │         │         
+tuotto-%  │         │         │         │         │         │         │         
+(ROI) *   │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Omavaraisu│         │         │         │44,6     │45,6     │         │45,4     
+usaste, % │         │         │         │         │         │         │         
+*         │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Loan to   │         │         │         │46,1     │42,2     │         │42,3     
+Value     │         │         │         │         │         │         │         
+(LTV), % *│         │         │         │         │         │         │         
+³⁾        │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+EPRA Net  │         │         │         │4 663,7  │4 517,4  │3,2      │4 492,0  
+Tangible  │         │         │         │         │         │         │         
+Assets    │         │         │         │         │         │         │         
+(NTA), M€ │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Bruttoinve│10,6     │13,6     │-22,3    │882,9    │27,7     │3 088,3  │42,5     
+stoinnit, │         │         │         │         │         │         │         
+M€ *      │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Henkilöstö│         │         │         │267      │262      │         │256      
+katsauskau│         │         │         │         │         │         │         
+den       │         │         │         │         │         │         │         
+lopussa   │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Osakekohta│7-9/2026 │7-9/2025 │Muutos % │1-9/2026 │1-9/2025 │Muutos % │2025     
+iset      │         │         │         │         │         │         │         
+tunnusluvu│         │         │         │         │         │         │         
+t, €      │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Osakekohta│         │         │         │         │         │         │         
+inen      │         │         │         │         │         │         │         
+kassavirta│         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+ennen     │0,17     │0,18     │-5,6     │0,43     │0,43     │0,0      │0,57     
+käyttöpääo│         │         │         │         │         │         │         
+man       │         │         │         │         │         │         │         
+muutosta  │         │         │         │         │         │         │         
+(FFO) *   │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Osakekohta│-0,27    │0,11     │-345,5   │-0,08    │0,03     │-366,7   │0,08     
+inen tulos│         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Osakekohta│         │         │         │17,61    │18,40    │-4,3     │18,61    
+inen EPRA │         │         │         │         │         │         │         
+NTA       │         │         │         │         │         │         │         
+──────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────
+Osakekohta│         │         │         │14,30    │14,74    │-3,0     │14,89    
+inen oma  │         │         │         │         │         │         │         
+pääoma    │         │         │         │         │         │         │         
+──────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────────
+* Lumo Kodit julkaisee Euroopan arvopaperimarkkinaviranomaisen (ESMA) ohjeiden  
+mukaisen selostuksen käyttämistään vaihtoehtoisista tunnusluvuista              
+osavuosikatsauksen Tunnusluvut -osiossa                                         
+────────────────────────────────────────────────────────────────────────────────
+¹⁾ Sisältää Myytävänä olevia pitkäaikaisia omaisuuseriä                         
+────────────────────────────────────────────────────────────────────────────────
+²⁾ Ei sisällä Myytävänä oleviin pitkäaikaisiin omaisuuseriin liittyviä velkoja  
+────────────────────────────────────────────────────────────────────────────────
+³⁾ Ei sisällä Myytävänä olevia pitkäaikaisia omaisuuseriä ja niihin liittyviä   
+velkoja                                                                         
+────────────────────────────────────────────────────────────────────────────────
+
+ Näkymät vuodelle 2026 ennallaan
+
+Lumo Kodit arvioi konsernin liikevaihdon vuonna 2026 olevan 488-493 miljoonaa
+euroa. Lisäksi yhtiö arvioi konsernin kassavirran ennen käyttöpääoman muutosta
+(FFO) vuonna 2026 olevan 147-152 miljoonaa euroa ilman kertaluonteisia kuluja.
+
+Näkymät perustuvat yhtiön johdon arvioon liikevaihdon kehityksestä,
+kiinteistöjen ylläpitokuluista ja korjauksista, hallintokuluista,
+rahoituskuluista ja maksettavista veroista sekä johdon näkemykseen
+toimintaympäristön kehityksestä.
+
+Näkymissä on otettu huomioon arvio vuokrausasteesta ja vuokrien kehityksestä.
+Näkymissä ei ole otettu huomioon mahdollisten tulevien ostojen ja myyntien
+vaikutuksia.
+
+Yhtiön johto voi vaikuttaa liikevaihtoon ja kassavirtaan ennen käyttöpääoman
+muutosta (FFO) yhtiön oman liiketoiminnan kautta. Yhtiön johto ei voi vaikuttaa
+markkinoiden kehitykseen, säädösympäristöön eikä kilpailutilanteeseen.
+
+ Toimitusjohtajan katsaus
+
+Vahva kasvu jatkui kolmannella vuosineljänneksellä. Liikevaihto,
+nettovuokratuotto ja FFO kasvoivat vertailukaudesta. Kasvua vauhdittivat
+huhtikuussa hankittu asuntoportfolio sekä vuokrausasteen paraneminen. Taseemme
+on pysynyt vahvana ja maksuvalmiutemme hyvänä.
+
+Vuokrausasteen paraneminen jatkui kolmannella vuosineljänneksellä, ja
+taloudellinen vuokrausasteemme nousi katsauskauden lopussa 95,5 prosenttiin.
+Kesäkauden jälkeen myös syksyn vuokraustoiminta on jatkunut aktiivisena, ja
+kolmannen vuosineljänneksen vuokrausaste nousi 96,4 prosenttiin. Huhtikuussa
+hankitun portfolion vuokrausaste on kehittynyt erinomaisesti. Olemme
+saavuttaneet portfoliolle arvioimamme stabiloidun vuokrausasteen jo kolmannen
+vuosineljänneksen aikana, ja syyskuun lopussa sen vuokrausaste oli 96,8
+prosenttia. Portfolion kehitystä ovat tukeneet erityisesti onnistunut
+integraatio Lumon toimintamalleihin ja vuokrausalustaan sekä kohteiden hyvä
+laatu ja sijainti.
+
+Vuokra-asuntojen tarjonta on jatkanut laskuaan erityisesti pääkaupunkiseudulla.
+Uudisasuntotuotanto on samalla pysynyt erittäin matalana, väestönkasvun
+ennustetaan jatkuvan suurimmissa kaupungeissa ja Suomen talousnäkymät ovat
+vahvistuneet. Nämä tekijät tukevat vuokramarkkinan asteittaista
+tasapainottumista.
+
+Markkinakorkojen nousu on jatkunut syksyllä ja heijastunut
+kiinteistömarkkinoiden tuottovaatimuksiin. Tämän seurauksena nostimme
+arvonmäärityksessä käytettyjä tuottovaatimuksia, mikä laski
+sijoituskiinteistöjen käypiä arvoja. Toisaalta ostetun portfolion
+sisällyttäminen käyvän arvon arvostusmalliin vaikutti käypiin arvoihin selvästi
+positiivisesti. Taseemme säilyi muutoksesta huolimatta vahvana.
+
+Moody's vahvisti syyskuussa Baa2-luottoluokituksemme vakailla näkymillä. Olemme
+syksyn aikana jatkaneet erääntyvien pankkilainojen jälleenrahoituksia ja samalla
+pidentäneet lainasalkkumme maturiteettia. Katsauskauden jälkeen
+jälleenrahoitimme hyvissä ajoin syksyllä 2027 erääntyvän 125 miljoonan euron
+syndikoidun lainan. Lainasalkkumme korkean suojausasteen ansiosta korkotason
+muutosten vaikutukset kohdistuvat pääasiassa uuteen rahoitukseen. Rahoituksen
+saatavuus on säilynyt hyvänä sekä pankki- että pääomamarkkinoilla.
+
+Vaikka toimintaympäristöön liittyy edelleen epävarmuutta, olemme edenneet
+keskeisissä tavoitteissamme suunnitellusti. Huhtikuussa hankitun portfolion
+onnistunut haltuunotto, vuokrausasteen vahva kehitys sekä aktiivisesti
+toteutetut rahoitusjärjestelyt antavat meille hyvän lähtökohdan vuoden
+viimeiseen neljännekseen. Olemme myös vieneet eteenpäin tekoälyn hyödyntämistä
+saumattoman asiakaspolun ja toiminnan tehokkuuden parantamiseksi. Jatkamme
+strategiamme toteuttamista keskittyen asiakaskokemuksen kehittämiseen sekä
+vahvan taloudellisen aseman ylläpitämiseen.
+
+Reima Rytsölä
+
+toimitusjohtaja
+
+ Tiedotustilaisuus ja webcast
+
+Lumo Kodit järjestää institutionaalisille sijoittajille, analyytikoille ja
+medialle suunnatun tiedotustilaisuuden 5.11.2026 klo 10.00 pääkonttorillaan
+osoitteessa Mannerheimintie 168A, Helsinki. Tilaisuuden kieli on englanti.
+Tilaisuuden jälkeen medialla on mahdollisuus esittää kysymyksiä myös suomeksi.
+
+Tilaisuutta voi seurata suorana webcast-lähetyksenä. Lähetykseen ei tarvitse
+rekisteröityä etukäteen. Tiedotustilaisuutta voi seurata osoitteessa:
+https://lumo.events.inderes.com/q3-2026.
+
+Tiedotustilaisuuteen voi osallistua myös puhelimitse. Osallistuminen
+telekonferenssiin edellyttää rekisteröitymistä oheisen linkin kautta:
+https://events.inderes.com/lumo/q3-2026/dial-in. Rekisteröidyttyäsi saat
+puhelinnumeron ja konferenssitunnuksen, joiden avulla telekonferenssiin
+liitytään.
+
+Webcast-lähetys tallennetaan, ja se on myöhemmin saatavilla yhtiön
+verkkosivuilla:
+https://yritys.lumo.fi/sijoittajat/tiedotteet-ja-julkaisut/taloudelliset-raporti
+t/
+
+Lisätiedot:
+
+Niina Saarto, Director, Treasury & Investor Relations, Lumo Kodit Oyj, puh. 020
+508 3283, niina.saarto@lumo.fi
+
+Antti Syvänen, väliaikainen talousjohtaja, Lumo Kodit Oyj, puh. 020 508 3061,
+antti.syvanen@lumo.fi
+
+Jakelu:
+
+Nasdaq Helsinki, Irish Stock Exchange, keskeiset tiedotusvälineet
+
+[1]: https://yritys.lumo.fi/sijoittajat/
+[2]: https://eur03.safelinks.protection.outlook.com/?url=https%3A%2F%2Flumo.even
+ts.inderes.com%2Fq3-2026&data=05%7C02%7Ceero.sampo%40lumo.fi%7C8089c2eb236b40512
+73c08df2380fe78%7Cbc727d7a3368492686f40972d3ac4637%7C0%7C0%7C639268709112526161%
+7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIsIlAiOiJXaW4z
+MiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&sdata=igyKM9DihX5yLu%2FB6tV2Nf
+losAjW7i0mSm1RrKP%2FOoc%3D&reserved=0
+[3]: https://eur03.safelinks.protection.outlook.com/?url=https%3A%2F%2Fevents.in
+deres.com%2Flumo%2Fq3-2026%2Fdial-in&data=05%7C02%7Ceero.sampo%40lumo.fi%7C8089c
+2eb236b4051273c08df2380fe78%7Cbc727d7a3368492686f40972d3ac4637%7C0%7C0%7C6392687
+09112553284%7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIs
+IlAiOiJXaW4zMiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&sdata=OIvSb1%2Bd8d
+UTGYTLZC8phbYFENKYJtR9EefLiZTjmC0%3D&reserved=0
+[4]: https://yritys.lumo.fi/sijoittajat/tiedotteet-ja-julkaisut/taloudelliset-ra
+portit/

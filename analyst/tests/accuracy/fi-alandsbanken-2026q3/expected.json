@@ -1,0 +1,123 @@
+{
+  "country": "FI",
+  "sector": "bank",
+  "company": {
+    "ticker": "ALBBV",
+    "exchange_mic": "XHEL",
+    "name": "Ålandsbanken",
+    "mfn_slug": "alandsbanken"
+  },
+  "release": {
+    "news_id": "d6022af5-0f8b-450f-82e2-561246fae40b",
+    "lang": "en",
+    "title": "Bank of Åland Plc: Interim Report for the period January - September 2026",
+    "published_at": "2026-10-23T06:00:00Z",
+    "url": "https://mfn.se/one/a/alandsbanken/bank-of-aland-plc-interim-report-for-the-period-january-september-2026-d6022af5",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "eb81d207-cb35-4ed2-abb1-ddfabb1089c8",
+      "lang": "en",
+      "title": "Bank of Åland Plc: Half-Year Financial Report for the period January - June 2026 - Solid development in the core business ",
+      "published_at": "2026-07-17T10:00:00Z",
+      "url": "https://mfn.se/one/a/alandsbanken/bank-of-aland-plc-half-year-financial-report-for-the-period-january-june-2026-solid-development-in-the-core-business-eb81d207"
+    },
+    {
+      "news_id": "36ad6539-0fa5-435e-934f-d99078dede72",
+      "lang": "sv",
+      "title": "Ålandsbanken Abp: Halvårsrapport för perioden januari – juni 2026 - Stabil utveckling i kärnaffären",
+      "published_at": "2026-07-17T10:00:00Z",
+      "url": "https://mfn.se/one/a/alandsbanken/alandsbanken-abp-halvarsrapport-for-perioden-januari-juni-2026-stabil-utveckling-i-karnaffaren-36ad6539"
+    },
+    {
+      "news_id": "e637b324-301e-4182-b632-3bf873cc27f7",
+      "lang": "en",
+      "title": "Bank of Åland Plc: Interim Report for the period January - March 2026",
+      "published_at": "2026-04-28T06:00:00Z",
+      "url": "https://mfn.se/one/a/alandsbanken/bank-of-aland-plc-interim-report-for-the-period-january-march-2026-e637b324"
+    },
+    {
+      "news_id": "af92647c-bf14-45f9-a251-8a0c3afaad8d",
+      "lang": "sv",
+      "title": "Ålandsbanken Abp: Delårsrapport för perioden januari–mars 2026",
+      "published_at": "2026-04-28T06:00:00Z",
+      "url": "https://mfn.se/one/a/alandsbanken/alandsbanken-abp-delarsrapport-for-perioden-januari-mars-2026-af92647c"
+    },
+    {
+      "news_id": "e730ed30-0e9b-41f0-9893-002e8c27393f",
+      "lang": "sv",
+      "title": "Ålandsbankens årsredovisning för 2025 har publicerats",
+      "published_at": "2026-02-25T16:40:00Z",
+      "url": "https://mfn.se/one/a/alandsbanken/alandsbankens-arsredovisning-for-2025-har-publicerats-e730ed30"
+    },
+    {
+      "news_id": "dada3e39-d365-4772-ae5a-c7113e18c8db",
+      "lang": "en",
+      "title": "The 2025 Annual Report of the Bank of Åland Plc has been published",
+      "published_at": "2026-02-25T16:40:00Z",
+      "url": "https://mfn.se/one/a/alandsbanken/the-2025-annual-report-of-the-bank-of-aland-plc-has-been-published-dada3e39"
+    },
+    {
+      "news_id": "2cb2df71-c041-438e-ad4e-bcfc57509f9b",
+      "lang": "sv",
+      "title": "Ålandsbanken Abp: Bokslutskommuniké för perioden januari - december 2025",
+      "published_at": "2026-02-04T07:00:00Z",
+      "url": "https://mfn.se/one/a/alandsbanken/alandsbanken-abp-bokslutskommunike-for-perioden-januari-december-2025-2cb2df71"
+    },
+    {
+      "news_id": "0f501cdb-399b-4261-9cf8-0dcbc3804fbb",
+      "lang": "en",
+      "title": "Bank of Åland Plc: Year-end Report for the period January–December 2025",
+      "published_at": "2026-02-04T07:00:00Z",
+      "url": "https://mfn.se/one/a/alandsbanken/bank-of-aland-plc-year-end-report-for-the-period-january-december-2025-0f501cdb"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "operating_profit",
+      "label": "Net operating profit",
+      "unit": "EUR M",
+      "current": "15.8",
+      "prior": "16.3",
+      "current_line": "amounted to EUR 15.8 M\n  (16.3).",
+      "prior_line": "amounted to EUR 15.8 M\n  (16.3)."
+    },
+    {
+      "key": "return_on_equity",
+      "label": "Return on equity after taxes (ROE)",
+      "unit": "%",
+      "current": "16.9",
+      "prior": "17.1",
+      "current_line": "Return on equity after taxes (ROE) decreased to 16.9 per cent (17.1).",
+      "prior_line": "Return on equity after taxes (ROE) decreased to 16.9 per cent (17.1)."
+    },
+    {
+      "key": "eps",
+      "label": "Earnings per share",
+      "unit": "EUR",
+      "current": "0.82",
+      "prior": "0.85",
+      "current_line": "Earnings per share decreased by 4 per cent to EUR 0.82 (0.85).",
+      "prior_line": "Earnings per share decreased by 4 per cent to EUR 0.82 (0.85)."
+    },
+    {
+      "key": "net_interest_income",
+      "label": "Net interest income",
+      "unit": "EUR M",
+      "current": "23.0",
+      "prior": "23.6",
+      "current_line": "Net interest income          │23.0 │23.9 │-4 │23.6 │",
+      "prior_line": "Net interest income          │23.0 │23.9 │-4 │23.6 │"
+    },
+    {
+      "key": "net_fee_income",
+      "label": "Net commission income",
+      "unit": "EUR M",
+      "current": "21.1",
+      "prior": "20.1",
+      "current_line": "Net commission income        │21.1 │22.6 │-7 │20.1 │",
+      "prior_line": "Net commission income        │21.1 │22.6 │-7 │20.1 │"
+    }
+  ]
+}

@@ -1,0 +1,157 @@
+NKT A/S Interim Report Q1-Q3 2026: Continued solid financial and operational execution
+
+Company Announcement
+
+
+19 November 2026
+
+Announcement No. 20
+
+
+NKT CEO Claes Westerlind says:
+
+
+- In Q3 2026, we delivered solid financial results as we continued to execute on
+our order backlog and moved forward with our investment programme. As part of
+this, we now expect the additional Transmission capacity in Karlskrona to
+commence commercial operation ramp-up in Q2 2027, slightly ahead of the original
+plan. Alongside these efforts, we continued to advance our Charging Forward
+strategy. At our Investor Day in September, we reaffirmed our strategic
+direction and medium-term financial ambitions, presented our capital allocation
+priorities and showcased what will be the world's largest high-voltage offshore
+cable factory.
+
+
+Financial highlights
+
+─────────────────────────────────┬─────────┬─────────┬────────────┬────────────
+EURm                             │Q3 2026  │Q3 2025  │Q1-Q3 2026  │Q1-Q3 2025  
+─────────────────────────────────┼─────────┼─────────┼────────────┼────────────
+Revenue                          │966      │936      │2,777       │2,718       
+─────────────────────────────────┼─────────┼─────────┼────────────┼────────────
+Revenue, standard metal prices   │673      │726      │1,940       │2,079       
+─────────────────────────────────┼─────────┼─────────┼────────────┼────────────
+Organic growth                   │-7%      │11%      │-7%         │12%         
+─────────────────────────────────┼─────────┼─────────┼────────────┼────────────
+Operational EBITDA               │111      │119      │312         │305         
+─────────────────────────────────┼─────────┼─────────┼────────────┼────────────
+Operational EBITDA margin*       │16.6%    │16.4%    │16.1%       │14.7%       
+─────────────────────────────────┴─────────┴─────────┴────────────┴────────────
+
+*Standard metal prices
+
+Financial outlook for 2026
+
+The financial outlook for 2026 is maintained, but NKT now expects to conclude
+the year in the upper end of the operational EBITDA-range. Revenue (standard
+metal prices) is expected to be approximately EUR 2.65-2.75bn and operational
+EBITDA is expected to be approximately EUR 400-430m.
+
+
+The financial outlook is based on several assumptions, including:
+
+* Satisfactory execution of high-voltage investments and projects to deliver on
+  expected profitability margins
+* Satisfactory operational execution across business lines
+* Stable market conditions across business lines
+* Stable supply chain with limited disruptions and access to the required
+  labour, materials, and services.
+
+
+Lower revenue* due to high comparison base, and operational EBITDA of EUR 111m
+
+Revenue in Q3 2026 amounted to EUR 966m compared to EUR 936m in Q3 2025. Revenue
+measured at standard metal prices declined to EUR 673m in Q3 2026 from EUR 726m
+in Q3 2025, corresponding to organic growth of -7%. The negative development was
+expected and
+
+driven by the Transmission and Grid Solutions & Accessories business lines,
+mainly as a result of a high comparison base from execution of the Champlain
+Hudson Power Express project and repair jobs in Q3 2025, as well as timing of
+projects in execution.
+
+
+Distribution reported positive organic growth, as the robust development in the
+power distribution segment was maintained, and the business line benefitted from
+the continued ramp-up of additional medium-voltage capacity in Asnaes, Denmark.
+
+
+Operational EBITDA declined to EUR 111m in Q3 2026 compared to EUR 119m in Q3
+2025. Transmission and Grid Solutions & Accessories reported reduced operational
+EBITDA, while it increased in Distribution. The operational EBITDA-margin, based
+on revenue at standard metal prices, was 16.6% in Q3 2026, representing an
+increase of 0.2 %-points compared to Q3 2025.
+
+
+At the end of Q3 2026, the Transmission order backlog was EUR 12.4bn (EUR 11.0bn
+at standard metal prices), compared to a Transmission order backlog of EUR
+13.0bn (EUR 11.6bn at standard metal prices) at the end of Q2 2026. The
+reduction in the backlog was driven by project execution during Q3 2026. The
+backlog does not include five projects awarded under a framework agreement with
+the Dutch-German transmission system operator, TenneT. These awards have an
+estimated value exceeding EUR 2.5bn.
+
+
+Free cash flow amounted to EUR -127m in Q3 2026, mainly driven by a negative
+contribution from changes in working capital and the ongoing investments to
+expand capacity. At the end of Q3 2026, NKT maintained a robust balance sheet,
+with net interest-bearing debt of EUR -471m.
+
+
+The disciplined and stringent execution of the investment projects to expand
+capacity was maintained in the quarter. The additional medium-voltage capacity
+in Denmark continued to ramp up, while the other production expansion projects
+progressed according to plan. This includes the additional medium-voltage
+capacity in Portugal, which gradually will become operational during Q4 2026. As
+announced at the Investor Day, commercial operation of the Karlskrona expansion
+in Sweden is expected to commence in Q2 2027, slightly ahead of the original
+plan, derisking the project and allowing for a more controlled ramp-up. The
+additional capacity at the high-voltage factory in Cologne, Germany, and the
+second cable-laying vessel are expected to become operational in 2027.
+
+Segment key financial highlights Q3 2026
+
+
+──────────────────────────┬──────────┬─────────────────┬────────────┬───────────
+                          │Revenue   │Revenue, standard│Operational │Op. EBITDA 
+                          │          │metal prices     │EBITDA      │margin*    
+───────────────────────┬──┴──┬────┬──┴─────┬─────┬─────┴───┬────┬───┴─────┬─────
+EURm                   │Q3   │Q3  │Q3 2026 │Q3   │Q3 2026  │Q3  │Q3 2026  │Q3   
+                       │2026 │2025│        │2025 │         │2025│         │2025 
+───────────────────────┼─────┼────┼────────┼─────┼─────────┼────┼─────────┼─────
+Transmission           │419  │490 │357     │430  │70       │71  │19.5%    │16.5%
+───────────────────────┼─────┼────┼────────┼─────┼─────────┼────┼─────────┼─────
+Grid Solutions &       │123  │141 │122     │130  │21       │26  │17.4%    │20.0%
+Accessories            │     │    │        │     │         │    │         │     
+───────────────────────┼─────┼────┼────────┼─────┼─────────┼────┼─────────┼─────
+Distribution           │458  │351 │226     │208  │24       │22  │10.6%    │10.7%
+───────────────────────┼─────┼────┼────────┼─────┼─────────┼────┼─────────┼─────
+Eliminations between   │-34  │-46 │-32     │-42  │-4       │0   │         │     
+segments and           │     │    │        │     │         │    │         │     
+non-allocated costs    │     │    │        │     │         │    │         │     
+───────────────────────┼─────┼────┼────────┼─────┼─────────┼────┼─────────┼─────
+NKT                    │966  │936 │673     │726  │111      │119 │16.6%    │16.4%
+───────────────────────┴─────┴────┴────────┴─────┴─────────┴────┴─────────┴─────
+
+* Standard metal prices
+
+
+Teleconference
+NKT A/S hosts a teleconference for investors and financial analysts at 10:00am
+CEST on 19 November 2026. The presentation to be used during the call will be
+available before the start of the teleconference. To attend, please register and
+access the call at investors.nkt.com
+
+
+Contacts
+
+
+Investors
+Jacob Johansen, Head of Investor Relations
++45 2169 3591 / jacob.johansen@nkt.com
+
+Press
+
+Pelle Fischer-Nielsen, External Communications Lead
++45 2223 5870 / pelle.fischer-nielsen@nkt.com
+

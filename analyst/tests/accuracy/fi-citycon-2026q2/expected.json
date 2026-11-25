@@ -1,0 +1,123 @@
+{
+  "country": "FI",
+  "sector": "property",
+  "company": {
+    "ticker": "CTY1S",
+    "exchange_mic": "XHEL",
+    "name": "Citycon",
+    "mfn_slug": "citycon"
+  },
+  "release": {
+    "news_id": "d34628fe-a60d-58aa-a8a5-c2f9603bc758",
+    "lang": "en",
+    "title": "Citycon Oyj: Citycon presents outstanding operational results for H1/2026",
+    "published_at": "2026-08-12T15:45:00Z",
+    "url": "https://mfn.se/cis/a/citycon/citycon-oyj-citycon-presents-outstanding-operational-results-for-h1-2026-d34628fe",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "3f9bce9a-9f06-5c2c-8a43-67f4a091a67e",
+      "lang": "fi",
+      "title": "Citycon Oyj: Citycon julkaisee vahvat taloudelliset ja operatiiviset tulokset ensimmäiseltä vuosineljännekseltä",
+      "published_at": "2026-05-13T20:50:00Z",
+      "url": "https://mfn.se/cis/a/citycon/citycon-oyj-citycon-julkaisee-vahvat-taloudelliset-ja-operatiiviset-tulokset-ensimmaiselta-vuosineljannekselta-3f9bce9a"
+    },
+    {
+      "news_id": "23a7dc91-517f-57d8-a1aa-32fa283ca93c",
+      "lang": "en",
+      "title": "Citycon Oyj: Citycon presents strong financial and operational results for Q1/2026",
+      "published_at": "2026-05-13T20:50:00Z",
+      "url": "https://mfn.se/cis/a/citycon/citycon-oyj-citycon-presents-strong-financial-and-operational-results-for-q1-2026-23a7dc91"
+    },
+    {
+      "news_id": "ab2c614a-fd27-5c49-a8ff-773ac7407d4b",
+      "lang": "fi",
+      "title": "Citycon Oyj: Cityconin tilinpäätös, selvitys hallinto- ja ohjausjärjestelmästä sekä palkitsemisraportti vuodelta 2025 on julkaistu",
+      "published_at": "2026-02-26T20:30:00Z",
+      "url": "https://mfn.se/cis/a/citycon/citycon-oyj-cityconin-tilinpaatos-selvitys-hallinto-ja-ohjausjarjestelmasta-seka-palkitsemisraportti-vuodelta-2025-on-julkaistu-ab2c614a"
+    },
+    {
+      "news_id": "05bb6ce6-3892-5d73-99c8-72aca15493c5",
+      "lang": "en",
+      "title": "Citycon Oyj: Citycon's Financial Statements, Corporate Governance Statement and Remuneration Report for 2025 published",
+      "published_at": "2026-02-26T20:30:00Z",
+      "url": "https://mfn.se/cis/a/citycon/citycon-oyj-citycons-financial-statements-corporate-governance-statement-and-remuneration-report-for-2025-published-05bb6ce6"
+    },
+    {
+      "news_id": "850a206c-3b4d-5fd5-b593-72bfd706b21f",
+      "lang": "en",
+      "title": "Citycon Oyj: Citycon Q1-Q3/2025 interim results: consistent operational performance. Hilik Attias appointed as the CFO of Citycon.",
+      "published_at": "2025-10-30T18:15:00Z",
+      "url": "https://mfn.se/cis/a/citycon/citycon-oyj-citycon-q1-q3-2025-interim-results-consistent-operational-performance-hilik-attias-appointed-as-the-cfo-of-citycon-850a206c"
+    },
+    {
+      "news_id": "65473043-701d-5b7d-8cd8-f0fa3ccf9893",
+      "lang": "fi",
+      "title": "Citycon Oyj: Cityconin Q1-Q3/2025 osavuosikatsaus: vakaa operatiivinen tulos. Hilik Attias on nimitetty Cityconin uudeksi talousjohtajaksi.",
+      "published_at": "2025-10-30T18:15:00Z",
+      "url": "https://mfn.se/cis/a/citycon/citycon-oyj-cityconin-q1-q3-2025-osavuosikatsaus-vakaa-operatiivinen-tulos-hilik-attias-on-nimitetty-cityconin-uudeksi-talousjohtajaksi-65473043"
+    },
+    {
+      "news_id": "95d14bdb-bd89-5552-9aba-eca765ea306f",
+      "lang": "en",
+      "title": "Citycon Oyj: Citycon H1/2025: Continued improvement in operational performance combined with further actions to strengthen the balance sheet",
+      "published_at": "2025-08-06T16:30:00Z",
+      "url": "https://mfn.se/cis/a/citycon/citycon-oyj-citycon-h1-2025-continued-improvement-in-operational-performance-combined-with-further-actions-to-strengthen-the-balance-sheet-95d14bdb"
+    },
+    {
+      "news_id": "28c3ac4e-4971-50ef-a8ef-2327e82e6497",
+      "lang": "fi",
+      "title": "Citycon Oyj: Citycon H1/2025: Cityconin operatiiviset luvut jatkoivat kehittymistään, minkä lisäksi jatkoimme toimenpiteitä taseen vahvistamiseksi",
+      "published_at": "2025-08-06T16:30:00Z",
+      "url": "https://mfn.se/cis/a/citycon/citycon-oyj-citycon-h1-2025-cityconin-operatiiviset-luvut-jatkoivat-kehittymistaan-minka-lisaksi-jatkoimme-toimenpiteita-taseen-vahvistamiseksi-28c3ac4e"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "net_operating_income",
+      "label": "Net rental income (Q2)",
+      "unit": "MEUR",
+      "current": "57.5",
+      "prior": "53.3",
+      "current_line": "Net rental income              │MEU│57.5 │53.3 │",
+      "prior_line": "Net rental income              │MEU│57.5 │53.3 │"
+    },
+    {
+      "key": "direct_operating_profit",
+      "label": "Direct operating profit (Q2)",
+      "unit": "MEUR",
+      "current": "50.8",
+      "prior": "47.7",
+      "current_line": "Direct operating profit²       │MEU│50.8 │47.7 │",
+      "prior_line": "Direct operating profit²       │MEU│50.8 │47.7 │"
+    },
+    {
+      "key": "eps",
+      "label": "IFRS Earnings per share (basic) (Q2)",
+      "unit": "EUR",
+      "current": "0.05",
+      "prior": "0.21",
+      "current_line": "IFRS Earnings per share        │EUR│0.05 │0.21 │",
+      "prior_line": "IFRS Earnings per share        │EUR│0.05 │0.21 │"
+    },
+    {
+      "key": "loan_to_value",
+      "label": "Loan to Value (LTV)",
+      "unit": "%",
+      "current": "51.4",
+      "prior": "46.4",
+      "current_line": "Loan to Value (LTV)²           │%  │51.4 │46.4 │",
+      "prior_line": "Loan to Value (LTV)²           │%  │51.4 │46.4 │"
+    },
+    {
+      "key": "epra_earnings",
+      "label": "EPRA Earnings (Q2)",
+      "unit": "MEUR",
+      "current": "17.6",
+      "prior": "17.5",
+      "current_line": "EPRA Earnings⁴                 │MEU│17.6 │17.5 │",
+      "prior_line": "EPRA Earnings⁴                 │MEU│17.6 │17.5 │"
+    }
+  ]
+}

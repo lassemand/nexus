@@ -1,0 +1,123 @@
+{
+  "country": "DK",
+  "sector": "industrial",
+  "company": {
+    "ticker": "NKT",
+    "exchange_mic": "XCSE",
+    "name": "NKT",
+    "mfn_slug": "nkt"
+  },
+  "release": {
+    "news_id": "d3a8d8ae-f07b-5887-bdde-8400b9163709",
+    "lang": "en",
+    "title": "NKT A/S Interim Report Q1-Q3 2026: Continued solid financial and operational execution",
+    "published_at": "2026-11-19T06:30:39Z",
+    "url": "https://mfn.se/cis/a/nkt/nkt-a-s-interim-report-q1-q3-2026-continued-solid-financial-and-operational-execution-d3a8d8ae",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "fdd9fcac-c652-57ed-960c-66140fe3272b",
+      "lang": "da",
+      "title": "NKT A/S 1. halvår 2026: Solid finansiel og operationel eksekvering",
+      "published_at": "2026-08-13T15:47:11Z",
+      "url": "https://mfn.se/cis/a/nkt/nkt-a-s-1-halvar-2026-solid-finansiel-og-operationel-eksekvering-fdd9fcac"
+    },
+    {
+      "news_id": "856db360-b042-5281-ac0a-c024c13b874f",
+      "lang": "en",
+      "title": "NKT A/S H1 2026 Interim Report: Solid financial and operational execution",
+      "published_at": "2026-08-13T15:47:11Z",
+      "url": "https://mfn.se/cis/a/nkt/nkt-a-s-h1-2026-interim-report-solid-financial-and-operational-execution-856db360"
+    },
+    {
+      "news_id": "d905238b-3425-5f38-91ad-4996d5ab8175",
+      "lang": "en",
+      "title": "NKT A/S Q1 2026 Interim Report: Record-high order intake and EBITDA of EUR 97m",
+      "published_at": "2026-05-13T05:30:28Z",
+      "url": "https://mfn.se/cis/a/nkt/nkt-a-s-q1-2026-interim-report-record-high-order-intake-and-ebitda-of-eur-97m-d905238b"
+    },
+    {
+      "news_id": "a01e7527-dd34-5a3d-9d64-c3300fdda094",
+      "lang": "da",
+      "title": "NKT A/S 1. kvartal 2026: Rekordhøj ordreindgang og EBITDA på EUR 97 mio.",
+      "published_at": "2026-05-13T05:30:28Z",
+      "url": "https://mfn.se/cis/a/nkt/nkt-a-s-1-kvartal-2026-rekordhoj-ordreindgang-og-ebitda-pa-eur-97-mio-a01e7527"
+    },
+    {
+      "news_id": "918bc56f-44f9-5ac4-8294-5a7b526259a7",
+      "lang": "da",
+      "title": "NKT A/S 3. kvartal 2025: 11% organisk vækst og operationelt EBITDA på EUR 119 mio.",
+      "published_at": "2025-11-19T06:34:13Z",
+      "url": "https://mfn.se/cis/a/nkt/nkt-a-s-3-kvartal-2025-11-organisk-vaekst-og-operationelt-ebitda-pa-eur-119-mio-918bc56f"
+    },
+    {
+      "news_id": "2721c1a2-99bf-5ac7-89fb-1549ca770155",
+      "lang": "en",
+      "title": "NKT A/S Q3 2025 Interim Report: 11% organic growth and operational EBITDA of EUR 119m",
+      "published_at": "2025-11-19T06:34:13Z",
+      "url": "https://mfn.se/cis/a/nkt/nkt-a-s-q3-2025-interim-report-11-organic-growth-and-operational-ebitda-of-eur-119m-2721c1a2"
+    },
+    {
+      "news_id": "c501aaa9-e278-48d7-ad2b-b8bc431ae0b7",
+      "lang": "da",
+      "title": "NKT A/S 2. kvartal 2025: 13% organisk vækst og EBITDA på EUR 105 mio.",
+      "published_at": "2025-08-14T15:23:38Z",
+      "url": "https://mfn.se/one/a/nkt/nkt-a-s-2-kvartal-2025-13-organisk-vaekst-og-ebitda-pa-eur-105-mio-c501aaa9"
+    },
+    {
+      "news_id": "8c4340b3-6f1e-423e-ab5c-b4fbdc969210",
+      "lang": "en",
+      "title": "NKT A/S Q2 2025 Interim Report: 13% organic growth and EBITDA of EUR 105m",
+      "published_at": "2025-08-14T15:23:38Z",
+      "url": "https://mfn.se/one/a/nkt/nkt-a-s-q2-2025-interim-report-13-organic-growth-and-ebitda-of-eur-105m-8c4340b3"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "revenue",
+      "label": "Revenue (Q3)",
+      "unit": "EURm",
+      "current": "966",
+      "prior": "936",
+      "current_line": "Revenue                          │966      │936",
+      "prior_line": "Revenue                          │966      │936"
+    },
+    {
+      "key": "revenue_standard_metal_prices",
+      "label": "Revenue, standard metal prices (Q3)",
+      "unit": "EURm",
+      "current": "673",
+      "prior": "726",
+      "current_line": "Revenue, standard metal prices   │673      │726",
+      "prior_line": "Revenue, standard metal prices   │673      │726"
+    },
+    {
+      "key": "organic_growth",
+      "label": "Organic growth (Q3)",
+      "unit": "%",
+      "current": "-7",
+      "prior": "11",
+      "current_line": "Organic growth                   │-7%      │11%",
+      "prior_line": "Organic growth                   │-7%      │11%"
+    },
+    {
+      "key": "ebitda",
+      "label": "Operational EBITDA (Q3)",
+      "unit": "EURm",
+      "current": "111",
+      "prior": "119",
+      "current_line": "Operational EBITDA               │111      │119",
+      "prior_line": "Operational EBITDA               │111      │119"
+    },
+    {
+      "key": "ebitda_margin",
+      "label": "Operational EBITDA margin, standard metal prices (Q3)",
+      "unit": "%",
+      "current": "16.6",
+      "prior": "16.4",
+      "current_line": "Operational EBITDA margin*       │16.6%    │16.4%",
+      "prior_line": "Operational EBITDA margin*       │16.6%    │16.4%"
+    }
+  ]
+}

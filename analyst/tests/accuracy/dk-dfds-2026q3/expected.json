@@ -1,0 +1,114 @@
+{
+  "country": "DK",
+  "sector": "industrial",
+  "company": {
+    "ticker": "DFDS",
+    "exchange_mic": "XCSE",
+    "name": "DFDS",
+    "mfn_slug": "dfds"
+  },
+  "release": {
+    "news_id": "2f14f316-c62c-4a42-ba37-3d152a03c2e5",
+    "lang": "da",
+    "title": "DELÅRSRAPPORT 3. KVT. 2026 - FORTSAT PÅ RET KURS. FORTSAT MERE AT GØRE",
+    "published_at": "2026-11-11T06:30:00Z",
+    "url": "https://mfn.se/one/a/dfds/delarsrapport-3-kvt-2026-fortsat-pa-ret-kurs-fortsat-mere-at-gore-2f14f316",
+    "kind": "interim"
+  },
+  "previous_reports": [
+    {
+      "news_id": "acd30fa1-60b8-44ab-9c30-ecefe13c2b0e",
+      "lang": "da",
+      "title": "DELÅRSRAPPORT 2. KVT. 2026 - PÅ RETTE KURS. MERE AT GØRE",
+      "published_at": "2026-08-13T15:45:00Z",
+      "url": "https://mfn.se/one/a/dfds/delarsrapport-2-kvt-2026-pa-rette-kurs-mere-at-gore-acd30fa1"
+    },
+    {
+      "news_id": "824be160-5520-4c2a-8243-ef869904a8d3",
+      "lang": "en",
+      "title": "Q2 2026 INTERIM REPORT - ON TRACK. MORE TO DO",
+      "published_at": "2026-08-13T15:45:00Z",
+      "url": "https://mfn.se/one/a/dfds/q2-2026-interim-report-on-track-more-to-do-824be160"
+    },
+    {
+      "news_id": "9763b792-d716-4485-ab66-b2aea7d3d8af",
+      "lang": "en",
+      "title": "Q1 2026 INTERIM REPORT - STEADY PROGRESS ",
+      "published_at": "2026-05-05T05:30:00Z",
+      "url": "https://mfn.se/one/a/dfds/q1-2026-interim-report-steady-progress-9763b792"
+    },
+    {
+      "news_id": "61d16467-aaa5-4171-b27b-46de61d21433",
+      "lang": "da",
+      "title": "DELÅRSRAPPORT 1. KVT. 2026 - STØT FREMGANG",
+      "published_at": "2026-05-05T05:30:00Z",
+      "url": "https://mfn.se/one/a/dfds/delarsrapport-1-kvt-2026-stot-fremgang-61d16467"
+    },
+    {
+      "news_id": "c4b510ad-e8ce-48ce-bf2a-4b0b4d41ae37",
+      "lang": "da",
+      "title": "DFDS ÅRSRAPPORT 2025",
+      "published_at": "2026-02-19T06:30:00Z",
+      "url": "https://mfn.se/one/a/dfds/dfds-arsrapport-2025-c4b510ad"
+    },
+    {
+      "news_id": "b6930aef-067e-48df-a955-692e283a0772",
+      "lang": "en",
+      "title": "DFDS ANNUAL REPORT 2025",
+      "published_at": "2026-02-19T06:30:00Z",
+      "url": "https://mfn.se/one/a/dfds/dfds-annual-report-2025-b6930aef"
+    },
+    {
+      "news_id": "ba856ee9-5a0d-4037-8e42-ab562775b203",
+      "lang": "en",
+      "title": "Q3 2025 INTERIM REPORT - STAYING THE TRANSITION COURSE",
+      "published_at": "2025-11-06T06:30:00Z",
+      "url": "https://mfn.se/one/a/dfds/q3-2025-interim-report-staying-the-transition-course-ba856ee9"
+    },
+    {
+      "news_id": "15157148-0536-4a5c-a0e7-c170ced7568d",
+      "lang": "da",
+      "title": "DELÅRSRAPPORT 3. KVT. 2025 - PÅ STØT KURS MOD TRANSITION",
+      "published_at": "2025-11-06T06:30:00Z",
+      "url": "https://mfn.se/one/a/dfds/delarsrapport-3-kvt-2025-pa-stot-kurs-mod-transition-15157148"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "revenue",
+      "label": "Omsætning (3. kvt.)",
+      "unit": "DKK mio.",
+      "current": "8826",
+      "prior": "8296",
+      "current_line": "Omsætning           │8.826  │8.296",
+      "prior_line": "Omsætning           │8.826  │8.296"
+    },
+    {
+      "key": "ebitda",
+      "label": "EBITDA (3. kvt.)",
+      "unit": "DKK mio.",
+      "current": "1477",
+      "prior": "1397",
+      "current_line": "EBITDA              │1.477  │1.397",
+      "prior_line": "EBITDA              │1.477  │1.397"
+    },
+    {
+      "key": "operating_income",
+      "label": "EBIT (3. kvt.)",
+      "unit": "DKK mio.",
+      "current": "685",
+      "prior": "536",
+      "current_line": "EBIT                │685    │536",
+      "prior_line": "EBIT                │685    │536"
+    },
+    {
+      "key": "free_cash_flow",
+      "label": "Justeret frit cash flow (3. kvt.)",
+      "unit": "DKK mio.",
+      "current": "205",
+      "prior": "-40",
+      "current_line": "Justeret frit cash  │205    │- 40",
+      "prior_line": "Justeret frit cash  │205    │- 40"
+    }
+  ]
+}
