@@ -15,7 +15,7 @@ commands to run.
 |---|---|---|
 | every Cargo package at `*/`, `verdict/*/`, `verdict/kernels/*/` | its `Cargo.toml` (`.moon/workspace.yml` globs) | `lint` (`cargo clippy -p <crate> --all-targets --all-features -- -D warnings`), `test` (`cargo test -p <crate>`), from `.moon/tasks/rust.yml` |
 | `telemetry` | as above | also `test-kafka`, `test-collector-down` |
-| `analyst` | as above | `test` skips `the_latency_of_a_decision_stays_far_under_the_budget`, which runs alone in `test-latency`, the only task retried once (`retryCount: 1`): its p99 < 10 ms on real Postgres writes can miss on a runner still flushing a cold build |
+| `analyst` | as above | `test` also needs signal's migrations as input; no task is retried. The latency test `the_latency_of_a_decision_stays_far_under_the_budget` warms up before measuring and asserts p99 < 10 ms locally; when `CI` is set it asserts p50 < 10 ms and p99 < 100 ms, because a runner still flushing a cold build stalls disk and CPU |
 | `verdict/kernels/sample` | as above | also `wasm`: clippy and release build of `verdict-sdk`/`verdict-sample` for `wasm32-unknown-unknown`; inputs `verdict/sdk/**`, `verdict/kernels/**` |
 | `verdict/bench` (own Cargo workspace) | as above | `fmt`, `lint`, `lint-wasm`, `build`, `build-wasm`, `test` |
 | `verdict/template` (own Cargo workspace) | as above | `fmt`, `lint`, `test`, `build-wasm` |

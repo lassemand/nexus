@@ -79,7 +79,6 @@ crate() {
   local c
   for c in "$@"; do
     printf '%s:lint %s:test ' "$c" "$c"
-    [[ "$c" == analyst ]] && printf 'analyst:test-latency '
   done
   return 0
 }
@@ -102,7 +101,7 @@ check "chronicle: chronicle and its dependents only" \
   "$fmt $(crate chronicle)" -- chronicle/src/nordic/live.rs
 
 check "signal migration: signal, and analyst's, chronicle's and insight's tests" \
-  "$fmt $(crate signal) analyst:test analyst:test-latency chronicle:test insight:test" -- signal/migrations/20990101000000_x.sql
+  "$fmt $(crate signal) analyst:test chronicle:test insight:test" -- signal/migrations/20990101000000_x.sql
 
 check "recorded e2e events: chronicle and signal" \
   "$fmt $(crate chronicle signal)" -- chronicle/tests/fixtures/mfn/e2e/x.pb
